@@ -1674,20 +1674,7 @@ export function createSpawn(ctx: HostContext): Spawn {
          * does not exist.
          */
         if (action.type === 'chat/turnComplete' || action.type === 'chat/turnCancelled') {
-          const own = byChat.get(chatUri)?.chat.agentId();
-          /*
-           * A chat of another backend's transcript is that backend's: the
-           * session's provider is not what a resume of that id reads, and the
-           * folder under it is the session's. The chat's own backend is on
-           * `Held.backends` and its row, which is where a start reads it.
-           */
-          if (!foreign && own !== undefined && own !== '') {
-            if (kept.provider(own) !== agent.provider) kept.setProvider(own, agent.provider);
-            keepFolder(own, sessions.get(uri)?.workingDirectory);
-          }
-          if (own !== undefined && own !== '' && ctx.recordedChat(idOf(uri), chatUri)?.backendId !== own) {
-            ctx.keepChat(uri, chatUri, own, false);
-          }
+          keepBackendId();
         }
         /*
          * The title the backend derived, when it moved on the session's default
@@ -1903,6 +1890,7 @@ export function createSpawn(ctx: HostContext): Spawn {
         if (sender !== undefined) kept.setSender(idOf(uri), transcriptId, sender);
       },
       onHandshake: () => {
+        keepBackendId();
         reported = true;
         setAgentModels(uri);
       },
@@ -1929,6 +1917,18 @@ export function createSpawn(ctx: HostContext): Spawn {
      */
     const existing = sessions.get(uri);
     const foreign = existing !== undefined ? agent !== existing.agent : own !== undefined && agent !== own.agent;
+    /** Keep the backend's id when first known, before a lazy backend sends its first prompt. */
+    const keepBackendId = (): void => {
+      const named = byChat.get(chatUri)?.chat.agentId();
+      // A foreign chat keeps its backend on its own row, not the session's provider/folder.
+      if (!foreign && named !== undefined && named !== '') {
+        if (kept.provider(named) !== agent.provider) kept.setProvider(named, agent.provider);
+        keepFolder(named, sessions.get(uri)?.workingDirectory);
+      }
+      if (named !== undefined && named !== '' && ctx.recordedChat(idOf(uri), chatUri)?.backendId !== named) {
+        ctx.keepChat(uri, chatUri, named, false);
+      }
+    };
     /*
      * A backend answers its session at once, and the rest of this start runs in
      * the same tick it was asked in; or it answers a promise, for a step to

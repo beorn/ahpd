@@ -673,6 +673,8 @@ const idIn = (name: string): string | undefined => {
  * old file, and doing that inside every `setFlags` would put a `fsync` in the
  * path of somebody moving the highlight down a list. Coalesced onto the next
  * tick instead: many changes in one turn become one pass over what moved.
+ * A changed backend chat id is written before its setter returns: a handshake
+ * may be the last host callback before the backend starts its first prompt.
  *
  * A file that cannot be read is a warning and an empty row, never a refusal.
  * Losing which sessions were archived is worth saying out loud; refusing to
@@ -1071,7 +1073,14 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     annotations: (id) => inner.annotations?.(id),
     setAnnotations: (id, value) => { touched(id, () => { inner.setAnnotations?.(id, value); }); },
     chats: (id) => inner.chats(id),
-    setChats: (id, list) => { touched(id, () => { inner.setChats(id, list); }); },
+    setChats: (id, list) => {
+      const before = new Map(inner.chats(id).map((chat) => [chat.uri, chat.backendId]));
+      const bindingChanged = list.some((chat) => before.get(chat.uri) !== chat.backendId);
+      touched(id, () => { inner.setChats(id, list); });
+      // A lazy backend hands its first prompt out after its handshake. Its
+      // real chat id must survive a killed host before the next timer tick.
+      if (bindingChanged) save();
+    },
     // Two rows move, so two files have to be written - which is why this is
     // written out rather than handed to `touched`, which names one.
     moveChat: (from, to, uri, turns) => {
