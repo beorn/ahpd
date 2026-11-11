@@ -1384,6 +1384,67 @@ describe('more than one chat in a session', () => {
     }
   });
 
+  // A lazy backend first learns its id in the handshake, before the first
+  // prompt; no completed/cancelled/error event can repair a host killed there.
+  it('persists a backend-minted chat id before its first prompt, without a turn-end event', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
+    try {
+      const dir = join(root, 'sessions');
+      const starts: Start[] = [];
+      const bindingsAtPrompt: (string | undefined)[] = [];
+      let holdTurnEnd = true;
+      const base = renaming(starts, true);
+      const agent: Agent = {
+        ...base,
+        create: (start: Start): Session => {
+          let known = false;
+          const session = startedNow(base.create({
+            ...start,
+            emit: (channel, action) => {
+              if (holdTurnEnd && (action.type === 'chat/turnComplete' || action.type === 'chat/turnCancelled')) return;
+              start.emit(channel, action);
+            },
+          }));
+          return {
+            ...session,
+            agentId: () => known ? session.agentId() : undefined,
+            sendMessage: (turnId, text, from, attachments, options) => {
+              known = true;
+              start.onHandshake?.();
+              bindingsAtPrompt.push(fileSessions({ dir }).chats(idOf(start.uri))
+                .find((chat) => chat.uri === start.chatUri)?.backendId);
+              return session.sendMessage(turnId, text, from, attachments, options);
+            },
+          };
+        },
+      };
+      const first = await hostAt(dir, agent);
+      await first.client.handle({ method: 'createSession', params: { channel: LIVE, provider: 'echo' } });
+      await first.client.handle({ method: 'createChat', params: { channel: LIVE, chat: PEER } });
+      await send(first.client, LIVE, 't0', 'made in the default chat');
+      await opened(first.client, PEER);
+      await send(first.client, PEER, 't1', 'made before the host stopped');
+      expect(actions(first.p, PEER).filter((event) => event.action.type === 'chat/turnComplete'
+        || event.action.type === 'chat/turnCancelled' || event.action.type === 'chat/error')).toEqual([]);
+      expect(bindingsAtPrompt).toEqual(['live-minted', `${UUID}-minted`]);
+
+      // Read only the durable store, without stopping the first host: graceful
+      // cancellation would emit a turn end and hide the crash window.
+      holdTurnEnd = false;
+      const second = await hostAt(dir, agent);
+      const defaultChat = String((await opened(second.client, LIVE)).state.defaultChat);
+      expect(said(await opened(second.client, defaultChat))).toEqual(['made in the default chat']);
+      expect(said(await opened(second.client, PEER))).toEqual(['made before the host stopped']);
+      const before = starts.length;
+      await send(second.client, PEER, 't2', 'continued after restart');
+      expect(resuming(starts.slice(before)).at(-1)?.resume).toBe(`${UUID}-minted`);
+      expect(said(await opened(second.client, PEER))).toEqual(['made before the host stopped', 'continued after restart']);
+    }
+    finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])('lists the original session when its first chat has a backend-minted id (find only: %s)', async (findOnly) => {
     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
     try {
