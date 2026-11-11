@@ -75,7 +75,7 @@ export function createHistory(ctx: HostContext): History {
     if (held !== undefined) return held;
     if (owner.subagents === undefined) return [];
     let found: Awaited<ReturnType<NonNullable<Agent['subagents']>>>;
-    try { found = await owner.subagents(id, turns, sessionAt(id)); }
+    try { found = await owner.subagents(ctx.sessionBackendId(id), turns, sessionAt(id)); }
     catch { return []; }
     const built = (found ?? []).map((one) => ({ ...one } as unknown as Bag));
     subHistory.set(id, built);
@@ -280,8 +280,8 @@ export function createHistory(ctx: HostContext): History {
       : [...asked.filter((agent) => agent.provider === recorded), ...asked.filter((agent) => agent.provider !== recorded)];
     const at = sessionAt(id);
     for (const agent of order) {
-      const row = await agent.find?.(id, at).catch(() => undefined);
-      if (row !== undefined) return { agent, row };
+      const row = await agent.find?.(ctx.sessionBackendId(id), at).catch(() => undefined);
+      if (row !== undefined) return { agent, row: { ...row, id } };
     }
     return undefined;
   };
@@ -374,7 +374,7 @@ export function createHistory(ctx: HostContext): History {
       if (!row || !owner?.transcript)
         return undefined;
       titles.set(id, row.title);
-      const built = await owner.transcript(id, sessionAt(id));
+      const built = await owner.transcript(ctx.sessionBackendId(id), sessionAt(id));
       if (!built)
         return undefined;
       /*
