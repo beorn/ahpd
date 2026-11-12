@@ -1384,9 +1384,9 @@ describe('more than one chat in a session', () => {
     }
   });
 
-  // A lazy backend first learns its id in the handshake, before the first
-  // prompt; no completed/cancelled/error event can repair a host killed there.
-  it('persists a backend-minted chat id before its first prompt, without a turn-end event', async () => {
+  // ACP opens before returning its Session; lazy backends open at the first
+  // prompt. Neither may rely on a turn-end event to survive a killed host.
+  it.each(['create', 'first-prompt'] as const)('persists a backend-minted chat id before its first prompt, without a turn-end event (%s)', async (handshake) => {
     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
     try {
       const dir = join(root, 'sessions');
@@ -1396,8 +1396,8 @@ describe('more than one chat in a session', () => {
       const base = renaming(starts, true);
       const agent: Agent = {
         ...base,
-        create: (start: Start): Session => {
-          let known = false;
+        create: (start: Start): Session | Promise<Session> => {
+          let known = handshake === 'create';
           const session = startedNow(base.create({
             ...start,
             emit: (channel, action) => {
@@ -1405,17 +1405,26 @@ describe('more than one chat in a session', () => {
               start.emit(channel, action);
             },
           }));
-          return {
+          const wrapped: Session = {
             ...session,
             agentId: () => known ? session.agentId() : undefined,
             sendMessage: (turnId, text, from, attachments, options) => {
-              known = true;
-              start.onHandshake?.();
+              if (handshake === 'first-prompt') {
+                known = true;
+                start.onHandshake?.();
+              }
               bindingsAtPrompt.push(fileSessions({ dir }).chats(idOf(start.uri))
                 .find((chat) => chat.uri === start.chatUri)?.backendId);
               return session.sendMessage(turnId, text, from, attachments, options);
             },
           };
+          if (handshake === 'create') {
+            return Promise.resolve().then(() => {
+              start.onHandshake?.();
+              return wrapped;
+            });
+          }
+          return wrapped;
         },
       };
       const first = await hostAt(dir, agent);

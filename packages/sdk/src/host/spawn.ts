@@ -2065,6 +2065,8 @@ export function createSpawn(ctx: HostContext): Spawn {
         finally { booking = false; }
       },
     });
+    // An eager backend can finish its handshake before create returns its Session.
+    keepBackendId();
     /*
      * Whether this chat may move, said where what its state or its session's
      * row holds differs. Both are built from `movable` as they are read, so a
