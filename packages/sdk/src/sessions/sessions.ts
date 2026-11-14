@@ -463,6 +463,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
     return [{
       uri: held.uri,
       backendId: held.backendId,
+      ...(typeof held.sessionConversation === 'boolean' ? { sessionConversation: held.sessionConversation } : {}),
       ...(text(held.provider) ? { provider: held.provider } : {}),
       ...(typeof config === 'object' && config !== null && !Array.isArray(config)
         ? { config: config as Record<string, unknown> }
