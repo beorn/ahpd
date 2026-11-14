@@ -375,6 +375,9 @@ if (LOG !== undefined && existsSync(LOG) && !process.argv.includes('--delete-fai
   for (const line of readFileSync(LOG, 'utf8').split('\n')) {
     if (line === '') continue;
     const logged = JSON.parse(line);
+    if (process.argv.includes('--remember-sessions') && logged.method === 'fixture/created-session') {
+      LISTED.push(logged.params);
+    }
     if (logged.method !== 'session/delete') continue;
     const at = LISTED.findIndex((one) => one.sessionId === logged.params?.sessionId);
     if (at >= 0) LISTED.splice(at, 1);
@@ -1820,6 +1823,11 @@ const onLine = (line) => {
       }
       const id = nextSession();
       if (typeof message.params?.cwd === 'string' && message.params.cwd !== '') cwd = message.params.cwd;
+      // Restart journeys need a provider catalogue that remembers the IDs it actually minted.
+      if (process.argv.includes('--remember-sessions')) {
+        if (LOG === undefined) throw new Error('remembered sessions need ACP_LOG');
+        appendFileSync(LOG, `${JSON.stringify({ method: 'fixture/created-session', params: { sessionId: id, cwd } })}\n`);
+      }
       hostTools = named(message.params?.mcpServers);
       // Started with `--books`, the server says what the session had already
       // cost before any turn, before it answers, the way `session/load`

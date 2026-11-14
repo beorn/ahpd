@@ -236,7 +236,7 @@ it.skipIf(process.platform !== 'linux')('an old child ending cannot clear a succ
   finally { for (const session of sessions) await session.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
-it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'session/load', 'bookkeeping'] as const)(
+it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'session/load', 'bookkeeping', 'load-bookkeeping'] as const)(
   'a failed %s removes only its own published custody pair', async (method) => {
     // 32996: close success does not exercise the three opening failure paths after publication.
     const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-failure-'));
@@ -244,6 +244,7 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
     const log = join(folder, 'requests.jsonl');
     let session: Session | undefined;
     let bookkeepingPair: Bag | undefined;
+    const bookkeeping = method === 'bookkeeping' || method === 'load-bookkeeping';
     try {
       const agent = acpAgent({ command: process.execPath, args: [FIXTURE, `--fail-method=${method}`], provider: 'custody-failure', env: {
         ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
@@ -251,8 +252,8 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
       let refused: unknown;
       try {
         session = await agent.create({ uri: 'ahp-session:/custody', chatUri: 'ahp-chat:/original', sessionConversation: true,
-          ...(method === 'session/load' ? { resume: 'recorded-backend-id' } : {}),
-          ...(method === 'bookkeeping' ? { onHandshake: () => {
+          ...(method === 'session/load' || method === 'load-bookkeeping' ? { resume: 'recorded-backend-id' } : {}),
+          ...(bookkeeping ? { onHandshake: () => {
             const pidRecord = readFileSync(`${prefix}.pid`, 'utf8');
             bookkeepingPair = { pid: Number(pidRecord.trim()), pidRecord, statRecord: readFileSync(`${prefix}.stat`, 'utf8') };
             throw new Error('fixture refused bookkeeping');
@@ -262,7 +263,7 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
         });
       } catch (error) { refused = error; }
       const requests = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Bag);
-      expect(requests.some((request) => request.method === (method === 'bookkeeping' ? 'session/new' : method))).toBe(true);
+      expect(requests.some((request) => request.method === (method === 'load-bookkeeping' ? 'session/load' : method === 'bookkeeping' ? 'session/new' : method))).toBe(true);
       const observed = bookkeepingPair ?? requests.find((request) => request.method === 'fixture/pid-at-failure');
       expect(observed).toBeDefined();
       expect(observed?.pidRecord).toBe(`${observed?.pid}\n`);
@@ -271,6 +272,7 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
       expect(existsSync(`${prefix}.stat`)).toBe(false);
       expect((session?.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBeUndefined();
       if (method === 'bookkeeping') expect(session?.agentId()).toMatch(/^acp-session-/u);
+      if (method === 'load-bookkeeping') expect(session?.agentId()).toBe('recorded-backend-id');
       if (refused !== undefined) expect(String(refused)).toContain(`fixture refused ${method}`);
     }
     finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
