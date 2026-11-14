@@ -388,7 +388,9 @@ export function createOpening(ctx: SessionContext): Opening {
         // The raw snapshot includes PID and kernel birth. A successor's snapshot is a different owner.
         if (readFileSync(`${prefix}.stat`, 'utf8') !== stat) return;
         try { if (readFileSync(`${prefix}.pid`, 'utf8') === pid) unlinkSync(`${prefix}.pid`); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`${provider}: could not inspect ACP PID marker during cleanup: ${messageOf(error)}`);
+        }
         unlinkSync(`${prefix}.stat`);
       }
       catch (error) {
