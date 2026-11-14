@@ -119,6 +119,55 @@ it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement in
   }
 });
 
+it.each(['new', 'load', 'resume', 'fork'].flatMap((method) => ['refresh', 'dispose'].map((invalidated) => ({ method, invalidated }))))('a late successful native $method reply cannot overwrite the selected opening after $invalidated', async ({ method, invalidated }) => {
+  // 32996: placement refusal alone misses an obsolete reply arriving after its successor completed.
+  const replies: ((reply: { sessionId: string }) => void)[] = [];
+  const handshake = vi.fn();
+  const learned = vi.fn();
+  let current: AcpOptions = { command: 'old-acp', provider: 'late-native', honoursTrust: true, hostTools: false };
+  const ctx = {
+    options: { ...current, presetOf: () => current }, provider: 'late-native', cwd: '/fixture',
+    values: {}, replay: [], turns: method === 'fork' ? [{ id: 'cut' }] : [], title: 'Fixture', startedWith: '', keeping: Promise.resolve(),
+    syncConfig: () => {}, learnModes: learned, learnConfigOptions: () => {}, learnModels: () => {},
+    sendAsked: async () => {},
+    start: { uri: 'ahp-session:/late-native', chatUri: 'ahp-chat:/selected', settings: {}, onHandshake: handshake,
+      ...(method === 'new' ? {} : { resume: 'kept-native' }), ...(method === 'fork' ? { forkAt: 'cut' } : {}),
+    },
+  } as unknown as SessionContext;
+  const reply = () => new Promise<{ sessionId: string }>((resolve) => { replies.push(resolve); });
+  const connected = vi.spyOn(connectionPort, 'connectAcp').mockImplementation(() => ({
+    initialize: async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true,
+      sessionCapabilities: { ...(method === 'resume' ? { resume: {} } : {}), ...(method === 'fork' ? { fork: {} } : {}) },
+    } }),
+    newSession: reply, loadSession: reply, resumeSession: reply, forkSession: reply,
+    ended: new Promise<void>(() => {}), close: async () => {},
+  } as unknown as AcpConnection));
+  const opening = createOpening(ctx);
+  const pending: Promise<unknown>[] = [];
+  try {
+    opening.refreshOptions();
+    const old = opening.open().catch((error: unknown) => error);
+    pending.push(old);
+    await until(() => replies.length === 1);
+    if (invalidated === 'refresh') {
+      current = { ...current, command: 'current-acp' };
+      opening.refreshOptions();
+      const selected = opening.open();
+      pending.push(selected);
+      await until(() => replies.length === 2);
+      replies[1]!({ sessionId: 'current-native' });
+      expect((await selected).sessionId).toBe(method === 'load' || method === 'resume' ? 'kept-native' : 'current-native');
+    }
+    else ctx.disposed = true;
+    replies[0]!({ sessionId: 'obsolete-native' });
+    expect(await old).toBeInstanceOf(Error);
+    expect(ctx.acpSessionId).toBe(invalidated === 'refresh' ? (method === 'load' || method === 'resume' ? 'kept-native' : 'current-native') : undefined);
+    expect(handshake).toHaveBeenCalledTimes(invalidated === 'refresh' ? 1 : 0);
+    expect(learned).toHaveBeenCalledTimes(invalidated === 'refresh' ? 1 : 0);
+  }
+  finally { connected.mockRestore(); await Promise.allSettled(pending); }
+});
+
 it.skipIf(process.platform !== 'linux')('catalog connections never publish custody for a managed backend', async () => {
   // 32996: catalog initialization is a real child connection, but never an actual selected opening.
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-catalog-'));

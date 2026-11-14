@@ -167,7 +167,7 @@ const begin = (
   });
 };
 
-it.each(['eager', 'lazy', 'file-store resume'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
+it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
   const { options, loaded, problems } = await load([SPEC]);
 
   expect(problems).toEqual([]);
@@ -229,6 +229,16 @@ it.each(['eager', 'lazy', 'file-store resume'] as const)('loads the package and 
   expect((beforeClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBe(actual?.agentId());
   expect(actual?.agentId()).toMatch(/^acp-session-/u);
   expect((beforeClose.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
+  if (opening === 'failed replacement') {
+    const native = actual?.agentId();
+    configured = { command: 'ahpd-no-such-acp-server' };
+    begin(client, chatUri, 't2', 'hello there again');
+    await until(() => actions(said, chatUri).some(({ action }) => action.type === 'chat/error' && action.turnId === 't2'));
+    const failed = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+    expect(actual?.agentId()).toBe(native);
+    expect((failed.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
+    expect((failed.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
+  }
   await actual?.close();
   const afterClose = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
   expect((afterClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
