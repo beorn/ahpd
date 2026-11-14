@@ -1739,6 +1739,18 @@ const onLine = (line) => {
     return;
   }
 
+  if (process.argv.includes(`--fail-method=${message.method}`)) {
+    const prefix = process.env.HAB_ACP_PID_PREFIX;
+    if (prefix === undefined || LOG === undefined) throw new Error('custody failure fixture needs its prefix and log');
+    appendFileSync(LOG, `${JSON.stringify({
+      method: 'fixture/pid-at-failure', pid: process.pid,
+      pidRecord: existsSync(`${prefix}.pid`) ? readFileSync(`${prefix}.pid`, 'utf8') : null,
+      statRecord: existsSync(`${prefix}.stat`) ? readFileSync(`${prefix}.stat`, 'utf8') : null,
+    })}\n`);
+    write({ jsonrpc: '2.0', id: message.id, error: { code: -32001, message: `fixture refused ${message.method}` } });
+    return;
+  }
+
   switch (message.method) {
     case 'initialize':
       if (process.argv.includes('--observe-pid-custody')) {
