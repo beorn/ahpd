@@ -655,6 +655,23 @@ it('keeps the backend a chat runs on, and its config, so a restart starts it the
   expect(loaded[1]).toEqual({ uri: 'ahp-chat:/odd', backendId: 'odd' });
 });
 
+it('keeps original, peer and unknown conversation provenance across a synchronous file-store restart', () => {
+  // 32996: provenance must survive before create is accepted; backend/default fields cannot recover it.
+  // Existing store cases contain no true/false/absent provenance and miss a parser dropping that fact.
+  const dir = join(root, 'sessions');
+  const held = [
+    { uri: 'ahp-chat:/original', backendId: 'replaced-id', sessionConversation: true },
+    { uri: 'ahp-chat:/peer', backendId: 'peer', default: true, sessionConversation: false },
+    { uri: 'ahp-chat:/legacy', backendId: 'legacy' },
+  ];
+  fileSessions({ dir }).setChats('a', held);
+  const restarted = fileSessions({ dir });
+  expect(restarted.chats('a')).toEqual(held);
+  restarted.setChats('a', restarted.chats('a').map((chat) => ({ ...chat, closed: true })));
+  restarted.close?.();
+  expect(fileSessions({ dir }).chats('a')).toEqual(held.map((chat) => ({ ...chat, closed: true })));
+});
+
 it('forgets a session entirely, whatever was set on it', () => {
   const store = memorySessions();
   store.setFlags('a', ARCHIVED);
