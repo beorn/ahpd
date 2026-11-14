@@ -1972,7 +1972,7 @@ export function createTooling(ctx: HostContext): Tooling {
      */
     startsRead(ctx, at, chatUri);
     if (asked.title !== undefined) kept.setChatTitle(idOf(at), chatUri, asked.title);
-    const chat = await spawn(agent, at, chatUri, chatIdFor(at, chatUri), config, preamble === undefined ? undefined : { context: preamble }, held.workingDirectory, undefined, held.additional);
+    const chat = await spawn(agent, at, chatUri, chatIdFor(at, chatUri), config, preamble === undefined ? undefined : { context: preamble }, held.workingDirectory, undefined, held.additional, undefined, undefined, undefined, false);
     log(`opened ${chatUri} in ${at}`);
     ctx.keepChatOwnConfigValues(at, chatUri, own);
     if (asked.title !== undefined) persistChatTitle(at, chatUri, asked.title);

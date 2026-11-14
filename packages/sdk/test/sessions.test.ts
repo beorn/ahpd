@@ -670,6 +670,11 @@ it('keeps original, peer and unknown conversation provenance across a synchronou
   restarted.setChats('a', restarted.chats('a').map((chat) => ({ ...chat, closed: true })));
   restarted.close?.();
   expect(fileSessions({ dir }).chats('a')).toEqual(held.map((chat) => ({ ...chat, closed: true })));
+  // A conversation occurrence in another session cannot inherit original ownership.
+  const moving = fileSessions({ dir });
+  moving.moveChat('a', 'b', held[0]!.uri, []);
+  moving.close?.();
+  expect(fileSessions({ dir }).chats('b')).toEqual([{ ...held[0], closed: true, sessionConversation: false }]);
 });
 
 it('forgets a session entirely, whatever was set on it', () => {
@@ -775,7 +780,7 @@ it('moves a chat to another session in the store, with its title and the senders
   const dir = join(root, 'sessions');
   const store = fileSessions({ dir });
   const lead = { uri: 'ahp-chat:/one', backendId: 'one', default: true };
-  const peer = { uri: 'ahp-chat:/peer', backendId: 'peer' };
+  const peer = { uri: 'ahp-chat:/peer', backendId: 'peer', sessionConversation: false };
   const tail = { uri: 'ahp-chat:/tail', backendId: 'tail', default: true };
   store.setChats('a', [lead, peer]);
   store.setChats('b', [tail]);

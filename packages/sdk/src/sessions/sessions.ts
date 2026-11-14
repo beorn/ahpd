@@ -253,7 +253,7 @@ export function memorySessions(): SessionStore & Held {
        */
       const target = rows.get(to);
       const list = [...(target?.chats ?? [])];
-      if (chat !== undefined) list.push({ ...chat });
+      if (chat !== undefined) list.push({ ...chat, ...(from === to ? {} : { sessionConversation: false }) });
       const theirs = new Map(target?.senders);
       for (const [turn, who] of ours) theirs.set(turn, who);
       const named = new Map(target?.chatTitles);
