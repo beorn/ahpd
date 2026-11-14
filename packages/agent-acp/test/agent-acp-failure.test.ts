@@ -1,9 +1,14 @@
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Bag, Session, Start } from '@ahpd/sdk';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { posix } from '../../../tools/posix.ts';
 import { acpAgent, connectAcp, watchSession } from '../src/index.js';
+import * as connectionPort from '../src/connection.js';
+import { createOpening } from '../src/session/opening.js';
+import type { SessionContext } from '../src/session/context.js';
+import type { AcpConnection, AcpOptions } from '../src/types.js';
+import type { Spawn } from '@ahpd/sdk';
 
 /*
  * A server that never starts, and one that exits mid-prompt.
@@ -51,6 +56,65 @@ const until = async (check: () => boolean, times = 3000): Promise<void> => {
 const pause = async (times: number): Promise<void> => {
   for (let i = 0; i < times; i++) await new Promise((r) => { setTimeout(r, 1); });
 };
+
+it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement invalidated by %s without spawning or replacing its successor', async (invalidated) => {
+  // 32996: the opening owner must revalidate after placement; subprocess tests cannot schedule this continuation.
+  // The connection port only holds initialize pending. createOpening owns all identity and live-state decisions.
+  const placements: ((spawn: Spawn) => void)[] = [];
+  const handshakes: ((error: Error) => void)[] = [];
+  let current: AcpOptions = { command: 'old-acp', provider: 'placement-race', honoursTrust: true };
+  const ctx = {
+    options: { ...current, presetOf: () => current },
+    provider: 'placement-race', cwd: '/fixture', values: {}, replay: [], startedWith: '',
+    syncConfig: () => {},
+    start: {
+      settings: { computer: 'computer://box' },
+      computers: { how: () => new Promise<Spawn>((resolve) => { placements.push(resolve); }) },
+    },
+  } as unknown as SessionContext;
+  const connected = vi.spyOn(connectionPort, 'connectAcp').mockImplementation(() => ({
+    initialize: () => new Promise<Awaited<ReturnType<AcpConnection['initialize']>>>((_resolve, reject) => { handshakes.push(reject); }),
+    ended: new Promise<void>(() => {}),
+    close: async () => {},
+  } as unknown as AcpConnection));
+  const opening = createOpening(ctx);
+  const pending: Promise<unknown>[] = [];
+  try {
+    opening.refreshOptions();
+    pending.push(opening.open().catch((error: unknown) => error));
+    await until(() => placements.length === 1);
+    if (invalidated !== 'refresh') {
+      if (invalidated === 'inputs') ctx.options.command = 'changed-during-placement';
+      else ctx.disposed = true;
+      placements[0]!({ command: 'old-acp', args: [] });
+      await pause(2);
+      expect(connected).not.toHaveBeenCalled();
+      expect(await pending[0]).toBeInstanceOf(Error);
+      expect(ctx.live).toBeUndefined();
+      expect(ctx.loading).toBe(false);
+      return;
+    }
+    current = { ...current, command: 'successor-acp' };
+    opening.refreshOptions();
+    const successor = opening.open();
+    pending.push(successor.catch((error: unknown) => error));
+    await until(() => placements.length === 2);
+    placements[1]!({ command: 'successor-acp', args: [] });
+    await until(() => connected.mock.calls.length === 1);
+    const live = ctx.live;
+    placements[0]!({ command: 'old-acp', args: [] });
+    await pause(2);
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(ctx.live).toBe(live);
+    expect(ctx.opening).toBe(successor);
+    expect(ctx.loading).toBe(true);
+  }
+  finally {
+    for (const reject of handshakes) reject(new Error('fixture finished'));
+    await Promise.allSettled(pending);
+    connected.mockRestore();
+  }
+});
 
 /** A session of `command`, with every action it emits kept, and every line the agent logs. */
 async function start(
