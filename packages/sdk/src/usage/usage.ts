@@ -7,8 +7,9 @@
  * already has rather than a command of its own.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { appendJsonlSync, stripJsonlZeroRun } from './inhab-jsonl.js';
 import { limitsOf, measureOf } from './charge.js';
 import { refusalReason } from '../host.js';
 import { periodOf, shown, zoneOf } from './periods.js';
@@ -337,7 +338,9 @@ export function fileUsage(options: FileUsageOptions): Usage {
     try { text = readFileSync(join(folder, name), 'utf8'); }
     catch (error) { told(`Could not read usage file ${name}: ${error instanceof Error ? error.message : String(error)}`); return []; }
     const placed: Placed[] = [];
-    for (const [index, line] of text.split('\n').entries()) {
+    for (const [index, rawLine] of text.split('\n').entries()) {
+      const { text: line, zeroRun } = stripJsonlZeroRun(rawLine);
+      if (zeroRun !== null) told(`${join(folder, name)}: line ${String(index + 1)}, ${String(zeroRun.bytes)} zero bytes.`);
       if (line.trim() === '') continue;
       let entry: UsageEntry;
       try { entry = JSON.parse(line) as UsageEntry; }
@@ -389,7 +392,10 @@ export function fileUsage(options: FileUsageOptions): Usage {
        * disk do not.
        */
       const file = join(folder, `${new Date(entry.at).toISOString().slice(0, 7)}-${entry.kind}.jsonl`);
-      try { appendFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 }); }
+      try {
+        const receipt = appendJsonlSync(file, [entry], { mode: 0o600 });
+        if (receipt.leadingNewline) told(`${file}: line EOF, 1 byte newline boundary.`);
+      }
       catch (error) { told(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`); }
       /*
        * Charged whatever the write did, because a total that forgets a record

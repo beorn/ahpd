@@ -436,6 +436,29 @@ it('skips a torn line, says so, and answers the month\'s other records', async (
   expect(await rebuilt.pools()).toEqual(['p']);
 });
 
+// Crash damage is present before this process first appends to the path. The
+// canonical append boundary check intentionally runs once per path per process.
+it.each([false, true])('retains usage across a zero tail and append (historical glued record: %s)', async (glued) => {
+  fileUsage({ folder });
+  const file = join(folder, '2026-10-model.jsonl');
+  const first = modelUse('2026-10-04T10:00:00.000Z', ['p'], { input: 7 });
+  const historical = modelUse('2026-10-04T11:00:00.000Z', ['p'], { input: 8 });
+  const next = modelUse('2026-10-04T12:00:00.000Z', ['p'], { input: 9 });
+  writeFileSync(file, `${JSON.stringify(first)}\n${'\0'.repeat(32)}${glued ? JSON.stringify(historical) : ''}`);
+  const said: string[] = [];
+  const reopened = fileUsage({ folder, timezone: 'UTC', onProblem: message => said.push(message) });
+  const before = glued ? [historical.at, first.at] : [first.at];
+  expect((await reopened.records('p', month.from, month.until)).map(one => one.at)).toEqual(before);
+
+  await reopened.record(next);
+  expect(readFileSync(file, 'utf8')).toContain(`\n${JSON.stringify(next)}\n`);
+  expect(readFileSync(file, 'utf8')).toContain('\0'.repeat(32));
+  const rebuilt = fileUsage({ folder, timezone: 'UTC' });
+  expect((await rebuilt.records('p', month.from, month.until)).map(one => one.at)).toEqual([next.at, ...before]);
+  expect(said.some(message => message.includes('2026-10-model.jsonl') && message.includes('32'))).toBe(true);
+  expect(said.some(message => message.includes(JSON.stringify(first)) || message.includes(JSON.stringify(historical)))).toBe(false);
+});
+
 it('answers this month and the newest of them when the range names no bounds', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
