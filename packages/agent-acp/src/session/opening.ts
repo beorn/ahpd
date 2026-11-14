@@ -1,9 +1,11 @@
 import { RequestError } from '@agentclientprotocol/sdk';
+import { readFileSync, unlinkSync } from 'node:fs';
+import { atomicWriteFileSync } from '@bearly/durable-file';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
 import { machineAsked, machinePathOf } from '@ahpd/sdk';
 import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
 import { heardCapabilities, watchSession } from '../catalog.js';
-import { connectAcp } from '../connection.js';
+import { childProcessOf, connectAcp } from '../connection.js';
 import { HOST_TOOLS } from '../mapping.js';
 import type { AcpConnection, AcpOptions } from '../types.js';
 import { messageOf } from './common.js';
@@ -388,6 +390,21 @@ export function createOpening(ctx: SessionContext): Opening {
     const startingWith = spawnOf(options);
     /** The server this open spawned, once it has. */
     let made: AcpConnection | undefined;
+    let custody: { prefix: string; pid: string; stat: string } | undefined;
+    const clearCustody = (): void => {
+      if (custody === undefined) return;
+      const { prefix, pid, stat } = custody;
+      try {
+        // The raw snapshot includes PID and kernel birth. A successor's snapshot is a different owner.
+        if (readFileSync(`${prefix}.stat`, 'utf8') !== stat) return;
+        try { if (readFileSync(`${prefix}.pid`, 'utf8') === pid) unlinkSync(`${prefix}.pid`); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        unlinkSync(`${prefix}.stat`);
+      }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`${provider}: could not clear ACP process custody: ${messageOf(error)}`);
+      }
+    };
     // Install the pending identity before the opening body can reach placement.
     const pending: Promise<{ connection: AcpConnection; sessionId: string }> = Promise.resolve().then(async () => {
       /*
@@ -415,6 +432,12 @@ export function createOpening(ctx: SessionContext): Opening {
        * keeps the host's, since that is the folder a client named.
        */
       const told = moved === undefined ? cwd : machinePathOf(cwd);
+      const prefix = options.env?.HAB_ACP_PID_PREFIX;
+      if (prefix !== undefined && (prefix === '' || options.env?.HAB_ACP_SESSION_URI !== start.uri
+        || (options.env?.HAB_ACP_CHAT_URI !== undefined
+          ? options.env.HAB_ACP_CHAT_URI !== start.chatUri : start.sessionConversation !== true))) {
+        throw new Error(`${provider}: this conversation has no matching configured ACP process authority`);
+      }
       const connection = connectAcp({
         command: moved?.command ?? options.command,
         ...(moved !== undefined
@@ -463,10 +486,19 @@ export function createOpening(ctx: SessionContext): Opening {
       // A server that dies between turns is let go, so the next turn spawns
       // another rather than prompting a process that is no longer there.
       void connection.ended.then(() => {
+        clearCustody();
         if (ctx.live !== connection) return;
         ctx.live = undefined;
         ctx.opening = undefined;
       });
+      if (prefix !== undefined) {
+        const pid = childProcessOf(connection)?.pid;
+        if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) throw new Error(`${provider}: the ACP child has no live process identity`);
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        custody = { prefix, pid: `${pid}\n`, stat };
+        atomicWriteFileSync(`${prefix}.stat`, stat, 0o600, { exactMode: true });
+        atomicWriteFileSync(`${prefix}.pid`, custody.pid, 0o600, { exactMode: true });
+      }
       const initializeResponse = await connection.initialize();
       const { agentCapabilities } = initializeResponse;
       ctx.closes = advertised(agentCapabilities?.sessionCapabilities?.close);
@@ -661,6 +693,7 @@ export function createOpening(ctx: SessionContext): Opening {
     void pending.catch(() => {
       if (ctx.opening === pending) ctx.opening = undefined;
       if (made === undefined) return;
+      clearCustody();
       if (ctx.live === made) ctx.live = undefined;
       void made.close();
     });

@@ -108,6 +108,9 @@ importers:
       '@agentclientprotocol/sdk':
         specifier: ^1.8.0
         version: 1.8.0(zod@4.5.4)
+      '@bearly/durable-file':
+        specifier: 0.1.0
+        version: 0.1.0
     devDependencies:
       '@ahpd/sdk':
         specifier: workspace:*
@@ -584,6 +587,10 @@ packages:
   '@babel/types@7.29.8':
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
+
+  '@bearly/durable-file@0.1.0':
+    resolution: {integrity: sha512-mHCRg+rzye+/1OxHbZREcqUjtnABJRvChOjDNBiiC8uvcfstTywxGNsLgH3i48iVoey/ofT3pe9oNyJDTJfzAA==}
+    engines: {bun: '>=1.3.13'}
 
   '@cofold/agents@0.4.0':
     resolution: {integrity: sha512-TtjZlw09kyWwkPloBW0qCuFVU8VbkCmUUmsUGZZqsh4AQ+ahW/U6rjxZ0Xl0ZDxWctATs9aver0zZ7R4IjzLKw==}
@@ -3078,6 +3085,8 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
+
+  '@bearly/durable-file@0.1.0': {}
 
   '@cofold/agents@0.4.0':
     dependencies:
