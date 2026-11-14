@@ -340,6 +340,7 @@ export function createChangesets(ctx: HostContext): Changesets {
         held.agent, uri, chatUri, chatIdFor(uri, chatUri), ctx.backendsOwn(held.config),
         { context: typeof message.text === 'string' ? message.text : '' },
         held.workingDirectory, undefined, held.additional,
+        undefined, undefined, undefined, false,
       );
       ctx.log(`opened ${chatUri} in ${uri} to write the words`);
       // The default chat takes its own title from here, before the side chat is said.

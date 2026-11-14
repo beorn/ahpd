@@ -1222,7 +1222,7 @@ describe('more than one chat in a session', () => {
     }
   });
 
-  it('serves each chat of a session from its own conversation after a restart', async () => {
+  it.each([false, true])('serves each chat of a session from its own conversation after a restart (legacy: %s)', async (legacy) => {
     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
     try {
       const dir = join(root, 'sessions');
@@ -1243,6 +1243,11 @@ describe('more than one chat in a session', () => {
       // starts on a folder that has all of it rather than on a race.
       await new Promise((tick) => { setTimeout(tick, 5); });
 
+      if (legacy) {
+        const old = fileSessions({ dir });
+        old.setChats('live', old.chats('live').map(({ sessionConversation: _unknown, ...chat }) => chat));
+        old.close?.();
+      }
       const second = await hostAt(dir, agent);
       const listed = await second.client.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } }) as {
         items: { resource: string }[];
@@ -1275,18 +1280,24 @@ describe('more than one chat in a session', () => {
       ]);
       expect(said(await opened(second.client, PEER))).toEqual(['second', 'third']);
       expect(said(await opened(second.client, session.state.defaultChat as string))).toEqual(['first']);
-      expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual([true, false]);
+      expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
+      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
     }
     finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('records the original before backend create and keeps session-id and legacy aliases as peers', async () => {
+  it.each([false, true])('records the original before backend create and keeps session-id and legacy aliases as peers (reused URI: %s)', async (reused) => {
     // 32996: the old chatId/default inference accepts both aliases; only host creation owns this fact.
     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
     try {
       const dir = join(root, 'sessions');
+      if (reused) {
+        const retired = fileSessions({ dir });
+        retired.setChats(UUID, [{ uri: PEER, backendId: 'retired', sessionConversation: true, closed: true }]);
+        retired.close?.();
+      }
       const starts: Start[] = [];
       const base = backend(starts);
       const agent: Agent = { ...base, create: (start) => {
@@ -1307,9 +1318,9 @@ describe('more than one chat in a session', () => {
         [uri, original, true], [uri, PEER, false], [uri, chatUriFor(uri), false],
         [TWO, String((await opened(client, TWO)).state.defaultChat), true],
       ]);
-      expect(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation])).toEqual([
+      expect(new Map(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation]))).toEqual(new Map([
         [original, true], [PEER, false], [chatUriFor(uri), false],
-      ]);
+      ]));
     }
     finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -1372,6 +1383,8 @@ describe('more than one chat in a session', () => {
       await first.client.handle({ method: 'disposeChat', params: { channel: PEER } });
       await settle();
       await new Promise((tick) => { setTimeout(tick, 5); });
+      // A hidden close retains provenance on the retained occurrence.
+      expect(fileSessions({ dir }).chats('live').find((chat) => chat.uri === PEER)).toMatchObject({ closed: true, sessionConversation: false });
       const before = starts.length;
 
       const second = await hostAt(dir, agent);
@@ -1398,6 +1411,7 @@ describe('more than one chat in a session', () => {
       await send(first.client, LIVE, 't0', 'first');
       await send(first.client, PEER, 't1', 'made here');
       await new Promise((tick) => { setTimeout(tick, 5); });
+      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual([true, false]);
 
       const second = await hostAt(dir, agent);
       /*
@@ -2530,6 +2544,8 @@ describe('more than one chat in a session', () => {
       const there = await opened(first.client, answer.session);
       expect((there.state as { lifecycle?: string }).lifecycle ?? 'ready').toBe('ready');
       expect(listed(there)).toEqual([PEER]);
+      expect(there.state.defaultChat).toBe(PEER);
+      expect(fileSessions({ dir: join(root, 'sessions') }).chats(idOf(answer.session)).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
     }
     finally {
       rmSync(root, { recursive: true, force: true });
@@ -2979,6 +2995,8 @@ describe('a chat of another backend', () => {
     // The chat that took the default is the one a client gets by naming none.
     const state = await opened(second.client, SESSION);
     expect(state.state.defaultChat).toBe(PEER);
+    expect(startsTwo.slice(beganTwo).map((start) => start.sessionConversation)).toEqual([false]);
+    expect(store.chats(id).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
     // And no chat of `one` was started to hold the session: the default chat is
     // the chat of `two`, and it is a chat of the session, not the session.
     expect(startsOne.slice(beganOne)).toEqual([]);

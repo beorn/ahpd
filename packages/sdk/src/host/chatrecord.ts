@@ -279,6 +279,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
       rows[at] = {
         uri: held.uri,
         backendId: held.backendId,
+        ...(held.sessionConversation === undefined ? {} : { sessionConversation: held.sessionConversation }),
         ...(held.provider === undefined ? {} : { provider: held.provider }),
         ...(held.config === undefined ? {} : { config: held.config }),
         ...(held.title === undefined ? {} : { title: held.title }),

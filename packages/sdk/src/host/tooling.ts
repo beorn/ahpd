@@ -2052,7 +2052,7 @@ export function createTooling(ctx: HostContext): Tooling {
     if (asked.tools !== undefined && asked.tools.length > 0) ctx.chatTools.set(chatUri, [...asked.tools]);
     let chat: Session;
     try {
-      chat = await spawn(agent, at, chatUri, chatIdFor(at, chatUri), config, preamble === undefined ? undefined : { context: preamble }, held.workingDirectory, undefined, held.additional);
+      chat = await spawn(agent, at, chatUri, chatIdFor(at, chatUri), config, preamble === undefined ? undefined : { context: preamble }, held.workingDirectory, undefined, held.additional, undefined, undefined, undefined, false);
     }
     catch (error) {
       ctx.madeFrom.delete(chatUri);
