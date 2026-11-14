@@ -96,8 +96,23 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     return ctx.stateOf(channel) ?? ctx.openState(channel, kind, seed());
   };
   /** A held state, as one subscribe is answered with it. */
-  const served = (channel: string, state: Bag): Record<string, unknown> =>
-    structuredClone({ resource: channel, state, fromSeq: ctx.serverSeq });
+  const served = (channel: string, state: Bag): Record<string, unknown> => {
+    if (spaceOf(channel) === 'chat') {
+      // This ahpd extension is current-on-subscribe, never a cached seed or offline transcript claim.
+      const talking = byChat.get(channel);
+      const current = talking?.chat.chatState()._meta as Bag | undefined;
+      const native = current?.['ahpd/backendSessionId'];
+      const meta = { ...((state._meta ?? {}) as Bag) };
+      delete meta['ahpd/backendSessionId'];
+      if (talking !== undefined && typeof native === 'string' && native.trim() !== ''
+        && native === talking.chat.agentId()
+        && recordedChat(idOf(talking.uri), channel)?.backendId === native) meta['ahpd/backendSessionId'] = native;
+      state = { ...state };
+      delete state._meta;
+      if (Object.keys(meta).length > 0) state._meta = meta;
+    }
+    return structuredClone({ resource: channel, state, fromSeq: ctx.serverSeq });
+  };
   /**
    * A chat's state with its turns cut to the window a subscribe asked for.
    *
