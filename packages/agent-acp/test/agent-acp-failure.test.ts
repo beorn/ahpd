@@ -131,6 +131,7 @@ it.skipIf(process.platform !== 'linux')('publishes the selected actual child bef
       ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: uri,
     } });
     session = await agent.create({ uri, chatUri: 'ahp-chat:/original', sessionConversation: true,
+      clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
       settings: {}, workingDirectory: folder, trusted: () => true,
       schema: () => ({ type: 'object', properties: {} }), emit: () => {},
     });
