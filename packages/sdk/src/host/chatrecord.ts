@@ -54,7 +54,7 @@ export interface ChatRecord {
    */
   keepChat(
     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
-    provider?: string, config?: Record<string, unknown>,
+    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
   ): void;
   /**
    * The values a chat of a session set for itself, as VS Code's
@@ -154,7 +154,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
 
   const keepChat = (
     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
-    provider?: string, config?: Record<string, unknown>,
+    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
   ): void => {
     const id = idOf(uri);
     const list = stored(id);
@@ -174,6 +174,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
     // a chat that has not changed backend, so the row keeps what it had.
     const served = provider ?? was?.provider;
     const settings = config ?? was?.config;
+    const conversation = sessionConversation ?? was?.sessionConversation;
     // Built field by field, so a chat that is being started is open: the mark
     // a closed one carries is not among them.
     const next: StoredChat = {
@@ -181,6 +182,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
       // The name the backend keeps this conversation under: the id it was
       // handed, and the session's own id for the chat that is the session.
       backendId: backendId ?? was?.backendId ?? chatIdFor(uri, chatUri) ?? id,
+      ...(conversation === undefined ? {} : { sessionConversation: conversation }),
       ...(served === undefined ? {} : { provider: served }),
       ...(settings === undefined ? {} : { config: settings }),
       ...(was?.configValues === undefined ? {} : { configValues: was.configValues }),

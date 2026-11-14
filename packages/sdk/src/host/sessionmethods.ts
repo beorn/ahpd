@@ -1788,7 +1788,7 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
        */
       let chat: Session;
       try {
-        chat = await spawn(agent, uri, chatUri, chatIdFor(uri, chatUri), backendsOwn(config), made, held.workingDirectory, undefined, peers, connection);
+        chat = await spawn(agent, uri, chatUri, chatIdFor(uri, chatUri), backendsOwn(config), made, held.workingDirectory, undefined, peers, connection, undefined, undefined, false);
       }
       catch (error) {
         madeFrom.delete(chatUri);
