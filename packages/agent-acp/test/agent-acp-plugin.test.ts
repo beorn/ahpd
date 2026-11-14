@@ -167,7 +167,7 @@ const begin = (
   });
 };
 
-it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
+it.each(['eager', 'lazy', 'file-store resume', 'failed replacement', 'sibling close'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
   const { options, loaded, problems } = await load([SPEC]);
 
   expect(problems).toEqual([]);
@@ -229,6 +229,22 @@ it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('
   expect((beforeClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBe(actual?.agentId());
   expect(actual?.agentId()).toMatch(/^acp-session-/u);
   expect((beforeClose.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
+  if (opening === 'sibling close') {
+    const selected = actual;
+    const siblingUri = 'ahp-chat:/sibling';
+    await client.handle({ method: 'createChat', params: { channel: 'ahp-session:/plugin', chat: siblingUri } });
+    const sibling = actual;
+    expect(sibling?.agentId()).toMatch(/^acp-session-/u);
+    expect(sibling?.agentId()).not.toBe(selected?.agentId());
+    await sibling?.close();
+    const closedSibling = await client.handle({ method: 'subscribe', params: { channel: siblingUri } }) as { snapshot: { resource: string; state: Bag } };
+    const stillSelected = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { resource: string; state: Bag } };
+    expect(closedSibling.snapshot.resource).toBe(siblingUri);
+    expect((closedSibling.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
+    expect(stillSelected.snapshot.resource).toBe(chatUri);
+    expect((stillSelected.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBe(selected?.agentId());
+    actual = selected;
+  }
   if (opening === 'failed replacement') {
     const native = actual?.agentId();
     configured = { command: 'ahpd-no-such-acp-server' };
