@@ -1233,6 +1233,9 @@ describe('more than one chat in a session', () => {
       const first = await hostAt(dir, agent);
       await first.client.handle({ method: 'createSession', params: { channel: LIVE, provider: 'echo' } });
       await first.client.handle({ method: 'createChat', params: { channel: LIVE, chat: PEER } });
+      // 32996: backend/default aliases cannot identify original ownership on a restart.
+      // This existing real-host journey owns the content boundary; keep provenance beside it.
+      expect(starts.map((start) => start.sessionConversation)).toEqual([true, false]);
       await settle();
       await send(first.client, LIVE, 't1', 'first');
       await send(first.client, PEER, 't2', 'second');
@@ -1272,10 +1275,43 @@ describe('more than one chat in a session', () => {
       ]);
       expect(said(await opened(second.client, PEER))).toEqual(['second', 'third']);
       expect(said(await opened(second.client, session.state.defaultChat as string))).toEqual(['first']);
+      expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual([true, false]);
     }
     finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('records the original before backend create and keeps session-id and legacy aliases as peers', async () => {
+    // 32996: the old chatId/default inference accepts both aliases; only host creation owns this fact.
+    const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
+    try {
+      const dir = join(root, 'sessions');
+      const starts: Start[] = [];
+      const base = backend(starts);
+      const agent: Agent = { ...base, create: (start) => {
+        if (starts.length === 0) {
+          expect(fileSessions({ dir }).chats(idOf(start.uri)).find((chat) => chat.uri === start.chatUri)?.sessionConversation).toBe(true);
+        }
+        return base.create(start);
+      } };
+      const { client } = await hostAt(dir, agent);
+      const uri = `ahp-session:/${UUID}`;
+      await client.handle({ method: 'createSession', params: { channel: uri, provider: 'echo' } });
+      const original = String((await opened(client, uri)).state.defaultChat);
+      for (const chat of [PEER, chatUriFor(uri)]) {
+        await client.handle({ method: 'createChat', params: { channel: uri, chat } });
+      }
+      await client.handle({ method: 'createSession', params: { channel: TWO, provider: 'echo' } });
+      expect(starts.map((start) => [start.uri, start.chatUri, start.sessionConversation])).toEqual([
+        [uri, original, true], [uri, PEER, false], [uri, chatUriFor(uri), false],
+        [TWO, String((await opened(client, TWO)).state.defaultChat), true],
+      ]);
+      expect(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation])).toEqual([
+        [original, true], [PEER, false], [chatUriFor(uri), false],
+      ]);
+    }
+    finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('finds a chat of a session it has never listed', async () => {
