@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -119,7 +119,11 @@ it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement in
   }
 });
 
-it.skipIf(process.platform !== 'linux')('publishes the selected actual child before initialize and clears its own pair on close', async () => {
+it.skipIf(process.platform !== 'linux').each([
+  { kind: 'original', fact: true, selected: undefined },
+  { kind: 'selected peer', fact: false, selected: 'ahp-chat:/original' },
+  { kind: 'selected legacy', fact: undefined, selected: 'ahp-chat:/original' },
+] as const)('publishes the selected actual child before initialize and clears its own pair on close ($kind)', async ({ fact, selected }) => {
   // 32996: a child self-stamp is too late for initialization. Observe from the real subprocess at initialize.
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
   const prefix = join(folder, 'child');
@@ -129,8 +133,10 @@ it.skipIf(process.platform !== 'linux')('publishes the selected actual child bef
   try {
     const agent = acpAgent({ command: process.execPath, args: [FIXTURE, '--observe-pid-custody'], provider: 'custody', env: {
       ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: uri,
+      ...(selected === undefined ? {} : { HAB_ACP_CHAT_URI: selected }),
     } });
-    session = await agent.create({ uri, chatUri: 'ahp-chat:/original', sessionConversation: true,
+    session = await agent.create({ uri, chatUri: 'ahp-chat:/original',
+      ...(fact === undefined ? {} : { sessionConversation: fact }),
       clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
       settings: {}, workingDirectory: folder, trusted: () => true,
       schema: () => ({ type: 'object', properties: {} }), emit: () => {},
@@ -143,6 +149,85 @@ it.skipIf(process.platform !== 'linux')('publishes the selected actual child bef
     await session.close();
     expect(existsSync(`${prefix}.pid`)).toBe(false);
     expect(existsSync(`${prefix}.stat`)).toBe(false);
+  }
+  finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== 'linux').each([
+  { kind: 'other session', uri: 'ahp-session:/other', fact: true, selected: undefined },
+  { kind: 'other selected chat', uri: 'ahp-session:/custody', fact: true, selected: 'ahp-chat:/other' },
+  { kind: 'unselected peer', uri: 'ahp-session:/custody', fact: false, selected: undefined },
+  { kind: 'unknown legacy', uri: 'ahp-session:/custody', fact: undefined, selected: undefined },
+] as const)('fails custody without selecting another conversation ($kind)', async ({ uri, fact, selected }) => {
+  // 32996: explicit full URIs or recorded original provenance are required; chatId/default never grant authority.
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
+  const prefix = join(folder, 'child');
+  const log = join(folder, 'requests.jsonl');
+  const actions: Bag[] = [];
+  let session: Session | undefined;
+  try {
+    const agent = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'custody', env: {
+      ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
+      ...(selected === undefined ? {} : { HAB_ACP_CHAT_URI: selected }),
+    } });
+    session = await agent.create({ uri, chatUri: 'ahp-chat:/original',
+      ...(fact === undefined ? {} : { sessionConversation: fact }),
+      clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
+      trusted: () => true, schema: () => ({ type: 'object', properties: {} }),
+      emit: (_channel, action) => { actions.push(action as Bag); },
+    });
+    expect(existsSync(log)).toBe(false);
+    expect(existsSync(`${prefix}.pid`)).toBe(false);
+    expect(existsSync(`${prefix}.stat`)).toBe(false);
+    session.sendMessage('t1', 'hello');
+    await until(() => failure(actions) !== undefined);
+    expect(failure(actions)).toContain('no matching configured ACP process authority');
+  }
+  finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== 'linux')('an old child ending cannot clear a successor custody pair', async () => {
+  // 32996: the same prefix can outlive an old connection's asynchronous close.
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
+  const prefix = join(folder, 'child');
+  const uri = 'ahp-session:/custody';
+  const sessions: Session[] = [];
+  try {
+    const agent = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'custody', env: {
+      HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: uri,
+    } });
+    const opening: Start = { uri, chatUri: 'ahp-chat:/original', sessionConversation: true,
+      clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
+      trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: () => {},
+    };
+    sessions.push(await agent.create(opening));
+    sessions.push(await agent.create(opening));
+    const successor = [readFileSync(`${prefix}.pid`, 'utf8'), readFileSync(`${prefix}.stat`, 'utf8')];
+    await sessions[0]!.close();
+    expect([readFileSync(`${prefix}.pid`, 'utf8'), readFileSync(`${prefix}.stat`, 'utf8')]).toEqual(successor);
+    await sessions[1]!.close();
+    expect(existsSync(`${prefix}.pid`)).toBe(false);
+    expect(existsSync(`${prefix}.stat`)).toBe(false);
+  }
+  finally { for (const session of sessions) await session.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== 'linux')('removes its published stat if the second custody write fails', async () => {
+  // 32996: publishing stat then pid is not an atomic pair; a failed rename must undo the stat it owns.
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
+  const prefix = join(folder, 'child');
+  mkdirSync(`${prefix}.pid`);
+  let session: Session | undefined;
+  try {
+    const agent = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'custody', env: {
+      HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
+    } });
+    session = await agent.create({ uri: 'ahp-session:/custody', chatUri: 'ahp-chat:/original', sessionConversation: true,
+      clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
+      trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: () => {},
+    });
+    expect(existsSync(`${prefix}.stat`)).toBe(false);
+    expect(existsSync(`${prefix}.pid`)).toBe(true);
   }
   finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
 });
