@@ -10,6 +10,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import { PROTOCOL_VERSION, client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
@@ -96,6 +97,10 @@ const KILL_GRACE_MS = 5000;
  * stopped. Its tree is ended with `taskkill` instead.
  */
 const windows = process.platform === 'win32';
+const children = new WeakMap<AcpConnection, ChildProcess>();
+
+/** Internal opening-owner access; not part of the package's connection API. */
+export const childProcessOf = (connection: AcpConnection): ChildProcess | undefined => children.get(connection);
 
 /**
  * End what a server left running on Windows, once it has exited.
@@ -484,7 +489,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     return (stderrCut ? held.slice(held.indexOf('\n') + 1) : held).trim();
   };
 
-  return {
+  const connected: AcpConnection = {
     stderrTail,
     initialize: (): Promise<InitializeResponse> => {
       if (initializeResponse !== undefined) return Promise.resolve(initializeResponse);
@@ -569,4 +574,6 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       if (windows && child.pid !== undefined) endLeftovers(child.pid, spawnedAt);
     },
   };
+  children.set(connected, child);
+  return connected;
 }
