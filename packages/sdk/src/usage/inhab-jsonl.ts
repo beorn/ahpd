@@ -284,7 +284,9 @@ export function appendJsonlSync(
   const payload = serializeJsonlLines(records)
   if (options.mkdir === true) mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const tornBytesDropped =
-    options.healTornTail === true ? healJsonlTornTailSync(path, { maxTornBytes: options.maxTornBytes }) : 0
+    options.healTornTail === true
+      ? healJsonlTornTailSync(path, options.maxTornBytes === undefined ? {} : { maxTornBytes: options.maxTornBytes })
+      : 0
   const leadingNewline = options.healTornTail === true ? false : needsLeadingNewlineSync(path)
   const fd = openSync(path, "a", options.mode ?? 0o600)
   try {
@@ -306,7 +308,9 @@ export async function appendJsonl(
   const payload = serializeJsonlLines(records)
   if (options.mkdir === true) await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const tornBytesDropped =
-    options.healTornTail === true ? await healJsonlTornTail(path, { maxTornBytes: options.maxTornBytes }) : 0
+    options.healTornTail === true
+      ? await healJsonlTornTail(path, options.maxTornBytes === undefined ? {} : { maxTornBytes: options.maxTornBytes })
+      : 0
   const leadingNewline = options.healTornTail === true ? false : await needsLeadingNewline(path)
   const handle = await open(path, "a", options.mode ?? 0o600)
   try {
@@ -595,7 +599,12 @@ export async function readJsonlSnapshotReverse(
   return readJsonlSnapshotCore(
     path,
     limits,
-    { kind: "reverse", visit, stop, maxReadBytes: options.maxReadBytes },
+    {
+      kind: "reverse",
+      visit,
+      stop,
+      ...(options.maxReadBytes === undefined ? {} : { maxReadBytes: options.maxReadBytes }),
+    },
     options,
   )
 }
