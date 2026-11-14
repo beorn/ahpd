@@ -385,9 +385,11 @@ export function createOpening(ctx: SessionContext): Opening {
      * session's own are what the open sends.
      */
     const values = { ...ctx.values };
+    const startingWith = spawnOf(options);
     /** The server this open spawned, once it has. */
     let made: AcpConnection | undefined;
-    const pending = (async () => {
+    // Install the pending identity before the opening body can reach placement.
+    const pending: Promise<{ connection: AcpConnection; sessionId: string }> = Promise.resolve().then(async () => {
       /*
        * A folder the host did not vouch for, and an agent that loads the
        * folder's own hooks and settings unchecked.
@@ -403,6 +405,9 @@ export function createOpening(ctx: SessionContext): Opening {
         throw new Error(`${provider}: ${cwd} is not a folder this host trusts, and an ACP agent loads a project's own settings and hooks from the folder it runs in; trust the folder, or set honoursTrust on this preset if its agent asks before it loads them`);
       }
       const moved = await placed();
+      if (ctx.disposed || ctx.opening !== pending || spawnOf(options) !== startingWith) {
+        throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
+      }
       /*
        * The folder as the agent reaches it: the host's own for an agent on this
        * host, and its machine path for one in a machine - the same text on
@@ -633,7 +638,7 @@ export function createOpening(ctx: SessionContext): Opening {
       replay.length = 0;
       if (ctx.watchedTurn !== undefined && !ctx.record.turns.includes(ctx.watchedTurn)) ctx.record.turns.push(ctx.watchedTurn);
       return { connection, sessionId: ctx.acpSessionId };
-    })();
+    });
     ctx.opening = pending;
     /*
      * The replay ends where the open does, whether it worked or not: what the
@@ -643,6 +648,7 @@ export function createOpening(ctx: SessionContext): Opening {
      * with, once the values the session holds have been sent.
      */
     const opened = (): void => {
+      if (ctx.opening !== pending) return;
       ctx.loading = false;
       ctx.syncConfig(values);
     };
@@ -706,6 +712,7 @@ export function createOpening(ctx: SessionContext): Opening {
     const was = ctx.live;
     ctx.live = undefined;
     ctx.opening = undefined;
+    ctx.loading = false;
     // The conversation is kept by `acpSessionId`, so the old server is only
     // stopped: awaiting that close here would hold the turn on a process that
     // is no longer answering for it.
