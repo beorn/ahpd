@@ -496,8 +496,8 @@ export function createOpening(ctx: SessionContext): Opening {
         if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) throw new Error(`${provider}: the ACP child has no live process identity`);
         const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
         custody = { prefix, pid: `${pid}\n`, stat };
-        atomicWriteFileSync(`${prefix}.stat`, stat, 0o600, { exactMode: true });
-        atomicWriteFileSync(`${prefix}.pid`, custody.pid, 0o600, { exactMode: true });
+        atomicWriteFileSync(`${prefix}.stat`, stat);
+        atomicWriteFileSync(`${prefix}.pid`, custody.pid);
       }
       const initializeResponse = await connection.initialize();
       const { agentCapabilities } = initializeResponse;
