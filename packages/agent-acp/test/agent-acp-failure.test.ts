@@ -1,4 +1,7 @@
 import { fileURLToPath } from 'node:url';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Bag, Session, Start } from '@ahpd/sdk';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
@@ -114,6 +117,33 @@ it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement in
     await Promise.allSettled(pending);
     connected.mockRestore();
   }
+});
+
+it.skipIf(process.platform !== 'linux')('publishes the selected actual child before initialize and clears its own pair on close', async () => {
+  // 32996: a child self-stamp is too late for initialization. Observe from the real subprocess at initialize.
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
+  const prefix = join(folder, 'child');
+  const log = join(folder, 'requests.jsonl');
+  const uri = 'ahp-session:/custody';
+  let session: Session | undefined;
+  try {
+    const agent = acpAgent({ command: process.execPath, args: [FIXTURE, '--observe-pid-custody'], provider: 'custody', env: {
+      ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: uri,
+    } });
+    session = await agent.create({ uri, chatUri: 'ahp-chat:/original', sessionConversation: true,
+      settings: {}, workingDirectory: folder, trusted: () => true,
+      schema: () => ({ type: 'object', properties: {} }), emit: () => {},
+    });
+    const observed = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Bag)
+      .find((line) => line.method === 'fixture/pid-at-initialize');
+    expect(observed).toBeDefined();
+    expect(observed?.pidRecord).toBe(`${observed?.pid}\n`);
+    expect(String(observed?.statRecord)).toMatch(new RegExp(`^${String(observed?.pid)} \\(`));
+    await session.close();
+    expect(existsSync(`${prefix}.pid`)).toBe(false);
+    expect(existsSync(`${prefix}.stat`)).toBe(false);
+  }
+  finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
 /** A session of `command`, with every action it emits kept, and every line the agent logs. */

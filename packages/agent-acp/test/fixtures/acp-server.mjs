@@ -1741,6 +1741,15 @@ const onLine = (line) => {
 
   switch (message.method) {
     case 'initialize':
+      if (process.argv.includes('--observe-pid-custody')) {
+        const prefix = process.env.HAB_ACP_PID_PREFIX;
+        if (prefix === undefined || LOG === undefined) throw new Error('pid custody fixture needs its prefix and log');
+        appendFileSync(LOG, `${JSON.stringify({
+          pid: process.pid, method: 'fixture/pid-at-initialize',
+          pidRecord: existsSync(`${prefix}.pid`) ? readFileSync(`${prefix}.pid`, 'utf8') : null,
+          statRecord: existsSync(`${prefix}.stat`) ? readFileSync(`${prefix}.stat`, 'utf8') : null,
+        })}\n`);
+      }
       respond(message.id, {
         protocolVersion: 1,
         agentCapabilities: {
