@@ -2,9 +2,10 @@ import { WAIT_MS } from '../../../tools/wait.ts';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createHost } from '../../sdk/src/host.js';
+import { fileSessions } from '../../sdk/src/sessions/sessions.js';
 import { describePlugin, loadPlugins, pluginIdsOf } from '../../server/src/plugins.js';
 import { echo } from '../../../examples/echo/agent.js';
 import { anyone, signIn } from './people.js';
@@ -128,7 +129,7 @@ const initialize = async (client: ReturnType<ReturnType<typeof createHost>['acce
 };
 
 /** Open one session on a provider and watch both of its channels. */
-async function open(client: ReturnType<ReturnType<typeof createHost>['accept']>, provider: string, name: string) {
+async function open(client: ReturnType<ReturnType<typeof createHost>['accept']>, provider: string, name: string, directory?: string) {
   const uri = `ahp-session:/${name}`;
   /*
    * The window's own answer about the folders it trusts. A session of a folder
@@ -143,7 +144,9 @@ async function open(client: ReturnType<ReturnType<typeof createHost>['accept']>,
       action: { type: 'root/configChanged', config: { workspaceTrust: { enabled: false, trustedUris: [] } } },
     },
   });
-  await client.handle({ method: 'createSession', params: { channel: uri, provider } });
+  await client.handle({ method: 'createSession', params: { channel: uri, provider,
+    ...(directory === undefined ? {} : { workingDirectories: [pathToFileURL(directory).href] }),
+  } });
   const opened = await client.handle({ method: 'subscribe', params: { channel: uri } }) as {
     snapshot: { state: { defaultChat: string } };
   };
@@ -164,7 +167,7 @@ const begin = (
   });
 };
 
-it('loads the package from its source file and serves a turn through the server a record names', async () => {
+it.each(['eager', 'lazy', 'file-store resume'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
   const { options, loaded, problems } = await load([SPEC]);
 
   expect(problems).toEqual([]);
@@ -172,10 +175,21 @@ it('loads the package from its source file and serves a turn through the server 
   expect(loaded[0]?.name).toBe('agent-acp');
   expect(loaded[0]?.title).toBe('Agent ACP');
 
-  const agent = engineOf(options).open(viewOf('acp', () => ({ command: process.execPath, args: [FIXTURE] }), 'ACP'));
+  // 32996: a held snapshot created before a record can open must not hide its later successful identity.
+  let configured: Bag = { command: process.execPath, args: [FIXTURE] };
+  const dir = opening === 'file-store resume' ? mkdtempSync(join(tmpdir(), 'ahpd-acp-resume-')) : undefined;
+  if (dir !== undefined) {
+    loose = dir;
+    configured = { command: process.execPath, args: [FIXTURE, '--remember-sessions'], honoursTrust: true,
+      env: { ACP_LOG: join(dir, 'provider.jsonl') } };
+  }
+  const agent = engineOf(options).open(viewOf('acp', () => configured, 'ACP'));
+  if (opening === 'lazy') configured = {};
   let actual: Session | undefined;
+  const resumes: (string | undefined)[] = [];
   const create = agent.create.bind(agent);
   agent.create = async (start) => {
+    resumes.push(start.resume);
     actual = await create(start);
     const state = actual.chatState.bind(actual);
     actual.chatState = () => {
@@ -184,13 +198,21 @@ it('loads the package from its source file and serves a turn through the server 
     };
     return actual;
   };
-  const host = createHost({ ...options, agents: [...(options.agents ?? []), agent] });
+  const host = createHost({ ...options, agents: [...(options.agents ?? []), agent],
+    ...(dir === undefined ? {} : { sessions: fileSessions({ dir }) }),
+  });
   const said = peer();
   const client = host.accept(said);
   const ready = await initialize(client);
   expect(ready.snapshots[0]?.state.agents.map((one) => one.provider)).toEqual(['base', 'acp']);
 
-  const { chatUri } = await open(client, 'acp', 'plugin');
+  const { chatUri } = await open(client, 'acp', 'plugin', dir);
+  if (opening === 'lazy') {
+    const beforeOpening = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+    expect((beforeOpening.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
+    expect(actual?.agentId()).toBeUndefined();
+    configured = { command: process.execPath, args: [FIXTURE] };
+  }
   begin(client, chatUri, 't1', 'hello there');
   await until(() => types(said, chatUri).includes('chat/turnComplete'));
   expect(types(said, chatUri).at(-1)).toBe('chat/turnComplete');
@@ -211,6 +233,32 @@ it('loads the package from its source file and serves a turn through the server 
   const afterClose = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
   expect((afterClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
   expect((afterClose.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
+  const native = actual?.agentId();
+  await host.close();
+  if (dir !== undefined) {
+    // Reopen the actual on-disk store, rather than carrying either host's in-memory session map.
+    const restarted = createHost({ ...options, agents: [...(options.agents ?? []), agent], sessions: fileSessions({ dir }) });
+    try {
+      const heard = peer();
+      heard.request = async () => ({ trusted: true });
+      const resumedClient = restarted.accept(heard);
+      await initialize(resumedClient);
+      await resumedClient.handle({ method: 'dispatchAction', params: { channel: 'ahp-root://', action: {
+        type: 'root/configChanged', config: { workspaceTrust: { enabled: false, trustedUris: [] } },
+      } } });
+      await resumedClient.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } });
+      const offline = await resumedClient.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+      expect((offline.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
+      begin(resumedClient, chatUri, 't2', 'hello there again');
+      await until(() => types(heard, chatUri).includes('chat/turnComplete'));
+      const resumed = await resumedClient.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+      expect(resumes).toEqual([undefined, native]);
+      expect(actual?.agentId()).toBe(native);
+      expect((resumed.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBe(native);
+      expect((resumed.snapshot.state.turns as { message?: { text?: string } }[]).map((turn) => turn.message?.text)).toEqual(['hello there', 'hello there again']);
+    }
+    finally { await restarted.close(); }
+  }
 });
 
 it('lists a manifest, its title, and the id its entry exports', async () => {
