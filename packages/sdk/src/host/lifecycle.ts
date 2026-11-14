@@ -2678,7 +2678,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
        */
       const legacy = by?.legacyChatUris ?? by?.sender?.legacyChatUris === true;
       const defaultChat = mintDefaultChatUri(legacy ? 'shaped' : 'opaque', uri, undefined);
-      const lead = await spawn(agent, uri, defaultChat, undefined, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions);
+      const lead = await spawn(agent, uri, defaultChat, undefined, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions, undefined, true);
       // Written down for the same reason a rename is: a first name outlives a
       // restart too.
       if (title !== undefined) ctx.persistSessionTitle(uri, title);

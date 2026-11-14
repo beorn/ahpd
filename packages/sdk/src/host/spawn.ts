@@ -135,6 +135,7 @@ export interface Spawn {
     sender?: Connection,
     askedInstructions?: string[],
     own?: { agent: Agent; config: Record<string, unknown> },
+    freshConversation?: boolean,
   ): Promise<Session>;
   /**
    * Set every plugin plan's `changed` on the entry it closes over.
@@ -1027,6 +1028,7 @@ export function createSpawn(ctx: HostContext): Spawn {
     sender?: Connection,
     askedInstructions?: string[],
     own?: { agent: Agent; config: Record<string, unknown> },
+    freshConversation?: boolean,
   ): Promise<Session> => {
     /*
      * The backend that actually runs this session.
@@ -1267,9 +1269,11 @@ export function createSpawn(ctx: HostContext): Spawn {
      * host holds the session: its models are then learned once it is held.
      */
     let reported = false;
+    const conversation = freshConversation ?? ctx.heldChats(idOf(uri)).find((one) => one.uri === chatUri)?.sessionConversation;
     const wired: Start = {
       uri,
       chatUri,
+      ...(conversation === undefined ? {} : { sessionConversation: conversation }),
       trusted: trustedBy,
       // The operator's policy as it stands at the start: managed settings, and
       // the auto-approval restriction a window forwarded.
@@ -1935,6 +1939,8 @@ export function createSpawn(ctx: HostContext): Spawn {
      * make first, and the session is held once that step is made, the start's
      * failure being the failure of whatever asked for it.
      */
+    // Only initial host creation establishes original ownership, before any backend handshake can run.
+    if (freshConversation === true) ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true);
     const made = used.create(wired);
     const session = made instanceof Promise ? await made : made;
     titled = session;
@@ -2014,6 +2020,7 @@ export function createSpawn(ctx: HostContext): Spawn {
     ctx.keepChat(
       uri, chatUri, chatId ?? idOf(uri), held.defaultChat === chatUri,
       foreign ? agent.provider : undefined, foreign ? config : undefined,
+      conversation,
     );
     // And the folder it works in, which is where a backend is told to look for
     // it after a restart. Only on a change, so a chat started again in the

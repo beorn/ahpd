@@ -259,6 +259,8 @@ export interface Start {
   uri: string;
   /** The chat channel URI beneath it. */
   chatUri: string;
+  /** Host-recorded original conversation: true original, false peer, absent legacy unknown. Independent of aliases and current default. */
+  sessionConversation?: boolean;
   /**
    * The name this chat's own conversation is kept under, where it has one.
    *
