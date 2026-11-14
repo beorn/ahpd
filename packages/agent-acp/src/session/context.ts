@@ -154,6 +154,8 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   cumulative: number | undefined;
   /** The connection this session spawned, once it has one. */
   live: AcpConnection | undefined;
+  /** Current successful opening only; the native ID itself may survive a failed replacement. */
+  successfulOpening: { connection: AcpConnection; opening: Promise<{ connection: AcpConnection; sessionId: string }> } | undefined;
   /** The server's own id for this conversation, once `session/new` answered. */
   acpSessionId: string | undefined;
   /** Whether the server said it can be asked to close that conversation. */

@@ -167,7 +167,10 @@ it.skipIf(process.platform !== 'linux').each([
     expect(observed).toBeDefined();
     expect(observed?.pidRecord).toBe(`${observed?.pid}\n`);
     expect(String(observed?.statRecord)).toMatch(new RegExp(`^${String(observed?.pid)} \\(`));
+    expect(session.agentId()).toMatch(/^acp-session-/u);
+    expect((session.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBe(session.agentId());
     await session.close();
+    expect((session.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBeUndefined();
     expect(existsSync(`${prefix}.pid`)).toBe(false);
     expect(existsSync(`${prefix}.stat`)).toBe(false);
   }
@@ -233,13 +236,14 @@ it.skipIf(process.platform !== 'linux')('an old child ending cannot clear a succ
   finally { for (const session of sessions) await session.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
-it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'session/load'] as const)(
+it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'session/load', 'bookkeeping'] as const)(
   'a failed %s removes only its own published custody pair', async (method) => {
     // 32996: close success does not exercise the three opening failure paths after publication.
     const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-failure-'));
     const prefix = join(folder, 'child');
     const log = join(folder, 'requests.jsonl');
     let session: Session | undefined;
+    let bookkeepingPair: Bag | undefined;
     try {
       const agent = acpAgent({ command: process.execPath, args: [FIXTURE, `--fail-method=${method}`], provider: 'custody-failure', env: {
         ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
@@ -248,18 +252,25 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
       try {
         session = await agent.create({ uri: 'ahp-session:/custody', chatUri: 'ahp-chat:/original', sessionConversation: true,
           ...(method === 'session/load' ? { resume: 'recorded-backend-id' } : {}),
+          ...(method === 'bookkeeping' ? { onHandshake: () => {
+            const pidRecord = readFileSync(`${prefix}.pid`, 'utf8');
+            bookkeepingPair = { pid: Number(pidRecord.trim()), pidRecord, statRecord: readFileSync(`${prefix}.stat`, 'utf8') };
+            throw new Error('fixture refused bookkeeping');
+          } } : {}),
           clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
           trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: () => {},
         });
       } catch (error) { refused = error; }
       const requests = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Bag);
-      expect(requests.some((request) => request.method === method)).toBe(true);
-      const observed = requests.find((request) => request.method === 'fixture/pid-at-failure');
+      expect(requests.some((request) => request.method === (method === 'bookkeeping' ? 'session/new' : method))).toBe(true);
+      const observed = bookkeepingPair ?? requests.find((request) => request.method === 'fixture/pid-at-failure');
       expect(observed).toBeDefined();
       expect(observed?.pidRecord).toBe(`${observed?.pid}\n`);
       expect(String(observed?.statRecord)).toMatch(new RegExp(`^${String(observed?.pid)} \\(`));
       expect(existsSync(`${prefix}.pid`)).toBe(false);
       expect(existsSync(`${prefix}.stat`)).toBe(false);
+      expect((session?.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBeUndefined();
+      if (method === 'bookkeeping') expect(session?.agentId()).toMatch(/^acp-session-/u);
       if (refused !== undefined) expect(String(refused)).toContain(`fixture refused ${method}`);
     }
     finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }

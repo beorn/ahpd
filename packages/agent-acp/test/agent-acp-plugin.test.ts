@@ -8,7 +8,7 @@ import { createHost } from '../../sdk/src/host.js';
 import { describePlugin, loadPlugins, pluginIdsOf } from '../../server/src/plugins.js';
 import { echo } from '../../../examples/echo/agent.js';
 import { anyone, signIn } from './people.js';
-import type { Engine, AgentView, Bag } from '@ahpd/sdk';
+import type { Engine, AgentView, Bag, Session } from '@ahpd/sdk';
 import type { HostOptions } from '../../sdk/src/types/host.js';
 import type { PluginSpec } from '../../sdk/src/types/plugin.js';
 import type { Peer } from '../../sdk/src/types/rpc.js';
@@ -173,6 +173,17 @@ it('loads the package from its source file and serves a turn through the server 
   expect(loaded[0]?.title).toBe('Agent ACP');
 
   const agent = engineOf(options).open(viewOf('acp', () => ({ command: process.execPath, args: [FIXTURE] }), 'ACP'));
+  let actual: Session | undefined;
+  const create = agent.create.bind(agent);
+  agent.create = async (start) => {
+    actual = await create(start);
+    const state = actual.chatState.bind(actual);
+    actual.chatState = () => {
+      const current = state();
+      return { ...current, _meta: { ...(current._meta as Bag | undefined), 'fixture/unrelated': 'kept' } };
+    };
+    return actual;
+  };
   const host = createHost({ ...options, agents: [...(options.agents ?? []), agent] });
   const said = peer();
   const client = host.accept(said);
@@ -192,6 +203,14 @@ it('loads the package from its source file and serves a turn through the server 
   // loader resolved is this package and the server it spawned is the one the
   // record's `command` named.
   expect(opened.snapshot.state.turns[0]?.responseParts[0]?.content).toBe('hello there');
+  const beforeClose = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+  expect((beforeClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBe(actual?.agentId());
+  expect(actual?.agentId()).toMatch(/^acp-session-/u);
+  expect((beforeClose.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
+  await actual?.close();
+  const afterClose = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+  expect((afterClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
+  expect((afterClose.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
 });
 
 it('lists a manifest, its title, and the id its entry exports', async () => {

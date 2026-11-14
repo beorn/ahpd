@@ -146,6 +146,7 @@ export function acpSession(
     keptCount: 0,
     cumulative: undefined,
     live: undefined,
+    successfulOpening: undefined,
     acpSessionId: undefined,
     closes: false,
     loads: false,
@@ -296,6 +297,10 @@ export function acpSession(
       status: ctx.status(),
       modifiedAt: modified,
       turns,
+      ...(ctx.successfulOpening !== undefined && !ctx.disposed
+        && ctx.successfulOpening.connection === ctx.live && ctx.successfulOpening.opening === ctx.opening
+        && ctx.acpSessionId !== undefined && ctx.acpSessionId.trim() !== ''
+        ? { _meta: { 'ahpd/backendSessionId': ctx.acpSessionId } } : {}),
       ...(ctx.active !== undefined ? { activeTurn: ctx.active } : {}),
       ...(draft !== undefined ? { draft } : {}),
     }),
