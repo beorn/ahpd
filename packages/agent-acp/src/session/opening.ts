@@ -475,6 +475,9 @@ export function createOpening(ctx: SessionContext): Opening {
       });
       ctx.live = connection;
       made = connection;
+      const assertCurrent = (): void => {
+        if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
+      };
       // A server that dies between turns is let go, so the next turn spawns
       // another rather than prompting a process that is no longer there.
       void connection.ended.then(() => {
@@ -493,6 +496,7 @@ export function createOpening(ctx: SessionContext): Opening {
         atomicWriteFileSync(`${prefix}.pid`, custody.pid);
       }
       const initializeResponse = await connection.initialize();
+      assertCurrent();
       const { agentCapabilities } = initializeResponse;
       ctx.closes = advertised(agentCapabilities?.sessionCapabilities?.close);
       ctx.loads = agentCapabilities?.loadSession === true;
@@ -573,6 +577,7 @@ export function createOpening(ctx: SessionContext): Opening {
           mcpServers: servers,
           ...extra,
         });
+        assertCurrent();
         ctx.acpSessionId = copied.sessionId;
         ctx.learnModes(copied.modes);
         ctx.learnConfigOptions(copied.configOptions);
@@ -609,6 +614,7 @@ export function createOpening(ctx: SessionContext): Opening {
         const taken = taking
           ? await connection.resumeSession(request)
           : await connection.loadSession(request);
+        assertCurrent();
         ctx.acpSessionId = reopen;
         ctx.learnModes(taken.modes);
         ctx.learnConfigOptions(taken.configOptions);
@@ -621,6 +627,7 @@ export function createOpening(ctx: SessionContext): Opening {
           mcpServers: servers,
           ...extra,
         });
+        assertCurrent();
         ctx.acpSessionId = created.sessionId;
         ctx.learnModes(created.modes);
         ctx.learnConfigOptions(created.configOptions);
@@ -632,7 +639,7 @@ export function createOpening(ctx: SessionContext): Opening {
        * `Session.models` and put the list on the agent, as agent-claude and
        * agent-pi do. Without this a client is never offered a model.
        */
-      if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
+      assertCurrent();
       ctx.start.onHandshake?.();
       /*
        * The catalogue's record starts here, where the server has named the
@@ -647,7 +654,7 @@ export function createOpening(ctx: SessionContext): Opening {
        * the host was still keeping content of goes in once it is kept.
        */
       await ctx.keeping;
-      if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
+      assertCurrent();
       ctx.record = watchSession({
         provider,
         id: ctx.acpSessionId,
