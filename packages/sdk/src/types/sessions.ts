@@ -131,6 +131,8 @@ export interface StoredChat {
    * has not said one, which is a chat nothing can be resumed from.
    */
   backendId: string;
+  /** Host-recorded original conversation: true for the original, false for a peer, absent for legacy unknown. */
+  sessionConversation?: boolean;
   /**
    * The backend that serves this chat, where it is not the session's own.
    *
