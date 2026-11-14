@@ -479,6 +479,7 @@ export function createOpening(ctx: SessionContext): Opening {
       // another rather than prompting a process that is no longer there.
       void connection.ended.then(() => {
         clearCustody();
+        if (ctx.successfulOpening?.connection === connection) ctx.successfulOpening = undefined;
         if (ctx.live !== connection) return;
         ctx.live = undefined;
         ctx.opening = undefined;
@@ -631,6 +632,7 @@ export function createOpening(ctx: SessionContext): Opening {
        * `Session.models` and put the list on the agent, as agent-claude and
        * agent-pi do. Without this a client is never offered a model.
        */
+      if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
       ctx.start.onHandshake?.();
       /*
        * The catalogue's record starts here, where the server has named the
@@ -645,6 +647,7 @@ export function createOpening(ctx: SessionContext): Opening {
        * the host was still keeping content of goes in once it is kept.
        */
       await ctx.keeping;
+      if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
       ctx.record = watchSession({
         provider,
         id: ctx.acpSessionId,
@@ -671,12 +674,15 @@ export function createOpening(ctx: SessionContext): Opening {
      * held as it began: the mode, the options and the model the server runs
      * with, once the values the session holds have been sent.
      */
-    const opened = (): void => {
+    const opened = (succeeded: boolean): void => {
       if (ctx.opening !== pending) return;
       ctx.loading = false;
       ctx.syncConfig(values);
+      if (succeeded && made !== undefined && ctx.live === made && ctx.opening === pending && !ctx.disposed) {
+        ctx.successfulOpening = { connection: made, opening: pending };
+      }
     };
-    void pending.then(opened, opened);
+    void pending.then(() => opened(true), () => opened(false));
     /*
      * An open that fails lets go of itself and of the server it spawned, so a
      * server that refused the session or its sign-in leaves no process behind
@@ -685,6 +691,7 @@ export function createOpening(ctx: SessionContext): Opening {
     void pending.catch(() => {
       if (ctx.opening === pending) ctx.opening = undefined;
       if (made === undefined) return;
+      if (ctx.successfulOpening?.connection === made) ctx.successfulOpening = undefined;
       clearCustody();
       if (ctx.live === made) ctx.live = undefined;
       void made.close();
@@ -735,6 +742,7 @@ export function createOpening(ctx: SessionContext): Opening {
     }
     ctx.startedWith = said;
     const was = ctx.live;
+    ctx.successfulOpening = undefined;
     ctx.live = undefined;
     ctx.opening = undefined;
     ctx.loading = false;
