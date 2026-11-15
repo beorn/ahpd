@@ -41,6 +41,14 @@ export interface AppendJsonlOptions {
   readonly healTornTail?: boolean
   /** The longest fragment `healTornTail` will drop; a longer one throws. Default 64 KiB; `Infinity` never refuses. */
   readonly maxTornBytes?: number
+  /**
+   * Read this file's last byte for THIS append even when this process already decided a boundary for this path
+   * (one-jsonl-writer). Default false: the once-per-process decision above stands, so a hot log pays one read.
+   * A caller that re-attaches to a file another lifetime may have left unterminated asks for the real boundary
+   * instead of inheriting an earlier answer. It changes no bytes: the same delimiter rule still decides, and the
+   * decision is still recorded for later appends. It is not a lock, a heal, or a cache reset for anyone else.
+   */
+  readonly recheckBoundary?: boolean
   /** Create the parent directory (mode 0o700) when it is absent. Default false. */
   readonly mkdir?: boolean
 }
@@ -156,8 +164,8 @@ const newlineCheckedPaths = new Set<string>()
  * worst case is one empty line. The line readers here and the hab-core segment followers skip an empty line (a reader
  * that parses every line must do the same). Nothing is ever truncated, so no record can be lost; do not add a lock.
  */
-function needsLeadingNewlineSync(path: string): boolean {
-  if (newlineCheckedPaths.has(path)) return false
+function needsLeadingNewlineSync(path: string, recheck: boolean = false): boolean {
+  if (!recheck && newlineCheckedPaths.has(path)) return false
   newlineCheckedPaths.add(path)
   let fd: number
   try {
@@ -178,8 +186,8 @@ function needsLeadingNewlineSync(path: string): boolean {
 }
 
 /** The asynchronous twin of {@link needsLeadingNewlineSync}. */
-async function needsLeadingNewline(path: string): Promise<boolean> {
-  if (newlineCheckedPaths.has(path)) return false
+async function needsLeadingNewline(path: string, recheck: boolean = false): Promise<boolean> {
+  if (!recheck && newlineCheckedPaths.has(path)) return false
   newlineCheckedPaths.add(path)
   let handle: FileHandle
   try {
@@ -287,7 +295,8 @@ export function appendJsonlSync(
     options.healTornTail === true
       ? healJsonlTornTailSync(path, options.maxTornBytes === undefined ? {} : { maxTornBytes: options.maxTornBytes })
       : 0
-  const leadingNewline = options.healTornTail === true ? false : needsLeadingNewlineSync(path)
+  const leadingNewline =
+    options.healTornTail === true ? false : needsLeadingNewlineSync(path, options.recheckBoundary === true)
   const fd = openSync(path, "a", options.mode ?? 0o600)
   try {
     const bytes = Buffer.from(leadingNewline ? `\n${payload}` : payload, "utf8")
@@ -311,7 +320,8 @@ export async function appendJsonl(
     options.healTornTail === true
       ? await healJsonlTornTail(path, options.maxTornBytes === undefined ? {} : { maxTornBytes: options.maxTornBytes })
       : 0
-  const leadingNewline = options.healTornTail === true ? false : await needsLeadingNewline(path)
+  const leadingNewline =
+    options.healTornTail === true ? false : await needsLeadingNewline(path, options.recheckBoundary === true)
   const handle = await open(path, "a", options.mode ?? 0o600)
   try {
     const bytes = Buffer.from(leadingNewline ? `\n${payload}` : payload, "utf8")
