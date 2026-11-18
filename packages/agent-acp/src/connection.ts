@@ -89,7 +89,7 @@ const STDERR_BYTES = 8 * 1024;
  * one that took none of the SIGTERM must not hold the daemon's close open for
  * ever, which is what the SIGKILL is for.
  */
-const KILL_GRACE_MS = 5000;
+export const KILL_GRACE_MS = 5000;
 
 /**
  * Windows, which has no process group to signal and no SIGTERM to send: a

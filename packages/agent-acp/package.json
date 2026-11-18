@@ -67,7 +67,8 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.8.0",
-    "@bearly/durable-file": "0.1.0"
+    "@bearly/durable-file": "0.1.0",
+    "@bearly/flock": "0.2.3"
   },
   "ahpd": {
     "entry": "./dist/index.js",
