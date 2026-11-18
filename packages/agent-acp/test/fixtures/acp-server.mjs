@@ -255,6 +255,8 @@ const authStatus = process.argv.find((one) => one.startsWith('--auth-status='));
  * one that reports a sign-in it never said it would.
  */
 const announcesAuth = authStatus !== undefined && !process.argv.includes('--auth-silent');
+// 34599: a child that ignores TERM and outlives its stdin, so only the host's configured kill grace ends it.
+if (process.argv.includes('--ignore-term')) { process.on('SIGTERM', () => {}); setInterval(() => {}, 1 << 30); }
 
 /** The session id this server names; one process serves one conversation. */
 let session = 'acp-session-1';
@@ -1776,9 +1778,11 @@ const onLine = (line) => {
         const prefix = process.env.HAB_ACP_PID_PREFIX;
         if (prefix === undefined || LOG === undefined) throw new Error('pid custody fixture needs its prefix and log');
         appendFileSync(LOG, `${JSON.stringify({
-          pid: process.pid, method: 'fixture/pid-at-initialize',
+          pid: process.pid, method: 'fixture/pid-at-initialize', at: Date.now(),
           pidRecord: existsSync(`${prefix}.pid`) ? readFileSync(`${prefix}.pid`, 'utf8') : null,
           statRecord: existsSync(`${prefix}.stat`) ? readFileSync(`${prefix}.stat`, 'utf8') : null,
+          // 34599: the host's retained custody record, as the child sees it at initialize.
+          custodyRecord: existsSync(`${prefix}.custody`) ? readFileSync(`${prefix}.custody`, 'utf8') : null,
         })}\n`);
       }
       respond(message.id, {
