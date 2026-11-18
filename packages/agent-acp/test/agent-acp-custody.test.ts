@@ -7,6 +7,7 @@
  * host, kept through the child's end, and every write is ordered by one per-seat lock (`<prefix>.lock`, never
  * deleted) held from admission until the child's end is recorded. Ruling: @cto 34599-retained-record-r3-go.
  */
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,7 @@ import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.
 import { acpAgent } from '../src/index.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/acp-server.mjs', import.meta.url));
+const PROBE = fileURLToPath(new URL('./fixtures/flock-probe.mjs', import.meta.url));
 const URI = 'ahp-session:/custody';
 const linux = process.platform === 'linux';
 const sessions: Session[] = [];
@@ -114,4 +116,20 @@ it.skipIf(!linux)('a failed turn whose child ignores TERM admits no replacement 
   expect(record.state).toBe('running');
   expect(record.child?.pid).toBe(second?.pid);
   expect(record.opening).not.toBe((JSON.parse(String(first?.custodyRecord)) as Custody).opening);
+});
+
+it.skipIf(!linux)('another process sees the seat locked while its child lives, and free once the end is recorded', async () => {
+  // A second host process must not admit an opening while this host's child lives; the lock is the exclusion.
+  const { session, prefix, log } = await start([]);
+  const probe = (): string => execFileSync(process.execPath, [PROBE, `${prefix}.lock`], { encoding: 'utf8' });
+  expect(probe()).toBe('held');
+  const pid = Number(initializes(log)[0]?.pid);
+  // The child never inherits the lock descriptor.
+  const lockPath = `${prefix}.lock`;
+  const { readdirSync, readlinkSync } = await import('node:fs');
+  const childFds = readdirSync(`/proc/${pid}/fd`).map((fd) => { try { return readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { return ''; } });
+  expect(childFds).not.toContain(lockPath);
+  await session.close();
+  await until(() => readCustody(prefix).state === 'ended');
+  expect(probe()).toBe('free');
 });
