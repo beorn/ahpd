@@ -1,14 +1,14 @@
 import { RequestError } from '@agentclientprotocol/sdk';
-import { readFileSync, unlinkSync } from 'node:fs';
-import { atomicWriteFileSync } from '@bearly/durable-file';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
 import { machineAsked, machinePathOf } from '@ahpd/sdk';
 import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
 import { heardCapabilities, watchSession } from '../catalog.js';
-import { childProcessOf, connectAcp } from '../connection.js';
+import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
 import { HOST_TOOLS } from '../mapping.js';
 import type { AcpConnection, AcpOptions } from '../types.js';
 import { messageOf } from './common.js';
+import { admitCustody } from './custody.js';
+import type { Custody, CustodyIdentity } from './custody.js';
 import type { SessionContext } from './context.js';
 import type { LogLevel } from '@ahpd/sdk';
 
@@ -226,6 +226,9 @@ export const machineIdOf = (start: Start): string | undefined => {
  */
 const AUTH_REQUIRED = RequestError.authRequired().code;
 
+/** How long past the kill grace an opening waits for a predecessor's custody before refusing (#34599). */
+const ADMIT_MARGIN_MS = 2000;
+
 export function createOpening(ctx: SessionContext): Opening {
   const { options, provider, start, cwd, replay } = ctx;
 
@@ -390,23 +393,8 @@ export function createOpening(ctx: SessionContext): Opening {
     const startingWith = spawnOf(options);
     /** The server this open spawned, once it has. */
     let made: AcpConnection | undefined;
-    let custody: { prefix: string; pid: string; stat: string } | undefined;
-    const clearCustody = (): void => {
-      if (custody === undefined) return;
-      const { prefix, pid, stat } = custody;
-      try {
-        // The raw snapshot includes PID and kernel birth. A successor's snapshot is a different owner.
-        if (readFileSync(`${prefix}.stat`, 'utf8') !== stat) return;
-        try { if (readFileSync(`${prefix}.pid`, 'utf8') === pid) unlinkSync(`${prefix}.pid`); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`${provider}: could not inspect ACP PID marker during cleanup: ${messageOf(error)}`);
-        }
-        unlinkSync(`${prefix}.stat`);
-      }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`${provider}: could not clear ACP process custody: ${messageOf(error)}`);
-      }
-    };
+    /** This opening's custody of the seat's ACP child (#34599), held from admission until its child's end is recorded. */
+    let custody: Custody | undefined;
     // Install the pending identity before the opening body can reach placement.
     const pending: Promise<{ connection: AcpConnection; sessionId: string }> = Promise.resolve().then(async () => {
       /*
@@ -440,7 +428,22 @@ export function createOpening(ctx: SessionContext): Opening {
           ? options.env.HAB_ACP_CHAT_URI !== start.chatUri : start.sessionConversation !== true))) {
         throw new Error(`${provider}: this conversation has no matching configured ACP process authority`);
       }
-      const connection = connectAcp({
+      if (prefix !== undefined) {
+        // Admission waits, on a timer, for a predecessor still inside its kill grace to record its end (#34599).
+        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider);
+        if (ctx.disposed || ctx.opening !== pending || spawnOf(options) !== startingWith) {
+          held.release();
+          throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
+        }
+        if (!held.write('spawning', null)) {
+          held.release();
+          throw new Error(`${provider}: could not record ACP custody at ${prefix}.custody; nothing was spawned`);
+        }
+        custody = held;
+      }
+      let connection: AcpConnection;
+      try {
+        connection = connectAcp({
         command: moved?.command ?? options.command,
         ...(moved !== undefined
           ? { args: moved.args }
@@ -482,7 +485,13 @@ export function createOpening(ctx: SessionContext): Opening {
         ...(options.exitGraceMs === undefined ? {} : { exitGraceMs: options.exitGraceMs }),
         ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
         ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
-      });
+        });
+      }
+      catch (error) {
+        // A spawn that threw left no child: its end is recorded with none.
+        custody?.end(null);
+        throw error;
+      }
       ctx.live = connection;
       made = connection;
       const assertCurrent = (): void => {
@@ -490,20 +499,21 @@ export function createOpening(ctx: SessionContext): Opening {
       };
       // A server that dies between turns is let go, so the next turn spawns
       // another rather than prompting a process that is no longer there.
+      // The child as stamped once it has a live identity; until then, an end records no child.
+      let child: CustodyIdentity | null = null;
       void connection.ended.then(() => {
-        clearCustody();
+        custody?.end(child);
         if (ctx.successfulOpening?.connection === connection) ctx.successfulOpening = undefined;
         if (ctx.live !== connection) return;
         ctx.live = undefined;
         ctx.opening = undefined;
       });
-      if (prefix !== undefined) {
+      if (custody !== undefined) {
+        // A failed stamp keeps `spawning` and the lock until the child's end is recorded: nothing manufactures `ended`.
         const pid = childProcessOf(connection)?.pid;
         if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) throw new Error(`${provider}: the ACP child has no live process identity`);
-        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-        custody = { prefix, pid: `${pid}\n`, stat };
-        atomicWriteFileSync(`${prefix}.stat`, stat);
-        atomicWriteFileSync(`${prefix}.pid`, custody.pid);
+        child = custody.identify(pid);
+        if (!custody.write('running', child)) throw new Error(`${provider}: could not record the running ACP child in its custody record`);
       }
       const initializeResponse = await connection.initialize();
       assertCurrent();
@@ -709,7 +719,6 @@ export function createOpening(ctx: SessionContext): Opening {
       if (ctx.opening === pending) ctx.opening = undefined;
       if (made === undefined) return;
       if (ctx.successfulOpening?.connection === made) ctx.successfulOpening = undefined;
-      clearCustody();
       if (ctx.live === made) ctx.live = undefined;
       void made.close();
     });

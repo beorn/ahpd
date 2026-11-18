@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -54,6 +54,12 @@ const until = async (check: () => boolean, times = 3000): Promise<void> => {
   }
   throw new Error(`still waiting after ${times} tries`);
 };
+
+/** The host's retained custody record (#34599), or null when none was written. */
+const custodyAt = (prefix: string): Bag | null => (existsSync(`${prefix}.custody`)
+  ? JSON.parse(readFileSync(`${prefix}.custody`, 'utf8')) as Bag : null);
+const childOf = (record: unknown): number | undefined => ((record as { child?: { pid?: number } | null } | null)?.child?.pid);
+const gone = (pid: number): boolean => !existsSync(`/proc/${pid}`) || /^\d+ \(.*\) Z /su.test(readFileSync(`/proc/${pid}/stat`, 'utf8'));
 
 /** Lets `times` timer ticks pass, for a check that something did not happen. */
 const pause = async (times: number): Promise<void> => {
@@ -183,6 +189,9 @@ it.skipIf(process.platform !== 'linux')('catalog connections never publish custo
     const requests = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Bag);
     expect(requests.some((request) => request.method === 'initialize')).toBe(true);
     expect(requests.some((request) => request.method === 'session/list')).toBe(true);
+    // A catalog child is never admitted: no record and no lock (#34599).
+    expect(existsSync(`${prefix}.custody`)).toBe(false);
+    expect(existsSync(`${prefix}.lock`)).toBe(false);
     expect(existsSync(`${prefix}.pid`)).toBe(false);
     expect(existsSync(`${prefix}.stat`)).toBe(false);
   }
@@ -193,8 +202,9 @@ it.skipIf(process.platform !== 'linux').each([
   { kind: 'original', fact: true, selected: undefined },
   { kind: 'selected peer', fact: false, selected: 'ahp-chat:/original' },
   { kind: 'selected legacy', fact: undefined, selected: 'ahp-chat:/original' },
-] as const)('publishes the selected actual child before initialize and clears its own pair on close ($kind)', async ({ fact, selected }) => {
+] as const)('records the selected actual child before initialize and keeps the record, ended, after close ($kind)', async ({ fact, selected }) => {
   // 32996: a child self-stamp is too late for initialization. Observe from the real subprocess at initialize.
+  // 34599: the record outlives the child, so a stop can prove it ended.
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
   const prefix = join(folder, 'child');
   const log = join(folder, 'requests.jsonl');
@@ -214,12 +224,17 @@ it.skipIf(process.platform !== 'linux').each([
     const observed = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Bag)
       .find((line) => line.method === 'fixture/pid-at-initialize');
     expect(observed).toBeDefined();
-    expect(observed?.pidRecord).toBe(`${observed?.pid}\n`);
-    expect(String(observed?.statRecord)).toMatch(new RegExp(`^${String(observed?.pid)} \\(`));
+    const atInit = JSON.parse(String(observed?.custodyRecord)) as Bag;
+    expect(atInit.state).toBe('running');
+    expect(childOf(atInit)).toBe(observed?.pid);
+    expect(observed?.pidRecord).toBeNull();
+    expect(observed?.statRecord).toBeNull();
     expect(session.agentId()).toMatch(/^acp-session-/u);
     expect((session.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBe(session.agentId());
     await session.close();
     expect((session.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBeUndefined();
+    await until(() => custodyAt(prefix)?.state === 'ended');
+    expect(custodyAt(prefix)).toMatchObject({ opening: atInit.opening, child: atInit.child });
     expect(existsSync(`${prefix}.pid`)).toBe(false);
     expect(existsSync(`${prefix}.stat`)).toBe(false);
   }
@@ -250,6 +265,7 @@ it.skipIf(process.platform !== 'linux').each([
       emit: (_channel, action) => { actions.push(action as Bag); },
     });
     expect(existsSync(log)).toBe(false);
+    expect(existsSync(`${prefix}.custody`)).toBe(false);
     expect(existsSync(`${prefix}.pid`)).toBe(false);
     expect(existsSync(`${prefix}.stat`)).toBe(false);
     session.sendMessage('t1', 'hello');
@@ -259,35 +275,49 @@ it.skipIf(process.platform !== 'linux').each([
   finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
-it.skipIf(process.platform !== 'linux')('an old child ending cannot clear a successor custody pair', async () => {
+it.skipIf(process.platform !== 'linux')('a second opening of the same seat refuses while the first child lives, and the record still names it', async () => {
   // 32996: the same prefix can outlive an old connection's asynchronous close.
+  // 34599: one seat has one child: a second opening waits out the bound, then refuses and spawns nothing.
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
   const prefix = join(folder, 'child');
+  const log = join(folder, 'requests.jsonl');
   const uri = 'ahp-session:/custody';
   const sessions: Session[] = [];
+  const actions: Bag[] = [];
   try {
-    const agent = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'custody', env: {
-      HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: uri,
+    const agent = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'custody', killGraceMs: 100, env: {
+      ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: uri,
     } });
     const opening: Start = { uri, chatUri: 'ahp-chat:/original', sessionConversation: true,
       clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
-      trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: () => {},
+      trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: (_channel, action) => { actions.push(action as Bag); },
     };
     sessions.push(await agent.create(opening));
-    sessions.push(await agent.create(opening));
-    const successor = [readFileSync(`${prefix}.pid`, 'utf8'), readFileSync(`${prefix}.stat`, 'utf8')];
+    const first = custodyAt(prefix);
+    const pid = childOf(first);
+    expect(first?.state).toBe('running');
+    let refused: unknown;
+    try {
+      sessions.push(await agent.create(opening));
+      sessions[1]!.sendMessage('t1', 'hello');
+      await until(() => failure(actions) !== undefined, 10_000);
+    }
+    catch (error) { refused = error; }
+    expect(String(refused ?? failure(actions))).toContain('did not become available');
+    expect(custodyAt(prefix)).toEqual(first);
+    expect(gone(pid!)).toBe(false);
+    expect(readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.includes('"method":"initialize"')).length).toBe(1);
     await sessions[0]!.close();
-    expect([readFileSync(`${prefix}.pid`, 'utf8'), readFileSync(`${prefix}.stat`, 'utf8')]).toEqual(successor);
-    await sessions[1]!.close();
-    expect(existsSync(`${prefix}.pid`)).toBe(false);
-    expect(existsSync(`${prefix}.stat`)).toBe(false);
+    await until(() => custodyAt(prefix)?.state === 'ended');
+    expect(childOf(custodyAt(prefix))).toBe(pid);
   }
   finally { for (const session of sessions) await session.close(); rmSync(folder, { recursive: true, force: true }); }
-});
+}, 20_000);
 
 it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'session/load', 'bookkeeping', 'load-bookkeeping'] as const)(
-  'a failed %s removes only its own published custody pair', async (method) => {
+  'a failed %s records its own child ended', async (method) => {
     // 32996: close success does not exercise the three opening failure paths after publication.
+    // 34599: the failure keeps the record and the lock until its child has ended, then records that end.
     const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-failure-'));
     const prefix = join(folder, 'child');
     const log = join(folder, 'requests.jsonl');
@@ -303,8 +333,8 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
         session = await agent.create({ uri: 'ahp-session:/custody', chatUri: 'ahp-chat:/original', sessionConversation: true,
           ...(method === 'session/load' || method === 'load-bookkeeping' ? { resume: 'recorded-backend-id' } : {}),
           ...(bookkeeping ? { onHandshake: () => {
-            const pidRecord = readFileSync(`${prefix}.pid`, 'utf8');
-            bookkeepingPair = { pid: Number(pidRecord.trim()), pidRecord, statRecord: readFileSync(`${prefix}.stat`, 'utf8') };
+            const custodyRecord = readFileSync(`${prefix}.custody`, 'utf8');
+            bookkeepingPair = { pid: childOf(JSON.parse(custodyRecord)), custodyRecord };
             throw new Error('fixture refused bookkeeping');
           } } : {}),
           clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
@@ -315,8 +345,11 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
       expect(requests.some((request) => request.method === (method === 'load-bookkeeping' ? 'session/load' : method === 'bookkeeping' ? 'session/new' : method))).toBe(true);
       const observed = bookkeepingPair ?? requests.find((request) => request.method === 'fixture/pid-at-failure');
       expect(observed).toBeDefined();
-      expect(observed?.pidRecord).toBe(`${observed?.pid}\n`);
-      expect(String(observed?.statRecord)).toMatch(new RegExp(`^${String(observed?.pid)} \\(`));
+      const seen = JSON.parse(String(observed?.custodyRecord)) as Bag;
+      expect(seen.state).toBe('running');
+      expect(childOf(seen)).toBe(observed?.pid);
+      await until(() => custodyAt(prefix)?.state === 'ended');
+      expect(custodyAt(prefix)).toMatchObject({ opening: seen.opening, child: seen.child });
       expect(existsSync(`${prefix}.pid`)).toBe(false);
       expect(existsSync(`${prefix}.stat`)).toBe(false);
       expect((session?.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBeUndefined();
@@ -328,22 +361,31 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
   },
 );
 
-it.skipIf(process.platform !== 'linux')('removes its published stat if the second custody write fails', async () => {
-  // 32996: publishing stat then pid is not an atomic pair; a failed rename must undo the stat it owns.
+it.skipIf(process.platform !== 'linux')('an unreadable custody record refuses the opening and spawns nothing', async () => {
+  // 34599: under the lock, a record that proves nothing about an earlier child is never read as "ended".
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-'));
   const prefix = join(folder, 'child');
-  mkdirSync(`${prefix}.pid`);
+  const log = join(folder, 'requests.jsonl');
+  writeFileSync(`${prefix}.custody`, '{"v":1,"state":"running"');
+  const actions: Bag[] = [];
   let session: Session | undefined;
   try {
     const agent = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'custody', env: {
-      HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
+      ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
     } });
-    session = await agent.create({ uri: 'ahp-session:/custody', chatUri: 'ahp-chat:/original', sessionConversation: true,
-      clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
-      trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: () => {},
-    });
-    expect(existsSync(`${prefix}.stat`)).toBe(false);
-    expect(existsSync(`${prefix}.pid`)).toBe(true);
+    let refused: unknown;
+    try {
+      session = await agent.create({ uri: 'ahp-session:/custody', chatUri: 'ahp-chat:/original', sessionConversation: true,
+        clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
+        trusted: () => true, schema: () => ({ type: 'object', properties: {} }), emit: (_channel, action) => { actions.push(action as Bag); },
+      });
+      session.sendMessage('t1', 'hello');
+      await until(() => failure(actions) !== undefined);
+    }
+    catch (error) { refused = error; }
+    expect(String(refused ?? failure(actions))).toContain('custody record is unreadable');
+    expect(existsSync(log)).toBe(false);
+    expect(readFileSync(`${prefix}.custody`, 'utf8')).toBe('{"v":1,"state":"running"');
   }
   finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
 });

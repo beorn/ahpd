@@ -13,6 +13,7 @@ allowBuilds:
   bufferutil: false
   es5-ext: false
   esbuild: true
+  koffi: false
   node-pty: true
   protobufjs: false
   utf-8-validate: false

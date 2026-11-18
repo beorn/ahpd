@@ -1767,6 +1767,7 @@ const onLine = (line) => {
       method: 'fixture/pid-at-failure', pid: process.pid,
       pidRecord: existsSync(`${prefix}.pid`) ? readFileSync(`${prefix}.pid`, 'utf8') : null,
       statRecord: existsSync(`${prefix}.stat`) ? readFileSync(`${prefix}.stat`, 'utf8') : null,
+      custodyRecord: existsSync(`${prefix}.custody`) ? readFileSync(`${prefix}.custody`, 'utf8') : null,
     })}\n`);
     write({ jsonrpc: '2.0', id: message.id, error: { code: -32001, message: `fixture refused ${message.method}` } });
     return;
