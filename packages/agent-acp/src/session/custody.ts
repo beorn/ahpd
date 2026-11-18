@@ -24,10 +24,13 @@ import { messageOf } from './common.js';
 
 export type CustodyState = 'spawning' | 'running' | 'ended';
 export interface CustodyIdentity { readonly pid: number; readonly stat: string }
+interface HostServiceSession { readonly sessionId: string; readonly generation: number }
 export interface CustodyRecord {
   readonly v: 1;
   readonly bootId: string;
   readonly host: CustodyIdentity;
+  /** Non-secret service identity projected by hab's verified host preparation, never the identity token. */
+  readonly serviceSession?: HostServiceSession;
   readonly opening: string;
   readonly seq: number;
   readonly state: CustodyState;
@@ -53,6 +56,25 @@ const identity = (value: unknown): CustodyIdentity | undefined => {
   return typeof pid === 'number' && typeof stat === 'string' && pidOf(stat) === pid ? { pid, stat } : undefined;
 };
 
+const serviceSessionOf = (value: unknown): HostServiceSession | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { sessionId, generation } = value as { sessionId?: unknown; generation?: unknown };
+  return typeof sessionId === 'string' && sessionId.length > 0 && typeof generation === 'number'
+    && Number.isSafeInteger(generation) && generation > 0 ? { sessionId, generation } : undefined;
+};
+
+/** The adapter has already verified the signed identity. The daemon receives only this projection. */
+function hostServiceSession(provider: string): HostServiceSession | undefined {
+  const text = process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
+  if (text === undefined) return undefined;
+  try {
+    const identity = serviceSessionOf(JSON.parse(text) as unknown);
+    if (identity !== undefined) return identity;
+  } catch { /* The diagnostic below covers invalid JSON as well as an invalid shape. */ }
+  console.error(`${provider}: invalid HAB_ACP_HOST_SERVICE_IDENTITY; custody records will not prove service-restart continuity`);
+  return undefined;
+}
+
 /** One read of the record: absent, malformed (any field missing, wrong or inconsistent), or the record. */
 export function readCustody(prefix: string): CustodyRecord | 'absent' | 'malformed' {
   let text: string;
@@ -62,15 +84,22 @@ export function readCustody(prefix: string): CustodyRecord | 'absent' | 'malform
     throw error;
   }
   let raw: Record<string, unknown>;
-  try { raw = JSON.parse(text) as Record<string, unknown>; }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'malformed';
+    raw = parsed as Record<string, unknown>;
+  }
   catch { return 'malformed'; }
   const host = identity(raw.host);
   const child = raw.child === null ? null : identity(raw.child);
+  const serviceSession = raw.serviceSession === undefined ? undefined : serviceSessionOf(raw.serviceSession);
+  if (raw.serviceSession !== undefined && serviceSession === undefined) return 'malformed';
   if (raw.v !== 1 || typeof raw.bootId !== 'string' || raw.bootId === '' || host === undefined
     || typeof raw.opening !== 'string' || raw.opening === '' || typeof raw.seq !== 'number' || !Number.isSafeInteger(raw.seq)
     || (raw.state !== 'spawning' && raw.state !== 'running' && raw.state !== 'ended') || child === undefined
     || (raw.state === 'running' && child === null)) return 'malformed';
-  return { v: 1, bootId: raw.bootId, host, opening: raw.opening, seq: raw.seq, state: raw.state, child };
+  return { v: 1, bootId: raw.bootId, host, ...(serviceSession === undefined ? {} : { serviceSession }),
+    opening: raw.opening, seq: raw.seq, state: raw.state, child };
 }
 
 /** Whether a recorded child is proved gone: no live process at its pid with its recorded birth. */
@@ -130,6 +159,7 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     const why = forbids(before, boot);
     if (why !== undefined) throw new Error(`${provider}: no new ACP child for this seat: ${why}; nothing was spawned`);
     const hostIdentity = { pid: process.pid, stat: statOf(process.pid) };
+    const serviceSession = hostServiceSession(provider);
     const opening = randomUUID();
     let seq = typeof before === 'object' ? before.seq : 0;
     let released = false;
@@ -147,7 +177,8 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
           return false;
         }
         seq += 1;
-        const record: CustodyRecord = { v: 1, bootId: boot, host: hostIdentity, opening, seq, state, child };
+        const record: CustodyRecord = { v: 1, bootId: boot, host: hostIdentity,
+          ...(serviceSession === undefined ? {} : { serviceSession }), opening, seq, state, child };
         atomicWriteFileSync(`${prefix}.custody`, `${JSON.stringify(record)}\n`);
         return true;
       }
