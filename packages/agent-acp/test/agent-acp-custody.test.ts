@@ -40,6 +40,7 @@ const until = async (check: () => boolean, ms = 10_000): Promise<void> => {
 type Custody = {
   v: number; bootId: string; opening: string; seq: number; state: 'spawning' | 'running' | 'ended';
   host: { pid: number; stat: string }; child: { pid: number; stat: string } | null;
+  serviceSession?: { sessionId: string; generation: number };
 };
 
 const bootId = (): string => readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
@@ -90,6 +91,29 @@ it.skipIf(!linux)('names the running child before initialize and keeps the recor
   expect(existsSync(`${prefix}.lock`)).toBe(true);
   expect(existsSync(`${prefix}.pid`)).toBe(false);
   expect(existsSync(`${prefix}.stat`)).toBe(false);
+});
+
+it.skipIf(!linux)('keeps the host service identity hab verified on the running and the ended record, and omits a malformed one', async () => {
+  // hab's prepare adapter verifies the host's identity token and hands the host only this projection (#34599).
+  const previous = process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
+  try {
+    process.env.HAB_ACP_HOST_SERVICE_IDENTITY = JSON.stringify({ sessionId: 'svc-34599', generation: 7 });
+    const { session, prefix, log } = await start([]);
+    const atInit = JSON.parse(String(initializes(log)[0]?.custodyRecord)) as Custody;
+    expect(atInit).toMatchObject({ state: 'running', serviceSession: { sessionId: 'svc-34599', generation: 7 } });
+    await session.close();
+    await until(() => readCustody(prefix).state === 'ended');
+    expect(readCustody(prefix).serviceSession).toEqual({ sessionId: 'svc-34599', generation: 7 });
+
+    process.env.HAB_ACP_HOST_SERVICE_IDENTITY = JSON.stringify({ sessionId: 'svc-34599', generation: 0 });
+    const bad = await start([]);
+    const badAtInit = JSON.parse(String(initializes(bad.log)[0]?.custodyRecord)) as Custody;
+    expect(badAtInit.state).toBe('running');
+    expect(badAtInit.serviceSession).toBeUndefined();
+  } finally {
+    if (previous === undefined) delete process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
+    else process.env.HAB_ACP_HOST_SERVICE_IDENTITY = previous;
+  }
 });
 
 it.skipIf(!linux)('a failed turn whose child ignores TERM admits no replacement until the predecessor has ended', async () => {
