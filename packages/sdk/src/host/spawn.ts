@@ -2030,7 +2030,20 @@ export function createSpawn(ctx: HostContext): Spawn {
      * failure being the failure of whatever asked for it.
      */
     // Only initial host creation establishes original ownership, before any backend handshake can run.
-    if (freshConversation === true) ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true);
+    if (freshConversation === true) {
+      /*
+       * Its harness and folder first. A changed chat binding is saved before
+       * its setter returns, and that save writes the whole record, so a folder
+       * kept after it would be missing from the record a host killed in this
+       * tick leaves behind, which a restore-on-open then reopens with no
+       * folder. The harness goes with it because a row that holds only a
+       * folder is an empty row, and an empty row is not kept. A start that
+       * fails forgets the whole row, as it does the title kept before it.
+       */
+      kept.setProvider(idOf(uri), agent.provider);
+      keepFolder(idOf(uri), workingDirectory);
+      ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true);
+    }
     const made = used.create(wired);
     const session = made instanceof Promise ? await made : made;
     titled = session;
