@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { uriOf } from '@ahpd/sdk';
 import type { Agent, Bag, Emit, McpServer, MessageAttachment, Session, Start } from '@ahpd/sdk';
@@ -1552,6 +1552,23 @@ it('uses positive no-rollout provenance for an ephemeral read and only the first
   await runTurn(session, watch, 'after-death', 'hi again');
   expect(watch.endings().at(-1)).toBe('chat/error');
   expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+});
+
+// AC1: persistence failure must prevent an actual ACP prompt, even after opening minted a native id.
+it('dispatches no provider prompt before a failed durable barrier can be retried', async () => {
+  const { agent, log } = backend(['--no-rollout']);
+  const before = vi.fn().mockImplementationOnce(() => { throw new Error('durable write refused'); });
+  const { session, watch } = await start(agent, 'barrier-refusal', {
+    resume: 'unmaterialized-barrier', neverSpoken: true, beforePrompt: before,
+  });
+  await runTurn(session, watch, 'refused', 'hi');
+  expect(watch.endings()).toEqual(['chat/error']);
+  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+  expect(requests(log).filter((one) => one.method === 'session/prompt')).toHaveLength(0);
+  await runTurn(session, watch, 'retry', 'hi again');
+  expect(watch.endings().at(-1)).toBe('chat/turnComplete');
+  expect(before.mock.calls.map(([id]) => id)).toEqual([session.agentId(), session.agentId()]);
+  expect(requests(log).filter((one) => one.method === 'session/prompt')).toHaveLength(1);
 });
 
 it('loads a resumed session when the host holds none of its turns', async () => {

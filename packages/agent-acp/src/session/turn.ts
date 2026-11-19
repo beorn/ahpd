@@ -456,7 +456,12 @@ export function createTurn(ctx: SessionContext): Turn {
         endTurn(turnId, 'cancelled');
         return;
       }
-      ctx.start.beforePrompt?.(held.sessionId);
+      try { ctx.start.beforePrompt?.(held.sessionId); }
+      catch (why: unknown) {
+        // The native session is open but has received no prompt. Keep it for a retry of the durable barrier.
+        endTurn(turnId, 'error', { errorType: 'sendFailed', message: messageOf(why) });
+        return;
+      }
       ctx.neverSpoken = false;
       ctx.mapping.prompted = true;
       const response = await held.connection.prompt(held.sessionId, blocks);
