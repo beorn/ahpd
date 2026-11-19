@@ -465,7 +465,7 @@ What these things are, rather than how they behave on the wire: a session is [SE
 | so do the settings chosen for a session | the configuration values in force are kept the same way, in the same store, and come back with it |
 | the sessions themselves come back either way | they are read from the backend's own transcripts, so what a store decides is only whether what this host added on top of them comes back too |
 
-`SessionStore.commit()` synchronously commits pending changes before an external effect. A persistent adapter throws on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter completes immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
+Await `SessionStore.commit(id)` before an external effect to acknowledge that row's pending changes. A persistent adapter rejects on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter resolves immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
 
 An unreadable, malformed, unsupported-version or filename-mismatched session row remains listed by its filename identity. Reads and writes for that identity throw a named error and preserve its bytes; valid sibling rows remain readable. The store does not rename bad rows away. Repair the file explicitly and reopen the store to read it again. An unreadable store directory is an error; only an absent directory opens empty.
 

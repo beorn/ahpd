@@ -1647,14 +1647,14 @@ it('reports background write failure and strictly commits the same pending row a
   expect(store.flags('a')).toBe(ARCHIVED);
   // Admission must observe a failed write even after the background attempt
   // logged it. Repairing the resource permits the SAME pending row to commit.
-  expect(() => store.commit()).toThrow(/blocked/);
+  await expect(store.commit('a')).rejects.toThrow(/blocked/);
   rmSync(join(root, 'blocked'));
   mkdirSync(join(root, 'blocked'));
-  store.commit();
+  await store.commit('a');
   expect(row(join(root, 'blocked', 'sessions'), 'a')).toEqual({ version: 1, id: 'a', flags: ARCHIVED });
   expect(fileSessions({ dir: join(root, 'blocked', 'sessions') }).flags('a')).toBe(ARCHIVED);
   store.close?.();
-  expect(() => store.commit()).toThrow(/closed session store/);
+  await expect(store.commit('a')).rejects.toThrow(/closed session store/);
 });
 
 /**
