@@ -54,7 +54,7 @@ export interface ChatRecord {
    */
   keepChat(
     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
-    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
+    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
   ): void;
   /**
    * The values a chat of a session set for itself, as VS Code's
@@ -154,7 +154,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
 
   const keepChat = (
     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
-    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
+    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
   ): void => {
     const id = idOf(uri);
     const list = stored(id);
@@ -175,6 +175,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
     const served = provider ?? was?.provider;
     const settings = config ?? was?.config;
     const conversation = sessionConversation ?? was?.sessionConversation;
+    const unspoken = neverSpoken ?? was?.neverSpoken;
     // Built field by field, so a chat that is being started is open: the mark
     // a closed one carries is not among them.
     const next: StoredChat = {
@@ -183,6 +184,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
       // handed, and the session's own id for the chat that is the session.
       backendId: backendId ?? was?.backendId ?? chatIdFor(uri, chatUri) ?? id,
       ...(conversation === undefined ? {} : { sessionConversation: conversation }),
+      ...(unspoken === undefined ? {} : { neverSpoken: unspoken }),
       ...(served === undefined ? {} : { provider: served }),
       ...(settings === undefined ? {} : { config: settings }),
       ...(was?.configValues === undefined ? {} : { configValues: was.configValues }),

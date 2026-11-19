@@ -145,6 +145,8 @@ export interface StoredChat {
   backendId: string;
   /** Host-recorded original conversation: true for the original, false for a peer, absent for legacy unknown. */
   sessionConversation?: boolean;
+  /** Positive first-prompt provenance. True is unconsumed, false consumed; absent is unknown history. */
+  neverSpoken?: boolean;
   /**
    * The backend that serves this chat, where it is not the session's own.
    *
@@ -732,4 +734,10 @@ export interface SessionStore {
    * only writer. Optional: a store that keeps nothing has nothing to finish.
    */
   close?(): void;
+  /**
+   * Acknowledge pending writes synchronously, or throw and retain failed work for retry.
+   * File stores commit atomic replacements against process interruption, not a power-loss fsync guarantee.
+   * Memory stores acknowledge only this process's lifetime; absence supplies no persisted provenance.
+   */
+  flush?(): void;
 }

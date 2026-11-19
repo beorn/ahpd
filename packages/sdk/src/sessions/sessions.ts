@@ -211,6 +211,7 @@ export function memorySessions(): SessionStore & Held {
     },
     annotations: (id) => rows.get(id)?.annotations,
     setAnnotations: (id, value) => { patch(id, { annotations: value }); },
+    flush: () => {},
     chats: (id) => rows.get(id)?.chats ?? [],
     // An empty list is held as that absence, the way an empty artifact list is:
     // a session with no chat left is a session nothing was recorded for.
@@ -472,6 +473,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
       uri: held.uri,
       backendId: held.backendId,
       ...(typeof held.sessionConversation === 'boolean' ? { sessionConversation: held.sessionConversation } : {}),
+      ...(typeof held.neverSpoken === 'boolean' ? { neverSpoken: held.neverSpoken } : {}),
       ...(text(held.provider) ? { provider: held.provider } : {}),
       ...(typeof config === 'object' && config !== null && !Array.isArray(config)
         ? { config: config as Record<string, unknown> }
@@ -1176,6 +1178,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         dirty.add(id);
       }
       later();
+    },
+    flush: () => {
+      if (writing !== undefined) {
+        clearTimeout(writing);
+        writing = undefined;
+      }
+      save(true);
     },
     close: () => {
       if (closed) return;

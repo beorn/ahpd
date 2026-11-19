@@ -114,6 +114,7 @@ export function acpSession(
   const ctx = {
     options,
     start,
+    neverSpoken: start.neverSpoken === true && start.beforePrompt !== undefined,
     heardModes,
     levels,
     provider,
