@@ -1,5 +1,5 @@
 import { WAIT_MS } from '../../../tools/wait.ts';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +12,8 @@ import { posix } from '../../../tools/posix.ts';
 /*
  * The daemon's record store: a folder per collection, a Markdown or JSON file
  * per record, and a watch that reads a hand edit again.
+ * @failure Failed observation becomes fresh state, an incomplete listing, or a false deletion; last-good edits stop working.
+ * @level l1; @consumer fileRecords and plugin record persistence; @testonly none
  */
 
 let dir: string;
@@ -42,6 +44,73 @@ const heard = (collection: RecordCollection): RecordChange[] => {
   collection.watch((change) => { changes.push(change); });
   return changes;
 };
+
+// Durable admission must distinguish absence from failed observation (#35127).
+// The existing malformed-edit tests below cover a known-good cache, not failed first loads or unknown watch entries.
+describe.each(['md', 'json', 'folder'] as const)('record read failures (%s)', (format) => {
+  const options = () => format === 'folder' ? { file: 'record' } : { format };
+  const seed = (id: string, text: string): string => {
+    const folder = format === 'folder' ? join(dir, 'notes', id) : join(dir, 'notes');
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, format === 'folder' ? 'record.md' : `${id}.${format}`);
+    writeFileSync(file, text);
+    return file;
+  };
+  const valid = (id: string) => format === 'json' ? JSON.stringify({ id }) : recordFile({ id });
+
+  it.each(['corrupt', 'mismatch'])('rejects a %s first load instead of opening an incomplete collection', async (kind) => {
+    const file = seed('bad', kind === 'corrupt' ? 'PRIVATE-RECORD-CONTENT' : valid('other'));
+    await expect(store().collection('notes', options())).rejects.toThrow(file);
+  });
+
+  // Windows has no POSIX mode-0000 unreadability.
+  it.skipIf(!posix)('rejects an unreadable first load and retains a known-good record after a watched read failure', async () => {
+    const file = seed('one', valid('one'));
+    const target = format === 'folder' ? join(dir, 'notes', 'one') : file;
+    const mode = format === 'folder' ? 0o700 : 0o600;
+    chmodSync(target, 0);
+    try {
+      await expect(store().collection('notes', options())).rejects.toThrow(file);
+    } finally { chmodSync(target, mode); }
+    const notes = await store().collection('notes', options());
+    const changes = heard(notes);
+    problems.length = 0;
+    chmodSync(target, 0);
+    try {
+      await vi.waitFor(() => { expect(problems.some(problem => problem.includes(file))).toBe(true); }, { timeout: WAIT_MS });
+      expect(await notes.get('one')).toEqual({ id: 'one' });
+      expect(changes).toEqual([]);
+    } finally { chmodSync(target, mode); }
+  });
+
+  it('refuses incomplete reads for an unknown failed record, then recovers only after repair or real deletion', async () => {
+    const notes = await store().collection('notes', options());
+    const changes = heard(notes);
+    const file = seed('bad', 'PRIVATE-RECORD-CONTENT');
+    await vi.waitFor(() => { expect(problems.some(problem => problem.includes(file))).toBe(true); }, { timeout: WAIT_MS });
+    await expect(notes.get('bad')).rejects.toThrow(file);
+    await expect(notes.list()).rejects.toThrow(file);
+    await expect(notes.find({ id: 'other' })).rejects.toThrow(file);
+    expect(changes).toEqual([]);
+    expect(problems.join('\n')).not.toContain('PRIVATE-RECORD-CONTENT');
+    writeFileSync(file, valid('bad'));
+    await vi.waitFor(async () => { expect(await notes.get('bad')).toEqual({ id: 'bad' }); }, { timeout: WAIT_MS });
+    expect(await notes.list()).toEqual([{ id: 'bad' }]);
+    const second = seed('second', 'PRIVATE-RECORD-CONTENT');
+    await vi.waitFor(async () => { await expect(notes.list()).rejects.toThrow(second); }, { timeout: WAIT_MS });
+    rmSync(second);
+    await vi.waitFor(async () => { expect(await notes.find({ id: 'bad' })).toEqual([{ id: 'bad' }]); }, { timeout: WAIT_MS });
+    expect(changes).toEqual([{ id: 'bad', type: 'added' }]);
+  });
+});
+
+it.each(['not JSON', '{"id":"another"}'])('rejects failed legacy conversion (%s)', async (text) => {
+  mkdirSync(join(dir, 'notes'));
+  const file = join(dir, 'notes', 'one.json');
+  writeFileSync(file, text);
+  await expect(store().collection('notes')).rejects.toThrow(file);
+  expect(existsSync(file)).toBe(true);
+});
 
 describe('recordFile and readRecordFile', () => {
   it('writes the fields as frontmatter and the body field as the body', () => {
@@ -195,15 +264,12 @@ describe('fileRecords', () => {
     const folder = join(dir, 'bots');
     mkdirSync(folder);
     writeFileSync(join(folder, 'helper.json'), JSON.stringify(bot));
-    writeFileSync(join(folder, 'wrong.json'), JSON.stringify({ id: 'other' }));
 
     const bots = await store().collection('bots', { body: 'instructions' });
     expect(await bots.get('helper')).toEqual(bot);
     expect(existsSync(join(folder, 'helper.json'))).toBe(false);
     expect(JSON.parse(readFileSync(join(folder, 'helper.json.migrated'), 'utf8'))).toEqual(bot);
-    expect(existsSync(join(folder, 'wrong.json'))).toBe(true);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('wrong.json');
+    expect(problems).toEqual([]);
 
     // A second start finds the Markdown file and converts nothing.
     writeFileSync(join(folder, 'helper.json'), JSON.stringify({ ...bot, name: 'Stale' }));
@@ -217,10 +283,7 @@ describe('fileRecords', () => {
     mkdirSync(folder);
     writeFileSync(join(folder, 'one.md'), '---\nid: two\n---\n');
 
-    const bots = await store().collection('bots');
-    expect(await bots.list()).toEqual([]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('one.md');
+    await expect(store().collection('bots')).rejects.toThrow('one.md');
   });
 
   it('tells a watcher of a hand edit as updated, and of its own put once', async () => {
