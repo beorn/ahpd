@@ -99,6 +99,7 @@ export function memorySessions(): SessionStore & Held {
   };
 
   return {
+    commit: () => {},
     flags: (id) => rows.get(id)?.flags ?? 0,
     setFlags: (id, value) => { patch(id, { flags: value === 0 ? undefined : value }); },
     config: (id) => rows.get(id)?.config,
@@ -776,10 +777,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     };
   };
 
-  const save = (): void => {
-    if (closed) return;
+  const save = (strict = false): void => {
+    if (closed) {
+      if (strict) throw new Error(`Cannot commit closed session store ${dir}`);
+      return;
+    }
     const waiting = [...dirty];
-    dirty.clear();
     for (const id of waiting) {
       const row = rowOf(id);
       const file = join(dir, fileNameOf(id));
@@ -788,15 +791,19 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         // flag read and cleared: its file goes with it.
         if (row === undefined) {
           rmSync(file, { force: true });
+          dirty.delete(id);
           continue;
         }
         // The folder is made at 0700: every file under it holds a person's
         // session, which is nobody else's business on a host with more than one
         // person on it.
         writeJsonAtomic(file, row, { dirMode: 0o700 });
+        dirty.delete(id);
       }
       catch (error) {
-        told(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        const message = `Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`;
+        told(message);
+        if (strict) throw new Error(message, { cause: error });
       }
     }
   };
@@ -1015,6 +1022,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   load();
 
   return {
+    commit: () => {
+      if (writing !== undefined) {
+        clearTimeout(writing);
+        writing = undefined;
+      }
+      save(true);
+    },
     flags: (id) => inner.flags(id),
     config: (id) => inner.config(id),
     setFlags: (id, value) => { touched(id, () => { inner.setFlags(id, value); }); },
@@ -1125,8 +1139,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
       if (writing !== undefined) {
         clearTimeout(writing);
         writing = undefined;
-        save();
       }
+      save();
       closed = true;
     },
   };

@@ -233,6 +233,13 @@ export interface StoredChat {
  * scheme is only whose it is.
  */
 export interface SessionStore {
+  /**
+   * Commit pending row changes before an external effect. A failed commit
+   * throws and retains uncommitted changes for an explicit retry. An in-memory
+   * store completes immediately; a persistent store must not merely schedule
+   * its write or report failure only through a diagnostic callback.
+   */
+  commit(): void;
   /** The client flags in force, or `0` where none were ever set. */
   flags(id: string): number;
   /** Replace them. The whole bitset, because that is what the protocol sends. */

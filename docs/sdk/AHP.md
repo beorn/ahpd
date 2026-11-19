@@ -465,6 +465,8 @@ What these things are, rather than how they behave on the wire: a session is [SE
 | so do the settings chosen for a session | the configuration values in force are kept the same way, in the same store, and come back with it |
 | the sessions themselves come back either way | they are read from the backend's own transcripts, so what a store decides is only whether what this host added on top of them comes back too |
 
+`SessionStore.commit()` synchronously commits pending changes before an external effect. A persistent adapter throws on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter completes immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
+
 ### A client that stops reading
 
 A client that reads slower than the host writes leaves every frame it has not
