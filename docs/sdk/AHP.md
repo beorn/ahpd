@@ -467,6 +467,8 @@ What these things are, rather than how they behave on the wire: a session is [SE
 
 `SessionStore.commit()` synchronously commits pending changes before an external effect. A persistent adapter throws on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter completes immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
 
+An unreadable, malformed, unsupported-version or filename-mismatched session row remains listed by its filename identity. Reads and writes for that identity throw a named error and preserve its bytes; valid sibling rows remain readable. The store does not rename bad rows away. Repair the file explicitly and reopen the store to read it again. An unreadable store directory is an error; only an absent directory opens empty.
+
 ### A client that stops reading
 
 A client that reads slower than the host writes leaves every frame it has not

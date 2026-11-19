@@ -684,14 +684,24 @@ const idIn = (name: string): string | undefined => {
  * A changed backend chat id is written before its setter returns: a handshake
  * may be the last host callback before the backend starts its first prompt.
  *
- * A file that cannot be read is a warning and an empty row, never a refusal.
- * Losing which sessions were archived is worth saying out loud; refusing to
- * start a daemon over it is not.
+ * An unreadable row remains addressable as an error. Other rows still load,
+ * and neither a read nor a write may mistake those retained bytes for absence.
  */
 export function fileSessions(options: FileSessionOptions): SessionStore {
   const inner = memorySessions();
   const dir = options.dir;
   const told = (message: string): void => { options.onProblem?.(message); };
+  const faults = new Map<string, Error>();
+  const readable = (id: string): typeof inner => {
+    const failure = faults.get(id);
+    if (failure !== undefined) throw failure;
+    return inner;
+  };
+  const readableAll = (): typeof inner => {
+    const failure = faults.values().next().value;
+    if (failure !== undefined) throw failure;
+    return inner;
+  };
   /**
    * One session's attachments: a folder of its own, named beside its file.
    *
@@ -824,58 +834,47 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
    * none of them can forget to mark what it moved.
    */
   const touched = (id: string, run: () => void): void => {
+    readable(id);
     heard.add(id);
     run();
     dirty.add(id);
     later();
   };
 
-  /**
-   * Move a file this version cannot read to `<file>.unreadable-<time>`.
-   *
-   * The name does not end in `.json`, so a later load does not read it again,
-   * and the UTC time keeps two moves of one id apart. A move that fails leaves
-   * the file where it is, and says so.
-   */
-  const setAside = (file: string): void => {
-    const aside = `${file}.unreadable-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')}`;
-    try {
-      renameSync(file, aside);
-      told(`Moved ${file} to ${aside}.`);
-    }
-    catch (error) {
-      told(`Could not move ${file} aside, so the next write for it replaces it: ${(error as NodeJS.ErrnoException).code ?? 'failed'}`);
-    }
-  };
-
   const load = (): void => {
     let names: string[];
     try { names = readdirSync(dir); }
     // Not there yet, which is what a first run looks like.
-    catch { return; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new Error(`Could not read session store ${dir}: ${(error as NodeJS.ErrnoException).code ?? 'unreadable'}`);
+    }
     for (const name of names) {
       if (!name.endsWith('.json')) continue;
       // A name that is not an id this version could have written is not one of
       // its files.
-      if (idIn(name.slice(0, -'.json'.length)) === undefined) continue;
+      const id = idIn(name.slice(0, -'.json'.length));
+      if (id === undefined) continue;
       const file = join(dir, name);
       const read = readJson(file);
       let row: Saved | undefined;
+      let problem: string | undefined;
       if (!read.ok) {
         // The parser's error quotes what it choked on, so a file that is not
         // JSON is said to be that and no more.
         if (read.kind === 'missing') continue;
-        told(`Could not read ${file}: ${read.kind === 'unreadable' ? read.code ?? 'unreadable' : 'it is not JSON'}`);
+        problem = `Could not read ${file}: ${read.kind === 'unreadable' ? read.code ?? 'unreadable' : 'it is not JSON'}`;
       }
-      else if ((read.value as Partial<Saved>).version === 1 && typeof (read.value as Partial<Saved>).id === 'string') {
+      else if (typeof read.value === 'object' && read.value !== null && !Array.isArray(read.value)
+        && (read.value as Partial<Saved>).version === 1 && (read.value as Partial<Saved>).id === id) {
         row = read.value as Saved;
       }
-      else told(`Ignoring ${file}: it is not a session store this version can read.`);
-      // One file this version cannot read is one session it does not know, and
-      // the rest of the folder still does. It is moved aside, because the next
-      // write for its id would put what memory holds in its place.
+      else problem = `Could not read ${file}: it is not a session store this version can read or its id differs from its filename`;
       if (row === undefined) {
-        setAside(file);
+        const failure = new Error(problem ?? `Could not read ${file}: invalid session row`);
+        faults.set(id, failure);
+        heard.add(id);
+        told(failure.message);
         continue;
       }
       heard.add(row.id);
@@ -1029,71 +1028,71 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
       }
       save(true);
     },
-    flags: (id) => inner.flags(id),
-    config: (id) => inner.config(id),
+    flags: (id) => readable(id).flags(id),
+    config: (id) => readable(id).config(id),
     setFlags: (id, value) => { touched(id, () => { inner.setFlags(id, value); }); },
     setConfig: (id, values) => { touched(id, () => { inner.setConfig(id, values); }); },
-    scope: (id) => inner.scope(id),
+    scope: (id) => readable(id).scope(id),
     setScope: (id, value) => { touched(id, () => { inner.setScope(id, value); }); },
-    owner: (id) => inner.owner(id),
+    owner: (id) => readable(id).owner(id),
     setOwner: (id, value) => { touched(id, () => { inner.setOwner(id, value); }); },
-    sender: (id, turnId) => inner.sender(id, turnId),
+    sender: (id, turnId) => readable(id).sender(id, turnId),
     setSender: (id, turnId, value) => { touched(id, () => { inner.setSender(id, turnId, value); }); },
-    provider: (id) => inner.provider(id),
+    provider: (id) => readable(id).provider(id),
     setProvider: (id, value) => { touched(id, () => { inner.setProvider(id, value); }); },
-    uri: (id) => inner.uri?.(id),
+    uri: (id) => readable(id).uri?.(id),
     setUri: (id, value) => { touched(id, () => { inner.setUri?.(id, value); }); },
-    tools: (id) => inner.tools?.(id),
+    tools: (id) => readable(id).tools?.(id),
     setTools: (id, value) => { touched(id, () => { inner.setTools?.(id, value); }); },
-    trustedFolder: (id) => inner.trustedFolder?.(id),
+    trustedFolder: (id) => readable(id).trustedFolder?.(id),
     setTrustedFolder: (id, value) => { touched(id, () => { inner.setTrustedFolder?.(id, value); }); },
-    userSettings: (id) => inner.userSettings?.(id),
+    userSettings: (id) => readable(id).userSettings?.(id),
     setUserSettings: (id, value) => { touched(id, () => { inner.setUserSettings?.(id, value); }); },
-    external: (id) => inner.external?.(id),
+    external: (id) => readable(id).external?.(id),
     setExternal: (id, value) => { touched(id, () => { inner.setExternal?.(id, value); }); },
-    parent: (id) => inner.parent(id),
+    parent: (id) => readable(id).parent(id),
     setParent: (id, value) => { touched(id, () => { inner.setParent(id, value); }); },
-    rootOf: (id) => inner.rootOf(id),
-    depthOf: (id) => inner.depthOf(id),
-    nested: (id) => inner.nested(id),
+    rootOf: (id) => readable(id).rootOf(id),
+    depthOf: (id) => readable(id).depthOf(id),
+    nested: (id) => readable(id).nested(id),
     setNested: (id, value) => { touched(id, () => { inner.setNested(id, value); }); },
-    nestedSessions: () => inner.nestedSessions(),
-    recordedFolders: () => inner.recordedFolders(),
-    remoteOrigin: (id) => inner.remoteOrigin?.(id),
+    nestedSessions: () => readableAll().nestedSessions(),
+    recordedFolders: () => readableAll().recordedFolders(),
+    remoteOrigin: (id) => readable(id).remoteOrigin?.(id),
     setRemoteOrigin: (id, value) => { touched(id, () => { inner.setRemoteOrigin?.(id, value); }); },
-    createdBy: (id) => inner.createdBy?.(id),
+    createdBy: (id) => readable(id).createdBy?.(id),
     setCreatedBy: (id, value) => { touched(id, () => { inner.setCreatedBy?.(id, value); }); },
-    automationOrigin: (id) => inner.automationOrigin?.(id),
+    automationOrigin: (id) => readable(id).automationOrigin?.(id),
     setAutomationOrigin: (id, value) => { touched(id, () => { inner.setAutomationOrigin?.(id, value); }); },
-    multiRoot: (id) => inner.multiRoot?.(id),
+    multiRoot: (id) => readable(id).multiRoot?.(id),
     setMultiRoot: (id, value) => { touched(id, () => { inner.setMultiRoot?.(id, value); }); },
-    worktree: (id) => inner.worktree(id),
+    worktree: (id) => readable(id).worktree(id),
     setWorktree: (id, value) => { touched(id, () => { inner.setWorktree(id, value); }); },
-    additionalWorktrees: (id) => inner.additionalWorktrees(id),
+    additionalWorktrees: (id) => readable(id).additionalWorktrees(id),
     setAdditionalWorktrees: (id, value) => { touched(id, () => { inner.setAdditionalWorktrees(id, value); }); },
-    autoArchivedAt: (id) => inner.autoArchivedAt(id),
+    autoArchivedAt: (id) => readable(id).autoArchivedAt(id),
     setAutoArchivedAt: (id, value) => { touched(id, () => { inner.setAutoArchivedAt(id, value); }); },
-    workingDirectory: (id) => inner.workingDirectory(id),
+    workingDirectory: (id) => readable(id).workingDirectory(id),
     setWorkingDirectory: (id, value) => { touched(id, () => { inner.setWorkingDirectory(id, value); }); },
-    changes: (id) => inner.changes(id),
+    changes: (id) => readable(id).changes(id),
     setChanges: (id, value) => { touched(id, () => { inner.setChanges(id, value); }); },
-    artifacts: (id) => inner.artifacts(id),
+    artifacts: (id) => readable(id).artifacts(id),
     setArtifacts: (id, values) => { touched(id, () => { inner.setArtifacts(id, values); }); },
-    pullRequests: (id) => inner.pullRequests(id),
+    pullRequests: (id) => readable(id).pullRequests(id),
     setPullRequests: (id, value) => { touched(id, () => { inner.setPullRequests(id, value); }); },
-    customTitle: (id) => inner.customTitle?.(id),
+    customTitle: (id) => readable(id).customTitle?.(id),
     setCustomTitle: (id, value) => { touched(id, () => { inner.setCustomTitle?.(id, value); }); },
-    chatTitle: (id, chatUri) => inner.chatTitle(id, chatUri),
+    chatTitle: (id, chatUri) => readable(id).chatTitle(id, chatUri),
     setChatTitle: (id, chatUri, title) => { touched(id, () => { inner.setChatTitle(id, chatUri, title); }); },
-    chatFlags: (id, chatUri) => inner.chatFlags(id, chatUri),
+    chatFlags: (id, chatUri) => readable(id).chatFlags(id, chatUri),
     setChatFlags: (id, chatUri, value) => { touched(id, () => { inner.setChatFlags(id, chatUri, value); }); },
-    chatChanges: (id, chatUri) => inner.chatChanges?.(id, chatUri),
+    chatChanges: (id, chatUri) => readable(id).chatChanges?.(id, chatUri),
     setChatChanges: (id, chatUri, value) => { touched(id, () => { inner.setChatChanges?.(id, chatUri, value); }); },
-    chatDraft: (id, chatUri) => inner.chatDraft?.(id, chatUri),
+    chatDraft: (id, chatUri) => readable(id).chatDraft?.(id, chatUri),
     setChatDraft: (id, chatUri, draft) => { touched(id, () => { inner.setChatDraft?.(id, chatUri, draft); }); },
-    annotations: (id) => inner.annotations?.(id),
+    annotations: (id) => readable(id).annotations?.(id),
     setAnnotations: (id, value) => { touched(id, () => { inner.setAnnotations?.(id, value); }); },
-    chats: (id) => inner.chats(id),
+    chats: (id) => readable(id).chats(id),
     setChats: (id, list) => {
       const before = new Map(inner.chats(id).map((chat) => [chat.uri, chat.backendId]));
       const bindingChanged = list.some((chat) => before.get(chat.uri) !== chat.backendId);
@@ -1105,6 +1104,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     // Two rows move, so two files have to be written - which is why this is
     // written out rather than handed to `touched`, which names one.
     moveChat: (from, to, uri, turns) => {
+      readable(from);
+      readable(to);
       heard.add(from);
       heard.add(to);
       inner.moveChat(from, to, uri, turns);
@@ -1114,9 +1115,10 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     },
     // What this store holds is what it read at construction, which is the whole
     // folder, and what it was told since: the composition answers both.
-    sessions: () => inner.sessions(),
-    attachmentsDir: attachmentsOf,
+    sessions: () => [...new Set([...inner.sessions(), ...faults.keys()])],
+    attachmentsDir: (id) => { readable(id); return attachmentsOf(id); },
     forget: (id) => {
+      readable(id);
       heard.delete(id);
       inner.forget(id);
       attachmentsGone(id);
@@ -1126,6 +1128,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     prune: (gone) => {
       for (const id of [...heard]) {
         if (!gone(id)) continue;
+        readable(id);
         heard.delete(id);
         inner.forget(id);
         attachmentsGone(id);
