@@ -290,6 +290,25 @@ export function appendJsonlSync(
   options: AppendJsonlOptions = {},
 ): AppendJsonlReceipt {
   const payload = serializeJsonlLines(records)
+  const appended = appendJsonlPayloadAtSync(path, () => ({ payload, lines: records.length }), options)
+  if (!appended.written) throw new Error(`appendJsonlSync: payload refused at ${path}`)
+  const { bytesWritten, lines, tornBytesDropped, leadingNewline } = appended
+  return { bytesWritten, lines, tornBytesDropped, leadingNewline }
+}
+
+/**
+ * {@link appendJsonlSync}'s one write path, which also reports the append descriptor's own boundaries (35067): `start`
+ * is fstat of that descriptor after healing and before the write, `end` is fstat after it. The payload is built from
+ * `start`, so a row can name its own offset; a builder returning `undefined` writes nothing. Package-private: the
+ * index exports only appendJsonlSync, whose receipt is unchanged.
+ */
+export function appendJsonlPayloadAtSync(
+  path: string,
+  build: (start: number) => { readonly payload: string; readonly lines: number } | undefined,
+  options: AppendJsonlOptions = {},
+):
+  | (AppendJsonlReceipt & { readonly written: true; readonly start: number; readonly end: number })
+  | { readonly written: false; readonly start: number; readonly tornBytesDropped: number } {
   if (options.mkdir === true) mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const tornBytesDropped =
     options.healTornTail === true
@@ -299,10 +318,22 @@ export function appendJsonlSync(
     options.healTornTail === true ? false : needsLeadingNewlineSync(path, options.recheckBoundary === true)
   const fd = openSync(path, "a", options.mode ?? 0o600)
   try {
-    const bytes = Buffer.from(leadingNewline ? `\n${payload}` : payload, "utf8")
+    const start = fstatSync(fd).size
+    const built = build(leadingNewline ? start + 1 : start)
+    if (built === undefined) return { written: false, start, tornBytesDropped }
+    const bytes = Buffer.from(leadingNewline ? `\n${built.payload}` : built.payload, "utf8")
     writeAllSync(fd, bytes, path)
     if (options.fsync === true) fsyncSync(fd)
-    return { bytesWritten: bytes.byteLength, lines: records.length, tornBytesDropped, leadingNewline }
+    const end = fstatSync(fd).size
+    return {
+      written: true,
+      start,
+      end,
+      bytesWritten: bytes.byteLength,
+      lines: built.lines,
+      tornBytesDropped,
+      leadingNewline,
+    }
   } finally {
     closeSync(fd)
   }

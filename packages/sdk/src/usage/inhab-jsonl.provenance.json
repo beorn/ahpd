@@ -1,8 +1,8 @@
 {
   "sourceRepository": "https://github.com/beorn/ag",
-  "sourceCommit": "c3ef0a3c9cbfc2fe64840d26304941301fb920e9",
+  "sourceCommit": "214c86d96915c0ff9b0b067b557dc76799df6f99",
   "sourcePath": "packages/inhab/src/jsonl.ts",
-  "sourceSha256": "1e0e63faf7375e1a9b5a7c37b21b4a72ba990aa7e0c4690ea323488c73623df1",
+  "sourceSha256": "87435e13815d0db9df4a2501b7c355d5e54576f044515e07ec9909bf987b75b1",
   "derivedPath": "inhab-jsonl.ts",
   "contract": "Byte-identical derived source. Re-derive from the current hh Ag pin; never edit this algorithm copy."
 }
