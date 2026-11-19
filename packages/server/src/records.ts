@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, watch as watchPath, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseYaml, stringifyYaml } from '@cofold/yaml';
-import { isRecord, isRecordPath, isRecordSlug, readJson, reason, RECORD_PATH, RECORD_SLUG } from '@ahpd/sdk';
+import { isRecord, isRecordPath, isRecordSlug, reason, RECORD_PATH, RECORD_SLUG } from '@ahpd/sdk';
 import type { CollectionOptions, RecordChange, RecordCollection, RecordStore, StoredRecord } from '@ahpd/sdk';
 
 /** How the daemon's record store is built. */
@@ -95,8 +95,9 @@ const textOf = (file: string): string | undefined => {
   try {
     return readFileSync(file, 'utf8');
   }
-  catch {
-    return undefined;
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return undefined;
+    throw error;
   }
 };
 
@@ -114,8 +115,10 @@ const copied = (record: StoredRecord): StoredRecord => structuredClone(record);
  *
  * A collection reads its folder when it is first opened and keeps what it read;
  * a watch on the folder keeps that current when a person edits, adds or
- * removes a file. A file that cannot be read is reported and the collection
- * keeps the record it had. The watch does not hold the process open.
+ * removes a file. A failed first load rejects the open. A watched failure is
+ * reported and keeps a known-good record; without one, reads of that id and
+ * collection-wide reads reject until a successful reread or actual deletion.
+ * The watch does not hold the process open.
  */
 export function fileRecords(dir: string, options: FileRecordsOptions = {}): RecordStore {
   const said = (message: string): void => { options.onProblem?.(message); };
@@ -146,8 +149,7 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
       ? idsIn(folder, suffix)
       : readdirSync(folder, { withFileTypes: true })
         .filter((one) => one.isDirectory() && isRecordSlug(one.name))
-        .map((one) => one.name)
-        .filter((id) => existsSync(join(folder, id, `${file}${suffix}`))));
+        .map((one) => one.name));
 
     /** One record as the text of its `.json` file: pretty JSON and a final newline. */
     const recordJson = (record: StoredRecord): string => `${JSON.stringify(record, null, 2)}\n`;
@@ -175,25 +177,30 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
     const held = new Map<string, StoredRecord>();
     /** The text each file held when this store last wrote or read it, so an event for that text is not a change. */
     const known = new Map<string, string>();
+    /** Failed observations of ids with no valid cached value; never advertise these as absence or a complete list. */
+    const failures = new Map<string, Error>();
+    const requireReadable = (id?: string): void => {
+      const failure = id === undefined ? failures.values().next().value : failures.get(id);
+      if (failure !== undefined) throw failure;
+    };
     const watchers = new Set<(change: RecordChange) => void>();
     const told = (change: RecordChange): void => {
       for (const watcher of [...watchers]) watcher(change);
     };
 
-    /** The record in one file's text, or nothing when it is reported instead. */
-    const recordIn = (id: string, text: string): StoredRecord | undefined => {
+    /** One record, or a content-free failure identifying the collection and file. */
+    const recordIn = (id: string, text: string): StoredRecord => {
       const file = fileOf(id);
       let record: StoredRecord;
       try {
         record = recordFromText(text);
       }
-      catch (error) {
-        said(`records ${name}: ${file} cannot be read: ${reason(error)}`);
-        return undefined;
+      catch {
+        // Parser errors may quote a record body or token. Its format and identity are sufficient here.
+        throw new Error(`records ${name}: ${file} cannot be read: invalid ${asJson ? 'JSON' : 'Markdown'} record`);
       }
       if (record.id !== id) {
-        said(`records ${name}: ${file} names the id ${String(record.id)}, and the file name is the id`);
-        return undefined;
+        throw new Error(`records ${name}: ${file} cannot be read: record id does not match its file name`);
       }
       return record;
     };
@@ -212,21 +219,18 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
       const target = fileOf(id);
       if (existsSync(target)) continue;
       const source = join(folder, `${id}.json`);
-      const read = readJson(source);
-      if (!read.ok) {
-        said(`records ${name}: ${source} cannot be converted: ${read.kind === 'missing' ? 'it is gone' : reason(read.error)}`);
-        continue;
-      }
-      if (!isRecord(read.value) || read.value['id'] !== id) {
-        said(`records ${name}: ${source} cannot be converted: it is not a record whose id is ${id}`);
-        continue;
-      }
       try {
-        written(target, recordFile(read.value as StoredRecord, body));
+        const text = textOf(source);
+        if (text === undefined) continue;
+        let record: StoredRecord;
+        try { record = jsonRecord(text); }
+        catch { throw new Error('invalid JSON record'); }
+        if (record.id !== id) throw new Error('record id does not match its file name');
+        written(target, recordFile(record, body));
         renameSync(source, `${source}.migrated`);
       }
       catch (error) {
-        said(`records ${name}: ${source} cannot be converted: ${reason(error)}`);
+        throw new Error(`records ${name}: ${source} cannot be converted: ${reason(error)}`);
       }
     }
 
@@ -235,7 +239,7 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
       if (text === undefined) continue;
       known.set(id, text);
       const record = recordIn(id, text);
-      if (record !== undefined) held.set(id, record);
+      held.set(id, record);
     }
 
     /*
@@ -246,19 +250,27 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
      * collection held its record.
      */
     const reread = (id: string): void => {
-      const text = textOf(fileOf(id));
-      if (text === undefined) {
-        known.delete(id);
-        if (held.delete(id)) told({ id, type: 'deleted' });
-        return;
+      try {
+        const text = textOf(fileOf(id));
+        if (text === undefined) {
+          failures.delete(id);
+          known.delete(id);
+          if (held.delete(id)) told({ id, type: 'deleted' });
+          return;
+        }
+        if (known.get(id) === text && !failures.has(id)) return;
+        known.set(id, text);
+        const record = recordIn(id, text);
+        failures.delete(id);
+        const type = held.has(id) ? 'updated' : 'added';
+        held.set(id, record);
+        told({ id, type });
       }
-      if (known.get(id) === text) return;
-      known.set(id, text);
-      const record = recordIn(id, text);
-      if (record === undefined) return;
-      const type = held.has(id) ? 'updated' : 'added';
-      held.set(id, record);
-      told({ id, type });
+      catch (error) {
+        const failure = error instanceof Error ? error : new Error(`records ${name}: ${fileOf(id)} cannot be read`);
+        if (!held.has(id)) failures.set(id, failure);
+        said(failure.message);
+      }
     };
 
     const pending = new Map<string, ReturnType<typeof setTimeout>>();
@@ -348,13 +360,17 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
 
     return {
       get: async (id) => {
+        requireReadable(id);
         const record = held.get(id);
         return record === undefined ? undefined : copied(record);
       },
-      list: async () => [...held.values()].map(copied),
-      find: async (match) => [...held.values()]
-        .filter((record) => Object.entries(match).every(([field, value]) => record[field] === value))
-        .map(copied),
+      list: async () => { requireReadable(); return [...held.values()].map(copied); },
+      find: async (match) => {
+        requireReadable();
+        return [...held.values()]
+          .filter((record) => Object.entries(match).every(([field, value]) => record[field] === value))
+          .map(copied);
+      },
       put: async (record) => {
         if (!isRecord(record)) throw new Error(`records ${name}: a record is a JSON object`);
         if (typeof record.id !== 'string' || !isRecordSlug(record.id)) {
@@ -364,6 +380,7 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
         const kept = recordFromText(text);
         mkdirSync(folderOf(record.id), { recursive: true, mode: 0o700 });
         written(fileOf(record.id), text);
+        failures.delete(record.id);
         known.set(record.id, text);
         const type = held.has(record.id) ? 'updated' : 'added';
         held.set(record.id, kept);
@@ -374,6 +391,7 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
       remove: async (id) => {
         if (typeof id !== 'string' || !isRecordSlug(id)) throw new Error(`records ${name}: ${String(id)} is not a record id: ${RECORD_SLUG}`);
         rmSync(fileOf(id), { force: true });
+        failures.delete(id);
         const had = held.delete(id);
         known.delete(id);
         if (had) told({ id, type: 'deleted' });
