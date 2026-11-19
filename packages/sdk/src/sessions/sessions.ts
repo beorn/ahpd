@@ -99,7 +99,7 @@ export function memorySessions(): SessionStore & Held {
   };
 
   return {
-    commit: () => {},
+    commit: async () => {},
     flags: (id) => rows.get(id)?.flags ?? 0,
     setFlags: (id, value) => { patch(id, { flags: value === 0 ? undefined : value }); },
     config: (id) => rows.get(id)?.config,
@@ -787,12 +787,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     };
   };
 
-  const save = (strict = false): void => {
+  const save = (strict = false, ids?: readonly string[]): void => {
     if (closed) {
       if (strict) throw new Error(`Cannot commit closed session store ${dir}`);
       return;
     }
-    const waiting = [...dirty];
+    const waiting = ids === undefined ? [...dirty] : ids.filter((id) => dirty.has(id));
     for (const id of waiting) {
       const row = rowOf(id);
       const file = join(dir, fileNameOf(id));
@@ -1021,12 +1021,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   load();
 
   return {
-    commit: () => {
+    commit: async (id) => {
       if (writing !== undefined) {
         clearTimeout(writing);
         writing = undefined;
       }
-      save(true);
+      save(true, [id]);
+      if (dirty.size > 0) later();
     },
     flags: (id) => readable(id).flags(id),
     config: (id) => readable(id).config(id),
