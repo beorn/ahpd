@@ -168,20 +168,32 @@ it('names the session once, with the URI it answers, before the backend spawns',
   expect(order).toEqual(['named', 'spawn']);
 });
 
-it('starts the session when the plugin\'s door throws, and says so in the log', async () => {
-  const lines: string[] = [];
-  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', {
-    onEvent: (line) => { lines.push(line); },
-  });
+it.each(['sync', 'async'] as const)('refuses creation before backend spawn when the %s mapping callback fails', async (mode) => {
+  const order: string[] = [];
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
+  const failure = new Error('mapping was not committed');
+  // The rejected promise is observed here as well so the old implementation's
+  // ignored callback is a failed assertion, not an unrelated unhandled rejection.
+  const rejected = Promise.reject(failure);
+  void rejected.catch(() => {});
+  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, () => {
+    order.push('named');
+    if (mode === 'sync') throw failure;
+    return rejected;
+  })).rejects.toBe(failure);
+  expect(order).toEqual(['named']);
+});
 
-  const uri = await plugin.startSession({ owner: 'user:soft', prompt: 'Say hello' }, () => {
-    throw new Error('nobody is listening');
+it('awaits the mapping callback before the backend spawns', async () => {
+  const order: string[] = [];
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
+  const uri = await plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async () => {
+    order.push('named');
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    order.push('mapped');
   });
-
-  // The plugin heard as much as it could, and what it does with that is not a
-  // reason to refuse the work the person asked for.
   expect(uri).toMatch(/^ahp-session:\//);
-  expect(lines.some((line) => line.includes(uri) && line.includes('nobody is listening'))).toBe(true);
+  expect(order).toEqual(['named', 'mapped', 'spawn']);
 });
 
 it('refuses a door that is not a function, at the boundary', () => {

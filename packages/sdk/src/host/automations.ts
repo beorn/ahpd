@@ -250,7 +250,7 @@ export interface Automations {
    * `named` is the plugin's own door, called with the URI once the host has
    * named it - before the tree is made and before the backend spawns.
    */
-  startForPlugin(wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void): Promise<string>;
+  startForPlugin(wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void | Promise<void>): Promise<string>;
   /**
    * A chat a plugin asked for, in a session this host is running.
    *
@@ -835,7 +835,7 @@ export function createAutomations(ctx: HostContext): Automations {
    * of a worktree session - and what each road adds is the question that is
    * its own.
    */
-  const beginSession = async (wanted: StartSession, named?: (uri: string) => void): Promise<string> => {
+  const beginSession = async (wanted: StartSession, named?: (uri: string) => void | Promise<void>): Promise<string> => {
     const provider = wanted.provider ?? ctx.first?.provider;
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
@@ -847,16 +847,11 @@ export function createAutomations(ctx: HostContext): Automations {
      * while the session is being set up, so a reader that learns the URI after
      * the start answers has already missed it.
      *
-     * A door that throws has heard as much as it could and is not this
-     * session's failure: it is logged against the host and the start goes on,
-     * which is the same answer a plugin that asks too early gets.
+     * The caller can commit its mapping before any backend is made. A thrown
+     * or rejected callback refuses this start rather than creating work whose
+     * caller never durably learned its identity.
      */
-    if (named !== undefined) {
-      try { named(uri); }
-      catch (error) {
-        log.warn(`${uri} is being started, but the plugin that asked was not told: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+    if (named !== undefined) await named(uri);
     const config = wanted.config ?? {};
     // The same steps a client's `createSession` takes: the folder the daemon's
     // `workspacelessFolder` says where none is named, the host's own keys are
@@ -1198,7 +1193,7 @@ export function createAutomations(ctx: HostContext): Automations {
    * to add. A folder the plugin registered as its own, or one under it, needs
    * no grant: the manifest announced it before the install.
    */
-  const beginPluginSession = async (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void): Promise<string> => {
+  const beginPluginSession = async (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void | Promise<void>): Promise<string> => {
     if (wanted.trusted === true && (wanted.workingDirectory === undefined ? who?.can?.('session:trust') !== true : !mayTrust(who, wanted.workingDirectory))) {
       throw new RpcError(-32009, refusalReason(`plugin:${who?.by ?? 'unknown'}`, 'session:trust'), {});
     }
@@ -1227,7 +1222,7 @@ export function createAutomations(ctx: HostContext): Automations {
 
   const startForAutomation = (wanted: StartSession): Promise<string> => startHeld(() => beginAutomation(wanted));
 
-  const startForPlugin = (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void): Promise<string> =>
+  const startForPlugin = (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void | Promise<void>): Promise<string> =>
     startHeld(() => beginPluginSession(wanted, who, named));
 
   /**
