@@ -254,7 +254,7 @@ export interface PluginStarts {
    * plugin that answers for that URI - a bot's connector reader - names it at
    * the first tool list the backend is spawned with.
    */
-  start?: (wanted: StartSession, named?: (uri: string) => void) => Promise<string>;
+  start?: (wanted: StartSession, named?: (uri: string) => void | Promise<void>) => Promise<string>;
   /**
    * Where a chat inside a running session is asked for, set by the host once
    * it exists.
@@ -1256,10 +1256,11 @@ export interface PluginHost extends PluginContext {
    * `named` is called once, with the URI the session will have, before the tree
    * is isolated or the backend spawns. A plugin that answers for that URI can
    * therefore answer from the start - a bot's connectors are in the first tool
-   * list rather than only the one built after the start answers. A `named`
-   * that throws is logged against the host and the start goes on.
+   * list rather than only the one built after the start answers. Its returned
+   * promise is awaited; a throw or rejection refuses creation before a backend
+   * is started.
    */
-  startSession(wanted: SessionRequest, named?: (uri: string) => void): Promise<string>;
+  startSession(wanted: SessionRequest, named?: (uri: string) => void | Promise<void>): Promise<string>;
   /**
    * Start a chat inside a running session, on the backend it names.
    *
