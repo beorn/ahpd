@@ -9,6 +9,8 @@ import type { RecordChange, RecordStore } from '../src/types/records.js';
 /*
  * The records port: a plugin opens a collection while `apply` runs, and the
  * collection reads and writes through whatever store the fold names.
+ * @failure A backend records rejection is swallowed or prevents retry after repair.
+ * @level l1; @consumer pluginHost.records; @testonly none
  */
 
 const context = (logged: string[] = []): LoaderContext => ({
@@ -25,6 +27,28 @@ const base = (): HostOptions => ({ path: '/tmp/plugin-records', agents: [] });
 
 /** A turn of the event loop, for the work a watch starts without a call to await. */
 const settled = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+// Backend load rejection must reach a persistence consumer, and a repair must permit a later open (#35127).
+// Existing cases cover an absent port, not a present backend whose collection failed to load.
+it('propagates a failed backend open to plugin reads and writes, and retries after repair', async () => {
+  const saved = memoryRecords();
+  const failure = new Error('records notes cannot be read: EACCES');
+  let unreadable = true;
+  const backend: RecordStore = {
+    collection: async (name, options) => {
+      if (unreadable) throw failure;
+      return saved.collection(name, options);
+    },
+  };
+  const notes = pluginHost('fixture', context(), { records: () => backend }).host.records('notes');
+  await expect(notes.get('one')).rejects.toBe(failure);
+  await expect(notes.list()).rejects.toBe(failure);
+  await expect(notes.find({ id: 'one' })).rejects.toBe(failure);
+  await expect(notes.put({ id: 'one' })).rejects.toBe(failure);
+  unreadable = false;
+  await notes.put({ id: 'one' });
+  expect(await notes.get('one')).toEqual({ id: 'one' });
+});
 
 it('reads and writes through the store a plugin put in place with replace', async () => {
   const daemon = memoryRecords();
