@@ -1514,6 +1514,22 @@ const HELD: Bag[] = [{
   state: 'complete',
 }];
 
+// #35117 AC1: an empty local seed is unknown history, not permission to replace a conversation.
+// The old --load-missing fixture uses -32002 and cannot pin preservation of the Codex -32603 error.
+it.each([
+  ['unknown', undefined],
+  ['spoken', HELD],
+] as const)('preserves no-rollout failures for %s history without positive provenance', async (name, seed) => {
+  const { agent, log } = backend(['--no-rollout']);
+  const native = `unmaterialized-${name}`;
+  await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
+  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, seed });
+  await runTurn(session, watch, 'first-attempt', 'hi');
+  expect(watch.endings()).toEqual(['chat/error']);
+  expect(requests(log).some((one) => one.method === 'session/new')).toBe(false);
+  expect(requests(log).some((one) => one.method === 'session/prompt')).toBe(false);
+});
+
 it('loads a resumed session when the host holds none of its turns', async () => {
   const { agent, log } = backend();
   const { session, watch } = await start(agent, 'resume', { resume: 'acp-session-resumed' });
