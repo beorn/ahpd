@@ -204,6 +204,7 @@ export function memorySessions(): SessionStore & Held {
     },
     annotations: (id) => rows.get(id)?.annotations,
     setAnnotations: (id, value) => { patch(id, { annotations: value }); },
+    flush: () => {},
     chats: (id) => rows.get(id)?.chats ?? [],
     // An empty list is held as that absence, the way an empty artifact list is:
     // a session with no chat left is a session nothing was recorded for.
@@ -464,6 +465,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
       uri: held.uri,
       backendId: held.backendId,
       ...(typeof held.sessionConversation === 'boolean' ? { sessionConversation: held.sessionConversation } : {}),
+      ...(typeof held.neverSpoken === 'boolean' ? { neverSpoken: held.neverSpoken } : {}),
       ...(text(held.provider) ? { provider: held.provider } : {}),
       ...(typeof config === 'object' && config !== null && !Array.isArray(config)
         ? { config: config as Record<string, unknown> }
@@ -776,10 +778,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     };
   };
 
-  const save = (): void => {
-    if (closed) return;
+  const save = (strict = false): void => {
+    if (closed) {
+      if (strict) throw new Error('Cannot flush a closed session store');
+      return;
+    }
     const waiting = [...dirty];
-    dirty.clear();
     for (const id of waiting) {
       const row = rowOf(id);
       const file = join(dir, fileNameOf(id));
@@ -788,14 +792,18 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         // flag read and cleared: its file goes with it.
         if (row === undefined) {
           rmSync(file, { force: true });
+          dirty.delete(id);
           continue;
         }
         // The folder is made at 0700: every file under it holds a person's
         // session, which is nobody else's business on a host with more than one
         // person on it.
         writeJsonAtomic(file, row, { dirMode: 0o700 });
+        dirty.delete(id);
       }
       catch (error) {
+        // A failed soft write is still pending when a later critical barrier asks for acknowledgment.
+        if (strict) throw error;
         told(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -1120,13 +1128,20 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
       }
       later();
     },
+    flush: () => {
+      if (writing !== undefined) {
+        clearTimeout(writing);
+        writing = undefined;
+      }
+      save(true);
+    },
     close: () => {
       if (closed) return;
       if (writing !== undefined) {
         clearTimeout(writing);
         writing = undefined;
-        save();
       }
+      save();
       closed = true;
     },
   };

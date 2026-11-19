@@ -456,6 +456,8 @@ export function createTurn(ctx: SessionContext): Turn {
         endTurn(turnId, 'cancelled');
         return;
       }
+      ctx.start.beforePrompt?.(held.sessionId);
+      ctx.neverSpoken = false;
       ctx.mapping.prompted = true;
       const response = await held.connection.prompt(held.sessionId, blocks);
       // The parts the host was still keeping are the turn's, said before it ends.

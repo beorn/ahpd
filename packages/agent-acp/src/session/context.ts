@@ -59,6 +59,8 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   options: AcpOptions;
   /** What this particular session was told. */
   start: Start;
+  /** One-shot first-prompt provenance; never restored after prompt dispatch, rewind or backend death. */
+  neverSpoken: boolean;
   /**
    * How this session tells its agent the modes the server named.
    *

@@ -589,7 +589,17 @@ export function createLocalTurns(ctx: HostContext): LocalTurns {
   ): Promise<WireTurn<Turn>[] | undefined> => {
     // Handed the content this host keeps for the session, by the reference it
     // kept each under, as it is handed the outputs it keeps for the chat.
-    const turns = await agent.transcript?.(id, at, ctx.outputsFor(session, chat), (toolCallId, ordinal) => ctx.toolResults.kept(session, toolCallId, ordinal));
+    // Never forward a stale caller observation; the exact row and actual backend must qualify this read.
+    const location: SessionAt = at?.workingDirectory === undefined ? {} : { workingDirectory: at.workingDirectory };
+    let proven = false;
+    if (agent.promptStart === 'reported' && ctx.kept.flush !== undefined
+      && ctx.kept.nested?.(idOf(session)) === undefined && ctx.kept.external?.(idOf(session)) !== true) {
+      ctx.kept.flush();
+      const recorded = ctx.recordedChat(idOf(session), chat);
+      proven = recorded?.sessionConversation === true && recorded.neverSpoken === true && recorded.backendId === id;
+    }
+    const observation = proven ? { ...location, neverSpoken: true } : at === undefined ? undefined : location;
+    const turns = await agent.transcript?.(id, observation, ctx.outputsFor(session, chat), (toolCallId, ordinal) => ctx.toolResults.kept(session, toolCallId, ordinal));
     // A chat whose turns are all this host's own has no transcript, and reads
     // as the turns it keeps, as a nested session opens from its record.
     if (turns === undefined) return keptIn(session, chat).length > 0 ? interleaveLocalTurns(session, chat, []) : undefined;

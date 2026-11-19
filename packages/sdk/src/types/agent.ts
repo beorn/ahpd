@@ -184,6 +184,8 @@ export interface Listed {
 export interface SessionAt {
   /** The session's working folder, as a path. Absent where none was recorded. */
   workingDirectory?: string;
+  /** Checked positive original-chat provenance after the host store's write barrier; absent means unknown. */
+  readonly neverSpoken?: boolean;
 }
 
 /** Where an agent's `placeSession` puts a session a client creates on it. Each field left out is the client's. */
@@ -272,6 +274,10 @@ export interface Start {
   uri: string;
   /** The chat channel URI beneath it. */
   chatUri: string;
+  /** Checked positive first-prompt provenance; never inferred from an empty seed. */
+  readonly neverSpoken?: boolean;
+  /** Commit the actual native binding and consume first-prompt provenance before dispatch. A throw prevents send. */
+  beforePrompt?(backendId: string): void;
   /** Host-recorded original conversation: true original, false peer, absent legacy unknown. Independent of aliases and current default. */
   sessionConversation?: boolean;
   /**
@@ -810,6 +816,8 @@ export interface RestoredSubagent {
 export interface Agent<Started extends Session | Promise<Session> = Session | Promise<Session>> {
   /** The id clients name. Unique among a host's agents. */
   provider: string;
+  /** Every actual provider prompt calls Start.beforePrompt before sending; other backends promise nothing. */
+  promptStart?: 'reported';
   /** What a person reads instead of the id. */
   displayName: string;
   /** One line about what this backend is. */

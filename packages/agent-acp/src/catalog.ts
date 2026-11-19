@@ -112,6 +112,13 @@ const keyOf = (provider: string, id: string): string => `${provider}\n${id}`;
  */
 const NOT_FOUND = -32002;
 
+/** Only the requested native thread's unmaterialized rollout, never a generic internal error. */
+export function isNoRollout(error: unknown, id: string): boolean {
+  const value = bag(error);
+  return value.code === -32603 && typeof value.message === 'string'
+    && value.message.endsWith(`no rollout found for thread id ${id}`);
+}
+
 /** The listing connection a provider holds, by the options that opened it. */
 const listings = new WeakMap<AcpOptions, Listing>();
 
@@ -523,6 +530,7 @@ export async function loadedSession(
   id: string,
   recorded?: string,
   machine?: SessionMachine,
+  neverSpoken?: boolean,
 ): Promise<WatchedSession | undefined> {
   const held = watchedSession(provider, id);
   if (held !== undefined) return held;
@@ -540,10 +548,16 @@ export async function loadedSession(
       () => true,
       (why: unknown) => {
         if (bag(why).code === RequestError.resourceNotFound().code) return false;
+        if (neverSpoken === true && replay.length === 0 && isNoRollout(why, id)) return 'unspoken' as const;
         throw why;
       },
     );
     if (!loaded) return undefined;
+    if (loaded === 'unspoken') {
+      // Do not register this exception in watched: a later read needs its own checked observation.
+      const at = new Date().toISOString();
+      return { provider, id, cwd, additional: [], title: '', createdAt: at, modifiedAt: at, turns: [], held: [] };
+    }
     // A load names no title, so the record holds none, as an untitled row is listed.
     return watchSession({ provider, id, cwd, additional: [], title: '', replay });
   }

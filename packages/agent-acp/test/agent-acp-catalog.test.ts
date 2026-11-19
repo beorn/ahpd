@@ -1523,11 +1523,35 @@ it.each([
   const { agent, log } = backend(['--no-rollout']);
   const native = `unmaterialized-${name}`;
   await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
-  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, seed });
+  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) });
   await runTurn(session, watch, 'first-attempt', 'hi');
   expect(watch.endings()).toEqual(['chat/error']);
   expect(requests(log).some((one) => one.method === 'session/new')).toBe(false);
   expect(requests(log).some((one) => one.method === 'session/prompt')).toBe(false);
+});
+
+it('uses positive no-rollout provenance for an ephemeral read and only the first provider prompt', async () => {
+  const { agent, log } = backend(['--no-rollout']);
+  const native = 'unmaterialized-positive';
+  expect(await agent.transcript?.(native, { neverSpoken: true })).toEqual([]);
+  // An exception-produced empty read must not cache permission over a later changed/unknown observation.
+  await expect(agent.transcript?.(native, { neverSpoken: false })).rejects.toMatchObject({ code: -32603 });
+  await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
+  const before: string[] = [];
+  const { session, watch } = await start(agent, 'positive-no-rollout', {
+    resume: native, neverSpoken: true, beforePrompt: (id) => { before.push(id); },
+  });
+  expect(before).toEqual([]);
+  await runTurn(session, watch, 'first', 'hi');
+  expect(watch.endings()).toEqual(['chat/turnComplete']);
+  expect(session.agentId()).not.toBe(native);
+  expect(before).toEqual([session.agentId()]);
+  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+  expect(requests(log).find((one) => one.method === 'session/prompt')?.params?.['sessionId']).toBe(session.agentId());
+  await runTurn(session, watch, 'death', 'die now');
+  await runTurn(session, watch, 'after-death', 'hi again');
+  expect(watch.endings().at(-1)).toBe('chat/error');
+  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
 });
 
 it('loads a resumed session when the host holds none of its turns', async () => {

@@ -2,7 +2,7 @@ import { RequestError } from '@agentclientprotocol/sdk';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
 import { machineAsked, machinePathOf } from '@ahpd/sdk';
 import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
-import { heardCapabilities, watchSession } from '../catalog.js';
+import { heardCapabilities, isNoRollout, watchSession } from '../catalog.js';
 import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
 import { HOST_TOOLS } from '../mapping.js';
 import type { AcpConnection, AcpOptions } from '../types.js';
@@ -631,15 +631,19 @@ export function createOpening(ctx: SessionContext): Opening {
           mcpServers: servers,
           ...extra,
         };
-        const taken = taking
-          ? await connection.resumeSession(request)
-          : await connection.loadSession(request);
+        let sessionId = reopen;
+        const taken = await (taking ? connection.resumeSession(request) : connection.loadSession(request)).catch(async (why: unknown) => {
+          if (!ctx.neverSpoken || held.length > 0 || ctx.turns.length > 0 || replay.length > 0 || !isNoRollout(why, reopen)) throw why;
+          const created = await connection.newSession({ cwd: told, mcpServers: servers, ...extra });
+          sessionId = created.sessionId;
+          return created;
+        });
         assertCurrent();
-        ctx.acpSessionId = reopen;
+        ctx.acpSessionId = sessionId;
         ctx.learnModes(taken.modes);
         ctx.learnConfigOptions(taken.configOptions);
         ctx.learnModels(taken);
-        await ctx.sendAsked({ connection, sessionId: reopen }, values);
+        await ctx.sendAsked({ connection, sessionId }, values);
       }
       else {
         const created = await connection.newSession({
