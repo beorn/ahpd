@@ -703,6 +703,8 @@ it('holds a part-way answer on the request, and says nothing of the client\'s an
   expect(sent.some((one) => one.type === 'chat/inputAnswerChanged')).toBe(false);
   // A client that arrives now reads it off the request.
   const needed = (session.sessionState().inputNeeded ?? []) as Bag[];
+  expect(needed.find((one) => one.kind === 'chatInput')?.turnId).toBe('t1');
+  expect(sent.find((one) => one.type === 'chat/inputRequested')?.turnId).toBe('t1');
   expect((needed.find((one) => one.kind === 'chatInput')?.request as Bag | undefined)?.answers).toEqual({ Colour: said.Colour });
   sdk.hold = Promise.resolve();
 });

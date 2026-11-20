@@ -704,7 +704,7 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
             id: event.requestId,
             questions: event.questions.map(questionOf),
           };
-          const request: Bag = { id: `input:${event.requestId}`, chat: options.chatUri, kind: 'chatInput', request: chatRequest };
+          const request: Bag = { id: `input:${event.requestId}`, chat: options.chatUri, kind: 'chatInput', turnId, request: chatRequest };
           const opened: OpenRequest = {
             requestId: event.requestId,
             kind: 'input',
@@ -713,7 +713,7 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
           };
           requests.set(event.requestId, opened);
           return {
-            actions: [{ type: 'chat/inputRequested', request: chatRequest }, { type: 'session/inputNeededSet', request }],
+            actions: [{ type: 'chat/inputRequested', turnId, request: chatRequest }, { type: 'session/inputNeededSet', request }],
             opened,
           };
         }

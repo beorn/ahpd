@@ -603,8 +603,10 @@ it('raises a chatInput entry for cofold\'s own ask tool and answers it back', as
 
   const entry = needed(p, uri, 'chatInput') as {
     id: string;
+    turnId?: string;
     request: { id: string; questions: { id: string; kind: string; message: string; options: { label: string }[] }[] };
   };
+  expect(entry.turnId).toBe('t1');
   expect(entry.request.questions[0]).toMatchObject({ id: 'which', kind: 'single-select', message: 'Which note?' });
   expect(entry.request.questions[0]?.options.map((one) => one.label)).toEqual(['monday', 'tuesday']);
   // The questions say what is asked, with no message of the host's own, as
