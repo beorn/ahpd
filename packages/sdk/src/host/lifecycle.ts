@@ -1,6 +1,7 @@
 import { AhpErrorCodes } from '@microsoft/agent-host-protocol';
 import { createWorktreeRemovalQueue, memoryWorktreeRemovals } from './worktreeremovals.js';
 import type { RemovalOutcome, WorktreeRemoval, WorktreeRemovalQueue } from './worktreeremovals.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
 import { computerId, computersFor } from '../machines/computers.js';
 import { deleteNested } from '../sessions/nested.js';
@@ -202,6 +203,10 @@ export interface Lifecycle {
   worktreeRecorded(path: string): boolean;
   /** A session's tree put back at its path on its branch, where `requestSessionWorktreeRemoval` took it, as VS Code restores a session's worktree. */
   restoreSessionWorktree(uri: string): Promise<void>;
+  /** The existing session chain, shared by creation, explicit use and worktree lifecycle. */
+  runSessionExclusive<T>(uri: string, step: () => Promise<T>): Promise<T>;
+  inSessionExclusive(uri: string): boolean;
+  checkSessionProvider(provider: string, config: Record<string, unknown>, by?: { owner?: Owner; principal?: Principal; sender?: Connection }): Agent;
   /**
    * A tree of the window's own, cut for a creating session whose tree is
    * pending and named after the handle the window holds it by.
@@ -1768,20 +1773,32 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/AGENTS.md#L352
    */
   const worktreeLocks = new Map<string, Promise<void>>();
+  const sessionStep = new AsyncLocalStorage<{ id: string; active: boolean }>();
+  const inSessionExclusive = (uri: string): boolean => {
+    const current = sessionStep.getStore();
+    return current?.active === true && current.id === idOf(uri);
+  };
 
   // What archive does with a dirty tree, from the host's own option: set here
   // because `requestSessionWorktreeRemoval` is where it is read.
   ctx.archiveDirtyWorktree = options.archiveDirtyWorktree ?? 'keep';
 
   /** One step on a session's chain, run once the step before it has settled. */
-  const runExclusive = (uri: string, step: () => Promise<void>): Promise<void> => {
+  const runExclusive = <T,>(uri: string, step: () => Promise<T>): Promise<T> => {
+    // Internal restore steps reuse their current owner instead of waiting on themselves.
+    if (inSessionExclusive(uri)) return step();
     const id = idOf(uri);
-    const next = (worktreeLocks.get(id) ?? Promise.resolve()).then(step).catch((error: unknown) => {
-      log.error(`worktree of ${uri}: ${error instanceof Error ? error.message : String(error)}`);
+    const result = (worktreeLocks.get(id) ?? Promise.resolve()).then(() => {
+      const current = { id, active: true };
+      return sessionStep.run(current, async () => {
+        try { return await step(); }
+        finally { current.active = false; }
+      });
     });
+    const next = result.then(() => undefined, () => undefined);
     worktreeLocks.set(id, next);
     void next.then(() => { if (worktreeLocks.get(id) === next) worktreeLocks.delete(id); });
-    return next;
+    return result;
   };
 
   /** Whether something is at a path. */
@@ -2038,7 +2055,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
           log.error(`could not put ${tree.path} back: ${error instanceof Error ? error.message : String(error)}`);
         });
     }
-  });
+  }).catch((error: unknown) => { log.error(`worktree of ${uri}: ${error instanceof Error ? error.message : String(error)}`); });
 
   /**
    * A message in the protocol's spelling, from what this host was handed: its
@@ -2785,23 +2802,11 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
    * was made for an older VS Code window that addresses no opaque chat, read
    * from `sender` where it is left out.
    */
-  const createProviderSession = async (
-    uri: string,
+  const checkSessionProvider = (
     provider: string,
     config: Record<string, unknown>,
-    where: string | undefined,
-    origin?: { kind: 'automation'; automation: string; run: string },
-    credentials?: Record<string, string>,
-    additional?: string[],
-    title?: string,
-    by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
-    progress?: (message: string) => void,
-  ): Promise<void> => {
-    named(uri, 'session');
-    if (sessions.has(uri))
-      throw new RpcError(-32003, `${uri} already exists`);
-    ctx.unheld(uri);
+    by?: { owner?: Owner; principal?: Principal; sender?: Connection },
+  ): Agent => {
     // An agent whose record is off or paused starts nothing: the sentence
     // names the state rather than answering as a provider this host has never
     // heard of.
@@ -2834,6 +2839,26 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
      * somebody else's account.
      */
     checkBindings(config[BINDINGS_KEY], by?.owner, options.connectors?.refs());
+    return agent;
+  };
+
+  const createProviderSession = async (
+    uri: string,
+    provider: string,
+    config: Record<string, unknown>,
+    where: string | undefined,
+    origin?: { kind: 'automation'; automation: string; run: string },
+    credentials?: Record<string, string>,
+    additional?: string[],
+    title?: string,
+    by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
+    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
+    progress?: (message: string) => void,
+  ): Promise<void> => {
+    named(uri, 'session');
+    if (sessions.has(uri)) throw new RpcError(-32003, `${uri} already exists`);
+    if (asked?.beforeCreate === undefined || kept.creation(idOf(uri)) === undefined) ctx.unheld(uri);
+    const agent = checkSessionProvider(provider, config, by);
     // Whose this is, written down beside the session rather than in its config:
     // a backend is handed `config` when it resumes and has no idea what an
     // owner is, and this outlives the process that decided it.
@@ -2995,7 +3020,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
   return {
     removeSession, mayDispose, endMovedSession, respawning, restart, moveSession, moveChatWorkspace, relaunchChat, chatIdOf, disposeProviderChat, ranIn, backendsOwn,
     getProviderForChat, chatConfig, effectiveChatConfigValues, initialChatConfig, keepChatOwnConfigValues, isolated, oweTree,
-    requestSessionWorktreeRemoval, worktreeRemovals, worktreeRecorded: recordedTree, restoreSessionWorktree, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
+    requestSessionWorktreeRemoval, worktreeRemovals, worktreeRecorded: recordedTree, restoreSessionWorktree, runSessionExclusive: runExclusive, inSessionExclusive, checkSessionProvider, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
     beginOrRun, startTurn, commandIn, beginTurn, modelIn, messageFrom, messageOf, messageAttachments, scratchFolder, createProviderSession,
   };
 }
