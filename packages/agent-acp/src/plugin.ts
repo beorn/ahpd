@@ -110,6 +110,8 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
   args: { type: 'array', items: { type: 'string' }, description: 'The arguments to give it, replacing the row\'s own.' },
   env: { type: 'object', additionalProperties: envValue, description: "Environment variables merged over the daemon's own for the child, by variable name. A variable is a credential wherever the server keeps one, so each answers <set>; a value written { \"$secret\": \"host:<name>\" } is read from the vault for this agent's owner." },
   cwd: { type: 'string', description: "The directory the server runs in; the session's working directory when absent." },
+  sessionIdEnv: { type: 'string', description: 'Host-only environment variable supported by this server for its forced conversation UUID.' },
+  spawnGuard: { type: 'string', enum: ['inherited-fd-v1'], description: 'Qualified bridge capability: retain the inherited child guard until OS exit.' },
   authenticate: {
     type: 'object',
     properties: { methodId: { type: 'string' } },
@@ -430,6 +432,8 @@ const optionsOfRecord = (shared: Shared, record: AgentView): AcpOptions => {
     : undefined;
   return {
     command,
+    ...(config['sessionIdEnv'] === undefined ? {} : { sessionIdEnv: String(config['sessionIdEnv']) }),
+    ...(config['spawnGuard'] === 'inherited-fd-v1' ? { spawnGuard: 'inherited-fd-v1' as const } : {}),
     provider: record.id,
     displayName: record.name,
     log: shared.log,
@@ -483,11 +487,12 @@ const engineOf = (host: PluginHost, values: Record<string, unknown>): Engine => 
       const row = shipped[record.id] ?? (base === undefined ? undefined : shipped[base]);
       return row === undefined ? undefined : made.find((one) => one.name === row.name);
     },
-    hostOnly: ['base', 'command', 'args', 'cwd', 'machine', 'install'],
+    hostOnly: ['base', 'command', 'args', 'cwd', 'machine', 'install', 'sessionIdEnv', 'spawnGuard'],
     keyVariables: KEY_VARIABLES,
     open: (record) => acpAgent({
       ...optionsOfRecord(shared, record),
-      presetOf: () => optionsOfRecord(shared, record),
+      ...(host.hostId === undefined ? {} : { hostScope: { configDir: host.configDir, hostId: host.hostId } }),
+      presetOf: () => ({ ...optionsOfRecord(shared, record), ...(host.hostId === undefined ? {} : { hostScope: { configDir: host.configDir, hostId: host.hostId } }) }),
     }),
   };
 };

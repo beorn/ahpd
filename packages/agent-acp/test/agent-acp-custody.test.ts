@@ -13,7 +13,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import type { Bag, Session } from '@ahpd/sdk';
+import type { Bag, Session, Start } from '@ahpd/sdk';
+import type { AcpOptions } from '../src/types.js';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { acpAgent } from '../src/index.js';
 
@@ -50,20 +51,45 @@ const logged = (log: string): Bag[] => (existsSync(log) ? readFileSync(log, 'utf
   .map((line) => JSON.parse(line) as Bag) : []);
 const initializes = (log: string): Bag[] => logged(log).filter((line) => line.method === 'fixture/pid-at-initialize');
 
-async function start(args: string[], extra: Record<string, unknown> = {}): Promise<{ session: Session; prefix: string; log: string; actions: Bag[] }> {
+async function start(args: string[], extra: Record<string, unknown> = {}, overrides: Partial<Start> = {}): Promise<{ session: Session; prefix: string; log: string; actions: Bag[]; agent: ReturnType<typeof acpAgent>; request: Start; options: AcpOptions }> {
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-34599-'));
   folders.push(folder);
   const prefix = join(folder, 'child');
   const log = join(folder, 'requests.jsonl');
   const actions: Bag[] = [];
-  const agent = acpAgent({ command: process.execPath, args: [FIXTURE, '--observe-pid-custody', ...args], provider: 'custody',
-    env: { ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: URI }, ...extra });
-  const session = await agent.create({ uri: URI, chatUri: 'ahp-chat:/original', sessionConversation: true,
+  const options: AcpOptions = { command: process.execPath, args: [FIXTURE, '--observe-pid-custody', ...args], provider: 'custody',
+    env: extra.sessionIdEnv === undefined ? { ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: URI } : { ACP_LOG: log },
+    ...(extra.sessionIdEnv === undefined ? {} : { hostScope: { configDir: folder, hostId: 'fixture-host' } }),
+    presetOf: () => options, ...extra };
+  const agent = acpAgent(options);
+  const request: Start = { uri: URI, chatUri: 'ahp-chat:/original', sessionConversation: true,
     clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder, trusted: () => true,
-    schema: () => ({ type: 'object', properties: {} }), emit: (_channel, action) => { actions.push(action as Bag); } });
+    schema: () => ({ type: 'object', properties: {} }), emit: (_channel, action) => { actions.push(action as Bag); }, ...overrides };
+  const session = await agent.create(request);
   sessions.push(session);
-  return { session, prefix, log, actions };
+  const observed = initializes(log)[0]?.custodyPrefix;
+  if (typeof observed !== 'string') throw new Error('Fixture did not observe the required custody prefix');
+  return { session, prefix: observed, log, actions, agent, request, options };
 }
+
+it.skipIf(!linux)('projects original and peer identities per Start and reapplies them after a preset refresh', async () => {
+  const original = '8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246';
+  const peer = '6c67bcf2-edcf-4765-a460-229a3da9752c';
+  const first = await start([], { sessionIdEnv: 'HAB_ACP_SESSION_ID' }, { uri: `ahp-session:/${original}` });
+  const second = await first.agent.create({ ...first.request, chatUri: 'ahp-chat:/peer', chatId: peer, sessionConversation: false });
+  sessions.push(second);
+  const [one, two] = initializes(first.log);
+  expect(one).toMatchObject({ forcedSessionId: original, hostSessionUri: `ahp-session:/${original}`, hostChatUri: 'ahp-chat:/original' });
+  expect(two).toMatchObject({ forcedSessionId: peer, hostChatUri: 'ahp-chat:/peer' });
+  expect(two?.custodyPrefix).not.toBe(one?.custodyPrefix);
+  expect(String(one?.custodyPrefix)).toContain('/acp-custody/');
+  expect(first.options.env).toEqual({ ACP_LOG: first.log });
+  first.options.env = { ACP_LOG: first.log, REFRESHED: 'yes' };
+  first.session.sendMessage('refresh', 'continue the original');
+  await until(() => initializes(first.log).length === 3);
+  expect(initializes(first.log)[2]).toMatchObject({ forcedSessionId: original, hostChatUri: 'ahp-chat:/original' });
+  expect(first.options.env).toEqual({ ACP_LOG: first.log, REFRESHED: 'yes' });
+});
 
 it.skipIf(!linux)('names the running child before initialize and keeps the record, ended, after the child exits', async () => {
   const { session, prefix, log } = await start([]);

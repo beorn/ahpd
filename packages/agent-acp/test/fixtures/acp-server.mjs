@@ -1787,6 +1787,10 @@ const onLine = (line) => {
         if (prefix === undefined || LOG === undefined) throw new Error('pid custody fixture needs its prefix and log');
         appendFileSync(LOG, `${JSON.stringify({
           pid: process.pid, method: 'fixture/pid-at-initialize', at: Date.now(),
+          forcedSessionId: process.env.HAB_ACP_SESSION_ID ?? null,
+          custodyPrefix: prefix,
+          hostSessionUri: process.env.HAB_ACP_SESSION_URI ?? null,
+          hostChatUri: process.env.HAB_ACP_CHAT_URI ?? null,
           pidRecord: existsSync(`${prefix}.pid`) ? readFileSync(`${prefix}.pid`, 'utf8') : null,
           statRecord: existsSync(`${prefix}.stat`) ? readFileSync(`${prefix}.stat`, 'utf8') : null,
           // 34599: the host's retained custody record, as the child sees it at initialize.
