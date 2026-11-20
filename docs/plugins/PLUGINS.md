@@ -1207,6 +1207,8 @@ Two reads go with it. `host.sessionKept(uri)` answers whether this host keeps th
 
 A durable creation reservation answers its saved owner at its exact canonical URI, including after `named` rejects. That read does not probe backend history, admit the reservation or start a provider. It is ownership metadata, not proof of a usable session. Required creation metadata that is missing or unreadable rejects the read rather than reporting an absent session.
 
+After validating its own authoritative saved mapping, an owner can explicitly use that original session with `host.startSession({ owner, resume: uri })`. Supply only `owner` and `resume`, without a naming callback or creation overrides. The host validates the exact canonical URI and owner, reconstructs the saved request and default chat, and serializes this use with any original start still finishing. A naming callback must not await a resume of its own session. The host never remints its URI or replays an already admitted or uncertain initial prompt. This API does not by itself qualify a provider's native crash recovery; that still requires its custody and persistence guarantees.
+
 ### Starting a chat on a backend
 
 A plugin that already has a session and needs one more conversation inside it - a bot's Back chat answering the message that woke it - says so with `host.startChat(session, wanted)`, which answers the new chat's URI. The session is named by its URI and stays what it is: its owner, its provider, its tree and its other chats.

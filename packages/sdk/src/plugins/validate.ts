@@ -542,6 +542,15 @@ export const checkSessionRequest = (value: unknown, by: string): StartSession =>
   if (typeof owner !== 'string' || !OWNER.test(owner)) {
     throw new Error(miss(by, 'startSession', String(owner), 'an owner: user:, team:, project:, root: or plugin:'));
   }
+  if (object.resume !== undefined) {
+    if (typeof object.resume !== 'string' || object.resume.trim() === '') {
+      throw new Error(miss(by, 'startSession', 'resume', 'the exact URI of an existing owned session'));
+    }
+    if (Object.keys(object).some((key) => key !== 'owner' && key !== 'resume')) {
+      throw new Error(miss(by, 'startSession', 'resume', 'owner and resume only, without creation overrides'));
+    }
+    return { owner: owner as Owner, resume: object.resume, text: '' };
+  }
   const provider = object.provider;
   if (provider !== undefined && !right(provider, 'string')) {
     throw new Error(miss(by, 'startSession', 'provider', 'a string, or nothing for the host default'));

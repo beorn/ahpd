@@ -137,6 +137,8 @@ export interface AutomationRunState extends Omit<AutomationRun, 'owner'> {
 
 /** How a store asks the host to start a session, since only the host can. */
 export interface StartSession {
+  /** Plugin-authorized use of an existing canonical reservation. */
+  resume?: string;
   /** The provider named in the automation's session template, or the default. */
   provider?: string;
   /** Where it should work. */

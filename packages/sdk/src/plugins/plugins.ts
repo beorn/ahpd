@@ -1623,6 +1623,9 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
       if (named !== undefined && typeof named !== 'function') {
         throw new Error(miss(by, 'startSession', 'the door', 'a function to call with the session\'s URI, or nothing'));
       }
+      if (asked.resume !== undefined && named !== undefined) {
+        throw new Error(miss(by, 'startSession', 'resume', 'no naming callback for an existing session'));
+      }
       return start(asked, named);
     },
     /*

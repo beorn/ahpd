@@ -737,13 +737,50 @@ export function createAutomations(ctx: HostContext): Automations {
    * of a worktree session - and what each road adds is the question that is
    * its own.
    */
-  const beginSession = async (wanted: StartSession, named?: (uri: string) => void | Promise<void>): Promise<string> => {
+  const beginSession = (given: StartSession, named?: (uri: string) => void | Promise<void>, requester?: PluginStarts): Promise<string> => {
+    const uri = given.resume ?? uriFor(crypto.randomUUID());
+    if (given.resume !== undefined && ctx.inSessionExclusive(uri)) {
+      return Promise.reject(new Error(`Cannot resume ${uri} from its own session lifecycle`));
+    }
+    return ctx.runSessionExclusive(uri, async () => {
+    let wanted = given;
+    const recovering = given.resume !== undefined;
+    if (recovering) {
+      const id = idOf(uri);
+      const creation = kept.creation(id);
+      if (given.owner === undefined || kept.uri?.(id) !== uri || creation === undefined || kept.owner(id) !== given.owner) {
+        throw new Error(`Cannot resume ${uri}: exact owned creation reservation not found`);
+      }
+      const provider = kept.provider(id);
+      const chat = kept.chats(id).find((one) => one.default === true);
+      const config = kept.config(id);
+      if (provider === undefined || chat === undefined || config === undefined) {
+        throw new Error(`Cannot resume ${uri}: required provider, config or default chat metadata is missing`);
+      }
+      const trusted = kept.trustedFolder?.(id);
+      const directory = kept.workingDirectory?.(id);
+      const title = kept.customTitle?.(id);
+      const userSettings = kept.userSettings?.(id);
+      const tools = kept.tools?.(id);
+      const origin = kept.automationOrigin?.(id);
+      wanted = {
+        owner: given.owner, provider, config, text: creation.initialPrompt === 'pending' ? creation.prompt ?? '' : '',
+        trusted: trusted !== undefined,
+        ...(directory === undefined ? {} : { workingDirectory: directory }),
+        ...(title === undefined ? {} : { title }),
+        ...(userSettings === undefined ? {} : { userSettings }),
+        ...(tools === undefined ? {} : { tools }),
+        ...(creation.instructions === undefined ? {} : { instructions: [...creation.instructions] }),
+        ...(creation.customizations === undefined ? {} : { customizations: structuredClone([...creation.customizations]) }),
+        ...(creation.model === undefined ? {} : { model: creation.model }),
+        ...(origin === undefined ? {} : { origin }),
+      };
+    }
     wanted = structuredClone(wanted);
     const provider = wanted.provider ?? ctx.first?.provider;
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
-    const uri = uriFor(crypto.randomUUID());
-    unheld(uri);
+    if (!recovering) unheld(uri);
     const config = wanted.config ?? {};
     if (!isDeepStrictEqual(config, JSON.parse(JSON.stringify(config)))) throw new RpcError(INVALID_PARAMS, "Session config cannot be recovered without losing values");
     // The same steps a client's `createSession` takes: the folder the daemon's
@@ -763,6 +800,12 @@ export function createAutomations(ctx: HostContext): Automations {
      */
     const owner = wanted.owner;
     const person = principalFor(owner);
+    if (requester !== undefined && options.users !== undefined && owner?.startsWith('user:') === true && person !== undefined && !person.can('session:create')) {
+      throw new RpcError(-32009, refusalReason(person.id, 'session:create'), {});
+    }
+    if (recovering && wanted.trusted === true && (wanted.workingDirectory === undefined || !mayTrust(requester, wanted.workingDirectory))) {
+      throw new RpcError(-32009, refusalReason(`plugin:${requester?.by ?? 'unknown'}`, 'session:trust'), {});
+    }
     /*
      * `computer:write`, which only a source asks for: naming one is a machine
      * made for this run, held to the same grant a client's `createSession` is.
@@ -790,9 +833,13 @@ export function createAutomations(ctx: HostContext): Automations {
     }
     const wrong = await admitted(person, charged.get(uri)?.scope, config, provider, uri, owner);
     if (wrong !== undefined) throw new RpcError(-32009, wrong);
+    if (recovering) {
+      ctx.checkSessionProvider(provider, config, forWhom(owner));
+      if (sessions.has(uri)) return uri;
+    }
     const prepare = async (): Promise<void> => {
       if (wanted.trusted === true && wanted.workingDirectory !== undefined) kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
-      kept.setCreation(idOf(uri), {
+      if (!recovering) kept.setCreation(idOf(uri), {
         phase: "reserved", initialPrompt: wanted.text.trim() === "" ? "none" : "pending",
         ...(wanted.text.trim() === "" ? {} : { prompt: wanted.text }),
         ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
@@ -870,6 +917,7 @@ export function createAutomations(ctx: HostContext): Automations {
     fireRun(wanted);
     beginIn(uri, wanted);
     return uri;
+    });
   };
 
   /**
@@ -1023,7 +1071,7 @@ export function createAutomations(ctx: HostContext): Automations {
         throw new RpcError(-32009, refusalReason(person.id, 'session:create'), {});
       }
     }
-    return await beginSession(wanted, named);
+    return await beginSession(wanted, named, who);
   };
 
   /**

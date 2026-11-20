@@ -227,6 +227,49 @@ it('awaits the mapping callback before the backend spawns', async () => {
   expect(order).toEqual(['named', 'mapped', 'spawn']);
 });
 
+it('resumes the same reservation after a lost mapping acknowledgment', async () => {
+  const order: string[] = [];
+  const { plugin, sessions } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
+  let mapped = '';
+  const failure = new Error('mapping acknowledgment lost');
+  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched', title: 'Original request' }, (uri) => {
+    mapped = uri;
+    throw failure;
+  })).rejects.toBe(failure);
+  const chat = sessions.chats(idOf(mapped))[0]?.uri;
+  expect(chat).toBeTypeOf('string');
+  expect(await plugin.startSession({ owner: 'user:soft', resume: mapped })).toBe(mapped);
+  expect(sessions.chats(idOf(mapped))[0]?.uri).toBe(chat);
+  expect(sessions.customTitle?.(idOf(mapped))).toBe('Original request');
+  expect(order).toEqual(['spawn']);
+});
+
+it('serializes two recoverers behind the original naming callback', async () => {
+  const order: string[] = [];
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
+  const gate = Promise.withResolvers<void>();
+  let mapped = '';
+  const original = plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async (uri) => {
+    mapped = uri;
+    await gate.promise;
+  });
+  await until(() => mapped !== '', 'reservation naming');
+  const recovering = [plugin.startSession({ owner: 'user:soft', resume: mapped }), plugin.startSession({ owner: 'user:soft', resume: mapped })];
+  expect(order).toEqual([]);
+  gate.resolve();
+  expect(await Promise.all([original, ...recovering])).toEqual([mapped, mapped, mapped]);
+  expect(order).toEqual(['spawn']);
+});
+
+it('rejects a naming callback awaiting its own reservation resume', async () => {
+  const order: string[] = [];
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
+  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async (uri) => {
+    await plugin.startSession({ owner: 'user:soft', resume: uri });
+  })).rejects.toThrow(/own.*lifecycle/);
+  expect(order).toEqual([]);
+});
+
 it('refuses a door that is not a function, at the boundary', () => {
   const { plugin } = starting({ soft: ['session:create'] });
 
