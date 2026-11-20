@@ -25,7 +25,7 @@
 
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ensureWorkspacelessScratchDir, isUUID, machineAsked, statusOf, uriOf } from '@ahpd/sdk';
+import { ensureWorkspacelessScratchDir, idOf, isUUID, machineAsked, statusOf, uriOf } from '@ahpd/sdk';
 import type { Bag, Chosen, Session, Start } from '@ahpd/sdk';
 import { bag, UNTITLED } from './session/common.js';
 import { createClientCalls } from './session/clientcalls.js';
@@ -67,13 +67,17 @@ export function acpSession(
   const shared = options;
   const live = shared.presetOf;
   const identityEnv = shared.sessionIdEnv;
+  const spawnGuard = shared.spawnGuard;
   const scope = shared.hostScope === undefined ? undefined : { ...shared.hostScope };
   const project = (current: AcpOptions): AcpOptions => {
-    if (current.sessionIdEnv !== identityEnv || current.spawnGuard !== shared.spawnGuard) {
+    if (current.sessionIdEnv !== identityEnv || current.spawnGuard !== spawnGuard) {
       throw new Error('ACP identity capabilities changed during this Start; retain its identity and create a new configured Start');
     }
     const env = { ...current.env };
     if (identityEnv === undefined) return { ...current, env };
+    if (['HAB_ACP_PID_PREFIX', 'HAB_ACP_SESSION_URI', 'HAB_ACP_CHAT_URI', 'HAB_ACP_SPAWN_GUARD'].includes(identityEnv)) {
+      throw new Error('ACP sessionIdEnv names a reserved custody environment variable');
+    }
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identityEnv) || scope === undefined || !isAbsolute(scope.configDir) || scope.hostId.trim() === '') {
       throw new Error('ACP forced identity requires an environment name and the absolute configDir/persistent hostId scope');
     }
@@ -81,7 +85,7 @@ export function acpSession(
       throw new Error('ACP conversation custody is qualified only for a local Linux process; no server was opened');
     }
     if (start.sessionConversation === undefined) throw new Error('ACP retained identity needs positive original/peer provenance; legacy identity is unknown');
-    const original = start.uri.slice(start.uri.lastIndexOf('/') + 1);
+    const original = idOf(start.uri);
     const native = start.sessionConversation ? original : start.chatId;
     if (native === undefined || !isUUID(native) || (!start.sessionConversation && native === original)) {
       throw new Error('ACP retained identity requires the original UUID or a distinct peer UUID; no replacement was invented');
