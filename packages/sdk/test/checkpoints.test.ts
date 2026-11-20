@@ -172,14 +172,14 @@ describe('what a session changed', () => {
   it('gives two sessions in one folder their own changes', async () => {
     const dir = repository();
     const source = gitChanges();
-    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
+    await captureBaseline(dir, 's1');
     writeFileSync(join(dir, 'one.txt'), 'from s1\n');
-    await source.checkpoint?.(dir, 's1', '1');
+    await captureTurn(dir, 's1', '1');
     // The second session starts on the tree the first one left, which is what
     // makes what it did next its own.
-    await source.checkpoint?.(dir, 's2', BASELINE_TURN);
+    await captureBaseline(dir, 's2');
     writeFileSync(join(dir, 'two.txt'), 'from s2\n');
-    await source.checkpoint?.(dir, 's2', '1');
+    await captureTurn(dir, 's2', '1');
 
     const mine = await source.state(dir, 's1', 'session');
     const theirs = await source.state(dir, 's2', 'session');
@@ -196,9 +196,9 @@ describe('what a session changed', () => {
   it('is not moved by a commit in the folder', async () => {
     const dir = repository();
     const source = gitChanges();
-    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
+    await captureBaseline(dir, 's1');
     writeFileSync(join(dir, 'made.txt'), 'by the session\n');
-    await source.checkpoint?.(dir, 's1', '1');
+    await captureTurn(dir, 's1', '1');
     const before = await source.sessionSummary?.(dir, 's1');
 
     gitSync(['-C', dir, 'add', '-A']);
@@ -211,9 +211,9 @@ describe('what a session changed', () => {
   it('leaves an edit made by hand after the last turn out of the counts', async () => {
     const dir = repository();
     const source = gitChanges();
-    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
+    await captureBaseline(dir, 's1');
     writeFileSync(join(dir, 'made.txt'), 'by the session\n');
-    await source.checkpoint?.(dir, 's1', '1');
+    await captureTurn(dir, 's1', '1');
     // Typing in the file afterwards is not the session's work, and the
     // checkpoints are what say so.
     writeFileSync(join(dir, 'made.txt'), 'by the session\nand by hand\n');
@@ -235,6 +235,22 @@ describe('what a session changed', () => {
     expect((await source.state(plain, 's1', 'session'))?.files).toHaveLength(1);
     // And a row of a session with nothing in it is no counts at all.
     expect(await source.sessionSummary?.(plain, 's2')).toEqual({ files: 0, additions: 0, deletions: 0 });
+  });
+
+  it('exposes no per-turn checkpoint capture while keeping removeCheckpoints and answering changes from the tool tracker in a git repository', async () => {
+    const dir = repository();
+    const source = gitChanges();
+    expect(source.checkpoint).toBeUndefined();
+    expect(source.removeCheckpoints).toBeTypeOf('function');
+
+    const file = join(dir, 'tracked.txt');
+    await source.observe?.(dir, 's1', '1', file, 'before', 'one\n');
+    writeFileSync(file, 'one\ntwo\n');
+    await source.observe?.(dir, 's1', '1', file, 'after', 'one\ntwo\n');
+
+    expect(refsOf(dir, 's1')).toEqual([]);
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual({ files: 1, additions: 1, deletions: 0 });
+    expect((await source.state(dir, 's1', 'session'))?.files.map((one) => one.id)).toEqual([uriOf(file)]);
   });
 
   it('offers the scope under VS Code\'s own name', async () => {
