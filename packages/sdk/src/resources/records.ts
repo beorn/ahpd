@@ -367,12 +367,15 @@ export const memoryRecords = (): RecordStore => {
         find: async (match) => [...held.values()]
           .filter((record) => Object.entries(match).every(([field, value]) => record[field] === value))
           .map((record) => structuredClone(record)),
-        put: async (record) => {
+        put: async (record, options) => {
           if (typeof record !== 'object' || record === null || Array.isArray(record)) {
             throw new Error(`records ${name}: a record is a JSON object`);
           }
           if (typeof record.id !== 'string' || !isRecordSlug(record.id)) {
             throw new Error(`records ${name}: ${String(record.id)} is not a record id: ${RECORD_SLUG}`);
+          }
+          if (options?.createOnly === true && held.has(record.id)) {
+            throw new RpcError(-32010, `records ${name}: ${record.id} already exists; the original record was retained`);
           }
           const type = held.has(record.id) ? 'updated' : 'added';
           held.set(record.id, structuredClone(record));

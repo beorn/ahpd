@@ -28,6 +28,26 @@ const base = (): HostOptions => ({ path: '/tmp/plugin-records', agents: [] });
 /** A turn of the event loop, for the work a watch starts without a call to await. */
 const settled = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
 
+// The direct store protects the single winner; the plugin path independently catches dropped write options.
+it.each([false, true])('create-only records retain one winner through plugin=%s', async (throughPlugin) => {
+  const saved = memoryRecords();
+  const records = throughPlugin
+    ? pluginHost('fixture', context(), { records: () => saved }).host.records('mappings')
+    : await saved.collection('mappings');
+  const changes: RecordChange[] = [];
+  records.watch(change => { changes.push(change); });
+  await settled();
+  const first = { id: 'logical-key', owner: 'ana', uri: 'original-uri' };
+  const other = { id: 'logical-key', owner: 'bea', uri: 'other-uri' };
+  const results = await Promise.allSettled([records.put(first, { createOnly: true }), records.put(other, { createOnly: true })]);
+  expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']);
+  expect(results[1]).toMatchObject({ reason: { code: -32010 } });
+  expect(await records.get(first.id)).toEqual(first);
+  expect(changes).toEqual([{ id: first.id, type: 'added' }]);
+  await records.put(other);
+  expect(await records.get(first.id)).toEqual(other);
+});
+
 // Backend load rejection must reach a persistence consumer, and a repair must permit a later open (#35127).
 // Existing cases cover an absent port, not a present backend whose collection failed to load.
 it('propagates a failed backend open to plugin reads and writes, and retries after repair', async () => {

@@ -69,8 +69,13 @@ export interface RecordCollection {
   list(): Promise<StoredRecord[]>;
   /** Every record whose top-level fields equal each field of `match`. */
   find(match: Record<string, unknown>): Promise<StoredRecord[]>;
-  /** Keep one record, replacing what its id held. A record whose `id` is not a slug is refused. */
-  put(record: StoredRecord): Promise<void>;
+  /**
+   * Keep one record, replacing what its id held by default. A record whose `id` is not a slug is refused.
+   * createOnly atomically refuses an existing id with conflict code -32010; it never replaces that winner.
+   * A durable store arbitrates on the authoritative complete record, refreshes a conflicting winner before
+   * rejecting, and must keep uncertain publication distinct from a proven conflict.
+   */
+  put(record: StoredRecord, options?: { createOnly?: boolean }): Promise<void>;
   /** Take one record out. `true` when one was there. */
   remove(id: string): Promise<boolean>;
   /** Hear each change to the collection, until the function it answers is called. */
