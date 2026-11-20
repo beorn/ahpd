@@ -2137,8 +2137,16 @@ export function createCatalogue(ctx: HostContext): Catalogue {
     if (turn === undefined) return [];
     return (Array.isArray(turn.responseParts) ? turn.responseParts as Bag[] : []).flatMap((part): Bag[] => {
       const request = part.request as Bag | undefined;
-      if (part.kind === 'inputRequest' && part.response === undefined && request !== undefined)
-        return [{ id: `chatInput:${chat}:${String(request.id)}`, kind: 'chatInput', chat, request }];
+      if (part.kind === 'inputRequest' && part.response === undefined && request !== undefined) {
+        const turnId = ctx.inputTurns.get(`${chat}\n${String(request.id)}`);
+        return [{
+          id: `chatInput:${chat}:${String(request.id)}`,
+          kind: 'chatInput',
+          chat,
+          ...(turnId === turn.id ? { turnId } : {}),
+          request,
+        }];
+      }
       const toolCall = part.toolCall as Bag | undefined;
       if (toolCall === undefined) return [];
       const ids = `${chat}:${String(turn.id)}:${String(toolCall.toolCallId)}`;

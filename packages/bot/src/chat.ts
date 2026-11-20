@@ -732,7 +732,7 @@ export function botChatAgent(
           held.asked.push({ id, part });
         }
         else known.part = part;
-        start.emit('chat', { type: 'chat/inputRequested', request: copy });
+        start.emit('chat', { type: 'chat/inputRequested', turnId: held.id, request: copy });
         return;
       }
       if (kind !== 'toolConfirmation') return;

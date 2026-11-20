@@ -1293,3 +1293,27 @@ it('answers the question a stopped turn left standing with `cancel`', async () =
   // on rather than a turn that waits for a person for ever.
   expect(readFileSync(log, 'utf8')).toContain('"method":"session/cancel"');
 });
+
+it('refuses a late elicitation and permission emitted during post-abort prompt unwind so a queued successor turn runs (#35154)', async () => {
+  const { client, peer: p, uri, chatUri } = await talking();
+  begin(client, chatUri, 't1', 'elicitlateaftercancel please');
+  await until(() => types(p, chatUri).includes('chat/inputRequested'));
+
+  // Stop turn 1 and immediately hand turn 2 while turn 1's prompt is still unwinding.
+  client.handle({
+    method: 'dispatchAction',
+    params: { channel: chatUri, action: { type: 'chat/turnCancelled', turnId: 't1', duration: 0 } },
+  });
+  begin(client, chatUri, 't2', 'plain reply after unwind');
+
+  await endedTurn(p, chatUri, 1);
+  expect(actions(p, chatUri).filter((e) => e.action.type === 'chat/inputRequested')).toHaveLength(1);
+  expect(actions(p, chatUri).filter((e) => e.action.type === 'chat/inputRequested')[0]?.action.turnId).toBe('t1');
+  expect(actions(p, chatUri).some((e) => e.action.type === 'chat/toolCallReady' && e.action.toolCallId === 'call-late-unwind')).toBe(false);
+  expect(actions(p, uri).filter((e) => e.action.type === 'session/inputNeededSet')).toHaveLength(1);
+  expect(actions(p, uri).filter((e) => e.action.type === 'session/inputNeededSet')[0]?.action.request).toMatchObject({
+    kind: 'chatInput',
+    turnId: 't1',
+  });
+  expect(actions(p, chatUri).some((e) => e.action.type === 'chat/turnComplete' && e.action.turnId === 't2')).toBe(true);
+});

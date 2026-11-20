@@ -1296,6 +1296,46 @@ const promptScript = async (id, params) => {
     });
   }
 
+  if (text.includes('elicitlateaftercancel')) {
+    /*
+     * A server that asks a second question and a permission after the bridge's
+     * stop has settled its first question, before finishing its prompt unwind.
+     * Without the cancelRequested/replaced fence on askElicitation and
+     * requestPermission, that post-abort request parks after settleElicitations
+     * and deadlocks turn 1's prompt unwind, starving turn 2 in pendingTurns.
+     */
+    await ask('elicitation/create', {
+      mode: 'form',
+      sessionId: session,
+      message: 'First question before stop',
+      requestedSchema: {
+        type: 'object',
+        properties: { title: { type: 'string', title: 'The name' } },
+        required: ['title'],
+      },
+    });
+    await ask('elicitation/create', {
+      mode: 'form',
+      sessionId: session,
+      message: 'Late question during unwind',
+      requestedSchema: {
+        type: 'object',
+        properties: { late: { type: 'string', title: 'Late field' } },
+        required: ['late'],
+      },
+    });
+    await ask('session/request_permission', {
+      sessionId: session,
+      toolCall: { toolCallId: 'call-late-unwind', title: 'Late permission during unwind', name: 'late_tool', kind: 'execute' },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+      ],
+    });
+    respond(id, { stopReason: 'cancelled' });
+    return;
+  }
+
   if (text.includes('elicitcancel')) {
     /*
      * A question left standing when the turn is stopped.

@@ -623,6 +623,7 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
          * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeCanUseTool.ts#L167-L178
          */
         case 'approval.requested': {
+          if (options.cancelled()) return only([]);
           const displayName = options.displayNameOf(event.name);
           const prompt = event.prompt ?? `Run ${displayName}?`;
           const held = open.get(event.callId);
@@ -698,11 +699,12 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
          * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeCanUseTool.ts#L292-L295
          */
         case 'input.requested': {
+          if (options.cancelled()) return only([]);
           const chatRequest: Bag = {
             id: event.requestId,
             questions: event.questions.map(questionOf),
           };
-          const request: Bag = { id: `input:${event.requestId}`, chat: options.chatUri, kind: 'chatInput', request: chatRequest };
+          const request: Bag = { id: `input:${event.requestId}`, chat: options.chatUri, kind: 'chatInput', turnId, request: chatRequest };
           const opened: OpenRequest = {
             requestId: event.requestId,
             kind: 'input',
@@ -711,7 +713,7 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
           };
           requests.set(event.requestId, opened);
           return {
-            actions: [{ type: 'chat/inputRequested', request: chatRequest }, { type: 'session/inputNeededSet', request }],
+            actions: [{ type: 'chat/inputRequested', turnId, request: chatRequest }, { type: 'session/inputNeededSet', request }],
             opened,
           };
         }
