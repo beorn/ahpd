@@ -1,7 +1,7 @@
 # Developing ahpd
 
 `ahpd` is a pnpm workspace: three packages published together, two examples, and the tools that check them.
-Node 22 or later.
+This owned fork requires Node 24 or later on Linux/macOS, or Bun 1.3.13 or later on those platforms. The SDK's shared entry imports the native writer-lock binding, so this requirement also applies to memory-only consumers of that entry. Native recovery is qualified only on the runtime/platform actually tested.
 The root manifest pins `pnpm@11.21.0`, so `corepack enable` is the shortest way to the right one.
 
 | Package | What it is |

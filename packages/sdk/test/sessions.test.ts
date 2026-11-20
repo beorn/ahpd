@@ -11,6 +11,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { uriOf } from '../src/resources/fileuri.js';
@@ -38,6 +39,34 @@ const HOST = 'builder';
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'ahpd-store-')); });
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+it('holds the file-store writer across OS processes until close', async () => {
+  const dir = join(root, 'exclusive');
+  const first = fileSessions({ dir });
+  first.setOwner('owned', 'user:ana');
+  await first.commit('owned');
+  const code = `import {fileSessions} from ${JSON.stringify(new URL('../src/sessions/sessions.ts', import.meta.url).href)};
+    try { const s=fileSessions({dir:${JSON.stringify(dir)}}); console.log(s.owner('owned')); s.close(); }
+    catch(e) { console.error(e.message); process.exitCode=73; }`;
+  const run = () => spawnSync(process.execPath, ['--conditions=development', '--import', new URL('../../../scripts/dev.mjs', import.meta.url).href, '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 60000 });
+  try {
+    const competing = run();
+    expect(competing.status).toBe(73);
+    expect(competing.stderr).toContain('already has a writer');
+  } finally { first.close?.(); }
+  const successor = run();
+  expect(successor.stderr).toBe('');
+  expect(successor.status).toBe(0);
+  expect(successor.stdout.trim()).toBe('user:ana');
+});
+
+it('rejects a closed file-store setter before changing its retained row', () => {
+  const first = fileSessions({ dir: join(root, 'closed-writer') });
+  first.setOwner('owned', 'user:ana');
+  first.close?.();
+  expect(() => first.setOwner('owned', 'user:bob')).toThrow(/closed/);
+  expect(first.owner('owned')).toBe('user:ana');
+});
 
 /**
  * What one session's own file holds, or nothing when it has no file.

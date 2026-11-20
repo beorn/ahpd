@@ -165,7 +165,7 @@ it('names the session once, with the URI it answers, before the backend spawns',
     expect(start.chatUri).toBe(reservedChat);
     return base.create(start);
   } };
-  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
+  const { plugin, host } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
   const seen: string[] = [];
 
   const uri = await plugin.startSession({ owner: 'user:soft', provider: 'watched', prompt: 'Say hello' }, (one) => {
@@ -183,7 +183,8 @@ it('names the session once, with the URI it answers, before the backend spawns',
   // one built during `isolated`, which is after this.
   expect(seen).toEqual([uri]);
   expect(order).toEqual(['named', 'spawn']);
-  expect(fileSessions({ dir }).creation(idOf(uri))?.phase).toBe('complete');
+  expect(JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(uri))}.json`), 'utf8')).creation.phase).toBe('complete');
+  await host.close();
 });
 
 it.each(['reserved', 'admitted'] as const)('starts no backend when the %s row commit fails', async (phase) => {
@@ -261,6 +262,25 @@ it('serializes two recoverers behind the original naming callback', async () => 
   expect(order).toEqual(['spawn']);
 });
 
+it('keeps the authoritative backend binding before a recovered provider opens', async () => {
+  const store = memorySessions();
+  const base = watched([]);
+  const agent: Agent = { ...base, create: (start) => {
+    expect(store.chats(idOf(start.uri))[0]?.backendId).toBe('authoritative-native');
+    return base.create(start);
+  } };
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
+  let uri = '';
+  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, (named) => {
+    uri = named;
+    throw new Error('lost acknowledgment');
+  })).rejects.toThrow('lost acknowledgment');
+  const id = idOf(uri);
+  store.setCreation(id, { ...store.creation(id)!, phase: 'admitted' });
+  store.setChats(id, store.chats(id).map((chat) => ({ ...chat, backendId: 'authoritative-native' })));
+  expect(await plugin.startSession({ owner: 'user:soft', resume: uri })).toBe(uri);
+});
+
 it('rejects a naming callback awaiting its own reservation resume', async () => {
   const order: string[] = [];
   const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
@@ -268,6 +288,28 @@ it('rejects a naming callback awaiting its own reservation resume', async () => 
     await plugin.startSession({ owner: 'user:soft', resume: uri });
   })).rejects.toThrow(/own.*lifecycle/);
   expect(order).toEqual([]);
+});
+
+it('keeps its store open beyond close grace until an accepted callback settles', async () => {
+  const store = memorySessions();
+  const closed = vi.fn();
+  store.close = closed;
+  const { plugin, host } = await startingWith({ soft: ['session:create'] }, 'soft', { sessions: store });
+  const gate = Promise.withResolvers<void>();
+  let named = false;
+  const starting = plugin.startSession({ owner: 'user:soft' }, async () => { named = true; await gate.promise; });
+  const ending = starting.catch(() => undefined);
+  await until(() => named, 'pending naming callback');
+  vi.useFakeTimers();
+  try {
+    const closing = host.close();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(closed).not.toHaveBeenCalled();
+    gate.resolve();
+    await ending;
+    await closing;
+    expect(closed).toHaveBeenCalledOnce();
+  } finally { gate.resolve(); vi.useRealTimers(); }
 });
 
 it('refuses a door that is not a function, at the boundary', () => {
