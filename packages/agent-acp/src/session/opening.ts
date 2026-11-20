@@ -423,6 +423,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        */
       const told = moved === undefined ? cwd : machinePathOf(cwd);
       const prefix = options.env?.HAB_ACP_PID_PREFIX;
+      if (options.spawnGuard !== undefined && options.env?.HAB_ACP_SPAWN_GUARD !== undefined) {
+        throw new Error(`${provider}: a record cannot configure HAB_ACP_SPAWN_GUARD; the host projects each occurrence before spawn`);
+      }
       if (options.spawnGuard !== undefined && (prefix === undefined || moved !== undefined || process.platform !== 'linux')) {
         throw new Error(`${provider}: inherited spawn custody requires a scoped local Linux opening; nothing was spawned`);
       }
@@ -520,7 +523,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
             escapedIdentity = custody.identify(escaped.pid);
             custody.write('running', escapedIdentity);
           } catch (identityError) {
-            options.log?.(`${provider}: failed transport child remains unstamped: ${messageOf(identityError)}`, 'error');
+            const line = `${provider}: failed transport child remains unstamped: ${messageOf(identityError)}`;
+            if (options.log !== undefined) options.log(line, 'error');
+            else console.error(line);
           }
           custody.releaseInherited();
         }
