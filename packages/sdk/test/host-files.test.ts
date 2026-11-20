@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,19 +14,9 @@ import {
   resetSdk, actions, builtServer, claude, complete, createHost, emit, firstMessage, hello, hostTools, list, machine, open,
   peer, read, resolve, sendAnswered, serving, sessionQueries, settle, running, wrote,
 } from './support/host.js';
-import { WORK } from './support/work.js';
+import { WORK, REPOSITORY as REPO } from './support/work.js';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/claude-sdk.js')).fake);
-
-/**
- * This checkout, as an absolute path.
- *
- * The tests below read real files out of this repository, so the path has to
- * be found rather than written down: a literal one passes on the machine it
- * was written on and fails on every other, CI included.
- */
-// The trailing separator off, `\\` on Windows and `/` elsewhere.
-const REPO = fileURLToPath(new URL('../../..', import.meta.url)).replace(/[\\/]$/u, '');
 
 beforeEach(resetSdk);
 

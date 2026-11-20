@@ -90,3 +90,26 @@ it.each(['refs', 'HEAD', 'index', 'unchanged'] as const)('checks checkout %s aft
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it('keeps a temporary non-repository from discovering the repository above the run', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'ahpd-parent-repository-'));
+  const env = { ...process.env };
+  let finish: (() => void) | undefined;
+  try {
+    gitSync(['init', '-q', '-b', 'main', parent]);
+    process.env.TMPDIR = parent;
+    process.env.TEMP = parent;
+    process.env.TMP = parent;
+    finish = setup({ config: { root: parent } });
+    const plain = mkdtempSync(join(tmpdir(), 'plain-'));
+    expect(() => gitSync(['-C', plain, 'rev-parse', '--show-toplevel'])).toThrow();
+  }
+  finally {
+    try { finish?.(); }
+    finally {
+      for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+      Object.assign(process.env, env);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
+});

@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitSync } from './git.ts';
 
@@ -37,6 +37,10 @@ export default function setup(project: { config: { root: string } }): () => void
   process.env.TMPDIR = run;
   process.env.TEMP = run;
   process.env.TMP = run;
+  // A plain temporary folder must not discover a repository above the run,
+  // including when the machine's temporary directory is inside a checkout.
+  process.env.GIT_CEILING_DIRECTORIES = [run, process.env.GIT_CEILING_DIRECTORIES]
+    .filter((path) => path !== undefined && path !== '').join(delimiter);
   /*
    * And no line-ending conversion in any repository a test makes. Git for
    * Windows ships `core.autocrlf=true` in its system config, so a file a test
@@ -48,6 +52,22 @@ export default function setup(project: { config: { root: string } }): () => void
   process.env[`GIT_CONFIG_KEY_${String(count)}`] = 'core.autocrlf';
   process.env[`GIT_CONFIG_VALUE_${String(count)}`] = 'false';
   process.env.GIT_CONFIG_COUNT = String(count + 1);
+  /*
+   * Real files for the filesystem suites, in a repository of the run's own.
+   * Only these suites' read fixtures are copied: child processes still load
+   * their code and plugins from the source checkout, while serving this one.
+   */
+  const source = fileURLToPath(new URL('..', import.meta.url));
+  const repository = join(run, 'repository');
+  for (const relative of ['LICENSE', 'README.md', 'packages/sdk/src', 'packages/server/package.json']) {
+    const target = join(repository, relative);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(join(source, relative), target, { recursive: true });
+  }
+  gitSync(['init', '-q', '-b', 'main', repository]);
+  gitSync(['-C', repository, 'add', '-A']);
+  gitSync(['-C', repository, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '-m', 'fixture']);
+  process.env.AHPD_TEST_REPOSITORY = repository;
   /*
    * And a Claude config folder of the run's own, empty. A Claude session reads
    * and watches its config folder, and the person's own `~/.claude` is not a

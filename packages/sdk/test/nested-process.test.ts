@@ -14,6 +14,7 @@ import type { NestedHost } from '../src/sessions/nested.js';
 import type { Agent, Start } from '../src/types/agent.js';
 import type { HostOptions } from '../src/types/host.js';
 import type { Peer } from '../src/types/rpc.js';
+import { REPOSITORY } from './support/work.js';
 
 /*
  * The proxy against real child processes.
@@ -30,8 +31,8 @@ import type { Peer } from '../src/types/rpc.js';
  */
 
 const REPO = join(import.meta.dirname, '../../..');
-const ENTRY = 'packages/server/src/main.ts';
-const FIXTURE = './packages/sdk/test/fixtures/plugin-nested-echo';
+const ENTRY = join(REPO, 'packages/server/src/main.ts');
+const FIXTURE = join(REPO, 'packages/sdk/test/fixtures/plugin-nested-echo');
 const PROVIDER = 'cofold';
 /** How long a real host may take to answer, on a loaded machine. */
 const PATIENCE = 20_000;
@@ -88,6 +89,7 @@ const home = (): Record<string, string> => {
     XDG_DATA_HOME: join(dir, 'data'),
     XDG_STATE_HOME: join(dir, 'state'),
     XDG_CACHE_HOME: join(dir, 'cache'),
+    GIT_CEILING_DIRECTORIES: join(REPOSITORY, '..'),
   };
   for (const key of ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']) mkdirSync(env[key] as string, { recursive: true });
   return env;
@@ -102,7 +104,7 @@ const child = (command: string, args: string[], env: Record<string, string>): Ch
 
 /** A real `ahpd --stdio` with the fixture plugin loaded. */
 const ahpd = (env: Record<string, string>, plugin = FIXTURE): ChildProcessWithoutNullStreams =>
-  child(process.execPath, ['--conditions', 'development', '--import', './scripts/dev.mjs', ENTRY, '--stdio', '--plugin', plugin], env);
+  child(process.execPath, ['--conditions', 'development', '--import', join(REPO, 'scripts/dev.mjs'), ENTRY, '--stdio', '--path', REPOSITORY, '--plugin', plugin], env);
 
 /** A Node script, as a machine that is not what it should be: Node is on every system, where `sh` is not. */
 const misfit = (script: string): ChildProcessWithoutNullStreams => child(process.execPath, ['-e', script], home());
@@ -176,7 +178,7 @@ const outer = async (
   options: { store?: string; create?: boolean; computers?: HostOptions['computers']; agentPlugins?: Record<string, string>; folders?: string[] } = {},
 ) => {
   const host = createHost({
-    path: REPO,
+    path: REPOSITORY,
     agents: [agent],
     // The proxy is started through `NestedOptions.start`, so the port is only
     // what lets a session name a machine.
@@ -315,7 +317,7 @@ it('a restart waits for the inner host it replaces, and resumes its conversation
     if (started.length > 1 && !firstGone) replacedTooEarly = true;
     one.once('exit', () => { if (one === started[0]) firstGone = true; });
     return one;
-  }), { folders: [REPO] });
+  }), { folders: [REPOSITORY] });
 
   served.dispatch(served.chatUri, { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { origin: { kind: 'user' }, text: 'first words' } });
   await until(() => served.on(served.chatUri).some(({ action }) => action.type === 'chat/turnComplete'));
@@ -334,7 +336,7 @@ it('a restart waits for the inner host it replaces, and resumes its conversation
   const elsewhere = mkdtempSync(join(tmpdir(), 'ahpd-nested-elsewhere-'));
   made.push(elsewhere);
   // Another folder in the first one's place, which starts the inner host again.
-  served.dispatch(served.uri, { type: 'session/workingDirectoryReplaced', directory: uriOf(REPO), replacement: uriOf(elsewhere) });
+  served.dispatch(served.uri, { type: 'session/workingDirectoryReplaced', directory: uriOf(REPOSITORY), replacement: uriOf(elsewhere) });
   // The host hands the action back once the restart behind it is over, so this
   // is the moment both processes have had their say.
   await until(() => served.on(served.uri).some(({ action, origin }) => action.type === 'session/workingDirectoryReplaced' && origin !== undefined));
@@ -358,13 +360,13 @@ it('a restart before the first turn starts a session the inner host does not hol
     const one = ahpd(env);
     started.push(one);
     return one;
-  }), { folders: [REPO] });
+  }), { folders: [REPOSITORY] });
 
   const elsewhere = mkdtempSync(join(tmpdir(), 'ahpd-nested-elsewhere-'));
   made.push(elsewhere);
   // Another folder in the first one's place, which starts the inner host again
   // there before any turn has run.
-  served.dispatch(served.uri, { type: 'session/workingDirectoryReplaced', directory: uriOf(REPO), replacement: uriOf(elsewhere) });
+  served.dispatch(served.uri, { type: 'session/workingDirectoryReplaced', directory: uriOf(REPOSITORY), replacement: uriOf(elsewhere) });
   await until(() => served.on(served.uri).some(({ action, origin }) => action.type === 'session/workingDirectoryReplaced' && origin !== undefined));
   expect(started).toHaveLength(2);
 
@@ -414,7 +416,7 @@ it('a daemon that stops leaves the session inside the machine for the next one',
     how: async () => ({ command: 'true', args: [] }),
     nested: async (_id: string, asked: { plugins: string[] }) => ({
       command: process.execPath,
-      args: ['--conditions', 'development', '--import', './scripts/dev.mjs', ENTRY, '--stdio', ...asked.plugins.flatMap((one) => ['--plugin', one])],
+      args: ['--conditions', 'development', '--import', join(REPO, 'scripts/dev.mjs'), ENTRY, '--stdio', '--path', REPOSITORY, ...asked.plugins.flatMap((one) => ['--plugin', one])],
       env,
     }),
   };
