@@ -220,7 +220,7 @@ export function acpSession(
 
   Object.assign(ctx, createConfig(ctx));
   Object.assign(ctx, createHandlers(ctx));
-  Object.assign(ctx, createOpening(ctx));
+  Object.assign(ctx, createOpening(ctx, shared));
   Object.assign(ctx, createTurn(ctx));
   Object.assign(ctx, createClientCalls(ctx));
 
@@ -507,5 +507,11 @@ export function acpSession(
    */
   const refusal = ctx.refreshOptions();
   if (refusal !== undefined) return Promise.reject(new Error(refusal));
-  return ctx.open().then(() => session);
+  return ctx.open().then(() => session).catch((error: unknown) => {
+    const authentication = ctx.authenticationFailure(error);
+    // Keep the protocol error's identity, code and data while using the same
+    // corrective method names that a later prompt failure already reports.
+    if (authentication !== undefined && error instanceof Error) error.message = authentication.message;
+    throw error;
+  });
 }

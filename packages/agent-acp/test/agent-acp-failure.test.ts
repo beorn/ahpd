@@ -86,7 +86,7 @@ it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement in
     ended: new Promise<void>(() => {}),
     close: async () => {},
   } as unknown as AcpConnection));
-  const opening = createOpening(ctx);
+  const opening = createOpening(ctx, ctx.options);
   const pending: Promise<unknown>[] = [];
   try {
     opening.refreshOptions();
@@ -148,7 +148,7 @@ it.each(['new', 'load', 'resume', 'fork'].flatMap((method) => ['refresh', 'dispo
     newSession: reply, loadSession: reply, resumeSession: reply, forkSession: reply,
     ended: new Promise<void>(() => {}), close: async () => {},
   } as unknown as AcpConnection));
-  const opening = createOpening(ctx);
+  const opening = createOpening(ctx, ctx.options);
   const pending: Promise<unknown>[] = [];
   try {
     opening.refreshOptions();

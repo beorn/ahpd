@@ -1523,9 +1523,7 @@ it.each([
   const { agent, log } = backend(['--no-rollout']);
   const native = `unmaterialized-${name}`;
   await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
-  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) });
-  await runTurn(session, watch, 'first-attempt', 'hi');
-  expect(watch.endings()).toEqual(['chat/error']);
+  await expect(start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) })).rejects.toMatchObject({ code: -32603 });
   expect(requests(log).some((one) => one.method === 'session/new')).toBe(false);
   expect(requests(log).some((one) => one.method === 'session/prompt')).toBe(false);
 });
@@ -2011,16 +2009,11 @@ it('refuses a fork at a turn the server was never offered one for', async () => 
   // `t1` is not where the conversation ends, so no control was offered for it
   // and this is a caller out of step - served rather than refused, it would be
   // a copy of a conversation that still holds `t2`.
-  const { session: forked, watch: forkedWatch } = await start(agent, 'forked-earlier', {
+  await expect(start(agent, 'forked-earlier', {
     resume: String(session.agentId()),
     forkAt: 't1',
     seed: session.allTurns(),
-  });
-  await runTurn(forked, forkedWatch, 't3', 'third');
-
-  expect(forkedWatch.types().at(-1)).toBe('chat/error');
-  expect(String((forkedWatch.actions.at(-1)?.action as { part?: { error?: { message?: string } } })
-    .part?.error?.message)).toContain('is not the last turn');
+  })).rejects.toThrow('is not the last turn');
   expect(requests(log).some((one) => one.method === 'session/fork')).toBe(false);
 });
 
@@ -2087,10 +2080,7 @@ const running = (pid: number): boolean => {
  */
 it('lets go of every server an open that failed had spawned', async () => {
   const { agent, log } = backend(['--signin']);
-  const { session, watch } = await start(agent, 'refused');
-  await runTurn(session, watch, 't1', 'hi');
-
-  expect(watch.endings()).toEqual(['chat/error']);
+  await expect(start(agent, 'refused')).rejects.toThrow('wants to be signed in');
   const spawned = [...new Set(requests(log).flatMap((one) => (one.pid === undefined ? [] : [one.pid])))];
   expect(spawned.length).toBeGreaterThan(0);
   await until(() => spawned.every((pid) => !running(pid)));

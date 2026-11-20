@@ -85,13 +85,11 @@ const failure = (actions: Bag[]): string | undefined => {
 
 it('refuses a folder nobody vouched for, rather than starting the agent in it', async () => {
   const { folder, log } = foldered();
-  const { session, actions } = await sessionIn({ workingDirectory: folder, trusted: () => false }, log);
-  session.sendMessage('t1', 'hi');
-  await until(() => failure(actions) !== undefined);
+  const opening = sessionIn({ workingDirectory: folder, trusted: () => false }, log);
   // The sentence names the folder and the way out of it, so a person reading
   // the failure knows which folder and which flag.
-  expect(failure(actions)).toContain(folder);
-  expect(failure(actions)).toContain('honoursTrust');
+  await expect(opening).rejects.toThrow(folder);
+  await expect(opening).rejects.toThrow('honoursTrust');
   // And nothing was started: the fixture writes its log the moment it is sent
   // a request, and it was never given one.
   expect(existsSync(log)).toBe(false);

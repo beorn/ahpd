@@ -79,7 +79,7 @@ const opening = (id: string, over: Partial<Start> = {}): Start => ({
 async function start(agent: Agent, id: string): Promise<Session> {
   const actions: Bag[] = [];
   const emit: Emit = (channel, action) => { actions.push(action); void channel; };
-  const session = await agent.create(opening(id, { emit }));
+  const session = await agent.create(opening(id, { emit, trusted: () => true }));
   started.push(session);
   return session;
 }
@@ -164,19 +164,20 @@ it('has no delete to send to a server whose handshake did not advertise one', as
 });
 
 it('forgets a session this process watched, so the next listing does not offer it', async () => {
-  const { agent } = backend(['--no-load']);
-  // A server that cannot reopen a conversation still lists its own, so the
-  // record this process holds is the only catalogue there would be.
+  const { agent } = backend(['--no-load', '--no-list']);
+  // With neither server listing nor replay, the real opened native session's
+  // watched record is the only catalogue and transcript available.
   const one = await start(agent, 'watched-1');
-  expect(one).toBeDefined();
-  await agent.list?.();
+  const native = one.agentId();
+  expect(native).toMatch(/^acp-session-/);
+  expect((await agent.list?.())?.some((row) => row.id === native)).toBe(true);
 
-  await agent.delete?.('watched-1', '/tmp');
+  await agent.delete?.(native!, '/tmp');
 
   const rows = await agent.list?.();
-  expect(rows?.some((row) => row.id === 'watched-1')).toBe(false);
+  expect(rows?.some((row) => row.id === native)).toBe(false);
   // And the transcript is gone with it, which is what the record was for.
-  expect(await agent.transcript?.('watched-1')).toBeUndefined();
+  expect(await agent.transcript?.(native!)).toBeUndefined();
 });
 /*
  * A session that ran in a machine keeps its conversation there, in the store of

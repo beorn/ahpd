@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { RequestError } from '@agentclientprotocol/sdk';
 import { afterEach, expect, it } from 'vitest';
 import type { Bag, Session, Start } from '@ahpd/sdk';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
@@ -86,39 +87,27 @@ it('signs in with the method the spec named, and the session runs', async () => 
 });
 
 it('refuses a session from a server nobody signed in, naming the methods it offers', async () => {
-  const { session, actions } = await talking(['--signin']);
-  await turn(session, actions, 't1', 'hi');
-
-  // The refusal is the protocol's own rather than a generic failure, and it
-  // carries the handshake's methods: the spec is what names one, and this is
-  // the sentence that says which.
-  expect(errored(actions)?.errorType).toBe('authRequired');
-  expect(String(errored(actions)?.message)).toContain('api-key');
-  expect(actions.some((action) => action.type === 'chat/turnComplete')).toBe(false);
+  // Opening preserves the protocol error and its corrective method names;
+  // no usable Session is fabricated to postpone the same error to a turn.
+  await expect(talking(['--signin'])).rejects.toMatchObject({
+    code: RequestError.authRequired().code, message: expect.stringContaining('api-key'),
+  });
 });
 
 it('refuses a method the server did not offer, and says which it did', async () => {
-  const { session, actions } = await talking(['--signin'], { authenticate: { methodId: 'oauth' } });
-  await turn(session, actions, 't1', 'hi');
-
   // The bridge does not send a guess, and it does not open a session on a
   // server that refused one: the sentence is what a person corrects the
   // configuration with.
-  expect(String(errored(actions)?.message)).toMatch(/^acp-signin offers api-key, not oauth/);
+  await expect(talking(['--signin'], { authenticate: { methodId: 'oauth' } })).rejects.toThrow(/^acp-signin offers api-key, not oauth/);
 });
 
-it('fails the turn with what the server said when it refuses the sign-in', async () => {
-  const { session, actions } = await talking(['--signin-fails'], { authenticate: { methodId: 'api-key' } });
-  await turn(session, actions, 't1', 'hi');
-
+it('rejects opening with what the server said when it refuses the sign-in', async () => {
   // The refusal came from `authenticate` and carries the same code the
   // protocol's `auth_required` does, so a code alone cannot tell the two
   // apart. It is not a request for a sign-in: nobody is being asked to set an
   // option they have already set. It is a send that failed, as VS Code's host
   // types one.
-  expect(errored(actions)?.errorType).toBe('sendFailed');
-  expect(String(errored(actions)?.message)).toMatch(/^acp-signin: sign-in with api-key failed: That API key was rejected/);
-  expect(actions.some((action) => action.type === 'chat/turnComplete')).toBe(false);
+  await expect(talking(['--signin-fails'], { authenticate: { methodId: 'api-key' } })).rejects.toThrow(/^acp-signin: sign-in with api-key failed: That API key was rejected/);
 });
 
 it('names the sign-in a turn refused as authRequired, with the methods to use', async () => {
