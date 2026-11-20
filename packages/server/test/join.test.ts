@@ -10,7 +10,7 @@
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { cpSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -243,6 +243,27 @@ it('serves two live session hosts on the same joined node', async () => {
   expect(first.live).toBe(true);
   expect(second.live).toBe(true);
   await at.close();
+}, 60_000);
+
+it('names the legacy shared store on the control request and leaves its row intact', async () => {
+  const at = await hub();
+  const store = join(home, 'ahpd', 'sessions');
+  mkdirSync(store, { recursive: true });
+  const row = join(store, 'old.json');
+  const bytes = '{"version":1,"id":"old","config":{"model":"saved"}}\n';
+  writeFileSync(row, bytes);
+  const node = joinUp([at.url, '--token', 'node-token']);
+  const control = await dialled(at.held, { control: 0 }, node);
+  expect(await control.frame()).toMatchObject({ id: 1, method: 'node/hello' });
+  control.send({ jsonrpc: '2.0', id: 1, result: {} });
+  control.send({ jsonrpc: '2.0', id: 2, method: 'node/open', params: {
+    id: 'old-stream', scope: { hostId: 'hub-a', innerId: 'old' },
+  } });
+  expect(await control.frame()).toMatchObject({ id: 2, error: {
+    message: `session old is in the legacy shared store ${store}; not migrated`,
+  } });
+  expect(at.held.map((socket) => socket.url).some((url) => url.includes('data=old-stream'))).toBe(false);
+  expect(readFileSync(row, 'utf8')).toBe(bytes);
 }, 60_000);
 
 it('closes a session socket when its host exits', async () => {

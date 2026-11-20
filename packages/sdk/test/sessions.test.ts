@@ -86,6 +86,50 @@ it('rejects a closed file-store setter before changing its retained row', () => 
   expect(first.owner('owned')).toBe('user:ana');
 });
 
+it('reopens the same joined session, isolates hubs, and retires only the disposed scope', async () => {
+  const dir = join(root, 'joined');
+  const joined = { hostId: 'hub-a', innerId: 'same' };
+  const first = fileSessions({ dir, joined });
+  const sibling = fileSessions({ dir, joined: { hostId: 'hub-a', innerId: 'sibling' } });
+  const otherHub = fileSessions({ dir, joined: { hostId: 'hub-b', innerId: 'same' } });
+  first.setConfig('same', { model: 'retained' });
+  await first.commit('same');
+  sibling.setConfig('sibling', { model: 'sibling' });
+  otherHub.setConfig('same', { model: 'separate' });
+
+  const attachments = first.attachmentsDir?.('same');
+  if (attachments === undefined) throw new Error('The joined session has no attachment directory');
+  mkdirSync(attachments, { recursive: true });
+  writeFileSync(join(attachments, 'image'), 'retained attachment');
+  const directory = dirname(dirname(attachments));
+  expect(JSON.parse(readFileSync(join(directory, 'identity'), 'utf8'))).toEqual(joined);
+  first.close?.();
+
+  const reopened = fileSessions({ dir, joined });
+  expect(reopened.config('same')).toEqual({ model: 'retained' });
+  expect(reopened.attachmentsDir?.('same')).toBe(attachments);
+  expect(readFileSync(join(attachments, 'image'), 'utf8')).toBe('retained attachment');
+  reopened.forget('same');
+  reopened.close?.();
+
+  expect(existsSync(directory)).toBe(false);
+  expect(sibling.config('sibling')).toEqual({ model: 'sibling' });
+  expect(otherHub.config('same')).toEqual({ model: 'separate' });
+});
+
+it('refuses a joined session still in the legacy shared store without changing that store', async () => {
+  const dir = join(root, 'legacy');
+  const legacy = fileSessions({ dir });
+  legacy.setConfig('saved', { model: 'old' });
+  await legacy.commit('saved');
+  legacy.close?.();
+  const original = readFileSync(join(dir, 'saved.json'), 'utf8');
+  const joined = { hostId: 'hub', innerId: 'saved' };
+  expect(() => fileSessions({ dir, joined })).toThrow(`session saved is in the legacy shared store ${dir}; not migrated`);
+  expect(readFileSync(join(dir, 'saved.json'), 'utf8')).toBe(original);
+  expect(readdirSync(join(dir, 'nested')).every((entry) => entry.endsWith('.lock'))).toBe(true);
+});
+
 /**
  * What one session's own file holds, or nothing when it has no file.
  *

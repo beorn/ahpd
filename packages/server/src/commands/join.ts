@@ -28,6 +28,7 @@ import { resolve } from 'node:path';
 import { SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
 import { JOIN_PATH } from '@ahpd/sdk';
 import type { Command, Registry } from '@cofold/commands';
+import { JOINED_SESSION_ENV, joinedSession, joinedSessions } from '../joined-session.js';
 import { version } from '../version.js';
 import { conflict, stop } from './options.js';
 
@@ -74,6 +75,7 @@ interface Hello {
  */
 interface Open {
   id: string;
+  scope?: unknown;
   plugins?: string[];
   env?: Record<string, string>;
 }
@@ -216,6 +218,14 @@ const serveSession = (options: {
   const { url, workdir, program, open: asked, say } = options;
   const at = new URL(url.href);
   at.searchParams.set('data', asked.id);
+  const env = { ...process.env, ...(asked.env ?? {}) };
+  delete env[JOINED_SESSION_ENV];
+  if (asked.scope !== undefined) {
+    const scope = joinedSession(asked.scope);
+    // Refuse unreadable or legacy state on the control request, before opening a data socket.
+    joinedSessions(scope, say).close?.();
+    env[JOINED_SESSION_ENV] = JSON.stringify(scope);
+  }
   const child = spawn(process.execPath, [
     ...process.execArgv,
     program,
@@ -226,7 +236,7 @@ const serveSession = (options: {
     ...(asked.plugins ?? []).flatMap((plugin) => ['--plugin', plugin]),
   ], {
     cwd: workdir,
-    env: { ...process.env, ...(asked.env ?? {}) },
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
