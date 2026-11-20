@@ -316,6 +316,16 @@ it('keeps its store open beyond close grace until an accepted callback settles',
 it('durably settles the initial prompt after its actual terminal event', async () => {
   const dir = join(DIR, `prompt-settled-${crypto.randomUUID()}`);
   const store = fileSessions({ dir });
+  const acknowledgment = Promise.withResolvers<void>();
+  const commit = store.commit.bind(store);
+  let settling = false;
+  store.commit = async (id) => {
+    if (store.creation(id)?.initialPrompt === 'settled') {
+      settling = true;
+      await acknowledgment.promise;
+    }
+    await commit(id);
+  };
   const base = echo({ path: DIR, pace: 0 });
   let completed = false;
   const agent: Agent = { ...base, create: (start) => base.create({
@@ -326,14 +336,25 @@ it('durably settles the initial prompt after its actual terminal event', async (
     },
   }) };
   const { plugin, host } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
+  let closing: Promise<void> | undefined;
   try {
     const uri = await plugin.startSession({ owner: 'user:soft', provider: 'echo', prompt: 'Finish this turn' });
-    await until(() => completed, 'initial prompt terminal event');
-    await vi.waitFor(() => {
-      const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(uri))}.json`), 'utf8'));
-      expect(saved.creation.initialPrompt).toBe('settled');
-    }, { timeout: WAIT_MS });
-  } finally { await host.close(); }
+    await until(() => completed && settling, 'initial prompt terminal event and durable acknowledgment');
+    vi.useFakeTimers();
+    closing = host.close();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(() => fileSessions({ dir })).toThrow(/already has a writer/);
+    acknowledgment.resolve();
+    await closing;
+    vi.useRealTimers();
+    const successor = fileSessions({ dir });
+    try { expect(successor.creation(idOf(uri))?.initialPrompt).toBe('settled'); }
+    finally { successor.close?.(); }
+  } finally {
+    acknowledgment.resolve();
+    vi.useRealTimers();
+    await (closing ?? host.close());
+  }
 });
 
 it('refuses a door that is not a function, at the boundary', () => {
