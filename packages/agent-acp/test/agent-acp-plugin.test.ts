@@ -167,7 +167,7 @@ const begin = (
   });
 };
 
-it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
+it.each(['eager', 'rejected unconfigured', 'file-store resume', 'failed replacement'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
   const { options, loaded, problems } = await load([SPEC]);
 
   expect(problems).toEqual([]);
@@ -184,7 +184,7 @@ it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('
       env: { ACP_LOG: join(dir, 'provider.jsonl') } };
   }
   const agent = engineOf(options).open(viewOf('acp', () => configured, 'ACP'));
-  if (opening === 'lazy') configured = {};
+  if (opening === 'rejected unconfigured') configured = {};
   let actual: Session | undefined;
   const resumes: (string | undefined)[] = [];
   const create = agent.create.bind(agent);
@@ -206,13 +206,12 @@ it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('
   const ready = await initialize(client);
   expect(ready.snapshots[0]?.state.agents.map((one) => one.provider)).toEqual(['base', 'acp']);
 
-  const { chatUri } = await open(client, 'acp', 'plugin', dir);
-  if (opening === 'lazy') {
-    const beforeOpening = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
-    expect((beforeOpening.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
-    expect(actual?.agentId()).toBeUndefined();
+  if (opening === 'rejected unconfigured') {
+    await expect(open(client, 'acp', 'plugin', dir)).rejects.toThrow('names no command');
+    expect(actual).toBeUndefined();
     configured = { command: process.execPath, args: [FIXTURE] };
   }
+  const { chatUri } = await open(client, 'acp', 'plugin', dir);
   begin(client, chatUri, 't1', 'hello there');
   await until(() => types(said, chatUri).includes('chat/turnComplete'));
   expect(types(said, chatUri).at(-1)).toBe('chat/turnComplete');

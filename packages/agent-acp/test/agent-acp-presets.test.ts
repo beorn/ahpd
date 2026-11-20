@@ -116,7 +116,7 @@ interface Probe {
  * A row's command and arguments are not on the Agent this load serves - a
  * backend says its id and name and nothing of what it would spawn - so a PATH
  * entry holds an executable under the row's own command that writes the name,
- * argv and environment it was run with, then exits. The file it leaves is read
+ * argv and environment it was run with, then serves ACP. The file it leaves is read
  * back here. This is POSIX only, because the executable is a script with a
  * shebang.
  */
@@ -141,6 +141,7 @@ const spawnOf = async (
     '  env: process.env,',
     '}));',
     `fs.renameSync(${JSON.stringify(`${out}.part`)}, ${JSON.stringify(out)});`,
+    `void import(${JSON.stringify(FIXTURE)});`,
   ].join('\n'));
   chmodSync(file, 0o755);
 
@@ -166,7 +167,8 @@ const turnOf = async (
   const env = { ACP_LOG: log, ...(typeof own === 'object' && own !== null ? own as Record<string, string> : {}) };
   const ended: string[] = [];
   const said: string[] = [];
-  const session = await sessionOf(kind, id, () => ({
+  let session: Session | undefined;
+  try { session = await sessionOf(kind, id, () => ({
     ...config,
     command: process.execPath,
     args: [FIXTURE, ...(extra.flags ?? [])],
@@ -185,8 +187,11 @@ const turnOf = async (
         }
       }
     },
-  });
-  session.sendMessage('t1', 'hi');
+  }); } catch (error) {
+    ended.push('open/error');
+    said.push(String(error));
+  }
+  session?.sendMessage('t1', 'hi');
   for (let i = 0; i < 3000 && ended.length === 0; i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
 
   const raw = existsSync(log) ? readFileSync(log, 'utf8') : '';
@@ -329,7 +334,7 @@ it('applies a row\'s sign-in once the daemon\'s own environment has its variable
   const { kind } = await load();
   const without = await turnOf(kind, 'codex', {}, { flags: ['--signin'] });
   expect(without.signedIn).toBeUndefined();
-  expect(without.ended).toEqual(['chat/error']);
+  expect(without.ended).toEqual(['open/error']);
 
   process.env.OPENAI_API_KEY = 'sk-daemon';
   const withIt = await turnOf(kind, 'codex', {}, { flags: ['--signin'] });

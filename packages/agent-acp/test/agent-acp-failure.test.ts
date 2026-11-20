@@ -258,19 +258,17 @@ it.skipIf(process.platform !== 'linux').each([
       ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: 'ahp-session:/custody',
       ...(selected === undefined ? {} : { HAB_ACP_CHAT_URI: selected }),
     } });
-    session = await agent.create({ uri, chatUri: 'ahp-chat:/original',
+    await expect(agent.create({ uri, chatUri: 'ahp-chat:/original',
       ...(fact === undefined ? {} : { sessionConversation: fact }),
       clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder,
       trusted: () => true, schema: () => ({ type: 'object', properties: {} }),
       emit: (_channel, action) => { actions.push(action as Bag); },
-    });
+    })).rejects.toThrow('no matching configured ACP process authority');
     expect(existsSync(log)).toBe(false);
     expect(existsSync(`${prefix}.custody`)).toBe(false);
     expect(existsSync(`${prefix}.pid`)).toBe(false);
     expect(existsSync(`${prefix}.stat`)).toBe(false);
-    session.sendMessage('t1', 'hello');
-    await until(() => failure(actions) !== undefined);
-    expect(failure(actions)).toContain('no matching configured ACP process authority');
+    expect(actions.some((action) => action.type === 'chat/turnStarted')).toBe(false);
   }
   finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
 });
@@ -353,9 +351,11 @@ it.skipIf(process.platform !== 'linux').each(['initialize', 'session/new', 'sess
       expect(existsSync(`${prefix}.pid`)).toBe(false);
       expect(existsSync(`${prefix}.stat`)).toBe(false);
       expect((session?.chatState()._meta as Bag | undefined)?.['ahpd/backendSessionId']).toBeUndefined();
-      if (method === 'bookkeeping') expect(session?.agentId()).toMatch(/^acp-session-/u);
-      if (method === 'load-bookkeeping') expect(session?.agentId()).toBe('recorded-backend-id');
-      if (refused !== undefined) expect(String(refused)).toContain(`fixture refused ${method}`);
+      expect(session).toBeUndefined();
+      expect(String(refused)).toContain(`fixture refused ${bookkeeping ? 'bookkeeping' : method}`);
+      if (method === 'load-bookkeeping') {
+        expect(requests.find((request) => request.method === 'session/load')?.params).toMatchObject({ sessionId: 'recorded-backend-id' });
+      }
     }
     finally { await session?.close(); rmSync(folder, { recursive: true, force: true }); }
   },
@@ -431,17 +431,10 @@ const failure = (actions: Bag[]): string | undefined => {
   return error?.part?.error?.message;
 };
 
-it('fails the first turn of a session whose command is missing, and nothing escapes', async () => {
-  const { session, actions } = await start(MISSING);
-  session.sendMessage('t1', 'hi');
-  await until(() => failure(actions) !== undefined);
-
-  expect(failure(actions)).toContain(MISSING);
-  expect(failure(actions)).toContain('not found');
-  // A second turn fails the same way rather than waiting on the first attempt.
-  session.sendMessage('t2', 'hi again');
-  await until(() => actions.filter((action) => action.type === 'chat/error').length > 1);
-  expect(actions.filter((action) => action.type === 'chat/error')).toHaveLength(2);
+it('rejects opening when the command is missing, and nothing escapes', async () => {
+  await expect(start(MISSING)).rejects.toThrow(`${MISSING} was not found`);
+  // An explicit later open fails independently; no fabricated session accepts a turn.
+  await expect(start(MISSING)).rejects.toThrow(`${MISSING} was not found`);
   expect(escaped).toEqual([]);
 });
 

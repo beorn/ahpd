@@ -91,6 +91,27 @@ it.skipIf(!linux)('projects original and peer identities per Start and reapplies
   expect(first.options.env).toEqual({ ACP_LOG: first.log, REFRESHED: 'yes' });
 });
 
+// Identity refusal must precede any usable provider session; the successful
+// original/peer journey cannot witness a reserved-variable or malformed-ID admission.
+it.skipIf(!linux).each([
+  ['HAB_ACP_PID_PREFIX', 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246', /reserved/],
+  ['HAB_ACP_SESSION_URI', 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246', /reserved/],
+  ['HAB_ACP_CHAT_URI', 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246', /reserved/],
+  ['HAB_ACP_SPAWN_GUARD', 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246', /reserved/],
+  ['HAB_ACP_SESSION_ID', 'ahp-session:/nested/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246', /original UUID/],
+] as const)('refuses identity variable %s and URI %s before returning a session', async (sessionIdEnv, uri, error) => {
+  await expect(start([], { sessionIdEnv }, { uri })).rejects.toThrow(error);
+});
+
+it.skipIf(!linux)('refuses a changed guard capability on refresh before admitting another turn', async () => {
+  const first = await start([], { sessionIdEnv: 'HAB_ACP_SESSION_ID' }, { uri: 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246' });
+  first.options.spawnGuard = 'inherited-fd-v1';
+  first.session.sendMessage('changed-capability', 'must not be sent');
+  await until(() => first.actions.some((action) => action.type === 'chat/error') || logged(first.log).some((line) => line.method === 'session/prompt'));
+  expect(first.actions).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'chat/error', part: expect.objectContaining({ error: expect.objectContaining({ message: expect.stringContaining('capabilities changed') }) }) })]));
+  expect(logged(first.log).filter((line) => line.method === 'session/prompt')).toHaveLength(0);
+});
+
 it.skipIf(!linux)('names the running child before initialize and keeps the record, ended, after the child exits', async () => {
   const { session, prefix, log } = await start([]);
   const [first] = initializes(log);
