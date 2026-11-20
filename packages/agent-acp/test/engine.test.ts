@@ -133,7 +133,7 @@ it('registers the acp engine, its templates, host-only fields and key variables'
   expect(engine).toMatchObject({
     name: 'acp',
     title: 'Agent Client Protocol',
-    hostOnly: ['base', 'command', 'args', 'cwd', 'machine', 'install'],
+    hostOnly: ['base', 'command', 'args', 'cwd', 'machine', 'install', 'sessionIdEnv', 'spawnGuard'],
   });
   // Each row's vendor key variables: the ones `knownAgents` marks secret and
   // the ones a row signs in with, which is what any owner may set.
@@ -160,7 +160,7 @@ it('registers the acp engine, its templates, host-only fields and key variables'
   // spells.
   const fields = Object.keys((engine?.schema.properties ?? {}) as Bag).sort();
   expect(fields).toEqual([
-    'args', 'authenticate', 'base', 'closeGraceMs', 'command', 'cutTurns', 'cwd', 'env', 'exitGraceMs', 'findFreshMs', 'honoursTrust', 'hostTools', 'install', 'killGraceMs', 'listingIdleMs', 'machine', 'modes', 'page', 'sessionListMaxPages', 'stderrBytes', 'stderrTail', 'toolsChanged', 'unreportedClientCalls',
+    'args', 'authenticate', 'base', 'closeGraceMs', 'command', 'cutTurns', 'cwd', 'env', 'exitGraceMs', 'findFreshMs', 'honoursTrust', 'hostTools', 'install', 'killGraceMs', 'listingIdleMs', 'machine', 'modes', 'page', 'sessionIdEnv', 'sessionListMaxPages', 'spawnGuard', 'stderrBytes', 'stderrTail', 'toolsChanged', 'unreportedClientCalls',
   ]);
   for (const owned of ['name', 'description', 'icon', 'model', 'provider']) expect(fields).not.toContain(owned);
 

@@ -1809,7 +1809,7 @@ const onLine = (line) => {
             ? { promptCapabilities: { image: true, embeddedContext: true } }
             : {}),
           sessionCapabilities: {
-            list: {},
+            ...(process.argv.includes('--no-list') ? {} : { list: {} }),
             ...(process.argv.includes('--no-resume') ? {} : { resume: {} }),
             ...(process.argv.includes('--fork') ? { fork: {} } : {}),
             ...(process.argv.includes('--no-close') ? {} : { close: {} }),

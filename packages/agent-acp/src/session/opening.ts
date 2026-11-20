@@ -229,7 +229,7 @@ const AUTH_REQUIRED = RequestError.authRequired().code;
 /** How long past the kill grace an opening waits for a predecessor's custody before refusing (#34599). */
 const ADMIT_MARGIN_MS = 2000;
 
-export function createOpening(ctx: SessionContext): Opening {
+export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions): Opening {
   const { options, provider, start, cwd, replay } = ctx;
 
   /**
@@ -523,7 +523,9 @@ export function createOpening(ctx: SessionContext): Opening {
       ctx.resumes = advertised(agentCapabilities?.sessionCapabilities?.resume);
       ctx.forks = advertised(agentCapabilities?.sessionCapabilities?.fork);
       // And for the agent, which offers a fork only where its server can make one.
-      heardCapabilities(options, agentCapabilities);
+      // Launch options belong to this Start; advertised agent capabilities
+      // remain in the catalog's one existing owner shared by its sessions.
+      heardCapabilities(capabilityOwner, agentCapabilities);
       ctx.promptCapabilities = agentCapabilities?.promptCapabilities ?? undefined;
       extras = advertised(agentCapabilities?.sessionCapabilities?.additionalDirectories);
       authMethods = (initializeResponse.authMethods ?? []).map((one) => one.id);
