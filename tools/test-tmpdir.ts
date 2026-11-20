@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gitSync } from './git.ts';
 
 /*
  * One temporary folder per test run, removed when the run ends.
@@ -12,7 +13,20 @@ import { fileURLToPath } from 'node:url';
  * run whatever a test forgot. Windows reads `TEMP` or `TMP` rather than
  * `TMPDIR`, so all three name the run's folder.
  */
-export default function setup(): () => void {
+export default function setup(project: { config: { root: string } }): () => void {
+  const checkout = project.config.root;
+  // An archive has no checkout metadata. A worktree's .git can be a file.
+  const gitFile = (name: string): string => gitSync([
+    '-C', checkout, 'rev-parse', '--path-format=absolute', '--git-path', name,
+  ]).trim();
+  const head = existsSync(join(checkout, '.git')) ? gitFile('HEAD') : undefined;
+  const index = head === undefined ? undefined : gitFile('index');
+  const snapshot = () => ({
+    refs: gitSync(['-C', checkout, 'for-each-ref', '--format=%(refname) %(objectname)']),
+    HEAD: readFileSync(head as string, 'utf8'),
+    index: index !== undefined && existsSync(index) ? readFileSync(index).toString('hex') : null,
+  });
+  const before = head === undefined ? undefined : snapshot();
   /*
    * By its long name. A Windows runner's temp folder is an 8.3 short one
    * (`C:\Users\RUNNER~1\...`), and git answers every path by its long name, so
@@ -23,6 +37,10 @@ export default function setup(): () => void {
   process.env.TMPDIR = run;
   process.env.TEMP = run;
   process.env.TMP = run;
+  // A plain temporary folder must not discover a repository above the run,
+  // including when the machine's temporary directory is inside a checkout.
+  process.env.GIT_CEILING_DIRECTORIES = [run, process.env.GIT_CEILING_DIRECTORIES]
+    .filter((path) => path !== undefined && path !== '').join(delimiter);
   /*
    * And no line-ending conversion in any repository a test makes. Git for
    * Windows ships `core.autocrlf=true` in its system config, so a file a test
@@ -34,6 +52,22 @@ export default function setup(): () => void {
   process.env[`GIT_CONFIG_KEY_${String(count)}`] = 'core.autocrlf';
   process.env[`GIT_CONFIG_VALUE_${String(count)}`] = 'false';
   process.env.GIT_CONFIG_COUNT = String(count + 1);
+  /*
+   * Real files for the filesystem suites, in a repository of the run's own.
+   * Only these suites' read fixtures are copied: child processes still load
+   * their code and plugins from the source checkout, while serving this one.
+   */
+  const source = fileURLToPath(new URL('..', import.meta.url));
+  const repository = join(run, 'repository');
+  for (const relative of ['LICENSE', 'README.md', 'packages/sdk/src', 'packages/server/package.json']) {
+    const target = join(repository, relative);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(join(source, relative), target, { recursive: true });
+  }
+  gitSync(['init', '-q', '-b', 'main', repository]);
+  gitSync(['-C', repository, 'add', '-A']);
+  gitSync(['-C', repository, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '-m', 'fixture']);
+  process.env.AHPD_TEST_REPOSITORY = repository;
   /*
    * And a Claude config folder of the run's own, empty. A Claude session reads
    * and watches its config folder, and the person's own `~/.claude` is not a
@@ -60,6 +94,8 @@ export default function setup(): () => void {
    */
   process.env.AHPD_TEST_WORK = join(run, 'work');
   return () => {
+    // Observe before cleanup, so cleanup cannot hide a checkout mutation.
+    const after = before === undefined ? undefined : snapshot();
     /*
      * The run's folder goes, and a folder Windows will not let go of is said,
      * not thrown. Every test has passed or failed by now, and a file a process
@@ -90,6 +126,13 @@ export default function setup(): () => void {
       rmSync(stray, { force: true });
       throw new Error(
         `a test wrote ${stray}: a state directory must be a temporary one, not this repository`,
+      );
+    }
+    if (before !== undefined && after !== undefined) {
+      const changed = (Object.keys(before) as (keyof typeof before)[])
+        .filter((key) => before[key] !== after[key]);
+      if (changed.length !== 0) throw new Error(
+        `a test changed checkout Git ${changed.join(', ')} in ${checkout}: use a temporary repository`,
       );
     }
   };

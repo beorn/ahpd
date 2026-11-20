@@ -20,3 +20,9 @@ export const WORK: string = named;
 
 /** `WORK` as the URI a client sends and receives. */
 export const WORK_URI: string = uriOf(WORK);
+
+/** A temporary Git repository containing the filesystem suites' read fixtures. */
+const repository = process.env.AHPD_TEST_REPOSITORY;
+if (repository === undefined || repository === '')
+  throw new Error('AHPD_TEST_REPOSITORY is not set: run the suite through vitest with tools/test-tmpdir.ts.');
+export const REPOSITORY: string = repository;

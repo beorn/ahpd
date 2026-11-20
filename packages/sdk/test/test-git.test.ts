@@ -1,8 +1,10 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { gitSync } from '../../../tools/git.ts';
+import setup from '../../../tools/test-tmpdir.ts';
 
 /*
  * A test's own `git`: answered as a string, timed like the host's calls, and
@@ -23,6 +25,7 @@ it('answers a call as a string', () => {
 
 it('says a call over AHPD_GIT_SLOW_MS on stderr, with its arguments', () => {
   process.env['AHPD_GIT_SLOW_MS'] = '1';
+  vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(2);
   const said: string[] = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((line) => { said.push(String(line)); return true; });
   gitSync(['--version']);
@@ -57,4 +60,56 @@ it('finds no test that runs git without gitSync', () => {
     })
     .filter((file) => DIRECT.test(readFileSync(join(ROOT, file), 'utf8')));
   expect(direct).toEqual([]);
+});
+
+/*
+ * A run must fail if a suite writes the checkout's Git bookkeeping. The
+ * temporary repository stands in for the checkout; no real checkout is
+ * mutated, even when the integrity check is missing.
+ */
+it.each(['refs', 'HEAD', 'index', 'unchanged'] as const)('checks checkout %s after a test run', (part) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ahpd-checkout-integrity-'));
+  const env = { ...process.env };
+  const git = (...args: string[]): string => gitSync(['-C', dir, ...args]);
+  try {
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'fixture');
+    const finish = setup({ config: { root: dir } });
+    if (part === 'refs') git('update-ref', 'refs/agents/witness/checkpoints/turn/0', 'HEAD');
+    if (part === 'HEAD') git('symbolic-ref', 'HEAD', 'refs/heads/another');
+    if (part === 'index') {
+      writeFileSync(join(dir, 'staged.txt'), 'fixture\n');
+      git('add', 'staged.txt');
+    }
+    if (part === 'unchanged') expect(finish).not.toThrow();
+    else expect(finish).toThrow(/a test changed checkout Git/);
+  }
+  finally {
+    for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+    Object.assign(process.env, env);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('keeps a temporary non-repository from discovering the repository above the run', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'ahpd-parent-repository-'));
+  const env = { ...process.env };
+  let finish: (() => void) | undefined;
+  try {
+    gitSync(['init', '-q', '-b', 'main', parent]);
+    process.env.TMPDIR = parent;
+    process.env.TEMP = parent;
+    process.env.TMP = parent;
+    finish = setup({ config: { root: parent } });
+    const plain = mkdtempSync(join(tmpdir(), 'plain-'));
+    expect(() => gitSync(['-C', plain, 'rev-parse', '--show-toplevel'])).toThrow();
+  }
+  finally {
+    try { finish?.(); }
+    finally {
+      for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+      Object.assign(process.env, env);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
 });
