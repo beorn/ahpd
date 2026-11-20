@@ -102,6 +102,8 @@ export interface SessionRequest {
    * the session is started under.
    */
   owner: Owner;
+  /** Explicitly use this exact existing owned URI; exclusive with creation fields and named. */
+  resume?: string;
   /** The backend it runs on, or the host's own default. */
   provider?: string;
   /** Where it works, or wherever a session with nothing said usually works. */
