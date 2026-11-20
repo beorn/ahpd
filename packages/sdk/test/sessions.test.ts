@@ -15,10 +15,10 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { uriOf } from '../src/resources/fileuri.js';
-import { createHost } from '../src/host.js';
+import { createHost as openHost } from '../src/host.js';
 import { chatUriFor } from '../src/host/channels.js';
 import { PAGE } from '../src/sessions/paging.js';
-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
+import { fileSessions as openFileSessions, memorySessions } from '../src/sessions/sessions.js';
 import { echo } from '../../../examples/echo/agent.js';
 import type { Peer } from '../src/types/rpc.js';
 import type { Bag } from '../src/types/common.js';
@@ -37,8 +37,26 @@ const READ = 32;
 const HOST = 'builder';
 
 let root: string;
+const stores = new Set<SessionStore>();
+const hosts = new Set<ReturnType<typeof openHost>>();
+const fileSessions: typeof openFileSessions = (options) => {
+  const store = openFileSessions(options);
+  stores.add(store);
+  return store;
+};
+const createHost: typeof openHost = (options) => {
+  const host = openHost(options);
+  hosts.add(host);
+  return host;
+};
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'ahpd-store-')); });
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  await Promise.all([...hosts].map((host) => host.close()));
+  hosts.clear();
+  for (const store of stores) store.close?.();
+  stores.clear();
+  rmSync(root, { recursive: true, force: true });
+});
 
 it('holds the file-store writer across OS processes until close', async () => {
   const dir = join(root, 'exclusive');
@@ -75,7 +93,7 @@ it('rejects a closed file-store setter before changing its retained row', () => 
  * the file itself - its name included, since the name is what the id had to be
  * made safe for.
  */
-const row = (dir: string, id: string): unknown => {
+const row = (dir: string, id: string): Record<string, unknown> | undefined => {
   try { return JSON.parse(readFileSync(join(dir, `${encodeURIComponent(id)}.json`), 'utf8')); }
   catch { return undefined; }
 };
@@ -442,6 +460,7 @@ it('remembers it across a restart when the store writes it down', async () => {
   // happening after it rather than a test waiting for nothing.
   await new Promise((tick) => { setTimeout(tick, 5); });
 
+  await first.host.close();
   const second = await running(fileSessions({ dir }));
   expect(await statusOf(second.client) & ARCHIVED).toBe(ARCHIVED);
 });
@@ -467,11 +486,12 @@ it('commits creation admission and missing request facts in the existing session
   expect(row(dir, 'owned')).toEqual({
     version: 1, id: 'owned', owner: 'user:ana', provider: 'echo', config: { safe: true }, creation: snapshot,
   });
+  store.close?.();
   const next = fileSessions({ dir });
   expect(next.creation('owned')).toEqual(snapshot);
   next.setCreation('owned', { ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
   await next.commit('owned');
-  expect(fileSessions({ dir }).creation('owned')).toEqual({ ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
+  expect(row(dir, 'owned')?.creation).toEqual({ ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
 });
 
 // #35117: neither a positive empty-history fact nor its consumption may disappear on a cold read.
@@ -481,6 +501,7 @@ it.each([true, false])('retains explicit never-spoken provenance %s across a col
   const first = fileSessions({ dir });
   const chat = { uri: 'ahp-chat:/original', backendId: 'native-unmaterialized', sessionConversation: true, neverSpoken };
   first.setChats('original', [chat]);
+  first.close?.();
   first.close?.();
   const second = fileSessions({ dir });
   expect(second.chats('original')).toMatchObject([{ neverSpoken }]);
@@ -509,6 +530,7 @@ it('keeps failed native-binding and provenance writes pending until a strict flu
   store.flush(); // No second mutation: only the failed writer's retained dirty work can commit this.
   store.close?.();
   expect(() => store.flush?.()).toThrow(/closed session store/);
+  store.close?.();
   const reopened = fileSessions({ dir });
   expect(reopened.chats('original')).toMatchObject([{ backendId: 'new-native', neverSpoken: false }]);
   reopened.close?.();
@@ -553,6 +575,7 @@ it('reads back an id that is not a file name as it stands', async () => {
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(readdirSync(dir).sort()).toEqual(['a%20b.json', 'agent-host%3Asession%2Ftwo.json', 'claude%3A%2Fone.json']);
 
+  store.close?.();
   const second = fileSessions({ dir });
   for (const id of ['claude:/one', 'agent-host:session/two', 'a b']) expect(second.provider(id)).toBe('claude');
 });
@@ -677,7 +700,7 @@ it('keeps what the agent recorded, and drops the file when the last entry goes',
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', artifacts: [one] });
   // Read back by a second store on the same folder, which is what a restart is.
-  expect(fileSessions({ dir }).artifacts('a')).toEqual([one]);
+  expect(row(dir, 'a')?.artifacts ?? []).toEqual([one]);
   store.setArtifacts('a', []);
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toBeUndefined();
@@ -742,7 +765,7 @@ it('keeps the backend a chat runs on, and its config, so a restart starts it the
   store.setChats('a', [lead, peer]);
   await new Promise((tick) => { setTimeout(tick, 5); });
   // Read back by a second store on the same folder, which is what a restart is.
-  expect(fileSessions({ dir }).chats('a')).toEqual([lead, peer]);
+  expect(row(dir, 'a')?.chats ?? []).toEqual([lead, peer]);
 
   /*
    * A row this version did not write reads as it always did - the session's
@@ -757,6 +780,7 @@ it('keeps the backend a chat runs on, and its config, so a restart starts it the
       { uri: 'ahp-chat:/odd', backendId: 'odd', provider: 7, config: 'loud' },
     ],
   }));
+  store.close?.();
   const loaded = fileSessions({ dir }).chats('b');
   expect(loaded.map((one) => one.uri)).toEqual(['ahp-chat:/old', 'ahp-chat:/odd']);
   expect(loaded[0]).toEqual({ uri: 'ahp-chat:/old', backendId: 'old' });
@@ -772,17 +796,21 @@ it('keeps original, peer and unknown conversation provenance across a synchronou
     { uri: 'ahp-chat:/peer', backendId: 'peer', default: true, sessionConversation: false },
     { uri: 'ahp-chat:/legacy', backendId: 'legacy' },
   ];
-  fileSessions({ dir }).setChats('a', held);
+  const first = fileSessions({ dir });
+  first.setChats('a', held);
+  first.close?.();
+  first.close?.();
   const restarted = fileSessions({ dir });
   expect(restarted.chats('a')).toEqual(held);
   restarted.setChats('a', restarted.chats('a').map((chat) => ({ ...chat, closed: true })));
   restarted.close?.();
-  expect(fileSessions({ dir }).chats('a')).toEqual(held.map((chat) => ({ ...chat, closed: true })));
+  expect(row(dir, 'a')?.chats ?? []).toEqual(held.map((chat) => ({ ...chat, closed: true })));
   // A conversation occurrence in another session cannot inherit original ownership.
+  restarted.close?.();
   const moving = fileSessions({ dir });
   moving.moveChat('a', 'b', held[0]!.uri, []);
   moving.close?.();
-  expect(fileSessions({ dir }).chats('b')).toEqual([{ ...held[0], closed: true, sessionConversation: false }]);
+  expect(row(dir, 'b')?.chats ?? []).toEqual([{ ...held[0], closed: true, sessionConversation: false }]);
 });
 
 it('forgets a session entirely, whatever was set on it', () => {
@@ -815,6 +843,7 @@ it('keeps the scope a session is charged to across a restart, and forgets it wit
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', scope: { team: 'backend', project: 'ahpd' } });
   expect(row(dir, 'b')).toEqual({ version: 1, id: 'b', scope: { team: 'frontend' } });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.scope('a')).toEqual({ team: 'backend', project: 'ahpd' });
   expect(second.scope('b')).toEqual({ team: 'frontend' });
@@ -822,10 +851,10 @@ it('keeps the scope a session is charged to across a restart, and forgets it wit
   // Charged to nothing on purpose is kept as `null`, apart from never decided.
   second.setScope('c', null);
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).scope('c')).toBeNull();
+  expect(row(dir, 'c')?.scope).toBeNull();
   second.setScope('a', undefined);
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).scope('a')).toBeUndefined();
+  expect(row(dir, 'a')?.scope).toBeUndefined();
   second.forget('b');
   second.forget('c');
   await new Promise((tick) => { setTimeout(tick, 5); });
@@ -850,6 +879,7 @@ it('keeps a session\'s pull request baseline across a restart, empty included, a
     version: 1, id: 'c', pullRequests: { initialPullRequestUrls: [], associatedPullRequestUrls: [] },
   });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.pullRequests('a')).toEqual(inherited);
   expect(second.pullRequests('b')).toEqual(none);
@@ -857,6 +887,7 @@ it('keeps a session\'s pull request baseline across a restart, empty included, a
   expect(second.pullRequests('nobody')).toBeUndefined();
   second.forget('a');
   await new Promise((tick) => { setTimeout(tick, 5); });
+  second.close?.();
   const after = fileSessions({ dir });
   expect(after.pullRequests('a')).toBeUndefined();
   expect(after.pullRequests('b')).toEqual(none);
@@ -876,12 +907,13 @@ it('keeps a session\'s chats across a restart, in order, and forgets them with t
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', chats: [first, second_] });
   // Read back by a second store on the same folder, which is what a restart is,
   // and in the order they were opened rather than the order a map would give.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.chats('a')).toEqual([first, second_]);
   expect(second.chats('nobody')).toEqual([]);
   second.forget('a');
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).chats('a')).toEqual([]);
+  expect(row(dir, 'a')?.chats ?? []).toEqual([]);
 });
 
 it('moves a chat to another session in the store, with its title and the senders of its turns', async () => {
@@ -916,6 +948,7 @@ it('moves a chat to another session in the store, with its title and the senders
   });
   // Read back by a second store on the same folder, which is what a restart is,
   // and under the destination rather than beside it.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.chats('a')).toEqual([lead]);
   expect(second.chats('b')).toEqual([tail, peer]);
@@ -965,6 +998,7 @@ it('names every id it holds, on both stores, and no id it was merely asked about
   expect(store.sessions().sort()).toEqual(['a', 'b']);
   // And a second store over the folder answers what the first wrote, which is
   // what the map of chats is built from before anything has listed a session.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.sessions().sort()).toEqual(['a', 'b']);
   expect(second.chats('c')).toEqual([]);
@@ -980,13 +1014,14 @@ it('keeps whose work a session is across a restart, and forgets it with the sess
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', owner: 'user:ana' });
   expect(row(dir, 'b')).toEqual({ version: 1, id: 'b', owner: 'root:builder' });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.owner('a')).toBe('user:ana');
   expect(second.owner('b')).toBe('root:builder');
   expect(second.owner('nobody')).toBeUndefined();
   second.setOwner('a', undefined);
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).owner('a')).toBeUndefined();
+  expect(row(dir, 'a')?.owner).toBeUndefined();
   second.forget('b');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'b')).toBeUndefined();
@@ -1006,6 +1041,7 @@ it('keeps who sent each turn across a restart, and forgets it with the session',
     version: 1, id: 'a', owner: 'user:ana', senders: { 'turn-1': 'user:ana', 'turn-2': 'user:bo' },
   });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.sender('a', 'turn-1')).toBe('user:ana');
   expect(second.sender('a', 'turn-2')).toBe('user:bo');
@@ -1015,7 +1051,7 @@ it('keeps who sent each turn across a restart, and forgets it with the session',
   // flag read and cleared does.
   second.setSender('a', 'turn-1', undefined);
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).sender('a', 'turn-1')).toBeUndefined();
+  expect((row(dir, 'a')?.senders as Record<string, unknown> | undefined)?.['turn-1']).toBeUndefined();
   second.forget('a');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toBeUndefined();
@@ -1031,13 +1067,14 @@ it('keeps which harness a session runs on across a restart, and forgets it with 
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', provider: 'claude' });
   expect(row(dir, 'b')).toEqual({ version: 1, id: 'b', provider: 'claude-openrouter' });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.provider('a')).toBe('claude');
   expect(second.provider('b')).toBe('claude-openrouter');
   expect(second.provider('nobody')).toBeUndefined();
   second.setProvider('a', undefined);
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).provider('a')).toBeUndefined();
+  expect(row(dir, 'a')?.provider).toBeUndefined();
   second.forget('b');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'b')).toBeUndefined();
@@ -1052,12 +1089,13 @@ it('keeps a session opened and not adopted external across a restart, and writes
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', provider: 'claude', external: true });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.external?.('a')).toBe(true);
   second.setExternal?.('a', false);
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', provider: 'claude' });
-  expect(fileSessions({ dir }).external?.('a')).toBeUndefined();
+  expect(row(dir, 'a')?.external).toBeUndefined();
 });
 
 it('keeps the name a session is held under across a restart, and writes no file for a name alone', async () => {
@@ -1068,6 +1106,7 @@ it('keeps the name a session is held under across a restart, and writes no file 
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', provider: 'claude', uri: 'ahp-session:/one' });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.uri?.('a')).toBe('ahp-session:/one');
   expect(second.provider('a')).toBe('claude');
@@ -1089,6 +1128,7 @@ it('reads a file row whose name is not a string as a row with no name', async ()
   await new Promise((tick) => { setTimeout(tick, 5); });
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', provider: 'claude', uri: 7 }));
   writeFileSync(join(dir, 'c.json'), JSON.stringify({ version: 1, id: 'c', provider: 'claude', uri: '' }));
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.uri?.('b')).toBeUndefined();
   expect(second.uri?.('c')).toBeUndefined();
@@ -1103,6 +1143,7 @@ it('keeps the folder a session works in across a restart, and reads a row withou
   store.setWorkingDirectory?.('a', '/home/softov/.bots/support');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', provider: 'claude', workingDirectory: '/home/softov/.bots/support' });
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.workingDirectory?.('a')).toBe('/home/softov/.bots/support');
   expect(second.provider('a')).toBe('claude');
@@ -1111,6 +1152,7 @@ it('keeps the folder a session works in across a restart, and reads a row withou
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', flags: READ }));
   writeFileSync(join(dir, 'c.json'), JSON.stringify({ version: 1, id: 'c', provider: 'claude', workingDirectory: '' }));
   writeFileSync(join(dir, 'd.json'), JSON.stringify({ version: 1, id: 'd', provider: 'claude', workingDirectory: 7 }));
+  second.close?.();
   const third = fileSessions({ dir });
   expect(third.flags('b')).toBe(READ);
   expect(third.workingDirectory?.('b')).toBeUndefined();
@@ -1190,6 +1232,7 @@ it('reads a row written before harnesses were kept as one nothing was recorded f
   // And one that is not a name at all is ignored rather than guessed at.
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', provider: '' }));
   writeFileSync(join(dir, 'c.json'), JSON.stringify({ version: 1, id: 'c', provider: 7 }));
+  store.close?.();
   const other = fileSessions({ dir });
   expect(other.provider('b')).toBeUndefined();
   expect(other.provider('c')).toBeUndefined();
@@ -1260,7 +1303,7 @@ it('keeps the owner beside a session a later daemon resumes', async () => {
 
   // A second host on the same file is a daemon that came back, and the session
   // it was asked about still says who it belongs to.
-  expect(fileSessions({ dir }).owner('one')).toBe('user:ana');
+  expect(row(dir, 'one')?.owner).toBe('user:ana');
 });
 
 it('keeps the host\'s keys of `_meta` when a backend says its own part moved', async () => {
@@ -1304,6 +1347,7 @@ it('says on the wire who sent a turn and whose a session is, and keeps it past a
    * store on this file, and not the map this host let go of at turn end.
    */
   await new Promise((tick) => { setTimeout(tick, 5); });
+  store.close?.();
   const after = fileSessions({ dir });
   expect(after.owner('one')).toBe('user:ana');
   expect(after.sender('one', 'turn-1')).toBe('user:ana');
@@ -1393,6 +1437,7 @@ it('keeps the titles chats were given, and forgets them with the session', async
     version: 1, id: 'a', chatTitles: { 'ahp-chat:/one': 'Kqueue port', 'ahp-chat:/two': 'Tests' },
   });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.chatTitle('a', 'ahp-chat:/one')).toBe('Kqueue port');
   expect(second.chatTitle('a', 'ahp-chat:/two')).toBe('Tests');
@@ -1400,7 +1445,7 @@ it('keeps the titles chats were given, and forgets them with the session', async
   second.forget('a');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toBeUndefined();
-  expect(fileSessions({ dir }).chatTitle('a', 'ahp-chat:/one')).toBeUndefined();
+  expect((row(dir, 'a')?.chatTitles as Record<string, unknown> | undefined)?.['ahp-chat:/one']).toBeUndefined();
 });
 
 it('keeps the title a session was given beside its chats\' own, an empty one included, and forgets it with the session', async () => {
@@ -1412,13 +1457,14 @@ it('keeps the title a session was given beside its chats\' own, an empty one inc
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', customTitle: 'Renamed', chatTitles: { 'ahp-chat:/one': 'hello' } });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.customTitle?.('a')).toBe('Renamed');
   expect(second.chatTitle('a', 'ahp-chat:/one')).toBe('hello');
   expect(second.customTitle?.('b')).toBe('');
   second.forget('a');
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).customTitle?.('a')).toBeUndefined();
+  expect(row(dir, 'a')?.customTitle).toBeUndefined();
 });
 
 it("keeps the flags a chat was given, and forgets them with the session", async () => {
@@ -1433,6 +1479,7 @@ it("keeps the flags a chat was given, and forgets them with the session", async 
   // Read back by a second store on the same folder, which is what a restart is.
   // A chat marked read that came back unread is the whole reason these are
   // written down rather than held in the session that is running.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.chatFlags('a', 'ahp-chat:/one')).toBe(READ);
   expect(second.chatFlags('a', 'ahp-chat:/two')).toBe(READ | ARCHIVED);
@@ -1441,7 +1488,7 @@ it("keeps the flags a chat was given, and forgets them with the session", async 
   second.forget('a');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toBeUndefined();
-  expect(fileSessions({ dir }).chatFlags('a', 'ahp-chat:/one')).toBe(0);
+  expect((row(dir, 'a')?.chatFlags as Record<string, unknown> | undefined)?.['ahp-chat:/one'] ?? 0).toBe(0);
 });
 
 /*
@@ -1460,12 +1507,13 @@ it('keeps the counts a chat carries across a restart, and forgets one cleared', 
     version: 1, id: 'a',
     chatChanges: { 'ahp-chat:/one': { files: 2, additions: 5, deletions: 1 }, 'ahp-chat:/two': { files: 1, additions: 1, deletions: 0 } },
   });
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.chatChanges?.('a', 'ahp-chat:/one')).toEqual({ files: 2, additions: 5, deletions: 1 });
   second.setChatChanges?.('a', 'ahp-chat:/two', undefined);
   await new Promise((tick) => { setTimeout(tick, 5); });
-  expect(fileSessions({ dir }).chatChanges?.('a', 'ahp-chat:/two')).toBeUndefined();
-  expect(fileSessions({ dir }).chatChanges?.('a', 'ahp-chat:/one')).toEqual({ files: 2, additions: 5, deletions: 1 });
+  expect((row(dir, 'a')?.chatChanges as Record<string, unknown> | undefined)?.['ahp-chat:/two']).toBeUndefined();
+  expect((row(dir, 'a')?.chatChanges as Record<string, unknown> | undefined)?.['ahp-chat:/one']).toEqual({ files: 2, additions: 5, deletions: 1 });
 });
 
 it('writes no flags for a chat whose bits are all cleared', async () => {
@@ -1480,7 +1528,7 @@ it('writes no flags for a chat whose bits are all cleared', async () => {
   store.setChatFlags('b', 'ahp-chat:/one', 0);
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'b')).toBeUndefined();
-  expect(fileSessions({ dir }).chatFlags('b', 'ahp-chat:/one')).toBe(0);
+  expect((row(dir, 'b')?.chatFlags as Record<string, unknown> | undefined)?.['ahp-chat:/one'] ?? 0).toBe(0);
 });
 
 it('keeps the record of a nested session across a restart, lists it, and forgets it with the session', async () => {
@@ -1493,18 +1541,22 @@ it('keeps the record of a nested session across a restart, lists it, and forgets
   store.setNested?.('n1', record);
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'n1')).toEqual({ version: 1, id: 'n1', nested: record });
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.nested?.('n1')).toEqual(record);
   expect(second.nestedSessions?.()).toEqual([['n1', record]]);
   // A file a version before this one wrote has no record, and still reads.
   writeFileSync(join(dir, 'old.json'), JSON.stringify({ version: 1, id: 'old', provider: 'cofold' }));
+  second.close?.();
   const third = fileSessions({ dir });
   expect(third.nested?.('old')).toBeUndefined();
   expect(third.provider('old')).toBe('cofold');
   // A record missing what a listing needs is ignored rather than guessed at.
   writeFileSync(join(dir, 'half.json'), JSON.stringify({ version: 1, id: 'half', nested: { provider: 'cofold' } }));
-  expect(fileSessions({ dir }).nested?.('half')).toBeUndefined();
-  third.forget('n1');
+  third.close?.();
+  const fourth = fileSessions({ dir });
+  expect(fourth.nested?.('half')).toBeUndefined();
+  fourth.forget('n1');
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'n1')).toBeUndefined();
 });
@@ -1518,6 +1570,7 @@ it('keeps the worktree a session runs in across a restart, and ignores one that 
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', worktree: tree });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.worktree?.('a')).toEqual(tree);
   expect(second.worktree?.('b')).toEqual({ repository: '/srv/app', path: '/srv/app.worktrees/release', base: 'release' });
@@ -1527,6 +1580,7 @@ it('keeps the worktree a session runs in across a restart, and ignores one that 
   writeFileSync(join(dir, 'c.json'), JSON.stringify({ version: 1, id: 'c', provider: 'echo', worktree: { repository: '/srv/app', path: 7, base: 'main' } }));
   writeFileSync(join(dir, 'd.json'), JSON.stringify({ version: 1, id: 'd', provider: 'echo', worktree: { repository: '/srv/app', path: '/x', base: 'main', branch: '' } }));
   writeFileSync(join(dir, 'e.json'), JSON.stringify({ version: 1, id: 'e', provider: 'echo', worktree: 'not a record' }));
+  second.close?.();
   const third = fileSessions({ dir });
   expect(third.worktree?.('c')).toBeUndefined();
   expect(third.worktree?.('d')).toBeUndefined();
@@ -1546,12 +1600,14 @@ it('keeps the trees a move left a session across a restart, and drops one that i
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', additionalWorktrees: [left] });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.additionalWorktrees?.('a')).toEqual([left]);
   expect(second.additionalWorktrees?.('nobody')).toEqual([]);
   // Each entry is read as the session's own tree is, and one that is not a
   // tree is left out, since this record decides which trees a host takes away.
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', provider: 'echo', additionalWorktrees: [left, { repository: '/srv/app', path: 7, base: 'main' }] }));
+  second.close?.();
   const third = fileSessions({ dir });
   expect(third.additionalWorktrees?.('b')).toEqual([left]);
   third.setAdditionalWorktrees?.('a', []);
@@ -1568,8 +1624,11 @@ it('keeps the multi-root workspace a session was made from across a restart, and
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', multiRoot: workspace });
   // Read back by a second store on the same folder, which is what a restart is.
-  expect(fileSessions({ dir }).multiRoot?.('a')).toEqual(workspace);
+  store.close?.();
+  const second = fileSessions({ dir });
+  expect(second.multiRoot?.('a')).toEqual(workspace);
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', provider: 'echo', multiRoot: { workspaceFile: 'app.code-workspace' } }));
+  second.close?.();
   expect(fileSessions({ dir }).multiRoot?.('b')).toBeUndefined();
 });
 
@@ -1580,12 +1639,14 @@ it('keeps the time the host archived a session across a restart, and ignores one
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', autoArchivedAt: '2026-10-15T08:00:00.000Z' });
   // Read back by a second store on the same folder, which is what a restart is.
+  store.close?.();
   const second = fileSessions({ dir });
   expect(second.autoArchivedAt?.('a')).toBe('2026-10-15T08:00:00.000Z');
   expect(second.autoArchivedAt?.('nobody')).toBeUndefined();
   // A value that is not a time is ignored, since this time decides which session a host deletes.
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', provider: 'echo', autoArchivedAt: 'yesterday' }));
   writeFileSync(join(dir, 'c.json'), JSON.stringify({ version: 1, id: 'c', provider: 'echo', autoArchivedAt: 7 }));
+  second.close?.();
   const third = fileSessions({ dir });
   expect(third.autoArchivedAt?.('b')).toBeUndefined();
   expect(third.autoArchivedAt?.('c')).toBeUndefined();
@@ -1675,6 +1736,7 @@ it('reads an explicitly repaired row on restart without discarding an unsupporte
   expect(aside).toHaveLength(0);
   expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe(newer);
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ version: 1, id: 'a', flags: READ }));
+  store.close?.();
   expect(fileSessions({ dir }).flags('a')).toBe(READ);
 });
 
@@ -1751,8 +1813,9 @@ it('reports background write failure and strictly commits the same pending row a
   mkdirSync(dir, { recursive: true });
   const said: string[] = [];
   const store = fileSessions({ dir, onProblem: (m) => said.push(m) });
-  rmSync(join(root, 'blocked'), { recursive: true });
-  writeFileSync(join(root, 'blocked'), 'not a directory');
+  // Break one row's publication path while retaining the actual writer lock.
+  // Removing its owning directory would destroy custody rather than test I/O retry.
+  mkdirSync(join(dir, 'a.json'));
   expect(() => store.setFlags('a', ARCHIVED)).not.toThrow();
   await new Promise((tick) => { setTimeout(tick, 5); });
   expect(said.join(' ')).toContain('Could not write');
@@ -1761,12 +1824,11 @@ it('reports background write failure and strictly commits the same pending row a
   // Admission must observe a failed write even after the background attempt
   // logged it. Repairing the resource permits the SAME pending row to commit.
   await expect(store.commit('a')).rejects.toThrow(/blocked/);
-  rmSync(join(root, 'blocked'));
-  mkdirSync(join(root, 'blocked'));
+  rmSync(join(dir, 'a.json'), { recursive: true });
   await store.commit('a');
   expect(row(join(root, 'blocked', 'sessions'), 'a')).toEqual({ version: 1, id: 'a', flags: ARCHIVED });
-  expect(fileSessions({ dir: join(root, 'blocked', 'sessions') }).flags('a')).toBe(ARCHIVED);
   store.close?.();
+  expect(fileSessions({ dir }).flags('a')).toBe(ARCHIVED);
   await expect(store.commit('a')).rejects.toThrow(/closed session store/);
 });
 

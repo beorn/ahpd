@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync, lst
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHost as openHost } from '../src/host.js';
 import { echo } from '../../../examples/echo/agent.js';
 import { gitWorktrees, worktreesOf } from '../src/repo/worktrees.js';
@@ -42,12 +42,18 @@ const createHost = (options: HostOptions): ReturnType<typeof openHost> => {
   return host;
 };
 
+// A managed TMPDIR can itself be under a checkout. A deliberately plain
+// fixture must not inherit that enclosing repository; child fixture repos
+// still resolve their own .git before reaching this discovery ceiling.
+beforeEach(() => { vi.stubEnv('GIT_CEILING_DIRECTORIES', realpathSync(tmpdir())); });
+
 afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.close()));
   // Awaited, with retries: on Windows a git a case started can hold a folder
   // for a moment after the case is over.
   for (const dir of made) await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   made = [];
+  vi.unstubAllEnvs();
 });
 
 /** A repository with one commit, a branch, and files git was told to ignore. */
