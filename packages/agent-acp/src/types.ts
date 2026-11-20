@@ -365,6 +365,10 @@ export interface AcpHandlers {
 /** How a connection spawns a server and where its updates go. */
 export interface AcpConnectionOptions {
   command: string;
+  /** Explicit descriptors inherited by this child after stdin/stdout/stderr. */
+  extraStdio?: readonly number[];
+  /** Internal opening owner learns the real child before transport setup can throw. */
+  spawned?(child: import('node:child_process').ChildProcess): void;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;

@@ -222,11 +222,25 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, fstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 /** The file every request is recorded in, when a test named one. */
 const LOG = process.env.ACP_LOG;
+
+// This qualified fixture holds the inherited occurrence descriptor from
+// process birth until OS exit; it never releases it or replaces itself.
+let inheritedGuard;
+let adoptedGuard;
+if (process.argv.includes('--adopt-spawn-guard')) {
+  if (process.env.HAB_ACP_SPAWN_GUARD === undefined) throw new Error('Qualified fixture requires its inherited spawn guard');
+  inheritedGuard = JSON.parse(process.env.HAB_ACP_SPAWN_GUARD);
+  const { adoptInheritedFlock } = await import('@bearly/flock');
+  const stat = fstatSync(inheritedGuard.fd, { bigint: true });
+  if (String(stat.dev) !== inheritedGuard.device || String(stat.ino) !== inheritedGuard.inode) throw new Error('Inherited guard inode differs');
+  adoptedGuard = adoptInheritedFlock(inheritedGuard.path, inheritedGuard.fd);
+  if (adoptedGuard === null) throw new Error('Fixture could not adopt its inherited spawn guard');
+}
 
 /**
  * What this server reports its sign-in as, by the kind it was started with.
@@ -1789,6 +1803,7 @@ const onLine = (line) => {
           pid: process.pid, method: 'fixture/pid-at-initialize', at: Date.now(),
           forcedSessionId: process.env.HAB_ACP_SESSION_ID ?? null,
           custodyPrefix: prefix,
+          inheritedGuard: adoptedGuard === undefined ? null : inheritedGuard,
           hostSessionUri: process.env.HAB_ACP_SESSION_URI ?? null,
           hostChatUri: process.env.HAB_ACP_CHAT_URI ?? null,
           pidRecord: existsSync(`${prefix}.pid`) ? readFileSync(`${prefix}.pid`, 'utf8') : null,

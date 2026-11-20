@@ -16,7 +16,7 @@
  * same loop. A failed write is reported and never manufactures `ended`.
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { fstatSync, lstatSync, readFileSync } from 'node:fs';
 import { atomicWriteFileSync } from '@bearly/durable-file';
 import { tryAcquireFlock } from '@bearly/flock';
 import type { FlockHandle } from '@bearly/flock';
@@ -25,6 +25,12 @@ import { messageOf } from './common.js';
 export type CustodyState = 'spawning' | 'running' | 'ended';
 export interface CustodyIdentity { readonly pid: number; readonly stat: string }
 interface HostServiceSession { readonly sessionId: string; readonly generation: number }
+export interface CustodySpawnGuard {
+  readonly kind: 'inherited-fd-v1';
+  readonly path: string;
+  readonly device: string;
+  readonly inode: string;
+}
 export interface CustodyRecord {
   readonly v: 1;
   readonly bootId: string;
@@ -35,6 +41,7 @@ export interface CustodyRecord {
   readonly seq: number;
   readonly state: CustodyState;
   readonly child: CustodyIdentity | null;
+  readonly spawnGuard?: CustodySpawnGuard;
 }
 
 /** How long between two lock tries while a predecessor or a stop holds custody. */
@@ -93,13 +100,19 @@ export function readCustody(prefix: string): CustodyRecord | 'absent' | 'malform
   const host = identity(raw.host);
   const child = raw.child === null ? null : identity(raw.child);
   const serviceSession = raw.serviceSession === undefined ? undefined : serviceSessionOf(raw.serviceSession);
+  const guard = raw.spawnGuard as Partial<CustodySpawnGuard> | undefined;
+  if (guard !== undefined && (guard === null || typeof guard !== 'object' || guard.kind !== 'inherited-fd-v1'
+    || guard.path !== `${prefix}.spawn-${String(raw.opening)}.lock`
+    || typeof guard.device !== 'string' || !/^\d+$/.test(guard.device)
+    || typeof guard.inode !== 'string' || !/^\d+$/.test(guard.inode))) return 'malformed';
   if (raw.serviceSession !== undefined && serviceSession === undefined) return 'malformed';
   if (raw.v !== 1 || typeof raw.bootId !== 'string' || raw.bootId === '' || host === undefined
     || typeof raw.opening !== 'string' || raw.opening === '' || typeof raw.seq !== 'number' || !Number.isSafeInteger(raw.seq)
     || (raw.state !== 'spawning' && raw.state !== 'running' && raw.state !== 'ended') || child === undefined
     || (raw.state === 'running' && child === null)) return 'malformed';
   return { v: 1, bootId: raw.bootId, host, ...(serviceSession === undefined ? {} : { serviceSession }),
-    opening: raw.opening, seq: raw.seq, state: raw.state, child };
+    opening: raw.opening, seq: raw.seq, state: raw.state, child,
+    ...(guard === undefined ? {} : { spawnGuard: guard as CustodySpawnGuard }) };
 }
 
 /** Whether a recorded child is proved gone: no live process at its pid with its recorded birth. */
@@ -114,6 +127,33 @@ const childGone = (child: CustodyIdentity): boolean => {
   return recorded === undefined ? false : birthOf(live) !== recorded;
 };
 
+/** Under custody ownership only: a qualified unstamped attempt never received initialize. */
+function reconcileSpawning(prefix: string, record: CustodyRecord | 'absent' | 'malformed', boot: string, provider: string): CustodyRecord | 'absent' | 'malformed' {
+  if (typeof record !== 'object' || record.bootId !== boot || record.state !== 'spawning' || record.spawnGuard === undefined || !childGone(record.host)) return record;
+  const guard = record.spawnGuard;
+  let held: FlockHandle | null = null;
+  try {
+    held = tryAcquireFlock(guard.path, { create: false, noFollow: true });
+    if (held === null) return record;
+    const fd = fstatSync(held.fd, { bigint: true });
+    const path = lstatSync(guard.path, { bigint: true });
+    if (!path.isFile() || String(fd.dev) !== guard.device || String(fd.ino) !== guard.inode
+      || path.dev !== fd.dev || path.ino !== fd.ino) throw new Error('original guard inode is missing or replaced');
+    const fresh = readCustody(prefix);
+    if (typeof fresh !== 'object' || fresh.opening !== record.opening || fresh.seq !== record.seq
+      || fresh.bootId !== boot || fresh.state !== 'spawning' || fresh.child !== null
+      || fresh.host.pid !== record.host.pid || fresh.host.stat !== record.host.stat
+      || JSON.stringify(fresh.spawnGuard) !== JSON.stringify(guard) || !childGone(fresh.host)) {
+      throw new Error('guard occurrence changed during reconciliation');
+    }
+    const ended: CustodyRecord = { ...fresh, seq: fresh.seq + 1, state: 'ended', child: null };
+    atomicWriteFileSync(`${prefix}.custody`, `${JSON.stringify(ended)}\n`);
+    return ended;
+  } catch (error) {
+    throw new Error(`${provider}: no new ACP child: original spawn guard cannot prove retirement: ${messageOf(error)}`, { cause: error });
+  } finally { held?.release(); }
+}
+
 /** Why an existing record forbids a new spawn under the lock, or undefined when it allows one. */
 function forbids(record: CustodyRecord | 'absent' | 'malformed', boot: string): string | undefined {
   if (record === 'absent') return undefined;
@@ -127,6 +167,10 @@ function forbids(record: CustodyRecord | 'absent' | 'malformed', boot: string): 
 /** One opening's custody: the lock it holds and the record it writes. */
 export interface Custody {
   readonly opening: string;
+  readonly spawnGuard?: CustodySpawnGuard;
+  readonly inheritedFd?: number;
+  /** Close the host duplicate after the child inherited it at OS spawn. */
+  releaseInherited(): void;
   /** Record a state. Returns false, having reported why, when the write did not land. */
   write(state: CustodyState, child: CustodyIdentity | null): boolean;
   /** Record the end of this opening's child (or that it spawned none), then release the lock. */
@@ -141,7 +185,7 @@ export interface Custody {
  * Admit one opening: take the custody lock (retrying on a timer until `boundMs` passes), then decide from the record
  * read under it. Throws when custody is held past the bound or the record forbids a spawn; nothing is written then.
  */
-export async function admitCustody(prefix: string, boundMs: number, provider: string): Promise<Custody> {
+export async function admitCustody(prefix: string, boundMs: number, provider: string, guarded = false): Promise<Custody> {
   const lockPath = `${prefix}.lock`;
   const deadline = Date.now() + boundMs;
   let handle: FlockHandle | null = tryAcquireFlock(lockPath);
@@ -153,19 +197,31 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     handle = tryAcquireFlock(lockPath);
   }
   const held = handle;
+  let inherited: FlockHandle | null = null;
   try {
     const boot = bootId();
-    const before = readCustody(prefix);
+    const before = guarded ? reconcileSpawning(prefix, readCustody(prefix), boot, provider) : readCustody(prefix);
     const why = forbids(before, boot);
     if (why !== undefined) throw new Error(`${provider}: no new ACP child for this seat: ${why}; nothing was spawned`);
     const hostIdentity = { pid: process.pid, stat: statOf(process.pid) };
     const serviceSession = hostServiceSession(provider);
     const opening = randomUUID();
+    let spawnGuard: CustodySpawnGuard | undefined;
+    if (guarded) {
+      const path = `${prefix}.spawn-${opening}.lock`;
+      inherited = tryAcquireFlock(path, { noFollow: true, fileMode: 0o600 });
+      if (inherited === null) throw new Error(`${provider}: new occurrence guard is already held; nothing was spawned`);
+      const stat = fstatSync(inherited.fd, { bigint: true });
+      spawnGuard = { kind: 'inherited-fd-v1', path, device: String(stat.dev), inode: String(stat.ino) };
+    }
+    const inheritedFd = inherited?.fd;
+    const releaseInherited = (): void => { inherited?.release(); inherited = null; };
     let seq = typeof before === 'object' ? before.seq : 0;
     let released = false;
     const release = (): void => {
       if (released) return;
       released = true;
+      releaseInherited();
       held.release();
     };
     const write = (state: CustodyState, child: CustodyIdentity | null): boolean => {
@@ -178,7 +234,8 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
         }
         seq += 1;
         const record: CustodyRecord = { v: 1, bootId: boot, host: hostIdentity,
-          ...(serviceSession === undefined ? {} : { serviceSession }), opening, seq, state, child };
+          ...(serviceSession === undefined ? {} : { serviceSession }), opening, seq, state, child,
+          ...(spawnGuard === undefined ? {} : { spawnGuard }) };
         atomicWriteFileSync(`${prefix}.custody`, `${JSON.stringify(record)}\n`);
         return true;
       }
@@ -189,6 +246,9 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     };
     return {
       opening,
+      ...(spawnGuard === undefined ? {} : { spawnGuard }),
+      ...(inheritedFd === undefined ? {} : { inheritedFd }),
+      releaseInherited,
       write,
       end: (child) => {
         try { write('ended', child); }
@@ -199,6 +259,7 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     };
   }
   catch (error) {
+    inherited?.release();
     held.release();
     throw error;
   }

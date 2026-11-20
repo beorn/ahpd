@@ -10,7 +10,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
+import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import { PROTOCOL_VERSION, client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
@@ -218,7 +218,9 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   // A second early, as a process's own start time is read back to the
   // millisecond and the two clocks need not agree on the last one.
   const spawnedAt = Date.now() - 1000;
+  // The first three descriptors are always pipes, even with inherited extras.
   const child = spawn(options.command, options.args ?? [], {
+    stdio: ['pipe', 'pipe', 'pipe', ...(options.extraStdio ?? [])] as const,
     env: { ...process.env, ...options.env },
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     /*
@@ -234,7 +236,8 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     // A daemon on Windows has no console, and a console program it starts
     // opens a window of its own without this.
     windowsHide: true,
-  });
+  }) as ChildProcessWithoutNullStreams;
+  options.spawned?.(child);
   /*
    * Drained rather than inherited: a server that chatters on stderr must not
    * block on a full pipe, and it must not write into the daemon's own output.
