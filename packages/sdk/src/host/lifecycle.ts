@@ -241,7 +241,7 @@ export interface Lifecycle {
     additional?: string[],
     title?: string,
     by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean },
+    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
     progress?: (message: string) => void,
   ): Promise<void>;
 }
@@ -2589,7 +2589,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
     additional?: string[],
     title?: string,
     by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean },
+    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
     progress?: (message: string) => void,
   ): Promise<void> => {
     named(uri, 'session');
@@ -2698,6 +2698,20 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
     // default chat inherit its title.
     // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostStateManager.ts#L1668-L1675
     if (title !== undefined) kept.setCustomTitle?.(idOf(uri), title);
+    const existing = kept.creation(idOf(uri)) === undefined ? undefined : kept.chats(idOf(uri)).find((one) => one.default === true);
+    const legacy = by?.legacyChatUris ?? by?.sender?.legacyChatUris === true;
+    const defaultChat = existing?.uri ?? mintDefaultChatUri(legacy ? "shaped" : "opaque", uri, undefined);
+    if (asked?.beforeCreate !== undefined && (kept.setUri === undefined || (where !== undefined && kept.setWorkingDirectory === undefined))) {
+      throw new Error("Session store cannot preserve creation identity and folder");
+    }
+    if (asked?.beforeCreate !== undefined) {
+      kept.setUri?.(idOf(uri), uri);
+      kept.setProvider(idOf(uri), provider);
+      kept.setConfig(idOf(uri), { ...config });
+      if (where !== undefined) kept.setWorkingDirectory?.(idOf(uri), localPath(where));
+      ctx.keepChat(uri, defaultChat, idOf(uri), true, undefined, undefined, true);
+      await asked.beforeCreate();
+    }
     // Its row goes out whole once it is added, and moves from then on.
     markSessionProvisional(uri);
     try {
@@ -2719,8 +2733,6 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
        * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L10109-L10116
        * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L10149-L10150
        */
-      const legacy = by?.legacyChatUris ?? by?.sender?.legacyChatUris === true;
-      const defaultChat = mintDefaultChatUri(legacy ? 'shaped' : 'opaque', uri, undefined);
       // The last wait of a create, in the client's words for it, said before
       // the backend is asked to start.
       progress?.('Starting the agent');
@@ -2739,7 +2751,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       // The session never existed, so what was written for it before its
       // backend started goes whole: its origin, and the flags and title kept.
       origins.delete(uri);
-      kept.forget(idOf(uri));
+      if (kept.creation(idOf(uri)) === undefined) kept.forget(idOf(uri));
       removeNotifiedSummary(uri);
       // The backend's own words. It is the thing that knows which
       // directories it serves, and a refusal a client can read beats an

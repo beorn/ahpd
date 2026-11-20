@@ -1,9 +1,11 @@
 import { loggerOf } from '../src/log.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { idOf } from '../src/sessions/catalog.js';
 import { ROOT } from '../src/host.js';
 import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
-import { memorySessions } from '../src/sessions/sessions.js';
+import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
 import { sdkVersion } from '../src/version.js';
 import {
   claude, createHost, echo, machine, resetSdk, sdk,
@@ -68,7 +70,7 @@ async function open(host: ReturnType<typeof createHost>, who: string) {
  * something no daemon does.
  */
 function starting(tokens: Record<string, Grant[]>, over: Partial<HostOptions> = {}) {
-  const sessions = memorySessions();
+  const sessions = over.sessions ?? memorySessions();
   const { host: plugin, contribution } = pluginHost('bots', context());
   const base: HostOptions = {
     path: DIR,
@@ -153,12 +155,27 @@ const watched = (order: string[]): Agent => {
 
 it('names the session once, with the URI it answers, before the backend spawns', async () => {
   const order: string[] = [];
-  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
+  const dir = join(DIR, `creation-${crypto.randomUUID()}`);
+  const store = fileSessions({ dir });
+  const base = watched(order);
+  let reservedChat: string | undefined;
+  const agent: Agent = { ...base, create: (start) => {
+    const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(start.uri))}.json`), 'utf8'));
+    expect(saved.creation.phase).toBe('admitted');
+    expect(start.chatUri).toBe(reservedChat);
+    return base.create(start);
+  } };
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
   const seen: string[] = [];
 
   const uri = await plugin.startSession({ owner: 'user:soft', provider: 'watched', prompt: 'Say hello' }, (one) => {
     order.push('named');
     seen.push(one);
+    const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(one))}.json`), 'utf8'));
+    expect(saved.owner).toBe('user:soft');
+    expect(saved.provider).toBe('watched');
+    expect(saved.creation).toEqual({ phase: 'reserved', initialPrompt: 'pending', prompt: 'Say hello' });
+    reservedChat = saved.chats.find((chat: { default?: boolean }) => chat.default === true).uri;
   });
 
   // The URI the start answers is the one the plugin was told, and it was told
@@ -166,6 +183,20 @@ it('names the session once, with the URI it answers, before the backend spawns',
   // one built during `isolated`, which is after this.
   expect(seen).toEqual([uri]);
   expect(order).toEqual(['named', 'spawn']);
+  expect(fileSessions({ dir }).creation(idOf(uri))?.phase).toBe('complete');
+});
+
+it.each(['reserved', 'admitted'] as const)('starts no backend when the %s row commit fails', async (phase) => {
+  const order: string[] = [];
+  const store = memorySessions();
+  const failure = new Error(`cannot commit ${phase}`);
+  const failing = { ...store, commit: async (id: string) => {
+    if (store.creation(id)?.phase === phase) throw failure;
+    await store.commit(id);
+  } };
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)], sessions: failing });
+  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, () => { order.push('named'); })).rejects.toBe(failure);
+  expect(order).toEqual(phase === 'reserved' ? [] : ['named']);
 });
 
 it.each(['sync', 'async'] as const)('refuses creation before backend spawn when the %s mapping callback fails', async (mode) => {

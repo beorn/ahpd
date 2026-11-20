@@ -20,6 +20,7 @@ import type { RuleMatch } from '../automations/triggers.js';
 import type { WakeFacts } from '../automations/wakemessage.js';
 import type { AutomationWake, SessionEventKind, SessionRule } from '../types/triggers.js';
 import type { Owner } from '../types/usage.js';
+import type { SessionCreation } from '../types/sessions.js';
 import type { HostContext } from './context.js';
 import { mayTrust } from './trust.js';
 
@@ -737,23 +738,14 @@ export function createAutomations(ctx: HostContext): Automations {
    * its own.
    */
   const beginSession = async (wanted: StartSession, named?: (uri: string) => void | Promise<void>): Promise<string> => {
+    wanted = structuredClone(wanted);
     const provider = wanted.provider ?? ctx.first?.provider;
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
     const uri = uriFor(crypto.randomUUID());
     unheld(uri);
-    /*
-     * Told before anything is made, which is what puts a plugin's own answer
-     * in the first tool list: the backend is spawned with the list built
-     * while the session is being set up, so a reader that learns the URI after
-     * the start answers has already missed it.
-     *
-     * The caller can commit its mapping before any backend is made. A thrown
-     * or rejected callback refuses this start rather than creating work whose
-     * caller never durably learned its identity.
-     */
-    if (named !== undefined) await named(uri);
     const config = wanted.config ?? {};
+    if (!isDeepStrictEqual(config, JSON.parse(JSON.stringify(config)))) throw new RpcError(INVALID_PARAMS, "Session config cannot be recovered without losing values");
     // The same steps a client's `createSession` takes: the folder the daemon's
     // `workspacelessFolder` says where none is named, the host's own keys are
     // not the backend's to read, and a worktree is made at the first send,
@@ -798,51 +790,56 @@ export function createAutomations(ctx: HostContext): Automations {
     }
     const wrong = await admitted(person, charged.get(uri)?.scope, config, provider, uri, owner);
     if (wrong !== undefined) throw new RpcError(-32009, wrong);
-    // A source in the config is made into a machine before anything runs, the
-    // same step a client's `createSession` takes.
-    await placedIn(uri, provider, config, where, wanted.owner);
-    /*
-     * The plugins this automation captured, put on the session before it is.
-     *
-     * The same path a client announcing itself takes - the active client goes
-     * into the presence a session's state is built from, and the chats are
-     * retooled - because what loads a client plugin is one route and a run may
-     * not take a shorter one. It is the host that is the client here, which is
-     * the whole point: nobody is at the keyboard when nine o'clock comes.
-     *
-     * Awaited, which a client's own announcement never is. A backend takes its
-     * plugins when it starts and offers no way to add one after, so a session
-     * opened while the copy was still being made would run with none of them.
-     *
-     * The copies' URIs are this host's own paths, under the directory they were
-     * copied into, so the copy a session makes of them is the directory it is
-     * already in and no client is asked for a byte.
-     *
-     * And they are this run's for as long as it lasts, which is said here for
-     * the same reason: an automation removed while this turn is still working
-     * would otherwise take the directory out from under it.
-     */
-    if (wanted.customizations !== undefined && wanted.customizations.length > 0) {
-      options.clientPlugins?.spare(wanted.customizations.map((one) => localPath(one.uri)));
-      ctx.presence.set(idOf(uri), new Map([[AUTOMATION_CLIENT, {
-        clientId: AUTOMATION_CLIENT,
-        displayName: 'Automation',
-        tools: [],
-        customizations: wanted.customizations.map((one) => ({ ...one, clientId: AUTOMATION_CLIENT })),
-      }]]));
-      ctx.retool(uri);
-      await ctx.pluginsSettled(uri);
-    }
-    /*
-     * The folder a trusted request asked for, kept with the session before it
-     * is opened: the backend is told what is trusted when it starts, and the
-     * row is what a restart reads. So the folder is trusted again after a
-     * restart without anybody repeating the request, and it is the one folder
-     * named rather than everything under it.
-     */
-    if (wanted.trusted === true && wanted.workingDirectory !== undefined) {
-      kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
-    }
+    const prepare = async (): Promise<void> => {
+      if (wanted.trusted === true && wanted.workingDirectory !== undefined) kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
+      kept.setCreation(idOf(uri), {
+        phase: "reserved", initialPrompt: wanted.text.trim() === "" ? "none" : "pending",
+        ...(wanted.text.trim() === "" ? {} : { prompt: wanted.text }),
+        ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
+        ...(wanted.customizations === undefined ? {} : { customizations: wanted.customizations }),
+        ...(wanted.model === undefined ? {} : { model: wanted.model as NonNullable<SessionCreation["model"]> }),
+      });
+      if (wanted.customizations !== undefined) options.clientPlugins?.spare(wanted.customizations.map((one) => localPath(one.uri)));
+      await kept.commit(idOf(uri));
+      if (named !== undefined) await named(uri);
+      if (ctx.closed) throw new Error(CLOSING);
+      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "admitted" });
+      await kept.commit(idOf(uri));
+      // A source in the config is made into a machine before anything runs, the
+      // same step a client's `createSession` takes.
+      await placedIn(uri, provider, config, where, wanted.owner);
+      /*
+       * The plugins this automation captured, put on the session before it is.
+       *
+       * The same path a client announcing itself takes - the active client goes
+       * into the presence a session's state is built from, and the chats are
+       * retooled - because what loads a client plugin is one route and a run may
+       * not take a shorter one. It is the host that is the client here, which is
+       * the whole point: nobody is at the keyboard when nine o'clock comes.
+       *
+       * Awaited, which a client's own announcement never is. A backend takes its
+       * plugins when it starts and offers no way to add one after, so a session
+       * opened while the copy was still being made would run with none of them.
+       *
+       * The copies' URIs are this host's own paths, under the directory they were
+       * copied into, so the copy a session makes of them is the directory it is
+       * already in and no client is asked for a byte.
+       *
+       * And they are this run's for as long as it lasts, which is said here for
+       * the same reason: an automation removed while this turn is still working
+       * would otherwise take the directory out from under it.
+       */
+      if (wanted.customizations !== undefined && wanted.customizations.length > 0) {
+        ctx.presence.set(idOf(uri), new Map([[AUTOMATION_CLIENT, {
+          clientId: AUTOMATION_CLIENT,
+          displayName: 'Automation',
+          tools: [],
+          customizations: wanted.customizations.map((one) => ({ ...one, clientId: AUTOMATION_CLIENT })),
+        }]]));
+        ctx.retool(uri);
+        await ctx.pluginsSettled(uri);
+      }
+    };
     await createProviderSession(
       uri,
       provider,
@@ -857,11 +854,18 @@ export function createAutomations(ctx: HostContext): Automations {
       wanted.title,
       forWhom(wanted.owner),
       {
+        beforeCreate: prepare,
         ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
         ...(wanted.tools === undefined ? {} : { tools: wanted.tools }),
         ...(wanted.userSettings === undefined ? {} : { userSettings: wanted.userSettings }),
       },
     );
+    kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "complete" });
+    await kept.commit(idOf(uri));
+    if (wanted.text.trim() !== "") {
+      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, initialPrompt: "admitted" });
+      await kept.commit(idOf(uri));
+    }
     ctx.oweTree(uri, {}, () => ({}));
     fireRun(wanted);
     beginIn(uri, wanted);
