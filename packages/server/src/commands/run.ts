@@ -11,6 +11,7 @@
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { JOINED_SESSION_ENV, joinedSession, joinedSessions } from '../joined-session.js';
 import { canonicalFromCli, check, createRegistry, optionTable, optionsOf, tokenize } from '@cofold/commands';
 import type { Command, JsonSchema, Registry } from '@cofold/commands';
 import type { Agent, Alert, LogLevel, AutomationStore, AutomationsOptions, ClientCounts, ClientRegistry, CommandSplitter, Connected, Contribution, DoorOptions, HostEventOf, HostHandlers, HostOptions, Loaded, Opened, Peer, PluginContext, Principal, Raw, RequestHandler, Route, ServedAdapter, ServedEngine, ServedTunnelKind, SessionStore, Tap, TunnelsChannel, Usage, Users, Vault } from '@ahpd/sdk';
@@ -324,6 +325,12 @@ export const identifyWith = (
  */
 export async function runForeground(options: Options, typed: Readonly<Record<string, unknown>> = {}): Promise<void> {
   const { token, from } = secret(options);
+  const joined = process.env[JOINED_SESSION_ENV];
+  delete process.env[JOINED_SESSION_ENV];
+  if (joined !== undefined && (!options.stdio || options.sessions === 'memory')) {
+    stop('A joined session needs a persistent stdio host');
+  }
+  const scope = joined === undefined ? undefined : joinedSession(JSON.parse(joined) as unknown);
   /*
    * Whether `ahpd start` spawned this process, and so will record it. Taken out
    * of the environment at once, so a shell a session runs does not inherit it.
@@ -448,7 +455,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
    */
   const nodes = options.users === undefined
     ? undefined
-    : liveNodes({ file: fileNodes({ path: nodesFileOf(options.users), onProblem: stamp }), log: stamp });
+    : liveNodes({ file: fileNodes({ path: nodesFileOf(options.users), onProblem: stamp }), hostId: hostId(), log: stamp });
 
   /*
    * The scratch of writers that are gone, cleared once at the start.
@@ -1617,9 +1624,11 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
      * an upgrade, and without this every archived session comes back into the
      * catalogue and every read one is unread, for everybody, with nothing said.
      */
-    sessions: options.sessions === 'memory'
-      ? memorySessions()
-      : daemonSessions((message) => { stamp(message, 'warn'); }),
+    sessions: scope !== undefined
+      ? joinedSessions(scope, (message) => { stamp(message, 'warn'); })
+      : options.sessions === 'memory'
+        ? memorySessions()
+        : daemonSessions((message) => { stamp(message, 'warn'); }),
     /*
      * Automations, with a clock unless asked otherwise.
      *

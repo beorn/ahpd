@@ -124,6 +124,8 @@ export type { NestedHost, NestedStarted };
 export interface NestedAsked {
   /** The machine's id, from the session's `computer://` setting. */
   id: string;
+  /** The durable session name inside the host. */
+  innerId: string;
   /** The plugin specs the inner host loads. */
   plugins: string[];
   /** Where inside the machine it starts, when the session named a folder. */
@@ -1233,6 +1235,7 @@ const nestedSession = (provider: string, variant: boolean, start: Start, options
     if (plugins.length === 0) throw new Error(`this host does not know which plugin serves ${provider}, so it cannot start one there`);
     const asked: NestedAsked = {
       id,
+      innerId: sessionId,
       plugins,
       ...(start.workingDirectory === undefined ? {} : { cwd: start.workingDirectory }),
       ...(handed === undefined ? {} : { record: handed.record }),
@@ -1902,10 +1905,14 @@ export const deleteNested = async (asked: NestedDeleteAsked): Promise<void> => {
   const where = `computer://${asked.id}`;
   let started: NestedStarted;
   try {
-    started = await startInside({
-      id: asked.id,
+    const start = {
       plugins: asked.plugins,
+      innerId: asked.sessionId,
       ...(asked.record === undefined ? {} : { record: asked.record }),
+    };
+    started = await asked.computers?.connect?.(asked.id, start) ?? await startInside({
+      ...start,
+      id: asked.id,
       ...(asked.computers === undefined ? {} : { computers: asked.computers }),
     });
   }

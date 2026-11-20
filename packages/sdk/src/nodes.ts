@@ -280,6 +280,8 @@ const sessionOf = (url: string | undefined): string | undefined => {
 export interface LiveOptions {
   /** The file `ahpd node add` wrote, which says who may join. */
   file: Nodes;
+  /** The hub's durable identity, used to scope joined sessions on the node. */
+  hostId?: string;
   /** One line worth keeping: a session a node would not open. Nothing is said without one. */
   log?(line: string, level?: LogLevel): void;
   /**
@@ -547,6 +549,9 @@ export function liveNodes(options: LiveOptions): LiveNodes {
       await live.peer.request('node/open', {
         id: open,
         plugins: asked.plugins,
+        ...(options.hostId === undefined || asked.innerId === undefined ? {} : {
+          scope: { hostId: options.hostId, innerId: asked.innerId },
+        }),
         ...(asked.record === undefined ? {} : { env: { [AGENT_RECORD_VARIABLE]: JSON.stringify(asked.record.bare) } }),
       }, OPEN_ANSWER_MS);
     }

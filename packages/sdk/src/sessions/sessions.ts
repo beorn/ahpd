@@ -1,8 +1,9 @@
 /** The two `SessionStore` implementations: one that forgets, one that does not. */
 
+import { createHash } from 'node:crypto';
 import { existsSync, fstatSync, lstatSync, mkdirSync, realpathSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { tryAcquireFlock } from '@bearly/flock';
-import { join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { readJson, writeJsonAtomic } from '../utils/jsonfile.js';
 import { asCreatedBy, asMultiRoot, asOrigin } from './remotesession.js';
 import type { Scope } from '../usage/scopes.js';
@@ -351,6 +352,10 @@ export interface FileSessionOptions {
    * answering it for a host embedded in an editor too.
    */
   dir: string;
+  /** A joined child keeps its session beneath this store, scoped by hub and inner session. */
+  joined?: { hostId: string; innerId: string };
+  /** The pre-directory store to check for an unmigrated joined session. */
+  legacyFile?: string;
   /** Somewhere to say that it could not be read or written. */
   onProblem?(message: string): void;
 }
@@ -725,8 +730,15 @@ const idIn = (name: string): string | undefined => {
  * and neither a read nor a write may mistake those retained bytes for absence.
  */
 export function fileSessions(options: FileSessionOptions): SessionStore {
-  mkdirSync(options.dir, { recursive: true, mode: 0o700 });
-  const dir = realpathSync(options.dir);
+  const joined = options.joined;
+  const scope = joined === undefined ? undefined
+    : createHash('sha256').update(JSON.stringify([joined.hostId, joined.innerId])).digest('hex');
+  const requestedDir = scope === undefined ? options.dir : join(options.dir, 'nested', scope);
+  // The scoped writer lock lives beside the directory, so it covers both creating and retiring it.
+  const container = scope === undefined ? requestedDir : dirname(requestedDir);
+  mkdirSync(container, { recursive: true, mode: 0o700 });
+  const realContainer = realpathSync(container);
+  const dir = scope === undefined ? realContainer : join(realContainer, basename(requestedDir));
   const writer = tryAcquireFlock(`${dir}.lock`, { noFollow: true });
   if (writer === null) throw new Error(`Session store ${dir} already has a writer; close or stop that host before opening another`);
   const inner = memorySessions();
@@ -779,11 +791,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   let writing: ReturnType<typeof setTimeout> | undefined;
   /** Closed: what was waiting has been written, and nothing is written again. */
   let closed = false;
+  let removeOnClose = false;
   const owned = (): void => {
     if (closed || !writer.held) throw new Error(`Cannot mutate closed session store ${dir}`);
     const held = fstatSync(writer.fd, { bigint: true });
     const path = lstatSync(writer.path, { bigint: true });
-    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || realpathSync(options.dir) !== dir) {
+    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || realpathSync(requestedDir) !== dir) {
       throw new Error(`Session store ${dir} writer identity changed; refusing a write outside its ownership`);
     }
   };
@@ -1078,7 +1091,42 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     }
   };
 
-  try { owned(); load(); }
+  try {
+    if (joined !== undefined) {
+      const status = lstatSync(dir, { throwIfNoEntry: false });
+      if (status !== undefined && !status.isDirectory()) throw new Error(`Joined session store ${dir} is not a directory`);
+      const identityPath = join(dir, 'identity');
+      const identity = readJson(identityPath);
+      if (!identity.ok && identity.kind === 'missing') {
+        const legacy = lstatSync(join(options.dir, fileNameOf(joined.innerId)), { throwIfNoEntry: false });
+        const unmigrated = (path: string): Error =>
+          new Error(`session ${joined.innerId} is in the legacy shared store ${path}; not migrated`);
+        if (legacy !== undefined) throw unmigrated(options.dir);
+        if (options.legacyFile !== undefined) {
+          const previous = readJson(options.legacyFile);
+          if (previous.ok) {
+            const whole = previous.value as Partial<Whole> | null;
+            if (whole?.version !== 1 || !Array.isArray(whole.sessions)) {
+              throw new Error(`Could not read legacy session store ${options.legacyFile}`);
+            }
+            if (whole.sessions.some((row) => row?.id === joined.innerId)) throw unmigrated(options.legacyFile);
+          } else if (previous.kind !== 'missing') {
+            throw new Error(`Could not read legacy session store ${options.legacyFile}`);
+          }
+        }
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        owned();
+        writeJsonAtomic(identityPath, { hostId: joined.hostId, innerId: joined.innerId });
+      } else {
+        const value = identity.ok ? identity.value as Partial<typeof joined> | null : null;
+        if (value?.hostId !== joined.hostId || value.innerId !== joined.innerId) {
+          throw new Error(`Could not verify joined session identity at ${identityPath}`);
+        }
+      }
+    }
+    owned();
+    load();
+  }
   catch (error) { writer.release(); throw error; }
 
   return {
@@ -1188,6 +1236,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
       heard.delete(id);
       inner.forget(id);
       attachmentsGone(id);
+      if (id === joined?.innerId) removeOnClose = true;
       dirty.add(id);
       later();
     },
@@ -1218,6 +1267,9 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         writing = undefined;
       }
       save(true);
+      if (removeOnClose && inner.sessions().length === 0 && faults.size === 0) {
+        rmSync(dir, { recursive: true });
+      }
       closed = true;
       writer.release();
     },
