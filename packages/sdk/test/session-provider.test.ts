@@ -71,11 +71,16 @@ function late(provider = 'echo'): Agent {
     provider,
     chats: { ...base.chats, fork: true },
     create: (start: Start) => {
-      const session = base.create(start);
+      // A fork inherits turns from its source; only this chat's own completion names its new transcript.
+      let namedByOwnTurn = false;
+      const session = base.create({ ...start, emit: (channel, action) => {
+        if (channel === 'chat' && action.type === 'chat/turnComplete') namedByOwnTurn = true;
+        start.emit(channel, action);
+      } });
       const named = start.forkAt !== undefined ? `forked-${idOf(start.chatUri)}` : `own-${idOf(start.uri)}`;
       return {
         ...session,
-        agentId: () => (session.allTurns().length === 0 ? undefined : named),
+        agentId: () => (namedByOwnTurn ? named : undefined),
         forkPoint: () => 'the-prompt',
       };
     },
