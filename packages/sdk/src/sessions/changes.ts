@@ -9,7 +9,7 @@ import type {
 } from '../types/changes.js';
 import type { PullRequests } from '../types/github.js';
 import { commitPrompt, cutDiff, pullRequestPrompt, splitWords } from './changewords.js';
-import { baselineOf, capture, latestOf, removeAll } from './checkpoints.js';
+import { baselineOf, latestOf, removeAll } from './checkpoints.js';
 import { runGit } from '../repo/hardened.js';
 import { uriOf } from '../resources/fileuri.js';
 import { INVALID_PARAMS } from '../rpc.js';
@@ -1598,16 +1598,6 @@ export function gitChanges(): ChangesetSource {
       proposedBy.delete(key);
       proposed.delete(uri);
     },
-
-    /*
-     * The session's own trees, committed where nobody's branch can see them.
-     *
-     * A turn's changeset is what the tools the session saw wrote, which is not
-     * what a terminal command wrote and is nothing at all after a restart. A
-     * checkpoint is the tree itself, so two of them are a difference that
-     * survives both.
-     */
-    checkpoint: (dir, session, turn) => capture(dir, session, turn),
 
     /** And the refs of a session that is gone, which nothing else would remove. */
     removeCheckpoints: (dir, session) => removeAll(dir, session),
