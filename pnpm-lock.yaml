@@ -20,6 +20,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.325
         version: 0.3.325(@anthropic-ai/sdk@0.129.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(zod@4.5.4)
+      '@bearly/flock':
+        specifier: 0.2.3
+        version: 0.2.3
       '@earendil-works/pi-coding-agent':
         specifier: ^1.5.2
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(@smithy/signature-v4@5.7.3)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.5.4)
