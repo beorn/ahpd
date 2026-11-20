@@ -467,6 +467,8 @@ What these things are, rather than how they behave on the wire: a session is [SE
 
 Await `SessionStore.commit(id)` before an external effect to acknowledge that row's pending changes. A persistent adapter rejects on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter resolves immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
 
+The required `creation(id)` and `setCreation(id, value)` methods keep `SessionCreation` in that same row. It contains `phase` (reserved, admitted or complete), initial-prompt admission, and otherwise missing instructions, protocol model selection, prompt and captured customizations. Owner, provider, config, title, folder and chat remain in their ordinary fields. The store takes a detached snapshot of creation values; a later template change cannot change the saved request. Custom store adapters must implement these methods and acknowledged row commits together.
+
 An unreadable, malformed, unsupported-version or filename-mismatched session row remains listed by its filename identity. Reads and writes for that identity throw a named error and preserve its bytes; valid sibling rows remain readable. The store does not rename bad rows away. Repair the file explicitly and reopen the store to read it again. An unreadable store directory is an error; only an absent directory opens empty.
 
 ### A client that stops reading

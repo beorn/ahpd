@@ -417,6 +417,34 @@ it('remembers it across a restart when the store writes it down', async () => {
   expect(await statusOf(second.client) & ARCHIVED).toBe(ARCHIVED);
 });
 
+it('commits creation admission and missing request facts in the existing session row', async () => {
+  const dir = join(root, 'sessions');
+  const store = fileSessions({ dir });
+  const customizations = [{ type: 'plugin', id: 'rules', uri: 'file:///captured/rules', name: 'Project rules', load: { kind: 'loaded' } }] as const;
+  const creation = {
+    phase: 'reserved', initialPrompt: 'pending', prompt: 'Review the change',
+    instructions: ['Read the project rules'], model: { id: 'echo', config: { effort: 'low' } }, customizations,
+  } as const;
+  const snapshot = structuredClone(creation);
+  store.setOwner('owned', 'user:ana');
+  store.setProvider('owned', 'echo');
+  store.setConfig('owned', { safe: true });
+  store.setCreation('owned', creation);
+  await store.commit('owned');
+  // The source template can change or disappear without changing this request.
+  Object.assign(customizations[0], { name: 'Changed template' });
+  expect(store.creation('owned')).toEqual(snapshot);
+  expect(readdirSync(dir)).toEqual(['owned.json']);
+  expect(row(dir, 'owned')).toEqual({
+    version: 1, id: 'owned', owner: 'user:ana', provider: 'echo', config: { safe: true }, creation: snapshot,
+  });
+  const next = fileSessions({ dir });
+  expect(next.creation('owned')).toEqual(snapshot);
+  next.setCreation('owned', { ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
+  await next.commit('owned');
+  expect(fileSessions({ dir }).creation('owned')).toEqual({ ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
+});
+
 it('keeps one file per session, and writes only the one that changed', async () => {
   const dir = join(root, 'sessions');
   const store = fileSessions({ dir });
@@ -1487,7 +1515,12 @@ it('keeps the time the host archived a session across a restart, and ignores one
   expect(memorySessions().autoArchivedAt?.('a')).toBeUndefined();
 });
 
-it.each(['this is not json', 'null', '[]', '{"version":1,"id":"different"}'])('keeps an unreadable session addressable without replacing its bytes: %s', (bytes) => {
+it.each([
+  'this is not json', 'null', '[]', '{"version":1,"id":"different"}',
+  '{"version":1,"id":"a","creation":{"phase":"corrupt","initialPrompt":"none"}}',
+  '{"version":1,"id":"a","creation":{"phase":"reserved","initialPrompt":"unknown"}}',
+  '{"version":1,"id":"a","creation":{"phase":"reserved","initialPrompt":"none","model":null}}',
+])('keeps an unreadable session addressable without replacing its bytes: %s', (bytes) => {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'a.json'), bytes);

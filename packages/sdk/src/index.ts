@@ -169,7 +169,7 @@ export type { Membership, Scope, ScopeAnswer } from './usage/scopes.js';
 export { githubIssuer, isIssuerUrl, issuerFrom, issuerKind, oidcIssuer } from './access/issuers.js';
 export type { Fetcher, GitHubIssuerOptions, IssuerKind, OidcIssuerOptions } from './access/issuers.js';
 export type { Issuer, IssuerAnswer } from './types/users.js';
-export type { AutomationOrigin, CreatedBy, NestedRecord, RemoteOrigin, SessionStore, StoredChat, StoredWorktree } from './types/sessions.js';
+export type { AutomationOrigin, CreatedBy, NestedRecord, RemoteOrigin, SessionCreation, SessionStore, StoredChat, StoredWorktree } from './types/sessions.js';
 export { uriFor, idFor, idOf, Status, statusOf, activityOf, titleFrom, holdsTheQueue, endedParts, mergeLogicalTurnUsage } from './sessions/catalog.js';
 export { ensureWorkspacelessScratchDir } from './sessions/scratch.js';
 export type { Activity, StatusBits } from './sessions/catalog.js';
