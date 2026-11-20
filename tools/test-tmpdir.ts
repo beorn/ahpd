@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gitSync } from './git.ts';
 
 /*
  * One temporary folder per test run, removed when the run ends.
@@ -12,7 +13,20 @@ import { fileURLToPath } from 'node:url';
  * run whatever a test forgot. Windows reads `TEMP` or `TMP` rather than
  * `TMPDIR`, so all three name the run's folder.
  */
-export default function setup(): () => void {
+export default function setup(project: { config: { root: string } }): () => void {
+  const checkout = project.config.root;
+  // An archive has no checkout metadata. A worktree's .git can be a file.
+  const gitFile = (name: string): string => gitSync([
+    '-C', checkout, 'rev-parse', '--path-format=absolute', '--git-path', name,
+  ]).trim();
+  const head = existsSync(join(checkout, '.git')) ? gitFile('HEAD') : undefined;
+  const index = head === undefined ? undefined : gitFile('index');
+  const snapshot = () => ({
+    refs: gitSync(['-C', checkout, 'for-each-ref', '--format=%(refname) %(objectname)']),
+    HEAD: readFileSync(head as string, 'utf8'),
+    index: index !== undefined && existsSync(index) ? readFileSync(index).toString('hex') : null,
+  });
+  const before = head === undefined ? undefined : snapshot();
   /*
    * By its long name. A Windows runner's temp folder is an 8.3 short one
    * (`C:\Users\RUNNER~1\...`), and git answers every path by its long name, so
@@ -60,6 +74,8 @@ export default function setup(): () => void {
    */
   process.env.AHPD_TEST_WORK = join(run, 'work');
   return () => {
+    // Observe before cleanup, so cleanup cannot hide a checkout mutation.
+    const after = before === undefined ? undefined : snapshot();
     /*
      * The run's folder goes, and a folder Windows will not let go of is said,
      * not thrown. Every test has passed or failed by now, and a file a process
@@ -90,6 +106,13 @@ export default function setup(): () => void {
       rmSync(stray, { force: true });
       throw new Error(
         `a test wrote ${stray}: a state directory must be a temporary one, not this repository`,
+      );
+    }
+    if (before !== undefined && after !== undefined) {
+      const changed = (Object.keys(before) as (keyof typeof before)[])
+        .filter((key) => before[key] !== after[key]);
+      if (changed.length !== 0) throw new Error(
+        `a test changed checkout Git ${changed.join(', ')} in ${checkout}: use a temporary repository`,
       );
     }
   };
