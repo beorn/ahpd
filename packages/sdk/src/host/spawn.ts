@@ -946,11 +946,11 @@ export function createSpawn(ctx: HostContext): Spawn {
    * keyed by and what a listed session is found again by.
    */
   const recordSessionProvider = (uri: string, agent: Agent, session: Session): void => {
-    kept.setProvider(idOf(uri), agent.provider);
+    if (kept.provider(idOf(uri)) !== agent.provider) kept.setProvider(idOf(uri), agent.provider);
     if (kept.uri?.(idOf(uri)) === undefined) kept.setUri?.(idOf(uri), uri);
     const own = session.agentId();
     if (own !== undefined && own !== '') {
-      kept.setProvider(own, agent.provider);
+      if (kept.provider(own) !== agent.provider) kept.setProvider(own, agent.provider);
       keepFolder(own, sessions.get(uri)?.workingDirectory);
     }
   };
