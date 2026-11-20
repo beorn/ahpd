@@ -1,6 +1,7 @@
 import { loggerOf } from '../src/log.js';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
+import { idOf } from '../src/sessions/catalog.js';
 import { memorySessions } from '../src/sessions/sessions.js';
 import { sdkVersion } from '../src/version.js';
 import {
@@ -75,6 +76,30 @@ it('answers nothing for a session only the store remembers', async () => {
   sessions.setProvider('gone', 'claude');
 
   expect(await plugin.sessionOwner('claude:/gone')).toBeUndefined();
+});
+
+// A rejected callback leaves a durable reservation, not a missing session to
+// replace. Ownership reads must not restore it or ask the backend for history.
+it('answers the reserved owner after mapping rejection without opening the backend', async () => {
+  const { plugin, host, sessions } = owned();
+  const client = host.accept(peer());
+  await hello(client, 'soft');
+  await signIn(client, 'soft');
+  const failure = new Error('mapping did not land');
+  let uri = '';
+  await expect(plugin.startSession({ owner: 'user:soft' }, async (named) => {
+    uri = named;
+    throw failure;
+  })).rejects.toBe(failure);
+  const id = idOf(uri);
+  expect(sessions.creation(id)?.phase).toBe('reserved');
+  const before = { asked: sdk.asked, reads: sdk.reads, listed: sdk.listed, queries: sdk.queries.length };
+  expect(await plugin.sessionOwner(uri)).toBe('user:soft');
+  expect(await plugin.sessionOwner(`claude:/${id}`)).toBeUndefined();
+  expect({ asked: sdk.asked, reads: sdk.reads, listed: sdk.listed, queries: sdk.queries.length }).toEqual(before);
+  expect(sessions.creation(id)?.phase).toBe('reserved');
+  sessions.setUri?.(id, undefined);
+  await expect(plugin.sessionOwner(uri)).rejects.toThrow('has no canonical URI');
 });
 
 it('answers the owner of a session this host is running', async () => {
