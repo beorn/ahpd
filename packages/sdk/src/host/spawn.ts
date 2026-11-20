@@ -226,6 +226,7 @@ export function createSpawn(ctx: HostContext): Spawn {
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L1127-L1152
    */
   const raiseTurnEnd = (end: Omit<TurnEndEvent, 'type'>): void => {
+    ctx.settleInitialPrompt(end);
     const sender = end.sender ?? senderOf(end.turnId) ?? kept.sender(idOf(end.session), end.turnId);
     void fire({ ...end, type: 'turn_end', ...(sender === undefined ? {} : { sender }) });
     if (end.channel === sessions.get(end.session)?.defaultChat) ctx.settleRun(end.session, runEndingOf(end.reason));

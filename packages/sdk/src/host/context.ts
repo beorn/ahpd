@@ -286,7 +286,7 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
   chatTools: Map<string, string[]>;
   /** What started each session, for the ones nothing did. */
   origins: Map<string, { kind: 'automation'; automation: string; run: string }>;
-  /** The automation runs starting a session now, which a close waits for. */
+  /** Accepted session starts and creation writes that a close must join. */
   starting: Set<Promise<string>>;
   /** When each session was created, by its own uri. */
   births: Map<string, string>;

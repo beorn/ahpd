@@ -392,7 +392,7 @@ export function createHost(options: HostOptions): Host {
   const terminals = new Claiming<Terminal>(claims, 'terminal');
   /** The one close, shared by every caller of `close`. */
   let closing: Promise<void> | undefined;
-  /** The automation runs starting a session now, which a close waits for. */
+  /** Accepted session starts and creation writes that a close must join. */
   const starting = new Set<Promise<string>>();
   /**
    * What started a session, for the ones nothing did.

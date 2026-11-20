@@ -10,7 +10,7 @@ import { createRuleEngine } from '../automations/triggers.js';
 import { wakeMessage } from '../automations/wakemessage.js';
 import { bag } from '../utils/values.js';
 import { AUTOMATIONS, isAutomationResource } from './channels.js';
-import { CLOSING, need, noProvider } from './common.js';
+import { CLOSING, need, noProvider, reason } from './common.js';
 import { refusalReason } from './gate.js';
 import type { Bag } from '../types/common.js';
 import type { AutomationEntry, AutomationRun, AutomationRunState, RunEnding, StartSession } from '../types/automations.js';
@@ -21,6 +21,7 @@ import type { WakeFacts } from '../automations/wakemessage.js';
 import type { AutomationWake, SessionEventKind, SessionRule } from '../types/triggers.js';
 import type { Owner } from '../types/usage.js';
 import type { SessionCreation } from '../types/sessions.js';
+import type { TurnEndEvent } from '../types/events.js';
 import type { HostContext } from './context.js';
 import { mayTrust } from './trust.js';
 
@@ -183,6 +184,8 @@ export interface Automations {
   manualRunRequests: Map<string, { automation: string; run: string }>;
   /** Move the run a session belongs to, when that session stops working. */
   settleRun(uri: string, ending: RunEnding): void;
+  /** Durably settle only the initial prompt whose exact turn this host admitted. */
+  settleInitialPrompt(end: Pick<TurnEndEvent, 'session' | 'channel' | 'turnId'>): void;
   /** Stop the run a client named: nothing where it stopped, or why it did not. */
   cancelRun(run: string): string | undefined;
   /** A session this host was running is gone: nothing about it is measured any more. */
@@ -698,12 +701,45 @@ export function createAutomations(ctx: HostContext): Automations {
    * session that opens silent, which is what a bot with no instructions gets,
    * and a turn with no text in it is an empty bubble rather than no turn.
    */
-  const beginIn = (session: string, wanted: StartSession): void => {
+  // A successor cannot infer the outcome of an unobserved admission. Only
+  // the exact initial turn admitted by this host can settle its saved marker.
+  const initialPromptTurns = new Map<string, { channel: string; turnId: string }>();
+  const settleInitialPrompt = (end: Pick<TurnEndEvent, 'session' | 'channel' | 'turnId'>): void => {
+    const initial = initialPromptTurns.get(end.session);
+    if (initial?.channel !== end.channel || initial.turnId !== end.turnId) return;
+    initialPromptTurns.delete(end.session);
+    const writing = (async () => {
+      const id = idOf(end.session);
+      const creation = kept.creation(id);
+      if (creation === undefined) throw new Error(`Cannot settle initial prompt for ${end.session}: creation reservation is missing`);
+      if (creation.initialPrompt !== 'admitted' && creation.initialPrompt !== 'settled') {
+        throw new Error(`Cannot settle initial prompt for ${end.session}: its saved admission is ${creation.initialPrompt}`);
+      }
+      if (creation?.initialPrompt === 'admitted') {
+        kept.setCreation(id, { ...creation, initialPrompt: 'settled' });
+        await kept.commit(id);
+      }
+      return end.session;
+    })();
+    // A terminal event may arrive during close. Its already-accepted write
+    // joins the same tracker as creation, without admitting another start.
+    ctx.starting.add(writing);
+    const done = (): void => { ctx.starting.delete(writing); };
+    writing.then(done, (error) => {
+      done();
+      ctx.log(`Cannot durably settle initial prompt for ${end.session}: ${reason(error)}`, 'error');
+    });
+  };
+
+  const beginIn = (session: string, wanted: StartSession, initialPrompt = false): void => {
     if (wanted.text.trim() === '') return;
     const turnId = crypto.randomUUID();
     if (wanted.owner !== undefined) senders.set(turnId, wanted.owner);
     const chat = byChat.get(ctx.defaultChatFor(session))?.chat;
-    if (chat !== undefined) void ctx.startTurn(chat, turnId, wanted.text, modelIn(wanted.model), { origin: { kind: 'automation' } });
+    if (chat !== undefined) {
+      if (initialPrompt) initialPromptTurns.set(session, { channel: chat.chatUri, turnId });
+      void ctx.startTurn(chat, turnId, wanted.text, modelIn(wanted.model), { origin: { kind: 'automation' } });
+    }
   };
 
   /**
@@ -915,7 +951,7 @@ export function createAutomations(ctx: HostContext): Automations {
     }
     ctx.oweTree(uri, {}, () => ({}));
     fireRun(wanted);
-    beginIn(uri, wanted);
+    beginIn(uri, wanted, true);
     return uri;
     });
   };
@@ -1480,6 +1516,7 @@ export function createAutomations(ctx: HostContext): Automations {
    * that starts makes itself another chat.
    */
   const gone = (session: string): void => {
+    initialPromptTurns.delete(session);
     engine.end(session);
     for (const [automation, one] of watched) {
       if (one.wake.session !== 'pinned' || one.wake.pinnedSession !== session) continue;
@@ -1583,7 +1620,7 @@ export function createAutomations(ctx: HostContext): Automations {
   };
 
   return {
-    manualRunRequests, settleRun, cancelRun, gone, stop, changed, beginAutomation, startForAutomation, startForPlugin, startForPluginChat, due,
+    manualRunRequests, settleRun, settleInitialPrompt, cancelRun, gone, stop, changed, beginAutomation, startForAutomation, startForPlugin, startForPluginChat, due,
     wireTriggerTypes, wirePluginStarts,
   };
 }
