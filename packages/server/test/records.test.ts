@@ -1,4 +1,5 @@
 import { WAIT_MS } from '../../../tools/wait.ts';
+import { fork } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +49,61 @@ it('create-only file records refresh the actual winner after a stale-cache confl
   expect(JSON.parse(readFileSync(join(dir, 'mappings', `${winner.id}.json`), 'utf8'))).toEqual(winner);
   expect(await second.get(winner.id)).toEqual(winner);
 });
+
+// A process-local mutex could pass the two-store case above; admission must also elect one OS writer.
+// @failure Independent creators both succeed or the losing process keeps stale state; @level l4; @consumer fileRecords.createOnly.
+it('create-only file records elect one independent process and refresh the losing process', async () => {
+  const entry = join(dir, 'record-writer.mjs');
+  writeFileSync(entry, `
+    const { fileRecords } = await import(${JSON.stringify(new URL('../src/records.ts', import.meta.url).href)});
+    const records = await fileRecords(${JSON.stringify(dir)}).collection('mappings', { format: 'json' });
+    process.once('message', async () => {
+      let outcome = 'created';
+      try { await records.put({ id: 'logical-key', owner: process.argv[2] }, { createOnly: true }); }
+      catch (error) { if (error.code !== -32010) throw error; outcome = 'conflict'; }
+      process.send({ outcome, record: await records.get('logical-key') });
+      process.disconnect();
+    });
+    process.send({ ready: true });
+  `);
+  type Result = { outcome: string; record: { id: string; owner: string } };
+  const workers = ['ana', 'bea'].map((owner) => {
+    const child = fork(entry, [owner], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+    let ready!: () => void;
+    let failed!: (error: Error) => void;
+    const started = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
+    const finished = new Promise<Result>((resolve, reject) => {
+      let result: Result | undefined;
+      child.on('message', (message) => {
+        const value = message as Result & { ready?: boolean };
+        if (value.ready === true) ready();
+        else result = value;
+      });
+      child.once('error', (error) => { failed(error); reject(error); });
+      child.once('close', (code) => {
+        if (code === 0 && result !== undefined) resolve(result);
+        else { const error = new Error(`record writer exited ${String(code)}: ${stderr}`); failed(error); reject(error); }
+      });
+    });
+    return { child, started, finished };
+  });
+  const finished = Promise.all(workers.map((worker) => worker.finished));
+  try {
+    await Promise.all(workers.map((worker) => worker.started));
+    for (const worker of workers) worker.child.send('create');
+    const results = await finished;
+    expect(results.map((result) => result.outcome).sort()).toEqual(['conflict', 'created']);
+    const winner = results.find((result) => result.outcome === 'created')!.record;
+    expect(results.map((result) => result.record)).toEqual([winner, winner]);
+    expect(JSON.parse(readFileSync(join(dir, 'mappings', 'logical-key.json'), 'utf8'))).toEqual(winner);
+  }
+  finally {
+    for (const worker of workers) if (worker.child.exitCode === null) worker.child.kill('SIGKILL');
+    await Promise.allSettled(workers.map((worker) => worker.finished));
+  }
+}, 30_000);
 
 /** Every change a collection tells, from now on. */
 const heard = (collection: RecordCollection): RecordChange[] => {
