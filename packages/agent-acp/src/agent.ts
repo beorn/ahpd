@@ -142,6 +142,7 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
 
   return {
     provider,
+    promptStart: 'reported',
     displayName,
     transcriptTurnIds: 'recorded',
     ...(options.variant === true ? { variant: true } : {}),
@@ -201,7 +202,7 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
      * saying the host has no such session rather than an empty one.
      */
     transcript: async (id, at) => {
-      const found = await loadedSession(options, provider, id, at?.workingDirectory, machineFor(provider, id));
+      const found = await loadedSession(options, provider, id, at?.workingDirectory, machineFor(provider, id), at?.neverSpoken);
       return found === undefined ? undefined : turnsOf(found);
     },
 

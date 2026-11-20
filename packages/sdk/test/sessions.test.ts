@@ -9,7 +9,7 @@
  * file.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -443,6 +443,57 @@ it('commits creation admission and missing request facts in the existing session
   next.setCreation('owned', { ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
   await next.commit('owned');
   expect(fileSessions({ dir }).creation('owned')).toEqual({ ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
+});
+
+// #35117: neither a positive empty-history fact nor its consumption may disappear on a cold read.
+// Existing chat round-trips predate this field, so they cannot distinguish missing from consumed authority.
+it.each([true, false])('retains explicit never-spoken provenance %s across a cold store', (neverSpoken) => {
+  const dir = join(root, 'first-prompt');
+  const first = fileSessions({ dir });
+  const chat = { uri: 'ahp-chat:/original', backendId: 'native-unmaterialized', sessionConversation: true, neverSpoken };
+  first.setChats('original', [chat]);
+  first.close?.();
+  const second = fileSessions({ dir });
+  expect(second.chats('original')).toMatchObject([{ neverSpoken }]);
+  second.close?.();
+});
+
+// The prompt barrier must retry a failed soft write even when its mutation already changed the cache.
+it('keeps failed native-binding and provenance writes pending until a strict flush commits them', () => {
+  const dir = join(root, 'first-prompt-failed-write');
+  const problems: string[] = [];
+  const store = fileSessions({ dir, onProblem: (message) => { problems.push(message); } });
+  if (store.flush === undefined) throw new Error('File session store must supply a flush acknowledgment');
+  const original = { uri: 'ahp-chat:/original', backendId: 'old-native', neverSpoken: true };
+  store.setChats('original', [original]);
+  store.flush();
+  const file = join(dir, 'original.json');
+  const backup = join(dir, 'before.json.backup');
+  renameSync(file, backup);
+  mkdirSync(file);
+  store.setChats('original', [{ ...original, backendId: 'new-native', neverSpoken: false }]);
+  expect(problems.some((message) => message.includes('Could not write'))).toBe(true);
+  expect(() => store.flush?.()).toThrow();
+  expect(JSON.parse(readFileSync(backup, 'utf8')).chats).toMatchObject([{ backendId: 'old-native', neverSpoken: true }]);
+  rmSync(file, { recursive: true });
+  renameSync(backup, file);
+  store.flush(); // No second mutation: only the failed writer's retained dirty work can commit this.
+  store.close?.();
+  expect(() => store.flush?.()).toThrow(/closed session store/);
+  const reopened = fileSessions({ dir });
+  expect(reopened.chats('original')).toMatchObject([{ backendId: 'new-native', neverSpoken: false }]);
+  reopened.close?.();
+});
+
+it.each([undefined, 'true', 1, null])('does not manufacture provenance from historical or invalid value %s', (value) => {
+  const dir = join(root, 'unknown-first-prompt');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'original.json'), JSON.stringify({
+    version: 1, id: 'original', chats: [{ uri: 'ahp-chat:/original', backendId: 'native', neverSpoken: value }],
+  }));
+  const store = fileSessions({ dir });
+  expect(store.chats('original')[0]).not.toHaveProperty('neverSpoken');
+  store.close?.();
 });
 
 it('keeps one file per session, and writes only the one that changed', async () => {

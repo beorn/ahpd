@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { uriOf } from '@ahpd/sdk';
 import type { Agent, Bag, Emit, McpServer, MessageAttachment, Session, Start } from '@ahpd/sdk';
@@ -1513,6 +1513,63 @@ const HELD: Bag[] = [{
   responseParts: [{ kind: 'text', id: 'seed-1-p1', content: 'at the fast one' }],
   state: 'complete',
 }];
+
+// #35117 AC1: an empty local seed is unknown history, not permission to replace a conversation.
+// The old --load-missing fixture uses -32002 and cannot pin preservation of the Codex -32603 error.
+it.each([
+  ['unknown', undefined],
+  ['spoken', HELD],
+] as const)('preserves no-rollout failures for %s history without positive provenance', async (name, seed) => {
+  const { agent, log } = backend(['--no-rollout']);
+  const native = `unmaterialized-${name}`;
+  await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
+  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) });
+  await runTurn(session, watch, 'first-attempt', 'hi');
+  expect(watch.endings()).toEqual(['chat/error']);
+  expect(requests(log).some((one) => one.method === 'session/new')).toBe(false);
+  expect(requests(log).some((one) => one.method === 'session/prompt')).toBe(false);
+});
+
+it('uses positive no-rollout provenance for an ephemeral read and only the first provider prompt', async () => {
+  const { agent, log } = backend(['--no-rollout']);
+  const native = 'unmaterialized-positive';
+  expect(await agent.transcript?.(native, { neverSpoken: true })).toEqual([]);
+  // An exception-produced empty read must not cache permission over a later changed/unknown observation.
+  await expect(agent.transcript?.(native, { neverSpoken: false })).rejects.toMatchObject({ code: -32603 });
+  await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
+  const before: string[] = [];
+  const { session, watch } = await start(agent, 'positive-no-rollout', {
+    resume: native, neverSpoken: true, beforePrompt: (id) => { before.push(id); },
+  });
+  expect(before).toEqual([]);
+  await runTurn(session, watch, 'first', 'hi');
+  expect(watch.endings()).toEqual(['chat/turnComplete']);
+  expect(session.agentId()).not.toBe(native);
+  expect(before).toEqual([session.agentId()]);
+  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+  expect(requests(log).find((one) => one.method === 'session/prompt')?.params?.['sessionId']).toBe(session.agentId());
+  await runTurn(session, watch, 'death', 'die now');
+  await runTurn(session, watch, 'after-death', 'hi again');
+  expect(watch.endings().at(-1)).toBe('chat/error');
+  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+});
+
+// AC1: persistence failure must prevent an actual ACP prompt, even after opening minted a native id.
+it('dispatches no provider prompt before a failed durable barrier can be retried', async () => {
+  const { agent, log } = backend(['--no-rollout']);
+  const before = vi.fn().mockImplementationOnce(() => { throw new Error('durable write refused'); });
+  const { session, watch } = await start(agent, 'barrier-refusal', {
+    resume: 'unmaterialized-barrier', neverSpoken: true, beforePrompt: before,
+  });
+  await runTurn(session, watch, 'refused', 'hi');
+  expect(watch.endings()).toEqual(['chat/error']);
+  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+  expect(requests(log).filter((one) => one.method === 'session/prompt')).toHaveLength(0);
+  await runTurn(session, watch, 'retry', 'hi again');
+  expect(watch.endings().at(-1)).toBe('chat/turnComplete');
+  expect(before.mock.calls.map(([id]) => id)).toEqual([session.agentId(), session.agentId()]);
+  expect(requests(log).filter((one) => one.method === 'session/prompt')).toHaveLength(1);
+});
 
 it('loads a resumed session when the host holds none of its turns', async () => {
   const { agent, log } = backend();

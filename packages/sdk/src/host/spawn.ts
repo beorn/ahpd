@@ -1374,7 +1374,8 @@ export function createSpawn(ctx: HostContext): Spawn {
     // Whose work the session is, as the store keeps it.
     const ownerOfSession = kept.owner(idOf(uri));
     const conversation = freshConversation ?? ctx.heldChats(idOf(uri)).find((one) => one.uri === chatUri)?.sessionConversation;
-    const wired: Start = {
+    // Only this unpublished builder may fill the read-only observation after its birth barrier.
+    const wired: Omit<Start, 'neverSpoken'> & { neverSpoken?: boolean } = {
       uri,
       chatUri,
       ...(conversation === undefined ? {} : { sessionConversation: conversation }),
@@ -2029,6 +2030,10 @@ export function createSpawn(ctx: HostContext): Spawn {
      * make first, and the session is held once that step is made, the start's
      * failure being the failure of whatever asked for it.
      */
+    const flush = kept.flush?.bind(kept);
+    const reportsPrompt = used === agent && used.promptStart === 'reported' && flush !== undefined
+      && kept.nested?.(idOf(uri)) === undefined && kept.external?.(idOf(uri)) !== true
+      && resuming?.forkAt === undefined;
     // Only initial host creation establishes original ownership, before any backend handshake can run.
     if (freshConversation === true) {
       /*
@@ -2042,7 +2047,19 @@ export function createSpawn(ctx: HostContext): Spawn {
        */
       kept.setProvider(idOf(uri), agent.provider);
       keepFolder(idOf(uri), workingDirectory);
-      ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true);
+      ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true, reportsPrompt ? true : undefined);
+    }
+    if (reportsPrompt && flush !== undefined) {
+      flush();
+      wired.beforePrompt = (backendId) => {
+        if (backendId === '') throw new Error('A provider prompt needs its actual native conversation id');
+        // Retry both the mutation and the barrier even when a failed prior flush changed memory.
+        ctx.keepChat(uri, chatUri, backendId, false, undefined, undefined, undefined, false);
+        flush();
+      };
+      const recorded = ctx.recordedChat(idOf(uri), chatUri);
+      if (recorded?.sessionConversation === true && recorded.neverSpoken === true
+        && recorded.backendId === (resuming?.resume ?? chatId ?? idOf(uri))) wired.neverSpoken = true;
     }
     const made = used.create(wired);
     const session = made instanceof Promise ? await made : made;

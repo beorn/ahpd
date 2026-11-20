@@ -1773,6 +1773,13 @@ const onLine = (line) => {
     return;
   }
 
+  // #35117: the native id can exist while its never-materialized rollout cannot be loaded or resumed.
+  if ((message.method === 'session/load' || message.method === 'session/resume') && process.argv.includes('--no-rollout')) {
+    write({ jsonrpc: '2.0', id: message.id, error: {
+      code: -32603, message: `no rollout found for thread id ${message.params?.sessionId}`,
+    } });
+    return;
+  }
   switch (message.method) {
     case 'initialize':
       if (process.argv.includes('--observe-pid-custody')) {

@@ -22,6 +22,70 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/c
 
 beforeEach(resetSdk);
 
+describe('35117 durable first-prompt provenance', () => {
+  // AC1: provider-level fallback tests cannot prove the host persisted permission before creating the backend.
+  const opening = async (sessions: ReturnType<typeof memorySessions>, starts: Start[], reported = true) => {
+    const base = echo({ path: WORK, pace: 0 });
+    const agent: Agent = {
+      ...base,
+      ...(reported ? { promptStart: 'reported' as const } : {}),
+      create: (start) => { starts.push(start); return base.create(start); },
+    };
+    const host = createHost({ path: WORK, agents: [agent], sessions });
+    const client = host.accept(peer());
+    await client.handle(hello(['0.9.0']));
+    return { host, create: () => client.handle({
+      method: 'createSession', params: { channel: 'ahp-session:/unspoken', provider: 'echo' },
+    }) };
+  };
+
+  it('does not create a backend when the initial provenance barrier fails', async () => {
+    const starts: Start[] = [];
+    const store = memorySessions();
+    store.flush = () => { throw new Error('birth write refused'); };
+    const { host, create } = await opening(store, starts);
+    try {
+      await expect(create()).rejects.toThrow('birth write refused');
+      expect(starts).toHaveLength(0);
+    } finally { await host.close(); }
+  });
+
+  it('retries the native-id and false-marker barrier after a failed first attempt', async () => {
+    const starts: Start[] = [];
+    const store = memorySessions();
+    const flush = vi.fn();
+    store.flush = flush;
+    const { host, create } = await opening(store, starts);
+    try {
+      await create();
+      expect(starts).toHaveLength(1);
+      const start = starts[0]!;
+      expect(start.neverSpoken).toBe(true);
+      expect(store.chats('unspoken')).toMatchObject([{ sessionConversation: true, neverSpoken: true }]);
+      expect(flush).toHaveBeenCalled();
+      flush.mockImplementationOnce(() => { throw new Error('first prompt write refused'); });
+      expect(() => start.beforePrompt?.('rebound-native')).toThrow('first prompt write refused');
+      start.beforePrompt?.('rebound-native');
+      expect(store.chats('unspoken')).toMatchObject([{ backendId: 'rebound-native', neverSpoken: false }]);
+      expect(flush).toHaveBeenCalledTimes(3);
+    } finally { await host.close(); }
+  });
+
+  it.each(['no durable flush', 'no prompt reporting'])('keeps unknown provenance with %s', async (missing) => {
+    const starts: Start[] = [];
+    const store = memorySessions();
+    if (missing === 'no durable flush') delete store.flush;
+    const { host, create } = await opening(store, starts, missing !== 'no prompt reporting');
+    try {
+      await create();
+      expect(starts).toHaveLength(1);
+      expect(starts[0]).not.toHaveProperty('neverSpoken');
+      expect(starts[0]).not.toHaveProperty('beforePrompt');
+      expect(store.chats('unspoken')[0]).not.toHaveProperty('neverSpoken');
+    } finally { await host.close(); }
+  });
+});
+
 describe('two people on one chat', () => {
   it('shows each other what is being typed', async () => {
     const host = serving(WORK);

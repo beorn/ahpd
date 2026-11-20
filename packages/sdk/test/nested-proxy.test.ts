@@ -1540,6 +1540,31 @@ const scriptedPort = (
   };
 };
 
+// #35117 AC1: the actual nested proxy owns unknown inner history, even when its nominal agent reports prompts.
+it('does not publish local never-spoken provenance for an actual nested proxy', async () => {
+  const port = scriptedPort([PROVIDER]);
+  const sessions = fileSessions({ dir: join(port.dir, 'provenance') });
+  const real: Agent = { ...backend(), runsNested: true, promptStart: 'reported' };
+  const host = createHost({
+    path: REPO_ROOT, agents: [real], agentPlugins: { [PROVIDER]: '@ahpd/agent-cofold' },
+    computers: port.computers, sessions,
+  });
+  const client = host.accept(watching());
+  try {
+    await client.handle({ method: 'initialize', params: { clientId: 'window', protocolVersions: ['1.0.0'] } });
+    await client.handle({ method: 'createSession', params: {
+      channel: 'ahp-session:/nested-unknown', provider: PROVIDER, config: { computer: 'computer://box' },
+    } });
+    await until(() => port.stored().length > 0, 1000);
+    const rows = sessions.chats('nested-unknown');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty('neverSpoken');
+  } finally {
+    await host.close();
+    port.done();
+  }
+});
+
 it('a variant that is its plugin\'s only agent is not run as the agent the inner host serves', async () => {
   const port = scriptedPort(['claude']);
   const real: Agent = { ...backend(), provider: 'claude-openrouter', runsNested: true, variant: true };
