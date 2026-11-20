@@ -2734,7 +2734,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       kept.setProvider(idOf(uri), provider);
       kept.setConfig(idOf(uri), { ...config });
       if (where !== undefined) kept.setWorkingDirectory?.(idOf(uri), localPath(where));
-      ctx.keepChat(uri, defaultChat, idOf(uri), true, undefined, undefined, true);
+      ctx.keepChat(uri, defaultChat, existing?.backendId ?? idOf(uri), true, undefined, undefined, true);
       await asked.beforeCreate();
     }
     // Its row goes out whole once it is added, and moves from then on.
@@ -2761,7 +2761,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       // The last wait of a create, in the client's words for it, said before
       // the backend is asked to start.
       progress?.('Starting the agent');
-      const lead = await spawn(agent, uri, defaultChat, undefined, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions, undefined, true);
+      const lead = await spawn(agent, uri, defaultChat, existing?.backendId, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions, undefined, true);
       // Written down for the same reason a rename is: a first name outlives a
       // restart too.
       if (title !== undefined) ctx.persistSessionTitle(uri, title);

@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/%40ahpd%2Fserver)](https://www.npmjs.com/package/@ahpd/server)
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
-![node >=22.1](https://img.shields.io/badge/node-%3E%3D22.1-5fa04e)
+![node >=24](https://img.shields.io/badge/node-%3E%3D24-5fa04e)
 ![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
 
 A ready-to-run [Agent Host Protocol](https://microsoft.github.io/agent-host-protocol/) server. It installs the `ahpd` command, runs agent sessions, and serves them over a WebSocket, so several clients can watch and drive the same session at once.
@@ -37,7 +37,7 @@ npm 12 blocks install scripts unless told otherwise, and `node-pty` needs its sc
 
 It listens on `ws://127.0.0.1:9187`. Run it with no arguments to serve the directory you are in.
 
-Needs Node 22.1 or later. Also runs on Bun and Deno.
+This owned fork requires Node 24 or later on Linux/macOS, or Bun 1.3.13 or later on those platforms. It does not claim Windows, Node 22 or Deno support. Native recovery is qualified only where actually tested.
 
 ## Commands
 

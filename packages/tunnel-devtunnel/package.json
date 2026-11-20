@@ -2,6 +2,7 @@
   "name": "@ahpd/tunnel-devtunnel",
   "version": "0.15.0-rc.4",
   "type": "module",
+  "os": ["linux", "darwin"],
   "description": "Microsoft Dev Tunnels for ahpd. Reach the daemon from anywhere, VS Code included.",
   "keywords": [
     "ahp",
@@ -49,7 +50,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   },
   "scripts": {
     "prepack": "tsc -p .",

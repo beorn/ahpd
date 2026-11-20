@@ -2,6 +2,7 @@
   "name": "@ahpd/tasks",
   "version": "0.15.0-rc.4",
   "type": "module",
+  "os": ["linux", "darwin"],
   "description": "Tasks and plans for ahpd. One shared list that every agent reads and writes through host tools.",
   "keywords": [
     "ahp",
@@ -50,7 +51,8 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   },
   "scripts": {
     "prepack": "tsc -p .",

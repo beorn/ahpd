@@ -3,6 +3,7 @@
   "name": "@ahpd/agent-claude",
   "version": "0.15.0-rc.4",
   "type": "module",
+  "os": ["linux", "darwin"],
   "description": "Claude Code integration for the Agent Host Protocol. Run it as an ahpd plugin or use it directly with @ahpd/sdk.",
   "keywords": [
     "ahp",
@@ -54,7 +55,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   },
   "scripts": {
     "prepack": "tsc -p .",

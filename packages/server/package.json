@@ -2,6 +2,7 @@
   "name": "@ahpd/server",
   "version": "0.15.0-rc.4",
   "type": "module",
+  "os": ["linux", "darwin"],
   "description": "The ahpd daemon: an Agent Host Protocol server on Node, Bun or Deno, with agents loaded as plugins",
   "keywords": [
     "ahp",
@@ -38,7 +39,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.18"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   },
   "scripts": {
     "prepack": "tsc -p .",

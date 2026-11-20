@@ -2,6 +2,7 @@
   "name": "@ahpd/agent-acp",
   "version": "0.15.0-rc.4",
   "type": "module",
+  "os": ["linux", "darwin"],
   "description": "Agent Client Protocol integration for the Agent Host Protocol. Run any ACP agent as an ahpd plugin or use it directly with @ahpd/sdk.",
   "keywords": [
     "ahp",
@@ -53,7 +54,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   },
   "scripts": {
     "prepack": "tsc -p .",

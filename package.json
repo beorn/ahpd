@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "os": ["linux", "darwin"],
   "packageManager": "pnpm@11.21.0",
   "description": "An open-source, plugin-driven AHP server with native Claude and pi agents, ACP agents (Codex, Copilot, Gemini), model proxying, tools and MCP servers, sandboxed computers and terminals, automations, conversational bots, and a web UI (ahpw). Users, permissions and usage tracking are built in. Build your own host and plugins with @ahpd/sdk.",
   "author": "Luiz Fernando Softov <lfs@softov.dev>",
@@ -52,6 +53,7 @@
     "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=22.18"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   }
 }

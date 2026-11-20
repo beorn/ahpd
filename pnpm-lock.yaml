@@ -215,6 +215,9 @@ importers:
 
   packages/sdk:
     dependencies:
+      '@bearly/flock':
+        specifier: 0.2.3
+        version: 0.2.3
       '@microsoft/agent-host-protocol':
         specifier: ^1.0.0
         version: 1.0.0

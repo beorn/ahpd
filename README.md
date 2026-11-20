@@ -5,7 +5,7 @@
 [![@ahpd/sdk](https://img.shields.io/npm/v/%40ahpd%2Fsdk?label=%40ahpd%2Fsdk)](https://www.npmjs.com/package/@ahpd/sdk)
 [![docs](https://img.shields.io/badge/docs-ahpio.github.io%2Fahpd-0b7285)](https://ahpio.github.io/ahpd/)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
-![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
+![node >=24](https://img.shields.io/badge/node-%3E%3D24-5fa04e)
 ![Agent Host Protocol 1.0.0](https://img.shields.io/badge/AHP-1.0.0-0b7285)
 ![runs on Node, Bun, Deno](https://img.shields.io/badge/runs%20on-Node%20%7C%20Bun%20%7C%20Deno-495057)
 
@@ -37,7 +37,7 @@ On Windows, in PowerShell:
 irm https://ahpio.com/ahpd/install.ps1 | iex
 ```
 
-The script checks for Node 22.18 or newer, installs `@ahpd/server` without sudo, adds `ahpd` to your PATH, and runs `ahpd configure`. [Install options](https://ahpio.github.io/ahpd/server/INSTALL)
+The upstream script installs the upstream release. This owned fork uses its declared Nix artifact and requires Node 24 or newer on Linux/macOS, or Bun 1.3.13 or newer. Its SDK shared entry loads the native writer-lock binding even for memory-only consumers. Native recovery is qualified only on the runtime/platform actually tested. [Upstream install options](https://ahpio.github.io/ahpd/server/INSTALL)
 
 Or install with npm, then run the setup:
 

@@ -3,7 +3,9 @@
 [![npm](https://img.shields.io/npm/v/%40ahpd%2Fsdk)](https://www.npmjs.com/package/@ahpd/sdk)
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
-![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
+![node >=24](https://img.shields.io/badge/node-%3E%3D24-5fa04e)
+
+This owned fork's shared SDK entry requires Node 24/Linux or macOS, or Bun 1.3.13 or newer, including memory-only consumers because the entry loads its native file-writer lock binding. File stores have one writer until close; inspect persisted JSON without opening a competing writer. Native recovery qualification remains specific to the runtime/platform tested.
 ![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
 
 A server library for the [Agent Host Protocol](https://github.com/microsoft/agent-host-protocol). It has no agent in it: you pass one in when you create the host.

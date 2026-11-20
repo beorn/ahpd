@@ -1,6 +1,7 @@
 /** The two `SessionStore` implementations: one that forgets, one that does not. */
 
-import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, fstatSync, lstatSync, mkdirSync, realpathSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { tryAcquireFlock } from '@bearly/flock';
 import { join, sep } from 'node:path';
 import { readJson, writeJsonAtomic } from '../utils/jsonfile.js';
 import { asCreatedBy, asMultiRoot, asOrigin } from './remotesession.js';
@@ -724,8 +725,11 @@ const idIn = (name: string): string | undefined => {
  * and neither a read nor a write may mistake those retained bytes for absence.
  */
 export function fileSessions(options: FileSessionOptions): SessionStore {
+  mkdirSync(options.dir, { recursive: true, mode: 0o700 });
+  const dir = realpathSync(options.dir);
+  const writer = tryAcquireFlock(`${dir}.lock`, { noFollow: true });
+  if (writer === null) throw new Error(`Session store ${dir} already has a writer; close or stop that host before opening another`);
   const inner = memorySessions();
-  const dir = options.dir;
   const told = (message: string): void => { options.onProblem?.(message); };
   const faults = new Map<string, Error>();
   const readable = (id: string): typeof inner => {
@@ -775,6 +779,14 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   let writing: ReturnType<typeof setTimeout> | undefined;
   /** Closed: what was waiting has been written, and nothing is written again. */
   let closed = false;
+  const owned = (): void => {
+    if (closed || !writer.held) throw new Error(`Cannot mutate closed session store ${dir}`);
+    const held = fstatSync(writer.fd, { bigint: true });
+    const path = lstatSync(writer.path, { bigint: true });
+    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || realpathSync(options.dir) !== dir) {
+      throw new Error(`Session store ${dir} writer identity changed; refusing a write outside its ownership`);
+    }
+  };
 
   /**
    * What one session is written down as, or nothing where there is nothing to
@@ -829,6 +841,14 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
       if (strict) throw new Error(`Cannot commit closed session store ${dir}`);
       return;
     }
+    try { owned(); }
+    catch (error) {
+      if (strict) throw error;
+      const message = `Could not write session store ${dir}: ${error instanceof Error ? error.message : String(error)}`;
+      if (options.onProblem === undefined) console.error(message);
+      else told(message);
+      return;
+    }
     const waiting = ids === undefined ? [...dirty] : ids.filter((id) => dirty.has(id));
     for (const id of waiting) {
       const row = rowOf(id);
@@ -871,6 +891,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
    * none of them can forget to mark what it moved.
    */
   const touched = (id: string, run: () => void): void => {
+    owned();
     readable(id);
     heard.add(id);
     run();
@@ -1057,7 +1078,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     }
   };
 
-  load();
+  try { owned(); load(); }
+  catch (error) { writer.release(); throw error; }
 
   return {
     creation: (id) => readable(id).creation(id),
@@ -1146,6 +1168,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     // Two rows move, so two files have to be written - which is why this is
     // written out rather than handed to `touched`, which names one.
     moveChat: (from, to, uri, turns) => {
+      owned();
       readable(from);
       readable(to);
       heard.add(from);
@@ -1160,6 +1183,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     sessions: () => [...new Set([...inner.sessions(), ...faults.keys()])],
     attachmentsDir: (id) => { readable(id); return attachmentsOf(id); },
     forget: (id) => {
+      owned();
       readable(id);
       heard.delete(id);
       inner.forget(id);
@@ -1168,6 +1192,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
       later();
     },
     prune: (gone) => {
+      owned();
       for (const id of [...heard]) {
         if (!gone(id)) continue;
         readable(id);
@@ -1192,8 +1217,9 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         clearTimeout(writing);
         writing = undefined;
       }
-      save();
+      save(true);
       closed = true;
+      writer.release();
     },
   };
 }

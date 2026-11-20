@@ -2269,6 +2269,9 @@ export function createHost(options: HostOptions): Host {
           new Promise((done) => { timer = setTimeout(done, HOST_CLOSE_WAIT_MS); }),
         ]);
         clearTimeout(timer);
+        // The UI grace cannot hand the store to a successor while an accepted
+        // start can still finish a callback or launch a provider.
+        await Promise.all([...starting].map((run) => run.then(() => undefined, () => undefined)));
         /*
          * Every machine enter and leave this host started, finished.
          *

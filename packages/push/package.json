@@ -2,6 +2,7 @@
   "name": "@ahpd/push",
   "version": "0.15.0-rc.4",
   "type": "module",
+  "os": ["linux", "darwin"],
   "description": "Push notifications for ahpd. Tells a phone or browser when a session needs you, through Expo or Web Push.",
   "keywords": [
     "ahp",
@@ -50,7 +51,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "bun": ">=1.3.13",
+    "node": ">=24"
   },
   "scripts": {
     "prepack": "tsc -p .",
