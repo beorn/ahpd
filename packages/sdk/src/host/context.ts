@@ -495,6 +495,8 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L472-L486
    */
   cancelledTurns: Map<string, Set<string>>;
+  /** The originating turn each chat's input request named, by `<chat>\n<requestId>`. */
+  inputTurns: Map<string, string>;
   /** What this host has learned about each backend, by the id clients name it by. */
   learned: Map<string, Learned>;
   /** The lead chat of a held session, when it has one. */

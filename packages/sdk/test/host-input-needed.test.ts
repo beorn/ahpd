@@ -200,15 +200,43 @@ it('raises a call\'s confirmation under VS Code\'s id, and takes it down with it
 
 it('raises a question under VS Code\'s id, and takes it down once the question has its response', async () => {
   const { start, entries } = await opened();
-  start.emit('chat', { type: 'chat/inputRequested', request: { id: 'q1', message: 'Which one?' } });
+  start.emit('chat', { type: 'chat/inputRequested', turnId: 't1', request: { id: 'q1', message: 'Which one?' } });
   await settle();
   expect(await entries()).toEqual([
-    { id: `chatInput:${start.chatUri}:q1`, kind: 'chatInput', chat: start.chatUri, request: { id: 'q1', message: 'Which one?' } },
+    { id: `chatInput:${start.chatUri}:q1`, kind: 'chatInput', chat: start.chatUri, turnId: 't1', request: { id: 'q1', message: 'Which one?' } },
   ]);
 
   start.emit('chat', { type: 'chat/inputCompleted', requestId: 'q1', response: 'cancel' });
   await settle();
   expect(await entries()).toEqual([]);
+});
+
+it('drops a stale chat/inputRequested from an ended or superseded turn when activeTurn is undefined or a successor', async () => {
+  const { start, entries, sent, said } = await opened();
+  await sent(1, { type: 'chat/turnCancelled', turnId: 't1', duration: 0 });
+  start.emit('chat', { type: 'chat/inputRequested', turnId: 't1', request: { id: 'late-idle', message: 'Too late (idle)' } });
+  await settle();
+  expect(said().filter((one) => one.type === 'chat/inputRequested')).toEqual([]);
+  expect(await entries()).toEqual([]);
+
+  start.emit('chat', {
+    type: 'chat/turnStarted',
+    turnId: 't2',
+    startedAt: new Date().toISOString(),
+    message: { text: 'next', origin: { kind: 'user' } },
+  });
+  await settle();
+  start.emit('chat', { type: 'chat/inputRequested', turnId: 't1', request: { id: 'late-active', message: 'Too late (t2 active)' } });
+  await settle();
+  expect(said().filter((one) => one.type === 'chat/inputRequested')).toEqual([]);
+  expect(await entries()).toEqual([]);
+
+  // A turnless chat/inputRequested never guesses turnId from the active turn.
+  start.emit('chat', { type: 'chat/inputRequested', request: { id: 'unattributed', message: 'No turnId' } });
+  await settle();
+  expect(await entries()).toEqual([
+    { id: `chatInput:${start.chatUri}:unattributed`, kind: 'chatInput', chat: start.chatUri, request: { id: 'unattributed', message: 'No turnId' } },
+  ]);
 });
 
 /*

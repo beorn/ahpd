@@ -1025,6 +1025,9 @@ export function createHost(options: HostOptions): Host {
       asks.clearTurn(channel, String(action.turnId ?? ''));
       // And a resumed turn is over, its time with it.
       ctx.resumedTurns.delete(`${channel}\n${String(action.turnId ?? '')}`);
+      for (const key of ctx.inputTurns.keys()) {
+        if (key.startsWith(`${channel}\n`)) ctx.inputTurns.delete(key);
+      }
     }
     /*
      * A backend's removal of an entry the session no longer holds is not said
@@ -1050,8 +1053,14 @@ export function createHost(options: HostOptions): Host {
     if (origin === undefined && held?.kind === 'chat' && typeof action.turnId === 'string' && action.type !== 'chat/truncated') {
       const stale = active !== undefined
         ? action.turnId !== active
-        : action.type === 'chat/turnComplete' && ctx.cancelledTurns.get(channel)?.has(action.turnId) === true;
+        : action.type === 'chat/inputRequested'
+          || (action.type === 'chat/turnComplete' && ctx.cancelledTurns.get(channel)?.has(action.turnId) === true);
       if (stale) return;
+    }
+    if (action.type === 'chat/inputRequested' && held?.kind === 'chat') {
+      const key = `${channel}\n${String((action.request as Record<string, unknown> | undefined)?.id ?? '')}`;
+      if (typeof action.turnId === 'string' && action.turnId !== '') ctx.inputTurns.set(key, action.turnId);
+      else ctx.inputTurns.delete(key);
     }
     // Whether this action ends the chat's active turn, which the reducer ends only when the ids match.
     const ending = ends && held?.kind === 'chat' && active === action.turnId;
@@ -1426,6 +1435,9 @@ export function createHost(options: HostOptions): Host {
       if (one !== session && (open.kind !== 'chat' || sessionFor(one) !== session)) continue;
       states.delete(one);
       ctx.cancelledTurns.delete(one);
+      for (const key of ctx.inputTurns.keys()) {
+        if (key.startsWith(`${one}\n`)) ctx.inputTurns.delete(key);
+      }
       ctx.forgetChatQueue(one);
     }
   };
@@ -1666,7 +1678,7 @@ export function createHost(options: HostOptions): Host {
     ],
     replayable, releaseActiveClientForSession, attachWatch, projectActionForClient, claims, agents, first: options.agents[0], connections, clientsChanged, relays: new Map(), holders, sessions, byChat, subagents, owners, names,
     leadOf, wheres, worktrees, worktreeOf, githubFacts, kept, offered, decided, about, terminals,
-    madeFrom, chatInteractivity, chatTools, origins, births, moves, listedMeta, browsable, broadcast, presence, beside, marks, lives, lifeOf, restarting, relaunches: new Map(), chatRelaunches: new Map(), baselineCheckpoints: new Map(), resumedTurns: new Map(), cancelledTurns: new Map(), learned, starting,
+    madeFrom, chatInteractivity, chatTools, origins, births, moves, listedMeta, browsable, broadcast, presence, beside, marks, lives, lifeOf, restarting, relaunches: new Map(), chatRelaunches: new Map(), baselineCheckpoints: new Map(), resumedTurns: new Map(), cancelledTurns: new Map(), inputTurns: new Map(), learned, starting,
     logs, detached, refuse,
     serverSeq: 0,
     closed: false, shutdown: () => host.close(), refusing: undefined, bareSessions: new Set<string>(), startedWorkspaceless: new Set<string>(), commandTurns: new Set<string>(), described, links,
@@ -1692,6 +1704,9 @@ export function createHost(options: HostOptions): Host {
     closeState: (channel: string) => {
       states.delete(channel);
       ctx.cancelledTurns.delete(channel);
+      for (const key of ctx.inputTurns.keys()) {
+        if (key.startsWith(`${channel}\n`)) ctx.inputTurns.delete(key);
+      }
       ctx.forgetChatQueue(channel);
     },
     heldStates: states as ReadonlyMap<string, HeldState>,
