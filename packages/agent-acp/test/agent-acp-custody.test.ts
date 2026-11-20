@@ -12,12 +12,13 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import type { Bag, Session, Start } from '@ahpd/sdk';
-import type { AcpOptions } from '../src/types.js';
+import type { AcpConnection, AcpOptions } from '../src/types.js';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { acpAgent } from '../src/index.js';
 import { admitCustody } from '../src/session/custody.js';
+import * as connectionPort from '../src/connection.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/acp-server.mjs', import.meta.url));
 const PROBE = fileURLToPath(new URL('./fixtures/flock-probe.mjs', import.meta.url));
@@ -62,6 +63,7 @@ async function start(args: string[], extra: Record<string, unknown> = {}, overri
     env: extra.sessionIdEnv === undefined ? { ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: URI } : { ACP_LOG: log },
     ...(extra.sessionIdEnv === undefined ? {} : { hostScope: { configDir: folder, hostId: 'fixture-host' } }),
     presetOf: () => options, ...extra };
+  options.env = { ACP_LOG: log, ...options.env };
   const agent = acpAgent(options);
   const request: Start = { uri: URI, chatUri: 'ahp-chat:/original', sessionConversation: true,
     clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS, settings: {}, workingDirectory: folder, trusted: () => true,
@@ -136,6 +138,34 @@ it.skipIf(!linux)('inherits the qualified guard at process birth and keeps it un
   expect(existsSync(guard.path)).toBe(true);
 });
 
+it.skipIf(!linux)('rejects a record-supplied occurrence guard before opening a child', async () => {
+  await expect(start([], { sessionIdEnv: 'HAB_ACP_SESSION_ID', spawnGuard: 'inherited-fd-v1',
+    env: { HAB_ACP_SPAWN_GUARD: 'record-spoof' },
+  }, { uri: 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246' })).rejects.toThrow('cannot configure HAB_ACP_SPAWN_GUARD');
+});
+
+it.skipIf(!linux)('retains the actual child when transport setup throws after spawn', async () => {
+  const realConnect = connectionPort.connectAcp;
+  let escaped: AcpConnection | undefined;
+  let prefix: string | undefined;
+  const connected = vi.spyOn(connectionPort, 'connectAcp').mockImplementation((options) => {
+    prefix = options.env?.HAB_ACP_PID_PREFIX;
+    escaped = realConnect(options);
+    throw new Error('fixture transport setup failed after spawn');
+  });
+  try {
+    await expect(start(['--adopt-spawn-guard'], { sessionIdEnv: 'HAB_ACP_SESSION_ID', spawnGuard: 'inherited-fd-v1' },
+      { uri: 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246' })).rejects.toThrow('fixture transport setup failed after spawn');
+    if (prefix === undefined || escaped === undefined) throw new Error('Real transport did not capture its scoped child');
+    const pid = connectionPort.childProcessOf(escaped)?.pid;
+    expect(readCustody(prefix)).toMatchObject({ state: 'running', child: { pid } });
+    expect(pid !== undefined && alive(pid)).toBe(true);
+    await escaped.close();
+    await until(() => readCustody(prefix!).state === 'ended');
+    expect(readCustody(prefix).child?.pid).toBe(pid);
+  } finally { connected.mockRestore(); await escaped?.close(); }
+});
+
 // A real killed writer and real transport child distinguish an empty stamp
 // from an ended occurrence; a replaced pathname must never count as its lock.
 it.skipIf(!linux).each(['before-spawn', 'after-spawn', 'replaced-inode'] as const)('reconciles only an ended original guard after host death (%s)', async (mode) => {
@@ -164,6 +194,7 @@ it.skipIf(!linux).each(['before-spawn', 'after-spawn', 'replaced-inode'] as cons
       expect(readCustody(prefix)).toEqual(old);
       process.kill(-child, 'SIGKILL');
       await until(() => !alive(child!));
+      await until(() => execFileSync(process.execPath, [PROBE, old.spawnGuard.path], { encoding: 'utf8' }) === 'free');
     }
     if (mode === 'replaced-inode') {
       writeFileSync(`${old.spawnGuard.path}.replacement`, 'different inode');
