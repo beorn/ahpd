@@ -38,6 +38,17 @@ const bot = {
   instructions: 'Answer briefly.\n\nUse the tools: a, b.\n',
 };
 
+// Two stores opened before either writes must arbitrate on the complete disk record, not their cached absence.
+it('create-only file records refresh the actual winner after a stale-cache conflict', async () => {
+  const first = await store().collection('mappings', { format: 'json' });
+  const second = await store().collection('mappings', { format: 'json' });
+  const winner = { id: 'logical-key', owner: 'ana', uri: 'original-uri' };
+  await first.put(winner, { createOnly: true });
+  await expect(second.put({ id: winner.id, owner: 'bea', uri: 'other-uri' }, { createOnly: true })).rejects.toMatchObject({ code: -32010 });
+  expect(JSON.parse(readFileSync(join(dir, 'mappings', `${winner.id}.json`), 'utf8'))).toEqual(winner);
+  expect(await second.get(winner.id)).toEqual(winner);
+});
+
 /** Every change a collection tells, from now on. */
 const heard = (collection: RecordCollection): RecordChange[] => {
   const changes: RecordChange[] = [];

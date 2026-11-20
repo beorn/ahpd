@@ -1380,7 +1380,7 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
       get: async (id) => (await opened()).get(id),
       list: async () => (await opened()).list(),
       find: async (match) => (await opened()).find(match),
-      put: async (record) => (await opened()).put(record),
+      put: async (record, options) => (await opened()).put(record, options),
       remove: async (id) => (await opened()).remove(id),
       /*
        * Answers its stop at once, and starts the store's own watch when the
