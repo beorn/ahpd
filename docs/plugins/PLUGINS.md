@@ -1205,6 +1205,8 @@ An optional second argument, `named: (uri: string) => void | Promise<void>`, rec
 
 Two reads go with it. `host.sessionKept(uri)` answers whether this host keeps the session at a URI, which is how a plugin decides whether a leftover machine is one of its own to adopt. `host.sessionOwner(uri)` answers whose that session is, or nothing where this host has none, which is how a plugin adopts a session somebody else started - a bot linking one its owner already has - without putting work into a place its writer has no business being. Both are promises read from the host's own store when they are called, because the plugin that registers that store may load after yours.
 
+A durable creation reservation answers its saved owner at its exact canonical URI, including after `named` rejects. That read does not probe backend history, admit the reservation or start a provider. It is ownership metadata, not proof of a usable session. Required creation metadata that is missing or unreadable rejects the read rather than reporting an absent session.
+
 ### Starting a chat on a backend
 
 A plugin that already has a session and needs one more conversation inside it - a bot's Back chat answering the message that woke it - says so with `host.startChat(session, wanted)`, which answers the new chat's URI. The session is named by its URI and stays what it is: its owner, its provider, its tree and its other chats.

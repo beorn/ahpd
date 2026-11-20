@@ -1540,13 +1540,17 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
      * and nothing where it has never opened this one, which are the two
      * answers a plugin linking somebody else's session has to tell apart.
      *
-     * A row is not a session, though, and the store keeps one for longer than
-     * the session lasts: a process that ran no turn leaves nothing on a
+     * A legacy row without creation intent is not a session. The store keeps
+     * one for longer than the session lasts: a process that ran no turn leaves nothing on a
      * backend's disk, so after a restart the row is all there is and the host
      * answers `No agent for session` to a subscribe. The owner is therefore
      * answered only where the host can still open the session, which is the
      * question `opens` asks of the live catalogue - so a plugin reusing a
      * session starts a new one instead of sending to the one that is gone.
+     *
+     * A durable creation reservation is different: its canonical URI and
+     * owner are metadata even if its callback rejected or creation has not
+     * completed. Reading that owner must not restore or admit the session.
      *
      * With no host built over this plugin there is no catalogue to ask, and
      * the store's answer is the whole of what is known: a host handed to a
@@ -1554,7 +1558,13 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
      */
     sessionOwner: async (uri) => {
       const sessions = await options.sessions?.();
-      const owner = sessions?.owner(idOf(uri));
+      const id = idOf(uri);
+      const owner = sessions?.owner(id);
+      if (sessions?.creation(id) !== undefined) {
+        const canonical = sessions.uri?.(id);
+        if (canonical === undefined) throw new Error(`Session creation ${id} has no canonical URI; repair its stored metadata before reuse`);
+        return canonical === uri ? owner : undefined;
+      }
       if (owner === undefined || starts.opens === undefined) return owner;
       return await starts.opens(uri) ? owner : undefined;
     },
