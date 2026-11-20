@@ -23,8 +23,9 @@
  * have yet.
  */
 
-import { resolve, sep } from 'node:path';
-import { ensureWorkspacelessScratchDir, statusOf, uriOf } from '@ahpd/sdk';
+import { isAbsolute, join, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { ensureWorkspacelessScratchDir, isUUID, machineAsked, statusOf, uriOf } from '@ahpd/sdk';
 import type { Bag, Chosen, Session, Start } from '@ahpd/sdk';
 import { bag, UNTITLED } from './session/common.js';
 import { createClientCalls } from './session/clientcalls.js';
@@ -63,6 +64,46 @@ export function acpSession(
   heardModes?: (modes: { id: string; name: string }[]) => void,
   levels: Map<string, Choice[]> = new Map(),
 ): Promise<Session> {
+  const shared = options;
+  const live = shared.presetOf;
+  const identityEnv = shared.sessionIdEnv;
+  const scope = shared.hostScope === undefined ? undefined : { ...shared.hostScope };
+  const project = (current: AcpOptions): AcpOptions => {
+    if (current.sessionIdEnv !== identityEnv || current.spawnGuard !== shared.spawnGuard) {
+      throw new Error('ACP identity capabilities changed during this Start; retain its identity and create a new configured Start');
+    }
+    const env = { ...current.env };
+    if (identityEnv === undefined) return { ...current, env };
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identityEnv) || scope === undefined || !isAbsolute(scope.configDir) || scope.hostId.trim() === '') {
+      throw new Error('ACP forced identity requires an environment name and the absolute configDir/persistent hostId scope');
+    }
+    if (process.platform !== 'linux' || machineAsked(start) !== undefined) {
+      throw new Error('ACP conversation custody is qualified only for a local Linux process; no server was opened');
+    }
+    if (start.sessionConversation === undefined) throw new Error('ACP retained identity needs positive original/peer provenance; legacy identity is unknown');
+    const original = start.uri.slice(start.uri.lastIndexOf('/') + 1);
+    const native = start.sessionConversation ? original : start.chatId;
+    if (native === undefined || !isUUID(native) || (!start.sessionConversation && native === original)) {
+      throw new Error('ACP retained identity requires the original UUID or a distinct peer UUID; no replacement was invented');
+    }
+    if (start.resume !== undefined && start.resume !== native) {
+      throw new Error('ACP saved backend identity conflicts with the requested conversation; retained identity was not replaced');
+    }
+    const key = createHash('sha256').update(JSON.stringify([scope.hostId, start.uri, start.chatUri])).digest('hex');
+    const protectedEnv: Record<string, string> = {
+      [identityEnv]: native,
+      HAB_ACP_PID_PREFIX: join(scope.configDir, 'acp-custody', key),
+      HAB_ACP_SESSION_URI: start.uri,
+      HAB_ACP_CHAT_URI: start.chatUri,
+    };
+    for (const [name, value] of Object.entries(protectedEnv)) {
+      if (env[name] !== undefined && env[name] !== value) throw new Error(`ACP identity environment ${name} conflicts with this conversation`);
+      env[name] = value;
+    }
+    return { ...current, env, hostScope: scope };
+  };
+  options = project(shared);
+  if (live !== undefined) options.presetOf = () => project(live());
   const provider = options.provider ?? 'acp';
   const emit = start.emit;
   /*
@@ -460,6 +501,7 @@ export function acpSession(
    * failure it meets.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostStateManager.ts#L2476-L2493
    */
-  if (ctx.refreshOptions() !== undefined) return Promise.resolve(session);
-  return ctx.open().then(() => session, () => session);
+  const refusal = ctx.refreshOptions();
+  if (refusal !== undefined) return Promise.reject(new Error(refusal));
+  return ctx.open().then(() => session);
 }

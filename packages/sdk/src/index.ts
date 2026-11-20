@@ -73,6 +73,7 @@ export { createClientCalls, DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from './tools/clien
 export type { ClientCall, ClientCallAnswer, ClientCalls, ClientCallsOptions } from './tools/clientcalls.js';
 export { toMcpContent } from './tools/mcpcontent.js';
 export { machineAsked, refuseComputer, computersFor, computerId, computerSource, machineRefusal, openComputer } from './machines/computers.js';
+export { isUUID } from './vscode/chatid.js';
 export {
   normalizeSandboxFileSystemPath, readChatSandboxState, readSessionSandboxPolicy, readSessionSandboxState, resolveSandboxEnabled,
   sandboxResolution, sessionSandboxConfig, sessionSandboxOverrides, withChatSandboxState, withSessionSandboxPolicy, withSessionSandboxState,

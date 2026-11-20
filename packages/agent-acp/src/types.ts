@@ -75,6 +75,12 @@ export interface AcpMachine {
 
 /** What an embedder, or a plugin's options, may set. */
 export interface AcpOptions {
+  /** Host-only forced native identity capability, not an ACP wire field. */
+  sessionIdEnv?: string;
+  /** Qualified bridge retains an inherited guard descriptor until OS exit. */
+  spawnGuard?: 'inherited-fd-v1';
+  /** Existing daemon identity/configuration authority, supplied at construction. */
+  hostScope?: { configDir: string; hostId: string };
   /** The program to spawn as the ACP server. */
   command: string;
   /** The arguments to give it. */
