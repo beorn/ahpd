@@ -1,6 +1,11 @@
 packages:
   - 'packages/*'
 
+# The private source package keeps a workspace dependency in its monorepo.
+# This consumer supplies the same released lock implementation explicitly.
+overrides:
+  '@bearly/durable-file>@bearly/flock': '0.2.3'
+
 # Native and prebuilt-fetching packages, which pnpm will not run install scripts
 # for unless they are named here. `node-pty` is optional - the terminals port
 # falls back to pipes without it - and esbuild is vitest's bundler.

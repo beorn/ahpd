@@ -14,7 +14,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, watch as watchPath, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseYaml, stringifyYaml } from '@cofold/yaml';
-import { isRecord, isRecordPath, isRecordSlug, reason, RECORD_PATH, RECORD_SLUG } from '@ahpd/sdk';
+import { atomicPublishFileSync } from '@bearly/durable-file';
+import { isRecord, isRecordPath, isRecordSlug, reason, RECORD_PATH, RECORD_SLUG, RpcError } from '@ahpd/sdk';
 import type { CollectionOptions, RecordChange, RecordCollection, RecordStore, StoredRecord } from '@ahpd/sdk';
 
 /** How the daemon's record store is built. */
@@ -249,10 +250,11 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
      * reaches a watcher once. A file that is gone is `deleted`, where this
      * collection held its record.
      */
-    const reread = (id: string): void => {
+    const reread = (id: string, required = false): void => {
       try {
         const text = textOf(fileOf(id));
         if (text === undefined) {
+          if (required) throw new Error(`records ${name}: ${fileOf(id)} disappeared after an exclusive publication conflict; the winner is unproven`);
           failures.delete(id);
           known.delete(id);
           if (held.delete(id)) told({ id, type: 'deleted' });
@@ -270,6 +272,7 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
         const failure = error instanceof Error ? error : new Error(`records ${name}: ${fileOf(id)} cannot be read`);
         if (!held.has(id)) failures.set(id, failure);
         said(failure.message);
+        if (required) throw failure;
       }
     };
 
@@ -371,7 +374,7 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
           .filter((record) => Object.entries(match).every(([field, value]) => record[field] === value))
           .map(copied);
       },
-      put: async (record) => {
+      put: async (record, options) => {
         if (!isRecord(record)) throw new Error(`records ${name}: a record is a JSON object`);
         if (typeof record.id !== 'string' || !isRecordSlug(record.id)) {
           throw new Error(`records ${name}: ${String(record.id)} is not a record id: ${RECORD_SLUG}`);
@@ -379,7 +382,13 @@ export function fileRecords(dir: string, options: FileRecordsOptions = {}): Reco
         const text = textOfRecord(record);
         const kept = recordFromText(text);
         mkdirSync(folderOf(record.id), { recursive: true, mode: 0o700 });
-        written(fileOf(record.id), text);
+        if (options?.createOnly === true) {
+          if (atomicPublishFileSync(fileOf(record.id), text) === 'exists') {
+            reread(record.id, true);
+            throw new RpcError(-32010, `records ${name}: ${record.id} already exists; the original record was retained`);
+          }
+        }
+        else written(fileOf(record.id), text);
         failures.delete(record.id);
         known.set(record.id, text);
         const type = held.has(record.id) ? 'updated' : 'added';
