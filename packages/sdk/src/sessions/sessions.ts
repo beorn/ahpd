@@ -6,7 +6,7 @@ import { readJson, writeJsonAtomic } from '../utils/jsonfile.js';
 import { asCreatedBy, asMultiRoot, asOrigin } from './remotesession.js';
 import type { Scope } from '../usage/scopes.js';
 import type { ChangesSummary } from '../types/changes.js';
-import type { AutomationOrigin, CreatedBy, MultiRoot, NestedRecord, PullRequestBaseline, RemoteOrigin, SessionStore, StoredChat, StoredWorktree } from '../types/sessions.js';
+import type { AutomationOrigin, CreatedBy, MultiRoot, NestedRecord, PullRequestBaseline, RemoteOrigin, SessionCreation, SessionStore, StoredChat, StoredWorktree } from '../types/sessions.js';
 import type { Owner } from '../types/usage.js';
 import { ownerOf } from '../utils/values.js';
 
@@ -100,6 +100,12 @@ export function memorySessions(): SessionStore & Held {
 
   return {
     commit: async () => {},
+    creation: (id) => rows.get(id)?.creation,
+    setCreation: (id, value) => {
+      const creation = creationOf(value);
+      if (creation === undefined) throw new Error(`Invalid creation intent for session ${id}`);
+      patch(id, { creation: structuredClone(creation) });
+    },
     flags: (id) => rows.get(id)?.flags ?? 0,
     setFlags: (id, value) => { patch(id, { flags: value === 0 ? undefined : value }); },
     config: (id) => rows.get(id)?.config,
@@ -288,6 +294,7 @@ export function memorySessions(): SessionStore & Held {
       // Written in the field order the file has always used, so a row read back
       // and written again is the same bytes.
       return {
+        ...(held.creation === undefined ? {} : { creation: held.creation }),
         ...(held.flags === undefined ? {} : { flags: held.flags }),
         ...(held.config === undefined ? {} : { config: held.config }),
         ...(held.scope === undefined ? {} : { scope: held.scope }),
@@ -501,6 +508,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
  * hands over to clear it, and nothing else in the store ever writes a row.
  */
 interface Row {
+  creation?: SessionCreation | undefined;
   flags?: number | undefined;
   config?: Record<string, unknown> | undefined;
   /** `null` is charged to nothing on purpose, which is not the same as never decided. */
@@ -550,7 +558,7 @@ interface Row {
  * nothing this host ran, and a row with one writes no file.
  */
 const empty = (row: Row): boolean =>
-  row.flags === undefined && row.config === undefined && row.scope === undefined
+  row.creation === undefined && row.flags === undefined && row.config === undefined && row.scope === undefined
   && row.owner === undefined && row.senders === undefined && row.provider === undefined
   && row.tools === undefined && row.trustedFolder === undefined && row.userSettings === undefined && row.external === undefined
   && row.artifacts === undefined && row.pullRequests === undefined && row.customTitle === undefined && row.chatTitles === undefined
@@ -570,6 +578,7 @@ const empty = (row: Row): boolean =>
 interface Saved {
   version: 1;
   id: string;
+  creation?: SessionCreation;
   flags?: number;
   config?: Record<string, unknown>;
   scope?: Scope | null;
@@ -623,6 +632,31 @@ interface Saved {
   /** What this session's own work added and removed, as it was last read. */
   changes?: ChangesSummary;
 }
+
+/** The creation facts must survive a write without dropping a request field. */
+const creationOf = (value: unknown): SessionCreation | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const held = value as Partial<SessionCreation>;
+  if (Object.keys(value).some((key) => !['phase', 'initialPrompt', 'instructions', 'customizations', 'model', 'prompt'].includes(key))) return undefined;
+  if (!['reserved', 'admitted', 'complete'].includes(held.phase as string)
+    || !['none', 'pending', 'admitted', 'settled'].includes(held.initialPrompt as string)
+    || (held.prompt !== undefined && typeof held.prompt !== 'string')
+    || (held.instructions !== undefined && (!Array.isArray(held.instructions) || held.instructions.some((one) => typeof one !== 'string')))) return undefined;
+  if (held.customizations !== undefined && (!Array.isArray(held.customizations) || held.customizations.some((one) =>
+    typeof one !== 'object' || one === null || one.type !== 'plugin' || typeof one.id !== 'string'
+    || typeof one.uri !== 'string' || typeof one.name !== 'string' || one.load?.kind !== 'loaded'
+    || Object.keys(one).some((key) => !['type', 'id', 'uri', 'name', 'load'].includes(key))
+    || Object.keys(one.load).some((key) => key !== 'kind')))) return undefined;
+  if (held.model !== undefined) {
+    const model = held.model;
+    if (typeof model !== 'object' || model === null || Array.isArray(model) || typeof model.id !== 'string'
+      || Object.keys(model).some((key) => key !== 'id' && key !== 'config')) return undefined;
+    if (model.config !== undefined && (typeof model.config !== 'object' || model.config === null || Array.isArray(model.config)
+      || Object.values(model.config).some((one) => one !== null && typeof one !== 'string' && typeof one !== 'boolean'
+        && !(typeof one === 'number' && Number.isFinite(one))))) return undefined;
+  }
+  return value as SessionCreation;
+};
 
 /**
  * An id as the name of the file that holds it, and the name back as an id.
@@ -753,6 +787,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     return {
       version: 1,
       id,
+      ...(held.creation === undefined ? {} : { creation: held.creation }),
       ...(held.flags === undefined ? {} : { flags: held.flags }),
       ...(held.config === undefined ? {} : { config: held.config }),
       ...(held.scope === undefined ? {} : { scope: held.scope }),
@@ -866,7 +901,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         problem = `Could not read ${file}: ${read.kind === 'unreadable' ? read.code ?? 'unreadable' : 'it is not JSON'}`;
       }
       else if (typeof read.value === 'object' && read.value !== null && !Array.isArray(read.value)
-        && (read.value as Partial<Saved>).version === 1 && (read.value as Partial<Saved>).id === id) {
+        && (read.value as Partial<Saved>).version === 1 && (read.value as Partial<Saved>).id === id
+        && ((read.value as Partial<Saved>).creation === undefined || creationOf((read.value as Partial<Saved>).creation) !== undefined)) {
         row = read.value as Saved;
       }
       else problem = `Could not read ${file}: it is not a session store this version can read or its id differs from its filename`;
@@ -878,6 +914,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         continue;
       }
       heard.add(row.id);
+      if (row.creation !== undefined) inner.setCreation(row.id, row.creation);
       if (typeof row.flags === 'number') inner.setFlags(row.id, row.flags);
       if (typeof row.config === 'object' && row.config !== null && !Array.isArray(row.config)) inner.setConfig(row.id, row.config);
       // A scope is a team and optionally a project. A row written by a version
@@ -1021,6 +1058,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   load();
 
   return {
+    creation: (id) => readable(id).creation(id),
+    setCreation: (id, value) => { touched(id, () => { inner.setCreation(id, value); }); },
     commit: async (id) => {
       if (writing !== undefined) {
         clearTimeout(writing);

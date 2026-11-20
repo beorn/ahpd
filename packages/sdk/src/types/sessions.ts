@@ -1,6 +1,18 @@
 import type { Scope } from '../usage/scopes.js';
 import type { ChangesSummary } from './changes.js';
 import type { Owner } from './usage.js';
+import type { ModelSelection } from '@microsoft/agent-host-protocol';
+import type { CapturedPlugin } from './clientplugins.js';
+
+/** Facts needed to finish owned creation that have no ordinary session field. */
+export interface SessionCreation {
+  readonly phase: 'reserved' | 'admitted' | 'complete';
+  readonly instructions?: readonly string[];
+  readonly customizations?: readonly CapturedPlugin[];
+  readonly model?: ModelSelection;
+  readonly prompt?: string;
+  readonly initialPrompt: 'none' | 'pending' | 'admitted' | 'settled';
+}
 
 /**
  * The pull requests a session's branch had when it started, and the ones it
@@ -233,6 +245,10 @@ export interface StoredChat {
  * scheme is only whose it is.
  */
 export interface SessionStore {
+  /** Creation admission and request facts, in this session's existing row. */
+  creation(id: string): SessionCreation | undefined;
+  /** Replace those facts before acknowledging the row with commit(id). */
+  setCreation(id: string, value: SessionCreation): void;
   /**
    * Commit this row's pending changes before an external effect. A failed commit
    * rejects and retains uncommitted changes for an explicit retry. An in-memory
