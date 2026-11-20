@@ -312,6 +312,30 @@ it('keeps its store open beyond close grace until an accepted callback settles',
   } finally { gate.resolve(); vi.useRealTimers(); }
 });
 
+// @failure A completed initial prompt remains an uncertain admission on disk; @level l2; @consumer SessionCreation.initialPrompt.
+it('durably settles the initial prompt after its actual terminal event', async () => {
+  const dir = join(DIR, `prompt-settled-${crypto.randomUUID()}`);
+  const store = fileSessions({ dir });
+  const base = echo({ path: DIR, pace: 0 });
+  let completed = false;
+  const agent: Agent = { ...base, create: (start) => base.create({
+    ...start,
+    emit: (channel, action) => {
+      start.emit(channel, action);
+      if (channel === 'chat' && action.type === 'chat/turnComplete') completed = true;
+    },
+  }) };
+  const { plugin, host } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
+  try {
+    const uri = await plugin.startSession({ owner: 'user:soft', provider: 'echo', prompt: 'Finish this turn' });
+    await until(() => completed, 'initial prompt terminal event');
+    await vi.waitFor(() => {
+      const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(uri))}.json`), 'utf8'));
+      expect(saved.creation.initialPrompt).toBe('settled');
+    }, { timeout: WAIT_MS });
+  } finally { await host.close(); }
+});
+
 it('refuses a door that is not a function, at the boundary', () => {
   const { plugin } = starting({ soft: ['session:create'] });
 
