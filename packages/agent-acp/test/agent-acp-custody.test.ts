@@ -7,9 +7,9 @@
  * host, kept through the child's end, and every write is ordered by one per-seat lock (`<prefix>.lock`, never
  * deleted) held from admission until the child's end is recorded. Ruling: @cto 34599-retained-record-r3-go.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -17,6 +17,7 @@ import type { Bag, Session, Start } from '@ahpd/sdk';
 import type { AcpOptions } from '../src/types.js';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { acpAgent } from '../src/index.js';
+import { admitCustody } from '../src/session/custody.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/acp-server.mjs', import.meta.url));
 const PROBE = fileURLToPath(new URL('./fixtures/flock-probe.mjs', import.meta.url));
@@ -110,6 +111,81 @@ it.skipIf(!linux)('refuses a changed guard capability on refresh before admittin
   await until(() => first.actions.some((action) => action.type === 'chat/error') || logged(first.log).some((line) => line.method === 'session/prompt'));
   expect(first.actions).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'chat/error', part: expect.objectContaining({ error: expect.objectContaining({ message: expect.stringContaining('capabilities changed') }) }) })]));
   expect(logged(first.log).filter((line) => line.method === 'session/prompt')).toHaveLength(0);
+});
+
+// The existing host-only custody lock test cannot witness ownership inherited
+// at OS spawn; this real child must keep its distinct occurrence lock alone.
+it.skipIf(!linux)('inherits the qualified guard at process birth and keeps it until actual child exit', async () => {
+  const { session, prefix, log } = await start(['--adopt-spawn-guard'], {
+    sessionIdEnv: 'HAB_ACP_SESSION_ID', spawnGuard: 'inherited-fd-v1',
+  }, { uri: 'ahp-session:/8c0a8ce8-ad4f-46d5-9f52-1c6e0e4b7246' });
+  const atInit = initializes(log)[0];
+  const guard = atInit?.inheritedGuard as { fd: number; path: string; device: string; inode: string; opening: string };
+  expect(guard.fd).toBe(3);
+  const record = JSON.parse(String(atInit?.custodyRecord)) as Custody & { spawnGuard: { kind: string; path: string; device: string; inode: string } };
+  expect(record.opening).toBe(guard.opening);
+  expect(record.spawnGuard).toEqual({ kind: 'inherited-fd-v1', path: guard.path, device: guard.device, inode: guard.inode });
+  expect(execFileSync(process.execPath, [PROBE, guard.path], { encoding: 'utf8' })).toBe('held');
+  // The parent relinquished its duplicate; only the child keeps this path.
+  const { readdirSync, readlinkSync } = await import('node:fs');
+  const parentFds = readdirSync('/proc/self/fd').map((fd) => { try { return readlinkSync(`/proc/self/fd/${fd}`); } catch { return ''; } });
+  expect(parentFds).not.toContain(guard.path);
+  await session.close();
+  await until(() => readCustody(prefix).state === 'ended');
+  expect(execFileSync(process.execPath, [PROBE, guard.path], { encoding: 'utf8' })).toBe('free');
+  expect(existsSync(guard.path)).toBe(true);
+});
+
+// A real killed writer and real transport child distinguish an empty stamp
+// from an ended occurrence; a replaced pathname must never count as its lock.
+it.skipIf(!linux).each(['before-spawn', 'after-spawn', 'replaced-inode'] as const)('reconciles only an ended original guard after host death (%s)', async (mode) => {
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-guard-crash-'));
+  folders.push(folder);
+  const prefix = join(folder, 'child');
+  const log = join(folder, 'child.jsonl');
+  const host = spawn('bun', [fileURLToPath(new URL('./fixtures/custody-host.ts', import.meta.url)), prefix, log, mode, process.execPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  let diagnostic = '';
+  let failure: Error | undefined;
+  host.stdout.on('data', (chunk) => { output += String(chunk); });
+  host.stderr.on('data', (chunk) => { diagnostic += String(chunk); });
+  host.on('error', (error) => { failure = error; });
+  let child: number | undefined;
+  try {
+    await until(() => { if (failure !== undefined) throw failure; if (host.exitCode !== null) throw new Error(`Fixture host ended: ${diagnostic}`); return output.includes('\n'); });
+    const retained = JSON.parse(output.trim()) as { record: Custody & { spawnGuard: { path: string } }; childPid?: number };
+    child = retained.childPid;
+    const old = retained.record;
+    expect(old).toMatchObject({ state: 'spawning', host: { pid: host.pid }, child: null });
+    host.kill('SIGKILL');
+    await until(() => host.signalCode !== null || host.exitCode !== null);
+    if (child !== undefined) {
+      await expect(admitCustody(prefix, 100, 'successor', true)).rejects.toThrow('no new ACP child');
+      expect(readCustody(prefix)).toEqual(old);
+      process.kill(-child, 'SIGKILL');
+      await until(() => !alive(child!));
+    }
+    if (mode === 'replaced-inode') {
+      writeFileSync(`${old.spawnGuard.path}.replacement`, 'different inode');
+      renameSync(`${old.spawnGuard.path}.replacement`, old.spawnGuard.path);
+      await expect(admitCustody(prefix, 100, 'successor', true)).rejects.toThrow('guard');
+      expect(readCustody(prefix)).toEqual(old);
+      return;
+    }
+    const successor = await admitCustody(prefix, 100, 'successor', true);
+    try {
+      expect(readCustody(prefix)).toMatchObject({ opening: old.opening, seq: old.seq + 1, state: 'ended', child: null });
+      expect(successor.opening).not.toBe(old.opening);
+    } finally { successor.release(); }
+    expect(logged(log).some((line) => line.method === 'initialize')).toBe(false);
+  } finally {
+    host.kill('SIGKILL');
+    if (child !== undefined && alive(child)) {
+      process.kill(-child, 'SIGKILL');
+      await until(() => !alive(child!));
+    }
+    if (host.pid !== undefined) await until(() => host.signalCode !== null || host.exitCode !== null);
+  }
 });
 
 it.skipIf(!linux)('names the running child before initialize and keeps the record, ended, after the child exits', async () => {

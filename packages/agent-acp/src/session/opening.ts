@@ -446,6 +446,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        */
       const told = moved === undefined ? cwd : machinePathOf(cwd);
       const prefix = options.env?.HAB_ACP_PID_PREFIX;
+      if (options.spawnGuard !== undefined && (prefix === undefined || moved !== undefined || process.platform !== 'linux')) {
+        throw new Error(`${provider}: inherited spawn custody requires a scoped local Linux opening; nothing was spawned`);
+      }
       if (prefix !== undefined && (prefix === '' || options.env?.HAB_ACP_SESSION_URI !== start.uri
         || (options.env?.HAB_ACP_CHAT_URI !== undefined
           ? options.env.HAB_ACP_CHAT_URI !== start.chatUri : start.sessionConversation !== true))) {
@@ -453,7 +456,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
       }
       if (prefix !== undefined) {
         // Admission waits, on a timer, for a predecessor still inside its kill grace to record its end (#34599).
-        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider);
+        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider, options.spawnGuard === 'inherited-fd-v1');
         if (ctx.disposed || ctx.opening !== pending || spawnOf(options) !== startingWith) {
           held.release();
           throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
@@ -465,8 +468,22 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         custody = held;
       }
       let connection: AcpConnection;
+      let escaped: import('node:child_process').ChildProcess | undefined;
+      let setupFailed = false;
+      let escapedIdentity: CustodyIdentity | null = null;
       try {
         connection = connectAcp({
+        spawned: (child) => {
+          escaped = child;
+          child.on('error', (error) => {
+            if (!setupFailed) return; // The ordinary transport owns errors after setup succeeds.
+            const line = `${provider}: retained transport child reported ${messageOf(error)}`;
+            if (options.log !== undefined) options.log(line, 'error');
+            else console.error(line);
+          });
+          child.once('close', () => { if (setupFailed) custody?.end(escapedIdentity); });
+        },
+        ...(custody?.inheritedFd === undefined ? {} : { extraStdio: [custody.inheritedFd] }),
         command: moved?.command ?? options.command,
         ...(moved !== undefined
           ? { args: moved.args }
@@ -478,9 +495,17 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
          */
         ...(moved !== undefined
           ? (moved.env === undefined ? {} : { env: moved.env })
-          : (options.env === undefined && start.env === undefined
+          : (options.env === undefined && start.env === undefined && custody?.spawnGuard === undefined
             ? {}
-            : { env: { ...(options.env ?? {}), ...(start.env ?? {}) } })),
+            : { env: {
+              ...(options.env ?? {}),
+              ...(start.env ?? {}),
+              // The custody guard travels in the child's own environment, so a recovered host
+              // still finds the inherited descriptor its occurrence was spawned with.
+              ...(custody?.spawnGuard === undefined ? {} : { HAB_ACP_SPAWN_GUARD: JSON.stringify({
+                ...custody.spawnGuard, fd: 3, opening: custody.opening,
+              }) }),
+            } })),
         ...(moved?.cwd !== undefined ? { cwd: moved.cwd } : moved === undefined ? { cwd } : {}),
         handlers: {
           update: ctx.sessionUpdate,
@@ -516,10 +541,22 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
         ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
         });
+        custody?.releaseInherited();
       }
       catch (error) {
-        // A spawn that threw left no child: its end is recorded with none.
-        custody?.end(null);
+        setupFailed = true;
+        if (escaped === undefined) custody?.end(null);
+        else if (custody !== undefined && escaped.pid !== undefined) {
+          // A setup exception is not a no-child receipt. Retain this actual
+          // process and its inherited guard until its OS close is observed.
+          try {
+            escapedIdentity = custody.identify(escaped.pid);
+            custody.write('running', escapedIdentity);
+          } catch (identityError) {
+            options.log?.(`${provider}: failed transport child remains unstamped: ${messageOf(identityError)}`, 'error');
+          }
+          custody.releaseInherited();
+        }
         throw error;
       }
       ctx.live = connection;
