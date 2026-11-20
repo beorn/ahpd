@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fileURLToPath } from 'node:url';
+import { REPOSITORY as REPO } from './support/work.js';
 import { call, directory, withRole } from './users-gate-helpers.js';
 import {
   resetSdk, actions, claude, createHost, emit, hello, machine, peer, sdk, settle,
@@ -8,15 +8,6 @@ import type { Bag } from '../src/types/common.js';
 import { WAIT_MS } from '../../../tools/wait.ts';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/claude-sdk.js')).fake);
-
-/**
- * This checkout, as an absolute path.
- *
- * The session below is started in it and the case reads real files, so the
- * path is found rather than written down - a literal one passes on the machine
- * it was written on and fails on every other.
- */
-const REPO = fileURLToPath(new URL('../../..', import.meta.url)).replace(/\/$/, '');
 
 beforeEach(resetSdk);
 
