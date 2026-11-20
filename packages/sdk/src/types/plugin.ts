@@ -1209,13 +1209,18 @@ export interface PluginHost extends PluginContext {
    * host has never opened answers nothing, which is a different answer from a
    * session of the host's own that nobody owns.
    *
-   * A row is not a session. What the store keeps about one outlives the
-   * process that ran it, and a session that ran no turn leaves nothing on a
+   * A legacy row without creation intent is not a session. Its metadata
+   * outlives the process that ran it, and a session that ran no turn leaves nothing on a
    * backend's disk for a restart to read back - so its owner is answered only
    * where this host can still open it, running now or in its catalogue. A
    * plugin that reuses a session is told nothing for the one that is gone and
    * starts a new one, rather than sending to a session `No agent for session`
    * answers.
+   *
+   * A durable creation reservation answers its saved owner at its exact
+   * canonical URI even before creation completes or after its naming callback
+   * rejects. This is a metadata read: it does not restore, admit or start the
+   * reserved session. Missing required creation metadata rejects the read.
    *
    * Read the way `sessionKept` is, and for the same reason: the store is named
    * by the fold that runs after every plugin has applied, so a plugin asking
