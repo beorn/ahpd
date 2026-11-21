@@ -117,6 +117,30 @@ it('reopens the same joined session, isolates hubs, and retires only the dispose
   expect(otherHub.config('same')).toEqual({ model: 'separate' });
 });
 
+it('disposes the joined scope from its durable record when the backend cannot list it', async () => {
+  const dir = join(root, 'unlisted-joined');
+  const joined = { hostId: 'hub', innerId: 'one' };
+  const { list: _list, find: _find, ...agent } = echo({ path: root, pace: 0 });
+  const initial = fileSessions({ dir, joined });
+  initial.setProvider('one', agent.provider);
+  initial.setUri?.('one', SESSION);
+  initial.setWorkingDirectory?.('one', root);
+  initial.setProvider('backend-copy', agent.provider);
+  const attachments = initial.attachmentsDir?.('one');
+  if (attachments === undefined) throw new Error('The joined session has no attachment directory');
+  mkdirSync(attachments, { recursive: true });
+  writeFileSync(join(attachments, 'saved'), 'recorded attachment');
+  initial.close?.();
+
+  const host = createHost({ path: root, agents: [agent], sessions: fileSessions({ dir, joined }) });
+  const client = host.accept(peer());
+  await client.handle({ method: 'initialize', params: { clientId: 'delete', protocolVersions: ['0.9.0'] } });
+  await expect(client.handle({ method: 'disposeSession', params: { channel: 'ahp-session:/backend-copy' } })).rejects.toThrow(/No agent/);
+  await client.handle({ method: 'disposeSession', params: { channel: SESSION } });
+  await host.close();
+  expect(existsSync(dirname(dirname(attachments)))).toBe(false);
+});
+
 it('refuses a joined session still in the legacy shared store without changing that store', async () => {
   const dir = join(root, 'legacy');
   const legacy = fileSessions({ dir });

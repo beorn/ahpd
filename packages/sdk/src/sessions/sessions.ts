@@ -12,6 +12,9 @@ import type { AutomationOrigin, CreatedBy, MultiRoot, NestedRecord, PullRequestB
 import type { Owner } from '../types/usage.js';
 import { ownerOf } from '../utils/values.js';
 
+const joinedSessionIds = new WeakMap<SessionStore, string>();
+export const joinedSessionId = (store: SessionStore): string | undefined => joinedSessionIds.get(store);
+
 /**
  * What the file store needs beyond the port.
  *
@@ -1129,7 +1132,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   }
   catch (error) { writer.release(); throw error; }
 
-  return {
+  const store: SessionStore = {
     creation: (id) => readable(id).creation(id),
     setCreation: (id, value) => { touched(id, () => { inner.setCreation(id, value); }); },
     commit: async (id) => {
@@ -1267,13 +1270,16 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         writing = undefined;
       }
       save(true);
-      if (removeOnClose && inner.sessions().length === 0 && faults.size === 0) {
+      // The exact scope includes the session's backend and chat records.
+      if (removeOnClose && joined !== undefined && inner.rowOf(joined.innerId) === undefined && faults.size === 0) {
         rmSync(dir, { recursive: true });
       }
       closed = true;
       writer.release();
     },
   };
+  if (joined !== undefined) joinedSessionIds.set(store, joined.innerId);
+  return store;
 }
 
 export interface SessionMigrationOptions {
