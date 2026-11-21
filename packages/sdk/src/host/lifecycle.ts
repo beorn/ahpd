@@ -5,6 +5,7 @@ import { computerId, computersFor } from '../machines/computers.js';
 import { deleteNested } from '../sessions/nested.js';
 import { localPath, uriOf } from '../resources/fileuri.js';
 import { idOf, uriFor, Status } from '../sessions/catalog.js';
+import { joinedSessionId } from '../sessions/sessions.js';
 import { mkdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
@@ -779,7 +780,10 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
   const removeSession = async (uri: string, acting?: Principal | Owner): Promise<void> => {
     mayDispose(acting, uri);
     const held = sessions.get(uri);
-    const owner = owners.get(uri);
+    const id = idOf(uri);
+    // The joined store can identify its one recorded session even when its backend does not list it.
+    const recorded = joinedSessionId(kept) === id && kept.uri?.(id) === uri ? kept.provider(id) : undefined;
+    const owner = owners.get(uri) ?? (recorded === undefined ? undefined : ctx.agents.get(recorded));
     if (!held && !owner)
       throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${uri}`);
     const agent = held?.agent ?? (owner as Agent);
@@ -813,8 +817,8 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
      * below drops the record they are read from. So does the machine, which is
      * read off the config the teardown forgets.
      */
-    const directory = dirOf(uri);
-    const chats = ctx.heldChats(idOf(uri));
+    const directory = dirOf(uri) ?? (recorded === undefined ? undefined : kept.workingDirectory?.(id));
+    const chats = ctx.heldChats(id);
     const ran = ranIn(uri);
     /*
      * And the checkpoints its turns left in that folder, which are commits
