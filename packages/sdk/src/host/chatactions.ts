@@ -81,7 +81,14 @@ export function sessionFlag(
     // nothing, and it stays where it is.
     const stopping = action.stopping === true;
     queueMicrotask(() => {
-      void ctx.sleep(uri, stopping).catch(() => undefined);
+      // A sleep that throws is a line of its own (#37577, @cto 2026-11-21): the
+      // refusal path names the watchers that held the sleep off, so a failure
+      // swallowed here would read as that same refusal, and the stop would end
+      // in its window with nothing in the log saying why.
+      void ctx.sleep(uri, stopping).catch((error: unknown) => {
+        const why = error instanceof Error ? error.message : String(error);
+        ctx.log.warn(`${uri}: the sleep this ${stopping ? 'stop' : 'archive'} asked for failed: ${why}`);
+      });
       ctx.reconcile();
     });
   }
