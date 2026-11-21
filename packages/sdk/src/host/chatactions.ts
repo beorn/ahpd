@@ -53,32 +53,45 @@ export function sessionFlag(
 ): boolean {
   const before = ctx.kept.flags(idOf(uri));
   const after = on ? before | bit : before & ~bit;
-  if (after === before) return false;
-  ctx.kept.setFlags(idOf(uri), after);
-  ctx.keepName(idOf(uri));
-  // Every client watching, and the catalogue: a flag one client sets is a flag
-  // the others have to see, which is what having a host for this buys over
-  // each client keeping its own.
-  ctx.dispatch(uri, action, origin);
-  ctx.markSummaryDirty(uri);
-  // Whether its chats may move, which an archived session's may not.
-  if (bit === Status.IsArchived) for (const chat of ctx.sessions.get(uri)?.chats.keys() ?? []) ctx.updateChatMovability(chat);
+  const moved = after !== before;
+  if (moved) {
+    ctx.kept.setFlags(idOf(uri), after);
+    ctx.keepName(idOf(uri));
+    // Every client watching, and the catalogue: a flag one client sets is a flag
+    // the others have to see, which is what having a host for this buys over
+    // each client keeping its own.
+    ctx.dispatch(uri, action, origin);
+    ctx.markSummaryDirty(uri);
+    // Whether its chats may move, which an archived session's may not.
+    if (bit === Status.IsArchived) for (const chat of ctx.sessions.get(uri)?.chats.keys() ?? []) ctx.updateChatMovability(chat);
+  }
   // Archived: asleep, or its tree given back where it is asleep already, and
   // let go by the residency where nothing holds it.
   // https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L1457-L1464
   if (bit === Status.IsArchived && on) {
+    // A stop says so on its own archive offer (#37426): the session is
+    // archived because the seat is being stopped, and a chat that never spoke
+    // has nothing to resume by, so that stop alone may sleep it. The flag is
+    // read here and passed to this one sleep; no other bit is written.
+    //
+    // Every offer asks, not only the one that moved the bit (@cto 2026-11-21,
+    // #37426): the host sleeps only a session no client watches, so a refusal is
+    // about the watchers of that moment and never a mark on the session. The
+    // bit's own latch above is about not waking clients for a message that moved
+    // nothing, and it stays where it is.
+    const stopping = action.stopping === true;
     queueMicrotask(() => {
-      void ctx.sleep(uri).catch(() => undefined);
+      void ctx.sleep(uri, stopping).catch(() => undefined);
       ctx.reconcile();
     });
   }
   // Unarchived: the tree back before anything wakes the session into it, and
   // the session is no longer one the host archived.
-  if (bit === Status.IsArchived && !on) {
+  if (bit === Status.IsArchived && !on && moved) {
     ctx.kept.setAutoArchivedAt?.(idOf(uri), undefined);
     void ctx.restoreSessionWorktree(uri);
   }
-  return true;
+  return moved;
 }
 
 /**

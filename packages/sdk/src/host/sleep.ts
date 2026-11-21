@@ -22,13 +22,19 @@ import type { Turn } from '@microsoft/agent-host-protocol';
  * automations stay, and only the agent behind it is closed.
  */
 export interface Sleep {
-  /** Whether a live session has nothing in hand, and so may sleep. */
-  quiet(uri: string): boolean;
+  /**
+   * Whether a live session has nothing in hand, and so may sleep.
+   *
+   * `stopping` is a seat's stop asking: a chat that never spoke has nothing to
+   * resume by, but a stop is still the end of the seat, so for that stop alone
+   * it counts as quiet (#37426). No flag is written by it.
+   */
+  quiet(uri: string, stopping?: boolean): boolean;
   /**
    * Let a quiet session's agent go. Answers whether it slept. An archived
    * session gives its tree back as well, once it has stopped.
    */
-  sleep(uri: string): Promise<boolean>;
+  sleep(uri: string, stopping?: boolean): Promise<boolean>;
   /**
    * Bring a session that is not live back, resumed in place.
    *
@@ -178,15 +184,22 @@ export function createSleep(ctx: HostContext): Sleep {
     return false;
   };
 
-  const quiet = (uri: string): boolean => {
+  const quiet = (uri: string, stopping = false): boolean => {
     const held = sessions.get(uri);
     const id = idOf(uri);
     if (held === undefined || restarting.has(uri) || closing.has(id) || waking.has(id) || holds.has(id)) return false;
     for (const [chatUri, chat] of held.chats) {
       if (hasActiveTurn(chatUri) || pending(chatUri) || waitingOnPerson(chat)) return false;
-      if (chat.resumable?.() === false || chat.busy?.() === true) return false;
-      // A chat with no conversation yet has nothing to resume by.
-      if (chat.agentId() === undefined || chat.allTurns().length === 0) return false;
+      // A chat with no conversation yet has nothing to resume by, and its
+      // agent says so. A stop is still the end of the seat: for that stop
+      // alone, a chat that never spoke counts as quiet (#37426).
+      const unheard = chat.allTurns().length === 0;
+      if (chat.resumable?.() === false && !(stopping && unheard)) return false;
+      if (chat.busy?.() === true) return false;
+      // An archived session is ended, not resumed: refusing that sleep leaves
+      // its agent running until the window expires and reaps it.
+      if (chat.agentId() === undefined) return false;
+      if (unheard && !archived(uri) && !stopping) return false;
     }
     return !watched(uri);
   };
@@ -194,7 +207,7 @@ export function createSleep(ctx: HostContext): Sleep {
   /** Whether a session is archived, which sleeps it without waiting out the timeout. */
   const archived = (uri: string): boolean => (kept.flags(idOf(uri)) & Status.IsArchived) !== 0;
 
-  const sleep = async (uri: string): Promise<boolean> => {
+  const sleep = async (uri: string, stopping = false): Promise<boolean> => {
     const id = idOf(uri);
     /*
      * An archived session with no agent running here has stopped already, so
@@ -206,7 +219,7 @@ export function createSleep(ctx: HostContext): Sleep {
       void ctx.requestSessionWorktreeRemoval(uri);
       return false;
     }
-    if (!quiet(uri)) return false;
+    if (!quiet(uri, stopping)) return false;
     const held = sessions.get(uri);
     if (held === undefined) return false;
     /*
@@ -219,9 +232,9 @@ export function createSleep(ctx: HostContext): Sleep {
      * new one. Disposing here would put the transcript out of its reach.
      */
     const row = getOverlaySessionSummaries().find((one) => one.resource === uri);
-    const stopping: Promise<void>[] = [];
+    const stoppingChats: Promise<void>[] = [];
     for (const [chatUri, chat] of held.chats) {
-      stopping.push(Promise.resolve(chat.close('stopping')).catch(() => {}));
+      stoppingChats.push(Promise.resolve(chat.close('stopping')).catch(() => {}));
       byChat.drop(chatUri);
       // A wake starts it under this session, which is the relaunch a moved
       // chat owed.
@@ -241,7 +254,7 @@ export function createSleep(ctx: HostContext): Sleep {
     log(`slept ${uri}`);
     activeSessionsChanged();
     markSummaryDirty(uri);
-    const closed = Promise.all(stopping).then(() => undefined);
+    const closed = Promise.all(stoppingChats).then(() => undefined);
     closing.set(id, closed);
     // An archived session gives its tree back once its agents have closed.
     // Queued now, so a wake asked for during the close waits behind it.

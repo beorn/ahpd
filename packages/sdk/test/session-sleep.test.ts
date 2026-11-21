@@ -22,6 +22,8 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { chatReducer } from '@microsoft/agent-host-protocol';
 import { createHost } from '../src/host.js';
+import { sessionFlag } from '../src/host/chatactions.js';
+import { Status } from '../src/sessions/catalog.js';
 import { memorySessions } from '../src/sessions/sessions.js';
 import { shellTerminals } from '../src/machines/terminals.js';
 import { echo } from '../../../examples/echo/agent.js';
@@ -172,8 +174,8 @@ async function serving(knobs: Knobs, options: Options = {}) {
     params: { clientId: 'window', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] },
   });
 
-  /** A session with one finished turn, and the channels it is read on. */
-  const open = async (name: string) => {
+  /** A session, with one finished turn unless `spoke` is false, and the channels it is read on. */
+  const open = async (name: string, spoke = true) => {
     const channel = `ahp-session:/${name}`;
     /** The session's own name, which the catalogue lists it by. */
     const resource = `ahp-session:/${name}`;
@@ -191,7 +193,7 @@ async function serving(knobs: Knobs, options: Options = {}) {
       });
       for (let i = 0; i < 200 && await turns(chatUri) === before; i++) await settle(1);
     };
-    await say('hello');
+    if (spoke) await say('hello');
     /** Stop watching the session and its chat, which leaves it free to sleep. */
     const leave = async (): Promise<void> => {
       await client.handle({ method: 'unsubscribe', params: { channel: chatUri } });
@@ -226,7 +228,7 @@ async function serving(knobs: Knobs, options: Options = {}) {
     return rows.items.map((one) => one.resource);
   };
 
-  return { host, client, time, open, active, awake, listed, dir };
+  return { host, client, time, open, turns, active, awake, listed, dir };
 }
 
 it('sleeps a session quiet for longer than the timeout', async () => {
@@ -723,10 +725,126 @@ it('sleeps an archived session at once', async () => {
 });
 
 /*
- * VS Code's host refuses an archive of a default chat without restoring the
- * session it is in.
- * https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L12120-L12122
+ * A session archived before its first turn has nothing to resume by, but it
+ * also has nothing to keep. The archive action sleeps it; refusing there
+ * leaves the agent running until its window expires and the window reaps it.
  */
+it('sleeps an archived session whose chat never spoke', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { client, open, turns, awake } = await serving(knobs);
+  const one = await open('one', false);
+  expect(await turns(one.chatUri)).toBe(0);
+  await one.leave();
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true } },
+  });
+  await until(() => knobs.closes.length > 0);
+  expect(awake()).toBe(0);
+});
+
+/*
+ * #37426: the stop does not just archive. It first cancels the seat's turn on
+ * one connection, drops that connection, and offers the archive on another,
+ * while it watches the child go. A never-spoken seat must sleep under that
+ * ordering too, or the window expires and the child is reaped with SIGTERM.
+ */
+it('sleeps a never-spoken session when a stop cancels a turn and then archives', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { client, open, turns, awake } = await serving(knobs);
+  const one = await open('one', false);
+  expect(await turns(one.chatUri)).toBe(0);
+  // The stop's first act: cancel the seat's turn on a watched chat.
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.chatUri, clientSeq: 1, action: { type: 'chat/turnCancelled' } },
+  });
+  await settle();
+  await one.leave();
+  // And then the archive that asks the host to sleep it.
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 2, action: { type: 'session/isArchivedChanged', isArchived: true } },
+  });
+  await until(() => knobs.closes.length > 0);
+  expect(awake()).toBe(0);
+});
+
+it('sleeps a never-spoken archived session whose chat is not resumable', async () => {
+  const knobs: Knobs = { closes: [], resumable: false };
+  const { client, open, turns, awake } = await serving(knobs);
+  const one = await open('one', false);
+  expect(await turns(one.chatUri)).toBe(0);
+  await one.leave();
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true, stopping: true } },
+  });
+  await until(() => knobs.closes.length > 0, 2000);
+  expect(awake()).toBe(0);
+});
+
+/*
+ * The stopping flag belongs to that stop alone: an archive that is not a stop
+ * still keeps a chat with nothing to resume by awake, as it did before.
+ */
+it('keeps a never-spoken archived session awake when the archive is not a stop', async () => {
+  const knobs: Knobs = { closes: [], resumable: false };
+  const { client, open, awake } = await serving(knobs);
+  const one = await open('one', false);
+  await one.leave();
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true } },
+  });
+  await settle(16);
+  expect(knobs.closes.length).toBe(0);
+  expect(awake()).toBe(1);
+});
+
+/*
+ * #37426, @cto 2026-11-21: an archive offer is a sleep request every time it is
+ * made, not only the once the bit moved. A client watching at the first
+ * evaluation refuses it - the host sleeps only a session nobody watches - and
+ * that refusal is about the watchers of that moment, never a mark on the
+ * session, so the next offer of the same bit asks again and sleeps it. The
+ * bit's own latch stays: a repeated offer still dispatches nothing, because a
+ * client is not woken for a message that moved nothing.
+ */
+it('asks again after a refused archive offer, and only the move dispatches', async () => {
+  const sleeps: string[] = [];
+  const dispatched: string[] = [];
+  const uri = 'ahp-session:/one';
+  let flag = 0;
+  let watched = true;
+  const ctx = {
+    kept: {
+      flags: () => flag,
+      setFlags: (_id: string, value: number): void => { flag = value; },
+    },
+    keepName: (): void => {},
+    dispatch: (channel: string): void => { dispatched.push(channel); },
+    markSummaryDirty: (): void => {},
+    sessions: new Map(),
+    updateChatMovability: (): void => {},
+    sleep: (target: string): Promise<boolean> => { sleeps.push(target); return Promise.resolve(!watched); },
+    reconcile: (): void => {},
+  };
+  const offer = { type: 'session/isArchivedChanged', isArchived: true, stopping: true };
+  const current = async (): Promise<{ moved: boolean; sleeps: number }> => {
+    const moved = sessionFlag(ctx as never, uri, Status.IsArchived, true, offer);
+    await new Promise((r) => { setTimeout(r, 0); });
+    return { moved, sleeps: sleeps.length };
+  };
+  const refused = await current();
+  expect(refused).toEqual({ moved: true, sleeps: 1 });
+  watched = false;
+  const taken = await current();
+  expect(taken).toEqual({ moved: false, sleeps: 2 });
+  expect(dispatched).toEqual([uri]);
+  expect(flag & Status.IsArchived).not.toBe(0);
+});
+
 it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
   const knobs: Knobs = { closes: [] };
   const { client, time, open, awake } = await serving(knobs);
