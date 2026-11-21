@@ -160,6 +160,16 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   successfulOpening: { connection: AcpConnection; opening: Promise<{ connection: AcpConnection; sessionId: string }> } | undefined;
   /** The server's own id for this conversation, once `session/new` answered. */
   acpSessionId: string | undefined;
+  /**
+   * The `_meta` the server put on its answer to opening that conversation
+   * (`session/new`, `session/load` or `session/resume`), kept whole.
+   *
+   * Only the server knows what it did on opening: a bridge that resumed a
+   * transcript it already held on `session/new` says so here, and a client
+   * moving a conversation onto this host reads it off the session's state as
+   * the proof the move carried (#37272).
+   */
+  openedMeta: Record<string, unknown> | undefined;
   /** Whether the server said it can be asked to close that conversation. */
   closes: boolean;
   /**
