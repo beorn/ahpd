@@ -62,6 +62,11 @@ interface Held {
  */
 export function memorySessions(): SessionStore & Held {
   const rows = new Map<string, Row>();
+  /*
+   * The ids somebody unlisted, which no row holds: unlisting is what drops the
+   * row, so the mark has to outlive it. See `SessionStore.unlisted`.
+   */
+  const unlistedIds = new Set<string>();
 
   /**
    * Apply one change to a session's row, keeping it only while it still says
@@ -334,6 +339,8 @@ export function memorySessions(): SessionStore & Held {
         ...(held.changes === undefined ? {} : { changes: held.changes }),
       };
     },
+    unlisted: (id) => unlistedIds.has(id),
+    setUnlisted: (id, value) => { if (value) unlistedIds.add(id); else unlistedIds.delete(id); },
     forget: (id) => { rows.delete(id); },
     prune: (gone) => {
       // One id per row, since a session is remembered under whichever of the
@@ -747,6 +754,22 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   const inner = memorySessions();
   const told = (message: string): void => { options.onProblem?.(message); };
   const faults = new Map<string, Error>();
+  /*
+   * The ids somebody unlisted, in a file of their own.
+   *
+   * Not a row and not a field of one: unlisting is what drops the row, so a
+   * mark kept in it would go with the row it is meant to outlive. The name is
+   * reserved - `load` skips it - because a session id is opaque and one could
+   * spell it.
+   */
+  const unlistedFile = 'unlisted.json';
+  const unlistedIds = new Set<string>();
+  const saveUnlisted = (): void => {
+    try { writeJsonAtomic(join(dir, unlistedFile), { version: 1, ids: [...unlistedIds] }, { dirMode: 0o700 }); }
+    catch (error) {
+      told(`Could not write ${join(dir, unlistedFile)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   const readable = (id: string): typeof inner => {
     const failure = faults.get(id);
     if (failure !== undefined) throw failure;
@@ -925,6 +948,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     }
     for (const name of names) {
       if (!name.endsWith('.json')) continue;
+      // The unlisted ids' own file, which `loadUnlisted` reads.
+      if (name === unlistedFile) continue;
       // A name that is not an id this version could have written is not one of
       // its files.
       const id = idIn(name.slice(0, -'.json'.length));
@@ -1129,6 +1154,20 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     }
     owned();
     load();
+    /*
+     * Read once, with the rows. A file that cannot be read is a line and no
+     * marks: a store that forgot its unlists lists the sessions again, which
+     * is the answer a host that never unlisted anything gives, and the caller
+     * that asked for the unlist is still the one holding the resume id.
+     */
+    const marked = readJson(join(dir, unlistedFile));
+    if (marked.ok) {
+      const ids = (marked.value as { ids?: unknown } | null)?.ids;
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string' && id !== '') unlistedIds.add(id);
+    }
+    else if (marked.kind !== 'missing') {
+      told(`Could not read ${join(dir, unlistedFile)}: ${marked.kind === 'unreadable' ? marked.code ?? 'unreadable' : 'it is not JSON'}`);
+    }
   }
   catch (error) { writer.release(); throw error; }
 
@@ -1233,6 +1272,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     // folder, and what it was told since: the composition answers both.
     sessions: () => [...new Set([...inner.sessions(), ...faults.keys()])],
     attachmentsDir: (id) => { readable(id); return attachmentsOf(id); },
+    unlisted: (id) => unlistedIds.has(id),
+    setUnlisted: (id, value) => {
+      owned();
+      if (value) unlistedIds.add(id);
+      else unlistedIds.delete(id);
+      saveUnlisted();
+    },
     forget: (id) => {
       owned();
       readable(id);
