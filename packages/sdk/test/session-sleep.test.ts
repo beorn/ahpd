@@ -172,8 +172,8 @@ async function serving(knobs: Knobs, options: Options = {}) {
     params: { clientId: 'window', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] },
   });
 
-  /** A session with one finished turn, and the channels it is read on. */
-  const open = async (name: string) => {
+  /** A session, with one finished turn unless `spoke` is false, and the channels it is read on. */
+  const open = async (name: string, spoke = true) => {
     const channel = `ahp-session:/${name}`;
     /** The session's own name, which the catalogue lists it by. */
     const resource = `ahp-session:/${name}`;
@@ -191,7 +191,7 @@ async function serving(knobs: Knobs, options: Options = {}) {
       });
       for (let i = 0; i < 200 && await turns(chatUri) === before; i++) await settle(1);
     };
-    await say('hello');
+    if (spoke) await say('hello');
     /** Stop watching the session and its chat, which leaves it free to sleep. */
     const leave = async (): Promise<void> => {
       await client.handle({ method: 'unsubscribe', params: { channel: chatUri } });
@@ -226,7 +226,7 @@ async function serving(knobs: Knobs, options: Options = {}) {
     return rows.items.map((one) => one.resource);
   };
 
-  return { host, client, time, open, active, awake, listed, dir };
+  return { host, client, time, open, turns, active, awake, listed, dir };
 }
 
 it('sleeps a session quiet for longer than the timeout', async () => {
@@ -713,6 +713,25 @@ it('sleeps an archived session at once', async () => {
   const knobs: Knobs = { closes: [] };
   const { client, open, awake } = await serving(knobs);
   const one = await open('one');
+  await one.leave();
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true } },
+  });
+  await until(() => knobs.closes.length > 0);
+  expect(awake()).toBe(0);
+});
+
+/*
+ * A session archived before its first turn has nothing to resume by, but it
+ * also has nothing to keep. The archive action sleeps it; refusing there
+ * leaves the agent running until its window expires and the window reaps it.
+ */
+it('sleeps an archived session whose chat never spoke', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { client, open, turns, awake } = await serving(knobs);
+  const one = await open('one', false);
+  expect(await turns(one.chatUri)).toBe(0);
   await one.leave();
   await client.handle({
     method: 'dispatchAction',

@@ -185,8 +185,11 @@ export function createSleep(ctx: HostContext): Sleep {
     for (const [chatUri, chat] of held.chats) {
       if (hasActiveTurn(chatUri) || pending(chatUri) || waitingOnPerson(chat)) return false;
       if (chat.resumable?.() === false || chat.busy?.() === true) return false;
-      // A chat with no conversation yet has nothing to resume by.
-      if (chat.agentId() === undefined || chat.allTurns().length === 0) return false;
+      // A chat with no conversation yet has nothing to resume by. An archived
+      // session is ended, not resumed: refusing that sleep leaves its agent
+      // running until the window expires and reaps it.
+      if (chat.agentId() === undefined) return false;
+      if (chat.allTurns().length === 0 && !archived(uri)) return false;
     }
     return !watched(uri);
   };
