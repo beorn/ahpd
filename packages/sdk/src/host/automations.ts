@@ -895,8 +895,13 @@ export function createAutomations(ctx: HostContext): Automations {
       await kept.commit(idOf(uri));
       if (named !== undefined) await named(uri);
       if (ctx.closed) throw new Error(CLOSING);
-      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "admitted" });
-      await kept.commit(idOf(uri));
+      // A completed session being handed its backend back stays complete: an
+      // admitted row left by a resume that then failed would be made again at
+      // the next restart, which is the blank or refused backend (#37283).
+      if (resumeBackend === undefined) {
+        kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "admitted" });
+        await kept.commit(idOf(uri));
+      }
       // A source in the config is made into a machine before anything runs, the
       // same step a client's `createSession` takes.
       await placedIn(uri, provider, config, where, wanted.owner);

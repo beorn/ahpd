@@ -149,7 +149,8 @@ const watched = (order: string[]): Agent => {
   return {
     ...base,
     provider: 'watched',
-    create: (start: Start) => { order.push('spawn'); return base.create(start); },
+    // A start handed a backend id says so, so a reservation re-made with none still reads as a bare 'spawn'.
+    create: (start: Start) => { order.push(start.resume === undefined ? 'spawn' : `spawn resume ${start.resume}`); return base.create(start); },
   };
 };
 
@@ -323,6 +324,61 @@ it('hands a completed session its own backend conversation on resume after a res
     expect(second.sessions.creation(idOf(uri))?.phase).toBe('complete');
   } finally {
     await second.host.close();
+  }
+});
+
+// #37283 review: a completed session whose first resume fails stays complete, so the restart after retries the
+// resume with the same backend id instead of making a new backend under it.
+it('keeps a completed session complete through a failed resume, and the next restart resumes it again', async () => {
+  const dir = join(DIR, `completed-resume-retry-${crypto.randomUUID()}`);
+  const starts: Start[] = [];
+  const base = echo({ path: DIR, pace: 0 });
+  let completed = false;
+  let failResume = false;
+  const agent: Agent = { ...base, create: (start) => {
+    starts.push(start);
+    if (failResume && start.resume !== undefined) throw new Error('backend failed to reopen');
+    return base.create({
+      ...start,
+      emit: (channel, action) => {
+        start.emit(channel, action);
+        if (channel === 'chat' && action.type === 'chat/turnComplete') completed = true;
+      },
+    });
+  } };
+  const first = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  let uri = '';
+  let backendId: string | undefined;
+  try {
+    uri = await first.plugin.startSession({ owner: 'user:soft', provider: 'echo', prompt: 'Remember the word heron' });
+    await until(() => completed, 'the first turn');
+    await until(() => first.sessions.creation(idOf(uri))?.phase === 'complete', 'creation complete');
+    backendId = first.sessions.chats(idOf(uri))[0]?.backendId;
+  } finally {
+    await first.host.close();
+  }
+  expect(backendId).toBeTypeOf('string');
+  failResume = true;
+  const second = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  try {
+    await expect(second.plugin.startSession({ owner: 'user:soft', resume: uri })).rejects.toThrow();
+    expect(starts.at(-1)?.resume).toBe(backendId);
+    expect(second.sessions.creation(idOf(uri))?.phase).toBe('complete');
+  } finally {
+    await second.host.close();
+  }
+  failResume = false;
+  const reread = fileSessions({ dir });
+  try { expect(reread.creation(idOf(uri))?.phase).toBe('complete'); } finally { reread.close?.(); }
+  const third = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  try {
+    expect(await third.plugin.startSession({ owner: 'user:soft', resume: uri })).toBe(uri);
+    expect(starts.at(-1)?.resume).toBe(backendId);
+    expect(third.sessions.chats(idOf(uri))[0]?.backendId).toBe(backendId);
+    expect(third.sessions.creation(idOf(uri))?.phase).toBe('complete');
+    expect(starts.every((one, index) => index === 0 || one.resume === backendId)).toBe(true);
+  } finally {
+    await third.host.close();
   }
 });
 
