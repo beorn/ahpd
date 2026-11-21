@@ -67,8 +67,13 @@ export function sessionFlag(
   // let go by the residency where nothing holds it.
   // https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L1457-L1464
   if (bit === Status.IsArchived && on) {
+    // A stop says so on its own archive offer (#37426): the session is
+    // archived because the seat is being stopped, and a chat that never spoke
+    // has nothing to resume by, so that stop alone may sleep it. The flag is
+    // read here and passed to this one sleep; no other bit is written.
+    const stopping = action.stopping === true;
     queueMicrotask(() => {
-      void ctx.sleep(uri).catch(() => undefined);
+      void ctx.sleep(uri, stopping).catch(() => undefined);
       ctx.reconcile();
     });
   }
