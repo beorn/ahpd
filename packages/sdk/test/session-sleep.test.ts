@@ -742,10 +742,64 @@ it('sleeps an archived session whose chat never spoke', async () => {
 });
 
 /*
- * VS Code's host refuses an archive of a default chat without restoring the
- * session it is in.
- * https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L12120-L12122
+ * #37426: the stop does not just archive. It first cancels the seat's turn on
+ * one connection, drops that connection, and offers the archive on another,
+ * while it watches the child go. A never-spoken seat must sleep under that
+ * ordering too, or the window expires and the child is reaped with SIGTERM.
  */
+it('sleeps a never-spoken session when a stop cancels a turn and then archives', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { client, open, turns, awake } = await serving(knobs);
+  const one = await open('one', false);
+  expect(await turns(one.chatUri)).toBe(0);
+  // The stop's first act: cancel the seat's turn on a watched chat.
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.chatUri, clientSeq: 1, action: { type: 'chat/turnCancelled' } },
+  });
+  await settle();
+  await one.leave();
+  // And then the archive that asks the host to sleep it.
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 2, action: { type: 'session/isArchivedChanged', isArchived: true } },
+  });
+  await until(() => knobs.closes.length > 0);
+  expect(awake()).toBe(0);
+});
+
+it('sleeps a never-spoken archived session whose chat is not resumable', async () => {
+  const knobs: Knobs = { closes: [], resumable: false };
+  const { client, open, turns, awake } = await serving(knobs);
+  const one = await open('one', false);
+  expect(await turns(one.chatUri)).toBe(0);
+  await one.leave();
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true, stopping: true } },
+  });
+  await until(() => knobs.closes.length > 0, 2000);
+  expect(awake()).toBe(0);
+});
+
+/*
+ * The stopping flag belongs to that stop alone: an archive that is not a stop
+ * still keeps a chat with nothing to resume by awake, as it did before.
+ */
+it('keeps a never-spoken archived session awake when the archive is not a stop', async () => {
+  const knobs: Knobs = { closes: [], resumable: false };
+  const { client, open, awake } = await serving(knobs);
+  const one = await open('one', false);
+  await one.leave();
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true } },
+  });
+  await settle(16);
+  expect(knobs.closes.length).toBe(0);
+  expect(awake()).toBe(1);
+});
+
 it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
   const knobs: Knobs = { closes: [] };
   const { client, time, open, awake } = await serving(knobs);
