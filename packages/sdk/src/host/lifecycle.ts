@@ -247,7 +247,7 @@ export interface Lifecycle {
     additional?: string[],
     title?: string,
     by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
+    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void>; resume?: string },
     progress?: (message: string) => void,
   ): Promise<void>;
 }
@@ -2650,7 +2650,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
     additional?: string[],
     title?: string,
     by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
+    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void>; resume?: string },
     progress?: (message: string) => void,
   ): Promise<void> => {
     named(uri, 'session');
@@ -2765,7 +2765,10 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       // The last wait of a create, in the client's words for it, said before
       // the backend is asked to start.
       progress?.('Starting the agent');
-      const lead = await spawn(agent, uri, defaultChat, existing?.backendId, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions, undefined, true);
+      // A recovered session whose backend already holds its conversation is
+      // handed it back by id with no seed, so the backend replays it (#37283).
+      const resuming = asked?.resume === undefined ? undefined : { resume: asked.resume, seed: [] };
+      const lead = await spawn(agent, uri, defaultChat, existing?.backendId, backendsOwn(config), resuming, where, credentials, additional, by?.sender, asked?.instructions, undefined, true);
       // Written down for the same reason a rename is: a first name outlives a
       // restart too.
       if (title !== undefined) ctx.persistSessionTitle(uri, title);

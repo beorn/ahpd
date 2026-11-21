@@ -780,6 +780,7 @@ export function createAutomations(ctx: HostContext): Automations {
     }
     return ctx.runSessionExclusive(uri, async () => {
     let wanted = given;
+    let resumeBackend: string | undefined;
     const recovering = given.resume !== undefined;
     if (recovering) {
       const id = idOf(uri);
@@ -799,6 +800,14 @@ export function createAutomations(ctx: HostContext): Automations {
       const userSettings = kept.userSettings?.(id);
       const tools = kept.tools?.(id);
       const origin = kept.automationOrigin?.(id);
+      /*
+       * A session whose creation completed has a backend conversation of its
+       * own, so its backend is handed that conversation back - its id, which
+       * the backend reopens and replays itself - rather than one made again
+       * under the same id, which starts blank or is refused as taken (#37283).
+       * A reservation that never finished being made is made, as before.
+       */
+      if (creation.phase === "complete") resumeBackend = chat.backendId;
       wanted = {
         owner: given.owner, provider, config, text: creation.initialPrompt === 'pending' ? creation.prompt ?? '' : '',
         trusted: trusted !== undefined,
@@ -938,6 +947,7 @@ export function createAutomations(ctx: HostContext): Automations {
       forWhom(wanted.owner),
       {
         beforeCreate: prepare,
+        ...(resumeBackend === undefined ? {} : { resume: resumeBackend }),
         ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
         ...(wanted.tools === undefined ? {} : { tools: wanted.tools }),
         ...(wanted.userSettings === undefined ? {} : { userSettings: wanted.userSettings }),

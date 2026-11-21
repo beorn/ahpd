@@ -281,6 +281,51 @@ it('keeps the authoritative backend binding before a recovered provider opens', 
   expect(await plugin.startSession({ owner: 'user:soft', resume: uri })).toBe(uri);
 });
 
+// #37283: a restart that resumes a session whose creation completed hands the backend its own conversation back by
+// id, for the backend to reopen and replay; a backend made again under that id starts blank or is refused as in use.
+it('hands a completed session its own backend conversation on resume after a restart, never a blank one', async () => {
+  const dir = join(DIR, `completed-resume-${crypto.randomUUID()}`);
+  const starts: Start[] = [];
+  const base = echo({ path: DIR, pace: 0 });
+  let completed = false;
+  const agent: Agent = { ...base, create: (start) => {
+    starts.push(start);
+    return base.create({
+      ...start,
+      emit: (channel, action) => {
+        start.emit(channel, action);
+        if (channel === 'chat' && action.type === 'chat/turnComplete') completed = true;
+      },
+    });
+  } };
+  const first = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  let uri = '';
+  let backendId: string | undefined;
+  try {
+    uri = await first.plugin.startSession({ owner: 'user:soft', provider: 'echo', prompt: 'Remember the word heron' });
+    await until(() => completed, 'the first turn');
+    await until(() => first.sessions.creation(idOf(uri))?.phase === 'complete', 'creation complete');
+    backendId = first.sessions.chats(idOf(uri))[0]?.backendId;
+  } finally {
+    await first.host.close();
+  }
+  expect(backendId).toBeTypeOf('string');
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.resume).toBeUndefined();
+  const second = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  try {
+    expect(await second.plugin.startSession({ owner: 'user:soft', resume: uri })).toBe(uri);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.uri).toBe(uri);
+    expect(starts[1]?.resume).toBeTypeOf('string');
+    expect(starts[1]?.resume).toBe(backendId);
+    expect(second.sessions.chats(idOf(uri))[0]?.backendId).toBe(backendId);
+    expect(second.sessions.creation(idOf(uri))?.phase).toBe('complete');
+  } finally {
+    await second.host.close();
+  }
+});
+
 it('rejects a naming callback awaiting its own reservation resume', async () => {
   const order: string[] = [];
   const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
