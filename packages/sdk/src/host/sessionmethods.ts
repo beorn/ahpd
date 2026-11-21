@@ -1889,11 +1889,25 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
       return null;
     },
     disposeSession: async (params) => {
-      // The caller, because a delete is not a write: `session:write` lets a
-      // member change their own sessions and says nothing about ending
-      // somebody else's, and this one cannot be undone.
-      await removeSession(String(params.channel ?? ''), connection.principal);
-      return null;
+      /*
+       * The caller, because a delete is not a write: `session:write` lets a
+       * member change their own sessions and says nothing about ending
+       * somebody else's, and this one cannot be undone.
+       *
+       * `preserveProviderSession` is the unlist: the row goes, the provider's
+       * conversation stays, and the answer is the id a resume is made with
+       * rather than `null`. It is an option on this call and not a verb of its
+       * own because every step of the disposal is the same one, and the two
+       * that differ are the backend deletes.
+       */
+      const preserving = params.preserveProviderSession === true;
+      const expected = optionalStringParam(params, 'expectProviderSessionId');
+      if (!preserving && expected !== undefined)
+        throw new RpcError(INVALID_PARAMS, 'expectProviderSessionId names the session an unlist keeps, so it needs preserveProviderSession: true');
+      const unlisted = await removeSession(String(params.channel ?? ''), connection.principal, preserving
+        ? { preserveProviderSession: true, ...(expected === undefined ? {} : { expectProviderSessionId: expected }) }
+        : undefined);
+      return unlisted ?? null;
     },
     /**
      * The configuration a session would have, before one exists.

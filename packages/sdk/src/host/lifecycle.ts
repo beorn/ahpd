@@ -98,9 +98,51 @@ export interface RanIn {
  * ends one, and the turn a message becomes - the checks it answers to, the
  * `!` command it may turn out to be, and the model and origin it carries.
  */
+/**
+ * What an unlist answers: a row gone while the provider's conversation stays.
+ *
+ * Kept so the caller can record the id it resumes by, which is the only handle
+ * left once the row is gone (`SessionStore.unlisted`).
+ */
+export interface Unlisted {
+  /** The harness the conversation belongs to. */
+  provider: string;
+  /** The backend's own name for the conversation, which a resume is made with. */
+  providerSessionId: string;
+  /** Where it ran, when this host knew, so the resume starts where the work is. */
+  directory?: string;
+  /** How many chat records went with the row. */
+  chatsRemoved: number;
+}
+
+/** How far a removal goes: all of it, or the row alone (`preserveProviderSession`). */
+export interface Removal {
+  /**
+   * Drop the row and keep the provider's own copy of the conversation.
+   *
+   * The disposal's every step runs as it does today except the two that ask a
+   * backend to delete: the session's (`deleted`) and each chat's
+   * (`disposeProviderChat`). What is left is the conversation, the folder and
+   * the checkpoint refs, and the id this answers with.
+   *
+   * Only a session that has stopped may be unlisted: a live one is
+   * `session-live` where a turn runs, and `stop-unproven` otherwise, because
+   * this call does not stop anything and cannot prove a stop it did not ask
+   * for. Stopping is the sleep path's, which a stop and an archive already
+   * take.
+   */
+  preserveProviderSession?: boolean;
+  /**
+   * The provider session id the caller believes this row is, refused by name
+   * before anything is dropped. A row made again under the same host URI would
+   * otherwise be unlisted in place of the one the caller meant.
+   */
+  expectProviderSessionId?: string;
+}
+
 export interface Lifecycle {
   /** A session gone, with everything it held, and the backend's own copy of it. */
-  removeSession(uri: string, acting?: Principal | Owner): Promise<void>;
+  removeSession(uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | undefined>;
   /**
    * The sessions a restart has taken out of `sessions` and not yet put back, by
    * uri. A listing counts them as running, so it never prunes their records.
@@ -777,7 +819,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
    * A name in neither map is not a session this host has ever heard of, and
    * says so rather than deleting nothing successfully.
    */
-  const removeSession = async (uri: string, acting?: Principal | Owner): Promise<void> => {
+  const removeSession = async (uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | undefined> => {
     mayDispose(acting, uri);
     const held = sessions.get(uri);
     const id = idOf(uri);
@@ -787,6 +829,33 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
     if (!held && !owner)
       throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${uri}`);
     const agent = held?.agent ?? (owner as Agent);
+    /*
+     * An unlist keeps the conversation, so it is not a disposal that cleans up
+     * after itself: what the backend holds is the thing the caller wants back.
+     * Nothing may be dropped before both checks below have answered, which is
+     * the same reason `mayDispose` is first.
+     *
+     * A live session is not unlistable for the same reason a disposal is not a
+     * stop it can prove: this path does not stop anything. A turn that is
+     * running names itself; a session merely held here - a child still alive,
+     * a restart under way - is a stop this host was told nothing about.
+     */
+    const preserving = removal?.preserveProviderSession === true;
+    if (preserving) {
+      if (held !== undefined || ctx.restarting.has(uri)) {
+        const running = held === undefined
+          ? undefined
+          : [...held.chats].find(([chatUri]) => ctx.hasActiveTurn(chatUri));
+        if (running !== undefined) {
+          const turn = ctx.stateOf(running[0])?.activeTurn as { id?: unknown } | undefined;
+          throw new RpcError(AhpErrorCodes.TurnInProgress, `session-live: ${running[0]} is running turn ${String(turn?.id ?? 'a turn')} in ${uri}`);
+        }
+        throw new RpcError(AhpErrorCodes.Conflict, `stop-unproven: ${uri} is still running on this host, and this call does not stop it; stop it first`);
+      }
+      const expected = removal.expectProviderSessionId;
+      if (expected !== undefined && expected !== ctx.sessionBackendId(id))
+        throw new RpcError(AhpErrorCodes.Conflict, `expectProviderSessionId: ${uri} answers ${ctx.sessionBackendId(id)}, not ${expected}`);
+    }
     /*
      * The turn's last words before the session that said them goes.
      *
@@ -818,6 +887,13 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
      * read off the config the teardown forgets.
      */
     const directory = dirOf(uri) ?? (recorded === undefined ? undefined : kept.workingDirectory?.(id));
+    /*
+     * Where an unlist says the conversation ran, read here rather than at the
+     * answer: the row that holds it is forgotten below, and a caller that only
+     * kept a record of the session never had it live here for `dirOf` to
+     * answer from.
+     */
+    const resumeAt = directory ?? kept.workingDirectory?.(ctx.sessionBackendId(id)) ?? kept.workingDirectory?.(id);
     const chats = ctx.heldChats(id);
     const ran = ranIn(uri);
     /*
@@ -833,8 +909,10 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       catch { /* the session goes either way */ }
     }
     if (held !== undefined) await teardown(held, uri);
-    else await deletedInside(uri);
-    let failure = await deleted(uri, agent, directory, ran);
+    else if (!preserving) await deletedInside(uri);
+    // The two backend deletes, and the only steps an unlist leaves out: what
+    // they remove is the conversation the caller is keeping.
+    let failure = preserving ? undefined : await deleted(uri, agent, directory, ran);
     /*
      * And every chat of it, each a conversation of its own that the backend
      * keeps under an id of its own. Closed ones included: their conversation
@@ -844,6 +922,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
      */
     for (const chat of chats) {
       if (chat.backendId === '' || chat.backendId === idOf(uri)) continue;
+      if (preserving) continue;
       /*
        * The backend that holds this chat's conversation, which is the chat's
        * own where it ran on one - a transcript belongs to the harness that
@@ -902,9 +981,24 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       if (channel === uri || (open.kind === 'chat' && ctx.sessionFor(channel) === uri)) ctx.closeState(channel);
     }
     activeSessionsChanged();
+    /*
+     * The mark that keeps the row from coming back, written before the
+     * broadcast so a listing a client starts on being told the session is gone
+     * already knows it. It outlives the row: the backend still lists the
+     * conversation, and merging that row back in is the resurrection this
+     * exists to prevent.
+     */
+    if (preserving) kept.setUnlisted?.(id, true);
     if (announced) broadcast(ROOT, 'root/sessionRemoved', { channel: ROOT, session: uri });
-    log(`disposed ${uri}`);
+    log(preserving ? `unlisted ${uri}, keeping the ${agent.provider} conversation ${ctx.sessionBackendId(id)}` : `disposed ${uri}`);
     if (failure !== undefined) throw failure;
+    if (!preserving) return undefined;
+    return {
+      provider: agent.provider,
+      providerSessionId: ctx.sessionBackendId(id),
+      ...(resumeAt === undefined ? {} : { directory: resumeAt }),
+      chatsRemoved: chats.length,
+    };
   };
 
   const restart = async (
