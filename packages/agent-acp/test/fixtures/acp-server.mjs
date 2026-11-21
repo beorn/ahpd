@@ -292,6 +292,12 @@ const nextSession = () => {
 };
 
 /** What a `--described` server says of a mode or a value, and a server without it says nothing. */
+/**
+ * `--says-meta`: the server answers opening a conversation with a `_meta` of
+ * its own, naming the method it answered, as a server that resumed a kept
+ * transcript on `session/new` says so there.
+ */
+const said = (method) => (process.argv.includes('--says-meta') ? { _meta: { fixture: { answered: method } } } : {});
 const about = (description) => (process.argv.includes('--described') ? { description } : {});
 
 /** The modes this server offers, with the one currently in force. */
@@ -1920,9 +1926,12 @@ const onLine = (line) => {
       // cost before any turn, before it answers, the way `session/load`
       // replays a resumed conversation before its response.
       if (process.argv.includes('--books')) notify(charge(0));
-      respond(message.id, process.argv.includes('--legacy')
-        ? { sessionId: id, modes: modes(), models: listed() }
-        : { sessionId: id, modes: modes(), configOptions: configOptions() });
+      respond(message.id, {
+        ...(process.argv.includes('--legacy')
+          ? { sessionId: id, modes: modes(), models: listed() }
+          : { sessionId: id, modes: modes(), configOptions: configOptions() }),
+        ...said('session/new'),
+      });
       return;
     }
 
@@ -1939,9 +1948,12 @@ const onLine = (line) => {
       if (typeof message.params?.cwd === 'string' && message.params.cwd !== '') cwd = message.params.cwd;
       hostTools = named(message.params?.mcpServers);
       if (process.argv.includes('--replay')) replayed();
-      respond(message.id, process.argv.includes('--legacy')
-        ? { modes: modes(), models: listed() }
-        : { modes: modes(), configOptions: configOptions() });
+      respond(message.id, {
+        ...(process.argv.includes('--legacy')
+          ? { modes: modes(), models: listed() }
+          : { modes: modes(), configOptions: configOptions() }),
+        ...said('session/load'),
+      });
       return;
     }
 
@@ -1958,9 +1970,12 @@ const onLine = (line) => {
       session = String(message.params?.sessionId ?? nextSession());
       if (typeof message.params?.cwd === 'string' && message.params.cwd !== '') cwd = message.params.cwd;
       hostTools = named(message.params?.mcpServers);
-      respond(message.id, process.argv.includes('--legacy')
-        ? { modes: modes(), models: listed() }
-        : { modes: modes(), configOptions: configOptions() });
+      respond(message.id, {
+        ...(process.argv.includes('--legacy')
+          ? { modes: modes(), models: listed() }
+          : { modes: modes(), configOptions: configOptions() }),
+        ...said('session/resume'),
+      });
       return;
     }
 

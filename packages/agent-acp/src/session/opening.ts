@@ -61,6 +61,12 @@ const LIVE_KEYS = [
 const spawnOf = (one: AcpOptions): string =>
   JSON.stringify(SPAWN_KEYS.map((key) => [key, (one as unknown as Record<string, unknown>)[key]]));
 
+/** The `_meta` a server answered opening a conversation with, when it gave one as an object (#37272). */
+const openedMetaOf = (answer: { _meta?: unknown } | null | undefined): Record<string, unknown> | undefined => {
+  const meta = answer?._meta;
+  return typeof meta === 'object' && meta !== null && !Array.isArray(meta) ? (meta as Record<string, unknown>) : undefined;
+};
+
 /**
  * Whether the handshake advertised something ACP writes as an empty object.
  *
@@ -640,6 +646,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         });
         assertCurrent();
         ctx.acpSessionId = copied.sessionId;
+        ctx.openedMeta = openedMetaOf(copied);
         ctx.learnModes(copied.modes);
         ctx.learnConfigOptions(copied.configOptions);
         ctx.learnModels(copied);
@@ -681,6 +688,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         });
         assertCurrent();
         ctx.acpSessionId = sessionId;
+        ctx.openedMeta = openedMetaOf(taken);
         ctx.learnModes(taken.modes);
         ctx.learnConfigOptions(taken.configOptions);
         ctx.learnModels(taken);
@@ -694,6 +702,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         });
         assertCurrent();
         ctx.acpSessionId = created.sessionId;
+        ctx.openedMeta = openedMetaOf(created);
         ctx.learnModes(created.modes);
         ctx.learnConfigOptions(created.configOptions);
         ctx.learnModels(created);

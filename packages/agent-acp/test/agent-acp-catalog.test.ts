@@ -241,6 +241,21 @@ it('answers the session with the server\'s models, modes and options in its stat
   expect(configOf(session).values).toMatchObject({ permissionMode: 'ask', model: 'fast', 'acp.thinking': 'off', 'acp.telemetry': false });
 });
 
+// #37272: a backend that says on opening that it resumed a kept transcript is
+// the only proof a moved conversation carried, so its `_meta` reaches clients
+// untouched on the session's state, whichever of new, load or resume opened it.
+it('passes the _meta the server answered opening the conversation through on the session state', async () => {
+  const { agent } = backend(['--says-meta']);
+  const opened = await start(agent, 'meta-new');
+  expect(opened.session.sessionState()._meta).toEqual({ fixture: { answered: 'session/new' } });
+
+  const loaded = await start(agent, 'meta-load', { resume: 'kept-conversation' });
+  expect(loaded.session.sessionState()._meta).toEqual({ fixture: { answered: 'session/load' } });
+
+  const { agent: silent } = backend();
+  expect((await start(silent, 'meta-none')).session.sessionState()._meta).toBeUndefined();
+});
+
 it('tells the host once the server has named its models', async () => {
   const { agent } = backend();
   let told = 0;
