@@ -1166,6 +1166,7 @@ export function createSpawn(ctx: HostContext): Spawn {
           restart: options.nodeRestart ?? 'end',
           start: (asked: NestedAsked) => connect(asked.id, {
             plugins: asked.plugins,
+            innerId: asked.innerId,
             ...(asked.cwd === undefined ? {} : { cwd: asked.cwd }),
             ...(asked.record === undefined ? {} : { record: asked.record }),
           }),

@@ -60,6 +60,8 @@ export interface NestedStarted {
  * there through it.
  */
 export interface NestedStart {
+  /** The durable session name inside the host, independent of the connection. */
+  innerId?: string;
   /**
    * The plugins the host inside loads, one `--plugin` each.
    *

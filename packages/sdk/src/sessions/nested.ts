@@ -42,7 +42,7 @@ import { spawn as startProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { AhpClient, RpcError } from '@microsoft/agent-host-protocol/client';
 import type { AhpTransport, Subscription, TransportFrame } from '@microsoft/agent-host-protocol/client';
-import { canvasReducer, changesetReducer, chatReducer, rootReducer, sessionReducer, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
+import { AhpErrorCodes, canvasReducer, changesetReducer, chatReducer, rootReducer, sessionReducer, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
 import type {
   ActionOrigin, CanvasAction, CanvasState, ChangesetAction, ChangesetState, ChatAction, ChatState, RootAction, RootState, SessionAction, SessionState,
   StateAction, TerminalState,
@@ -124,6 +124,8 @@ export type { NestedHost, NestedStarted };
 export interface NestedAsked {
   /** The machine's id, from the session's `computer://` setting. */
   id: string;
+  /** The durable session name inside the host. */
+  innerId: string;
   /** The plugin specs the inner host loads. */
   plugins: string[];
   /** Where inside the machine it starts, when the session named a folder. */
@@ -1233,6 +1235,7 @@ const nestedSession = (provider: string, variant: boolean, start: Start, options
     if (plugins.length === 0) throw new Error(`this host does not know which plugin serves ${provider}, so it cannot start one there`);
     const asked: NestedAsked = {
       id,
+      innerId: sessionId,
       plugins,
       ...(start.workingDirectory === undefined ? {} : { cwd: start.workingDirectory }),
       ...(handed === undefined ? {} : { record: handed.record }),
@@ -1884,11 +1887,9 @@ export interface NestedDeleteAsked {
  * A nested session's copy inside its machine, gone.
  *
  * The half of a delete a session that is not running has no close for: a host
- * is started inside the machine for one question. The listing is what puts the
- * row in that host's catalogue without opening it - the session is not running
- * there either, and starting its agent only to delete it would be the work of a
- * resume nobody asked for - and `disposeSession` then takes it out of the
- * host's store, which is what the next daemon would have listed and resumed.
+ * is started inside the machine for one question. A joined host can dispose
+ * its recorded session directly. Other hosts list first to load the catalogue
+ * row without opening the session or starting its agent.
  *
  * A session the inner host does not list is already gone, which is the answer a
  * delete twice gets. Everything else - no such machine, a host that will not
@@ -1901,11 +1902,18 @@ export const deleteNested = async (asked: NestedDeleteAsked): Promise<void> => {
   const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error));
   const where = `computer://${asked.id}`;
   let started: NestedStarted;
+  let joined: boolean;
   try {
-    started = await startInside({
-      id: asked.id,
+    const start = {
       plugins: asked.plugins,
+      innerId: asked.sessionId,
       ...(asked.record === undefined ? {} : { record: asked.record }),
+    };
+    const connected = await asked.computers?.connect?.(asked.id, start);
+    joined = connected !== undefined;
+    started = connected ?? await startInside({
+      ...start,
+      id: asked.id,
       ...(asked.computers === undefined ? {} : { computers: asked.computers }),
     });
   }
@@ -1937,10 +1945,29 @@ export const deleteNested = async (asked: NestedDeleteAsked): Promise<void> => {
     if (!SUPPORTED_PROTOCOL_VERSIONS.includes(hello.protocolVersion)) {
       throw new Error(`the host inside ${where} speaks ${hello.protocolVersion}, and this host offered ${SUPPORTED_PROTOCOL_VERSIONS.join(', ')}`);
     }
-    const listed = await client.request('listSessions', { channel: ROOT });
-    const row = listed.items.find((one) => idOf(one.resource) === asked.sessionId);
-    if (row === undefined) say(`${asked.sessionId} is not in ${where} any more, so nothing was deleted there`);
-    else await bounded(client.request('disposeSession', { channel: row.resource }), DISPOSE_WAIT);
+    const dispose = async (channel: string): Promise<void> => {
+      const complete = Symbol();
+      const result = await bounded(client.request('disposeSession', { channel }).then(() => complete), DISPOSE_WAIT);
+      if (result === undefined) throw new Error(`the host inside ${where} did not finish disposing ${channel}`);
+      if (result !== complete) throw result;
+    };
+    let disposed = false;
+    if (joined) {
+      try {
+        await dispose(uriFor(asked.sessionId));
+        disposed = true;
+      }
+      catch (error) {
+        // Unscoped peers may still need their catalogue hydrated before disposal.
+        if (!(error instanceof RpcError) || error.code !== AhpErrorCodes.SessionNotFound) throw error;
+      }
+    }
+    if (!disposed) {
+      const listed = await client.request('listSessions', { channel: ROOT });
+      const row = listed.items.find((one) => idOf(one.resource) === asked.sessionId);
+      if (row === undefined) say(`${asked.sessionId} is not in ${where} any more, so nothing was deleted there`);
+      else await dispose(row.resource);
+    }
   }
   catch (error) {
     say(`could not delete ${asked.sessionId} inside ${where}: ${reason(error)}`);

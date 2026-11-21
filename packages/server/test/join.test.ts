@@ -10,7 +10,7 @@
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { cpSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -208,6 +208,62 @@ it('says its workdir on hello and serves a session in that folder', async () => 
   await gone(pid);
   node.kill();
   await at.close();
+}, 60_000);
+
+it('serves two live session hosts on the same joined node', async () => {
+  const at = await hub();
+  const workdir = join(home, 'node');
+  fixture(workdir);
+  const node = joinUp([at.url, '--token', 'node-token', '--workdir', workdir]);
+  const control = await dialled(at.held, { control: 0 }, node);
+  expect(await control.frame()).toMatchObject({ id: 1, method: 'node/hello' });
+  control.send({ jsonrpc: '2.0', id: 1, result: {} });
+
+  const open = async (request: number, id: string, innerId: string): Promise<Held> => {
+    control.send({ jsonrpc: '2.0', id: request, method: 'node/open', params: {
+      id, plugins: ['./plugin-env/index.ts'], scope: { hostId: 'hub-a', innerId },
+    } });
+    expect(await control.frame()).toMatchObject({ id: request, result: { id } });
+    const data = await dialled(at.held, { data: id }, node);
+    const closed = new Promise<never>((_resolve, reject) => {
+      const fail = (): void => reject(new Error(`session host ${id} closed before initialization. Node stderr:\n${node.said()}`));
+      if (data.socket.readyState !== WebSocket.OPEN) fail();
+      else data.socket.once('close', fail);
+    });
+    const answered = Promise.race([data.frame(), closed]);
+    data.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+      clientId: 'join-test', protocolVersions: ['0.9.0'],
+    } });
+    expect(await answered).toMatchObject({ id: 1, result: { protocolVersion: expect.any(String) } });
+    return data;
+  };
+
+  const first = await open(2, 'stream-a', 'inner-a');
+  const second = await open(3, 'stream-b', 'inner-b');
+  expect(first.live).toBe(true);
+  expect(second.live).toBe(true);
+  await at.close();
+}, 60_000);
+
+it('names the legacy shared store on the control request and leaves its row intact', async () => {
+  const at = await hub();
+  const store = join(home, 'ahpd', 'sessions');
+  mkdirSync(store, { recursive: true });
+  const row = join(store, 'old.json');
+  const bytes = '{"version":1,"id":"old","config":{"model":"saved"}}\n';
+  writeFileSync(row, bytes);
+  const node = joinUp([at.url, '--token', 'node-token']);
+  const control = await dialled(at.held, { control: 0 }, node);
+  expect(await control.frame()).toMatchObject({ id: 1, method: 'node/hello' });
+  control.send({ jsonrpc: '2.0', id: 1, result: {} });
+  control.send({ jsonrpc: '2.0', id: 2, method: 'node/open', params: {
+    id: 'old-stream', scope: { hostId: 'hub-a', innerId: 'old' },
+  } });
+  expect(await control.frame()).toMatchObject({ id: 2, error: {
+    message: `session old is in the legacy shared store ${store}; not migrated`,
+  } });
+  expect(at.held.map((socket) => socket.url).some((url) => url.includes('data=old-stream'))).toBe(false);
+  expect(readFileSync(row, 'utf8')).toBe(bytes);
 }, 60_000);
 
 it('closes a session socket when its host exits', async () => {
