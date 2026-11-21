@@ -268,6 +268,8 @@ it('keeps the authoritative backend binding before a recovered provider opens', 
   const base = watched([]);
   const agent: Agent = { ...base, create: (start) => {
     expect(store.chats(idOf(start.uri))[0]?.backendId).toBe('authoritative-native');
+    // An admitted row is a reservation still being made, so it is made again and handed no backend id (#37283).
+    expect(start.resume).toBeUndefined();
     return base.create(start);
   } };
   const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
@@ -321,6 +323,34 @@ it('hands a completed session its own backend conversation on resume after a res
     expect(starts[1]?.resume).toBeTypeOf('string');
     expect(starts[1]?.resume).toBe(backendId);
     expect(second.sessions.chats(idOf(uri))[0]?.backendId).toBe(backendId);
+    expect(second.sessions.creation(idOf(uri))?.phase).toBe('complete');
+  } finally {
+    await second.host.close();
+  }
+});
+
+// #37283: a completed session whose chat never spoke has no backend conversation to reopen, so a restart makes it
+// again with no backend id, as a reservation is, rather than asking the backend for a conversation it never kept.
+it('makes a completed session that never spoke again on resume, with no backend id', async () => {
+  const dir = join(DIR, `completed-unspoken-${crypto.randomUUID()}`);
+  const starts: Start[] = [];
+  const base = echo({ path: DIR, pace: 0 });
+  // Reported, as agent-acp's is, so the host records whether the chat ever spoke.
+  const agent: Agent = { ...base, promptStart: 'reported', create: (start) => { starts.push(start); return base.create(start); } };
+  const first = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  let uri = '';
+  try {
+    uri = await first.plugin.startSession({ owner: 'user:soft', provider: 'echo' });
+    await until(() => first.sessions.creation(idOf(uri))?.phase === 'complete', 'creation complete');
+    expect(first.sessions.chats(idOf(uri))[0]?.neverSpoken).toBe(true);
+  } finally {
+    await first.host.close();
+  }
+  const second = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: fileSessions({ dir }) });
+  try {
+    expect(await second.plugin.startSession({ owner: 'user:soft', resume: uri })).toBe(uri);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.resume).toBeUndefined();
     expect(second.sessions.creation(idOf(uri))?.phase).toBe('complete');
   } finally {
     await second.host.close();

@@ -805,9 +805,11 @@ export function createAutomations(ctx: HostContext): Automations {
        * own, so its backend is handed that conversation back - its id, which
        * the backend reopens and replays itself - rather than one made again
        * under the same id, which starts blank or is refused as taken (#37283).
-       * A reservation that never finished being made is made, as before.
+       * A reservation that never finished being made is made, as before, and
+       * so is a completed session whose chat never spoke: its backend keeps no
+       * conversation to reopen, and a resume of one is refused as not found.
        */
-      if (creation.phase === "complete") resumeBackend = chat.backendId;
+      if (creation.phase === "complete" && chat.neverSpoken !== true) resumeBackend = chat.backendId;
       wanted = {
         owner: given.owner, provider, config, text: creation.initialPrompt === 'pending' ? creation.prompt ?? '' : '',
         trusted: trusted !== undefined,
