@@ -399,7 +399,10 @@ export function createHistory(ctx: HostContext): History {
      * registered only once the read answers with turns.
      */
     const loadUnlisted = async (): Promise<{ row: Summary; turns: WireTurn<Turn>[] } | undefined> => {
-      // The gate a durable unlist extends, before any load.
+      // The gate a durable unlist extends, before any load: an id somebody
+      // unlisted is not one a client reaches by naming it, because the backend
+      // can still answer for it. It comes back only by being made again.
+      if (ctx.kept.unlisted?.(id) === true) return undefined;
       if (!ctx.kept.sessions().includes(id)) return undefined;
       const provider = ctx.kept.provider(id);
       if (provider === undefined) return undefined;

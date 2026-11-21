@@ -482,6 +482,27 @@ export interface SessionStore {
   /** Record them, or forget them with an empty list. */
   setAdditionalWorktrees?(id: string, value: StoredWorktree[]): void;
   /**
+   * Whether this session's row was deliberately unlisted.
+   *
+   * An unlist is a session this host stops offering while the provider keeps
+   * its conversation: the row, the chats and the folder record go exactly as
+   * a disposal's do, and the backend is never asked to delete its own copy.
+   * What is left is this mark, which is what keeps the row from coming back:
+   * the backend still lists the conversation, so a listing that merged it in
+   * again would resurrect the session a caller asked to be rid of, with a
+   * fresh row and no owner.
+   *
+   * It is not a flag on the row, because the row is what unlisting drops. A
+   * session comes back only deliberately, by being made again on the id the
+   * unlist answered with; that clears the mark.
+   *
+   * Optional: a store without it lists every row its backends offer, which is
+   * what a host that was never told to unlist has always done.
+   */
+  unlisted?(id: string): boolean;
+  /** Record it, or clear it for a session made again on this id. */
+  setUnlisted?(id: string, value: boolean): void;
+  /**
    * When the host archived this session itself, because its pull requests
    * were merged, as an ISO time. Nothing for a session a person archived, and
    * for one that is not archived.

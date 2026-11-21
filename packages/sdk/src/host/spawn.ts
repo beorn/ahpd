@@ -952,7 +952,20 @@ export function createSpawn(ctx: HostContext): Spawn {
     if (own !== undefined && own !== '') {
       if (kept.provider(own) !== agent.provider) kept.setProvider(own, agent.provider);
       keepFolder(own, sessions.get(uri)?.workingDirectory);
+      /*
+       * A conversation that was unlisted has come back on purpose: this is a
+       * session made again on the id the unlist answered with, and the mark
+       * that kept its row off every listing goes with it (`SessionStore.unlisted`).
+       */
+      if (kept.unlisted?.(own) === true) kept.setUnlisted?.(own, false);
     }
+    /*
+     * And the host's own id for it, which a backend that names its conversation
+     * only after the first prompt leaves as the row's: a session made on the id
+     * an unlist answered with is that conversation back on purpose, whichever
+     * of the two the mark was written under.
+     */
+    if (kept.unlisted?.(idOf(uri)) === true) kept.setUnlisted?.(idOf(uri), false);
   };
 
   /**

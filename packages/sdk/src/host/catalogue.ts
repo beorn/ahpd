@@ -1331,6 +1331,18 @@ export function createCatalogue(ctx: HostContext): Catalogue {
      * session recorded since this host started is one the map built at startup
      * never saw, so reading the store here is also what keeps that map current.
      */
+    /*
+     * And the ids somebody unlisted, dropped before anything else reads them.
+     *
+     * The backend still holds the conversation an unlist kept, so it still
+     * lists it: merged in here, that row is the session coming back with a
+     * fresh name and no owner, which is the one thing the caller asked not to
+     * happen. The mark outlives the row (`SessionStore.unlisted`), and only a
+     * session made again on the same id clears it.
+     */
+    for (const id of [...offered.keys()]) {
+      if (kept.unlisted?.(id) === true) offered.delete(id);
+    }
     const stored = new Set(kept.sessions());
     for (const id of stored) {
       const backendId = ctx.sessionBackendId(id);
