@@ -22,6 +22,8 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { chatReducer } from '@microsoft/agent-host-protocol';
 import { createHost } from '../src/host.js';
+import { sessionFlag } from '../src/host/chatactions.js';
+import { Status } from '../src/sessions/catalog.js';
 import { memorySessions } from '../src/sessions/sessions.js';
 import { shellTerminals } from '../src/machines/terminals.js';
 import { echo } from '../../../examples/echo/agent.js';
@@ -798,6 +800,49 @@ it('keeps a never-spoken archived session awake when the archive is not a stop',
   await settle(16);
   expect(knobs.closes.length).toBe(0);
   expect(awake()).toBe(1);
+});
+
+/*
+ * #37426, @cto 2026-11-21: an archive offer is a sleep request every time it is
+ * made, not only the once the bit moved. A client watching at the first
+ * evaluation refuses it - the host sleeps only a session nobody watches - and
+ * that refusal is about the watchers of that moment, never a mark on the
+ * session, so the next offer of the same bit asks again and sleeps it. The
+ * bit's own latch stays: a repeated offer still dispatches nothing, because a
+ * client is not woken for a message that moved nothing.
+ */
+it('asks again after a refused archive offer, and only the move dispatches', async () => {
+  const sleeps: string[] = [];
+  const dispatched: string[] = [];
+  const uri = 'ahp-session:/one';
+  let flag = 0;
+  let watched = true;
+  const ctx = {
+    kept: {
+      flags: () => flag,
+      setFlags: (_id: string, value: number): void => { flag = value; },
+    },
+    keepName: (): void => {},
+    dispatch: (channel: string): void => { dispatched.push(channel); },
+    markSummaryDirty: (): void => {},
+    sessions: new Map(),
+    updateChatMovability: (): void => {},
+    sleep: (target: string): Promise<boolean> => { sleeps.push(target); return Promise.resolve(!watched); },
+    reconcile: (): void => {},
+  };
+  const offer = { type: 'session/isArchivedChanged', isArchived: true, stopping: true };
+  const current = async (): Promise<{ moved: boolean; sleeps: number }> => {
+    const moved = sessionFlag(ctx as never, uri, Status.IsArchived, true, offer);
+    await new Promise((r) => { setTimeout(r, 0); });
+    return { moved, sleeps: sleeps.length };
+  };
+  const refused = await current();
+  expect(refused).toEqual({ moved: true, sleeps: 1 });
+  watched = false;
+  const taken = await current();
+  expect(taken).toEqual({ moved: false, sleeps: 2 });
+  expect(dispatched).toEqual([uri]);
+  expect(flag & Status.IsArchived).not.toBe(0);
 });
 
 it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
