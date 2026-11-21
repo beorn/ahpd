@@ -412,6 +412,22 @@ it('keeps a completed session complete through a failed resume, and the next res
   }
 });
 
+// #37283 acceptance 2: a resume the host cannot honour is refused before any session or backend is made.
+it('refuses a resume of a session it never reserved, or with creation overrides, before anything is made', async () => {
+  const order: string[] = [];
+  const store = memorySessions();
+  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)], sessions: store });
+  const unknown = `ahp-session:/${crypto.randomUUID()}`;
+  await expect(plugin.startSession({ owner: 'user:soft', resume: unknown }))
+    .rejects.toThrow('exact owned creation reservation not found');
+  // The validator refuses this at the call, before the host sees it.
+  expect(() => plugin.startSession({ owner: 'user:soft', resume: unknown, provider: 'watched' } as never))
+    .toThrow('owner and resume only');
+  expect(order).toEqual([]);
+  expect(store.creation(idOf(unknown))).toBeUndefined();
+  expect(store.chats(idOf(unknown))).toEqual([]);
+});
+
 it('rejects a naming callback awaiting its own reservation resume', async () => {
   const order: string[] = [];
   const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
