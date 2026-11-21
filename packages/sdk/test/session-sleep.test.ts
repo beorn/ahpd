@@ -36,6 +36,17 @@ import type { Terminal } from '../src/types/terminals.js';
 import { WAIT_MS } from '../../../tools/wait.ts';
 
 let made: string[] = [];
+/** The host log the flag tests hand `sessionFlag`: every level lands in one list. */
+const logger = (lines: string[]) => {
+  const log = (line: string): void => { lines.push(line); };
+  return Object.assign(log, {
+    trace: log,
+    debug: log,
+    info: log,
+    warn: log,
+    error: log,
+  });
+};
 afterEach(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true });
   made = [];
@@ -823,6 +834,7 @@ it('asks again after a refused archive offer, and only the move dispatches', asy
       setFlags: (_id: string, value: number): void => { flag = value; },
     },
     keepName: (): void => {},
+    log: logger([]),
     dispatch: (channel: string): void => { dispatched.push(channel); },
     markSummaryDirty: (): void => {},
     sessions: new Map(),
@@ -843,6 +855,40 @@ it('asks again after a refused archive offer, and only the move dispatches', asy
   expect(taken).toEqual({ moved: false, sleeps: 2 });
   expect(dispatched).toEqual([uri]);
   expect(flag & Status.IsArchived).not.toBe(0);
+});
+
+/*
+ * #37577 (@cto 2026-11-21): a sleep that throws is a line naming the session and
+ * the reason. The refusal path names the watchers that held the sleep off, and
+ * a failure swallowed here would read as that same refusal while the stop went
+ * on to end its child in the window.
+ */
+it('names a failed sleep, and reconciles anyway', async () => {
+  const uri = 'ahp-session:/one';
+  let flag = 0;
+  const logged: string[] = [];
+  let reconciled = 0;
+  const ctx = {
+    kept: {
+      flags: () => flag,
+      setFlags: (_id: string, value: number): void => { flag = value; },
+    },
+    keepName: (): void => {},
+    log: logger(logged),
+    dispatch: (): void => {},
+    markSummaryDirty: (): void => {},
+    sessions: new Map(),
+    updateChatMovability: (): void => {},
+    sleep: () => Promise.reject(new Error('backend said no')),
+    reconcile: (): void => { reconciled += 1; },
+  };
+  sessionFlag(ctx as never, uri, Status.IsArchived, true, { type: 'session/isArchivedChanged', isArchived: true, stopping: true });
+  await new Promise((r) => { setTimeout(r, 0); });
+  expect(reconciled).toBe(1);
+  expect(logged.length).toBe(1);
+  expect(logged[0]).toContain(uri);
+  expect(logged[0]).toContain('stop');
+  expect(logged[0]).toContain('backend said no');
 });
 
 it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
