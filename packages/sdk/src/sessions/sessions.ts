@@ -1315,13 +1315,21 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         clearTimeout(writing);
         writing = undefined;
       }
-      save(true);
-      // The exact scope includes the session's backend and chat records.
-      if (removeOnClose && joined !== undefined && inner.rowOf(joined.innerId) === undefined && faults.size === 0) {
-        rmSync(dir, { recursive: true });
+      // A close that throws still ends this store and lets go of its folder
+      // (#37472): otherwise the lock outlives the store, and the next open in
+      // this process is refused as a second writer. The error still reaches
+      // the caller.
+      try {
+        save(true);
+        // The exact scope includes the session's backend and chat records.
+        if (removeOnClose && joined !== undefined && inner.rowOf(joined.innerId) === undefined && faults.size === 0) {
+          rmSync(dir, { recursive: true });
+        }
       }
-      closed = true;
-      writer.release();
+      finally {
+        closed = true;
+        writer.release();
+      }
     },
   };
   if (joined !== undefined) joinedSessionIds.set(store, joined.innerId);

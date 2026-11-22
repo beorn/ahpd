@@ -7,7 +7,7 @@
  * files.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,9 +40,31 @@ describe('the stores, closed', () => {
     const file = join(sessions, 'a.json');
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ version: 1, id: 'a', flags: 1 });
     const before = readFileSync(file, 'utf8');
-    store.setFlags('b', 2);
+    // #37472: a setter after close is refused by name, never dropped silently
+    // (sessions.test.ts 'rejects a closed file-store setter'), and writes nothing.
+    expect(() => store.setFlags('b', 2)).toThrow('Cannot mutate closed session store');
     await new Promise((done) => { setTimeout(done, 10); });
     expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  // #37472: a close whose last write fails still ends the store and lets go
+  // of the folder, so the next store in this process opens rather than being
+  // refused as a second writer. The failure still reaches the caller.
+  it('lets go of its folder when the last write at close fails', () => {
+    const sessions = join(dir, 'sessions');
+    const store = fileSessions({ dir: sessions });
+    store.setFlags('a', 1);
+    store.flush?.();
+    store.setFlags('b', 2);
+    chmodSync(sessions, 0o500);
+    try {
+      expect(() => store.close?.()).toThrow();
+    } finally {
+      chmodSync(sessions, 0o700);
+    }
+    const next = fileSessions({ dir: sessions });
+    expect(next.flags('a')).toBe(1);
+    next.close?.();
   });
 });
 

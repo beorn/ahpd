@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Agent, McpServer, Start } from '../src/types/agent.js';
 import type { ConnectorRef } from '../src/types/connectors.js';
-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
+import { memorySessions } from '../src/sessions/sessions.js';
+import { fileSessions } from './support/restart-stores.js';
 import { chatUriFor, ROOT } from '../src/host/channels.js';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
