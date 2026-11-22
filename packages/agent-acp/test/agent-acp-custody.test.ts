@@ -17,6 +17,11 @@ import type { Bag, Session, Start } from '@ahpd/sdk';
 import type { AcpConnection, AcpOptions } from '../src/types.js';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { acpAgent } from '../src/index.js';
+import { createHost } from '../../sdk/src/host.js';
+import { memorySessions } from '../../sdk/src/sessions/sessions.js';
+import { foldHostOptions, pluginHost } from '../../sdk/src/plugins/plugins.js';
+import { loggerOf } from '../../sdk/src/log.js';
+import { sdkVersion } from '../../sdk/src/version.js';
 import { admitCustody } from '../src/session/custody.js';
 import * as connectionPort from '../src/connection.js';
 
@@ -25,11 +30,81 @@ const PROBE = fileURLToPath(new URL('./fixtures/flock-probe.mjs', import.meta.ur
 const URI = 'ahp-session:/custody';
 const linux = process.platform === 'linux';
 const sessions: Session[] = [];
+const hosts: ReturnType<typeof createHost>[] = [];
 const folders: string[] = [];
 
 afterEach(async () => {
+  await Promise.allSettled(hosts.splice(0).map((host) => host.close()));
   await Promise.allSettled(sessions.splice(0).map((session) => session.close()));
   for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
+});
+
+it.skipIf(!linux)('refuses six retained plugin conversations when only the managed probe has process authority', async () => {
+  // 37443: real host resume must supply ownership/native identity; a direct
+  // Start fixture would manufacture the admission this regression must prove.
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-retained-plugin-'));
+  folders.push(folder);
+  const log = join(folder, 'requests.jsonl');
+  const store = memorySessions();
+  const provider = 'retained-custody';
+  const owner = 'plugin:hightea-pipe' as const;
+  const base = { command: process.execPath,
+    provider, honoursTrust: true, hostScope: { configDir: folder, hostId: 'retained-host' } };
+  const serving = (env: Record<string, string>, observe = false) => {
+    const { host: plugin, contribution } = pluginHost('hightea-pipe', {
+      path: folder, paths: [folder], configDir: folder, hostId: 'retained-host',
+      version: sdkVersion(), hostName: 'retained-host', log: loggerOf(() => {}), say: () => {},
+    });
+    const { options, problems } = foldHostOptions({ path: folder, sessions: store,
+      agents: [acpAgent({ ...base, args: [FIXTURE, ...(observe ? ['--observe-pid-custody'] : [])], env })] }, [contribution]);
+    expect(problems).toEqual([]);
+    const host = createHost(options);
+    hosts.push(host);
+    return { plugin, host };
+  };
+  const before = serving({ ACP_LOG: log });
+  const originals: { uri: string; chat: string; native: string }[] = [];
+  for (let index = 0; index < 6; index++) {
+    const uri = await before.plugin.startSession({ owner, provider, workingDirectory: folder });
+    const chat = store.chats(uri.split('/').at(-1)!)[0]!;
+    expect(chat.backendId).not.toBe(uri.split('/').at(-1));
+    originals.push({ uri, chat: chat.uri, native: chat.backendId });
+  }
+  const probe = await before.plugin.startSession({ owner: 'root:retained-host', provider, workingDirectory: folder });
+  await before.host.close();
+  const prefix = join(folder, 'managed-probe');
+  const tokenFile = join(folder, 'synthetic-probe-token');
+  writeFileSync(tokenFile, 'synthetic-probe-identity');
+  const authority = { ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: probe,
+    HAB_SESSION_LAUNCH_ID: 'managed-probe-launch', HAB_ID_TOKEN_FILE: tokenFile, TRIBE_NAME: '@probe/fixture' };
+  const after = serving(authority, true);
+  await after.plugin.startSession({ owner: 'root:retained-host', resume: probe });
+  const probeChat = store.chats(probe.split('/').at(-1)!)[0]!;
+  const probeCustody = readCustody(prefix);
+  const admitted = initializes(log).length;
+  expect(initializes(log).at(-1)).toMatchObject({ hostLaunchId: 'managed-probe-launch',
+    hostIdentityTokenFile: tokenFile, tribeName: '@probe/fixture', hostSessionUri: probe });
+  await expect(after.plugin.startSession({ owner, resume: probe })).rejects.toThrow('exact owned creation reservation');
+  expect(initializes(log)).toHaveLength(admitted);
+  for (const original of originals) {
+    await expect(after.plugin.startSession({ owner, resume: original.uri })).rejects.toThrow('no matching configured ACP process authority');
+    expect(store.chats(original.uri.split('/').at(-1)!)[0]).toMatchObject({ uri: original.chat, backendId: original.native });
+  }
+  // The tuple knows which native conversation to load, but grants none of
+  // these plugin-owned conversations the probe's process or Wire identity.
+  expect(initializes(log)).toHaveLength(admitted);
+  const wrongChat = originals[0]!;
+  const wrongChatId = wrongChat.uri.split('/').at(-1)!;
+  const heldChats = store.chats(wrongChatId);
+  store.setChats(wrongChatId, heldChats.map((chat) => ({ ...chat, default: false })));
+  await expect(after.plugin.startSession({ owner, resume: wrongChat.uri })).rejects.toThrow('required provider, config or default chat metadata');
+  store.setChats(wrongChatId, heldChats);
+  expect(initializes(log)).toHaveLength(admitted);
+  expect(readCustody(prefix)).toEqual(probeCustody);
+  expect(alive(probeCustody.child!.pid)).toBe(true);
+  expect(store.chats(probe.split('/').at(-1)!)[0]).toEqual(probeChat);
+  expect(authority).toEqual({ ACP_LOG: log, HAB_ACP_PID_PREFIX: prefix, HAB_ACP_SESSION_URI: probe,
+    HAB_SESSION_LAUNCH_ID: 'managed-probe-launch', HAB_ID_TOKEN_FILE: tokenFile, TRIBE_NAME: '@probe/fixture' });
 });
 
 const until = async (check: () => boolean, ms = 10_000): Promise<void> => {
