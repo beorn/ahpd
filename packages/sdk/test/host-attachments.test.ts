@@ -24,7 +24,8 @@ import { posix } from '../../../tools/posix.ts';
 import { WAIT_MS } from '../../../tools/wait.ts';
 import { createHost } from '../src/host.js';
 import { uriOf } from '../src/resources/fileuri.js';
-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
+import { memorySessions } from '../src/sessions/sessions.js';
+import { fileSessions } from './support/restart-stores.js';
 import { echo } from '../../../examples/echo/agent.js';
 import type { Agent, Start } from '../src/types/agent.js';
 import type { Bag } from '../src/types/common.js';
@@ -191,7 +192,7 @@ async function serving(said: Said, dir = temp(), store = true, pace = 0, held = 
     client.handle({ method: 'dispatchAction', params: { channel: chatUri, clientSeq, action } });
   const state = async (): Promise<Bag> =>
     ((await client.handle({ method: 'subscribe', params: { channel: chatUri } })) as { snapshot: { state: Bag } }).snapshot.state;
-  return { host, client, peer: p, chatUri, dir, turn, state };
+  return { host, client, peer: p, chatUri, dir, turn, state, sessions };
 }
 
 /** A folder a snapshot is written in, which a UUID names. */
@@ -346,10 +347,11 @@ it('reads a file only the client has, and leaves one this host has as it came', 
 
 it('tags a copy from the session\'s own folder where it stands, and leaves a tagged one as it came', async () => {
   const said = saidNothing();
-  const { dir, turn, peer: p } = await serving(said);
+  const { dir, turn, peer: p, sessions } = await serving(said);
   // Two files this host wrote for an earlier message, which a client opened
-  // and attached again.
-  const folder = fileSessions({ dir }).attachmentsDir?.('one') as string;
+  // and attached again. Asked of the host's own store: a second store on the
+  // folder would end this one (#37472).
+  const folder = sessions.attachmentsDir?.('one') as string;
   const copy = join(folder, '00000000-0000-4000-8000-000000000001', 'copy.png');
   const kept = join(folder, '00000000-0000-4000-8000-000000000002', 'kept.png');
   mkdirSync(dirname(copy), { recursive: true });
