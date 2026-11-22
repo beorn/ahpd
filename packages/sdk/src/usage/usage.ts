@@ -397,7 +397,12 @@ export function fileUsage(options: FileUsageOptions): Usage {
        */
       const file = join(folder, `${new Date(entry.at).toISOString().slice(0, 7)}-${entry.kind}.jsonl`);
       try {
-        const receipt = appendJsonlSync(file, [entry], { mode: 0o600 });
+        /*
+         * One boundary read per append, not one per process (33944): this store is long-lived, and a resident ahpd
+         * can append for hours after a crash or another writer extended the file with zeros. A process-lifetime
+         * decision would glue the next record onto that tail and lose it on the reopen.
+         */
+        const receipt = appendJsonlSync(file, [entry], { mode: 0o600, recheckBoundary: true });
         if (receipt.leadingNewline) told(`${file}: line EOF, 1 byte newline boundary.`);
       }
       catch (error) { told(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`); }
