@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import { createHost } from '../src/host.js';
 import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
 import { grantEntries } from '../src/host/root.js';
-import { holds, OPERATIONS } from '../src/access/users.js';
+import { grantProblem, holds, OPERATIONS } from '../src/access/users.js';
 import { echo } from '../../../examples/echo/agent.js';
 import type { HostOptions } from '../src/types/host.js';
 import type { LoaderContext, PluginHost } from '../src/types/plugin.js';
@@ -35,6 +35,45 @@ const context = (): LoaderContext => ({
   configDir: '/tmp/plugin-grants',
   log: loggerOf(() => {}),
   say: () => {},
+});
+
+it('requires a literal source binding before asking for service identity', () => {
+  let calls = 0;
+  const serviceIdentityEnvironment = () => {
+    calls++;
+    return { HAB_ID_TOKEN_FILE: '/private/service-token' };
+  };
+  for (const grants of [[], ['*:*'], ['service-env:other'], ['service-env:*']]) {
+    const { host } = pluginHost('source', context(), { grants: grants as `${string}:${string}`[], serviceIdentityEnvironment });
+    expect(() => host.serviceIdentityEnvironment('src_km')).toThrow('SERVICE_IDENTITY_NOT_GRANTED');
+  }
+  expect(calls).toBe(0);
+  const { host } = pluginHost('source', context(), { grants: ['service-env:src_km'], serviceIdentityEnvironment });
+  expect(host.serviceIdentityEnvironment('src_km')).toEqual({ HAB_ID_TOKEN_FILE: '/private/service-token' });
+  expect(calls).toBe(1);
+});
+
+it('names missing service identity instead of returning an empty environment', () => {
+  const { host } = pluginHost('source', context(), { grants: ['service-env:src_km'] });
+  expect(() => host.serviceIdentityEnvironment('src_km')).toThrow('SERVICE_IDENTITY_UNAVAILABLE');
+});
+
+it('copies only the service FILE pointer and freezes the answer', () => {
+  const { host } = pluginHost('source', context(), {
+    grants: ['service-env:src_km'],
+    serviceIdentityEnvironment: () => ({ HAB_ID_TOKEN_FILE: '/private/service-token', unrelated: 'excluded' }),
+  });
+  const environment = host.serviceIdentityEnvironment('src_km');
+  expect(environment).toEqual({ HAB_ID_TOKEN_FILE: '/private/service-token' });
+  expect(Object.isFrozen(environment)).toBe(true);
+});
+
+it('accepts concrete source identifiers and refuses every wildcard in service-env grants', () => {
+  expect(grantProblem('service-env:src_km')).toBeUndefined();
+  expect(grantProblem('service-env:source-12')).toBeUndefined();
+  for (const grant of ['service-env:*', 'service-env:src*', 'service-env:*km']) {
+    expect(grantProblem(grant)).toContain('service-env');
+  }
 });
 
 /** A plugin's host, with its contribution sealed as the loader seals it. */

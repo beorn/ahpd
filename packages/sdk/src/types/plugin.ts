@@ -987,6 +987,13 @@ export interface GrantEntry {
  */
 export interface PluginHost extends PluginContext {
   /**
+   * The service identity FILE pointer for one source binding. Requires the
+   * literal owner-written `service-env:<binding>` grant; wildcards never grant
+   * it. Pass only to that source's write child, never agent/connector options.
+   * Throws SERVICE_IDENTITY_NOT_GRANTED or SERVICE_IDENTITY_UNAVAILABLE.
+   */
+  serviceIdentityEnvironment(binding: string): Readonly<{ HAB_ID_TOKEN_FILE: string }>;
+  /**
    * The catalogs this plugin ships in `ahpd.i18n`, by locale, as the loader
    * read them; absent for a plugin that ships none.
    *

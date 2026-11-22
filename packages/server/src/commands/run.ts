@@ -8,6 +8,7 @@
  * itself, and the shutdown both signals reach.
  */
 
+import { serviceIdentityEnvironment } from '../service-identity.js';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1839,6 +1840,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
   });
   const holding: LoadOptions = {
     base,
+    serviceIdentityEnvironment,
     acceptsToken: tokenAcceptedBy(door),
     paths: options.paths,
     configDir: configDir(),

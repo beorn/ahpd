@@ -315,6 +315,12 @@ export const grantProblem = (value: string): string | undefined => {
     return `${value} is not <subject>:<operation>`;
   }
   const operation = value.slice(at + 1);
+  // Service identity delegates one concrete source, never a group or wildcard.
+  if (subject === 'service-env') {
+    return /^[A-Za-z0-9_.-]+$/.test(operation)
+      ? undefined
+      : `${value} must name one concrete service-env binding (letters, digits, _, . or -; no wildcard)`;
+  }
   if (operation === '*') return undefined;
   const groups = GROUPS.join(' or ');
   const mine = OPERATIONS[subject];

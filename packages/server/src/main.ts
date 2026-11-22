@@ -16,6 +16,7 @@
  * command gets.
  */
 
+import './service-identity.js';
 import { readFileSync } from 'node:fs';
 import { ArgumentError, exitCodeFor, fullyNamed, isFlag, literalPrefix, matchCommand, optionNotes, optionTable, optionsOf, tokenize, visible } from '@cofold/commands';
 import type { Command, OptionSpec, Runner } from '@cofold/commands';

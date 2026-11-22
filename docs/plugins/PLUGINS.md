@@ -1283,6 +1283,8 @@ Two hosts behave differently on purpose. One whose daemon carries a `usage` stor
 
 ### Reading a secret
 
+`host.serviceIdentityEnvironment(binding)` returns only a frozen `{ HAB_ID_TOKEN_FILE: string }` for a trusted source's write child. The owner must declare the literal `service-env:<binding>` grant in that plugin's configuration entry; binding identifiers use letters, digits, `_`, `.` or `-`. Wildcards in this namespace are invalid, and broader grants such as `*:*` do not confer this capability. An absent exact grant throws `SERVICE_IDENTITY_NOT_GRANTED`; missing native startup custody or a missing host callback throws `SERVICE_IDENTITY_UNAVAILABLE`. Native startup consumes the private `AHPD_SERVICE_TOKEN_FILE` pointer before plugins evaluate and removes private and legacy Hab identity variables from ambient environment. Never put this result in agent records, connector options, a vault or default child environment. Request it only when spawning the declared source's write child; reads and feeds receive no service identity. In-process plugins are trusted code and can read the returned file path.
+
 `host.secret(name)` answers the value behind a name in the host's vault, and is how a plugin reads one at the moment it needs it rather than at load. The second argument says whose work is reading it:
 
 ```ts
