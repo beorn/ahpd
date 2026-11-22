@@ -450,20 +450,32 @@ it('rejects the handshake with a sentence naming a missing command', async () =>
  * A backend with no kept session lists on the host, and its command may exist
  * only in a machine. One failure says nothing about the server, so the read
  * answers from the watched rows with one line, and the record does not spawn
- * and fail again at every listing until it changes.
+ * and fail again at every listing: it tries again after a wait that doubles
+ * from a minute, so a command that comes back is listed again (#37753).
  */
-it('answers the watched rows after a listing whose command is missing, with one line', async () => {
+it('answers the watched rows after a listing whose command is missing, with one line, and tries again after the wait', async () => {
   watchSession({ provider: 'acp-missing-list', id: 'kept', cwd: '/tmp', additional: [], title: 'Kept' });
   const lines: string[] = [];
   const agent = acpAgent({ command: MISSING, provider: 'acp-missing-list', log: (line) => { lines.push(line); } });
 
   await expect(agent.list?.()).resolves.toMatchObject([{ id: 'kept' }]);
-  const failed = (): string[] => lines.filter((line) => line.startsWith('acp-missing-list: session/list failed:'));
-  expect(failed()).toHaveLength(1);
+  const failed = (): string[] => lines.filter((line) => line.startsWith('acp-missing-list:'));
+  expect(failed()).toEqual([expect.stringMatching(/^acp-missing-list: server ended before initialize \(.* was not found.*\); next spawn attempt in 1 min$/u)]);
 
-  // The same record answers from the same rows, and tries no second time.
+  // Inside the wait the same record answers from the same rows, and tries no second time.
   await expect(agent.list?.()).resolves.toMatchObject([{ id: 'kept' }]);
   expect(failed()).toHaveLength(1);
+
+  // After it, one more try, and the wait doubles.
+  try {
+    later(MINUTE + 1);
+    await expect(agent.list?.()).resolves.toMatchObject([{ id: 'kept' }]);
+    expect(failed()).toHaveLength(2);
+    expect(failed()[1]).toMatch(/next spawn attempt in 2 min$/u);
+  }
+  finally {
+    vi.restoreAllMocks();
+  }
   await pause(20);
   expect(escaped).toEqual([]);
 });
