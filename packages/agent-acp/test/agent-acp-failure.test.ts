@@ -468,6 +468,80 @@ it('answers the watched rows after a listing whose command is missing, with one 
   expect(escaped).toEqual([]);
 });
 
+/*
+ * #37753: a record that keeps sessions is listed by the host at every pass (it
+ * passes the record's machines, none here), so a host server that dies before
+ * it answers the handshake - its env file gone, its command exiting at once -
+ * was spawned, and its failure logged, at every pass. Inside the wait after a
+ * death the read is answered with that death and nothing is spawned; the wait
+ * doubles from a minute up to fifteen, and a changed input or a listing that
+ * answers clears it, so a failure that heals heals by itself.
+ */
+const MINUTE = 60_000;
+const later = (ms: number): void => {
+  const now = Date.now() + ms;
+  vi.spyOn(Date, 'now').mockReturnValue(now);
+};
+const spawnsIn = (file: string): number => (existsSync(file) ? readFileSync(file, 'utf8').length : 0);
+
+it('logs one line, not one per pass, for a record that keeps sessions and whose env file is gone', async () => {
+  const lines: string[] = [];
+  const goneEnv = `--env-file=/nonexistent/ahpd-37753-${process.pid}.provider-env`;
+  const agent = acpAgent({ command: process.execPath, args: [goneEnv, FIXTURE], provider: 'acp-gone-env', log: (line) => { lines.push(line); } });
+  for (let passes = 0; passes < 3; passes += 1) await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
+  expect(lines.filter((line) => line.startsWith('acp-gone-env:'))).toEqual([
+    `acp-gone-env: server ended before initialize (${process.execPath} exited with code 9); next spawn attempt in 1 min`,
+  ]);
+  await pause(20);
+  expect(escaped).toEqual([]);
+});
+
+it('spawns a died-before-handshake host server again only after a doubling wait, at once on a changed input, and resets on an answer', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ahpd-37753-'));
+  const counter = join(dir, 'spawns');
+  const healed = join(dir, 'healed');
+  // Counts each spawn, then dies at once unless `healed` exists, when it runs the fixture server.
+  const script = join(dir, 'server.mjs');
+  writeFileSync(script, [
+    `import { appendFileSync, existsSync } from 'node:fs';`,
+    `appendFileSync(${JSON.stringify(counter)}, 'x');`,
+    `if (!existsSync(${JSON.stringify(healed)})) process.exit(9);`,
+    `await import(${JSON.stringify(FIXTURE)});`,
+  ].join('\n'));
+  const lines: string[] = [];
+  const options = { command: process.execPath, args: [script], provider: 'acp-dies-early', log: (line: string) => { lines.push(line); } };
+  const agent = acpAgent(options);
+  const waits = (): string[] => lines.filter((line) => line.includes('next spawn attempt')).map((line) => line.replace(/.*attempt in /u, ''));
+  try {
+    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
+    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
+    expect(spawnsIn(counter)).toBe(1);
+    later(MINUTE + 1);
+    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
+    expect(spawnsIn(counter)).toBe(2);
+    expect(waits()).toEqual(['1 min', '2 min']);
+    // The record is edited in place (channel.ts: an edit updates the view `open` was handed): spawned at once.
+    options.args = [script, '--edited'];
+    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
+    expect(spawnsIn(counter)).toBe(3);
+    expect(waits()).toEqual(['1 min', '2 min', '1 min']);
+    // Healed after the wait: the listing answers, and the next death waits a minute again, not two.
+    writeFileSync(healed, '');
+    vi.restoreAllMocks();
+    later(2 * MINUTE + 2);
+    await expect(agent.list?.([], true)).resolves.toBeDefined();
+    expect(spawnsIn(counter)).toBe(4);
+    rmSync(healed);
+    await pause(50);
+    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
+    expect(waits()).toEqual(['1 min', '2 min', '1 min', '1 min']);
+  }
+  finally {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it('fails the turn with the exit code when the server exits mid-prompt', async () => {
   const { session, actions } = await start(process.execPath, [FIXTURE]);
   session.sendMessage('t1', 'die now');

@@ -77,6 +77,37 @@ const locations = new WeakMap<AcpOptions, { machines?: SessionMachine[]; host?: 
 const failedOnHost = new WeakSet<AcpOptions>();
 
 /**
+ * The records that keep sessions whose host server died before it answered
+ * the handshake, with what it was spawned from and when to try again (#37753).
+ *
+ * A record that keeps sessions is not put in `failedOnHost`: its listing is
+ * the host's, and the host asks again at every pass. A server that dies before
+ * the handshake - its env file gone, its command exiting at once - mostly dies
+ * the same way at each, so without this it is spawned, and its failure logged,
+ * at every pass. A read before `retryAt` is answered with the same death and
+ * nothing is spawned; the wait doubles from a minute up to fifteen with each
+ * death, so a failure that heals - a command back after a switch, a token file
+ * minted again at the same path - heals by itself. A changed input or a
+ * listing that answers clears it. The inputs are compared rather than the
+ * record itself, because an edit updates the record `open` was handed in place
+ * (`sdk/src/agents/channel.ts`). A server that answered the handshake and then
+ * failed its listing is asked again at the next read, as before.
+ */
+const diedEarly = new WeakMap<AcpOptions, { inputs: string; death: Error; failures: number; retryAt: number }>();
+
+/** The first wait after a host server died before the handshake, doubled at each death after it. */
+const SPAWN_RETRY_FIRST_MS = 60_000;
+/** The longest wait between spawns of a host server that keeps dying before the handshake. */
+const SPAWN_RETRY_MOST_MS = 15 * 60_000;
+
+/** The listing connections whose server answered the handshake, so a later failure is not taken for a death before it. */
+const handshaken = new WeakSet<AcpConnection>();
+
+/** What a listing's server is spawned from, as one string to compare; never logged, since `env` may hold a secret. */
+const spawnInputsOf = (options: AcpOptions): string =>
+  JSON.stringify([options.command, options.args ?? [], options.cwd ?? null, Object.entries(options.env ?? {}).sort()]);
+
+/**
  * The machine lines one record has already said.
  *
  * A listing runs at every client connect, while a machine that is stopped,
@@ -729,16 +760,33 @@ export async function catalogueOf(
   }
   const onHost = host ?? true;
   if (onHost && !failedOnHost.has(options)) {
+    const inputs = spawnInputsOf(options);
+    const early = diedEarly.get(options);
+    if (early !== undefined && early.inputs !== inputs) diedEarly.delete(options);
+    else if (early !== undefined && Date.now() < early.retryAt) throw early.death;
     const held = listingFor(options);
     try {
       const read = await listedBy(options, provider, held.connection);
+      diedEarly.delete(options);
       if (read !== undefined) {
         listed = true;
         for (const row of read) if (!rows.has(row.id)) rows.set(row.id, row);
       }
     }
     catch (error) {
+      // The server's own death before it answered the handshake, not a timeout or a refusal (#37753).
+      const death = handshaken.has(held.connection)
+        ? undefined
+        : await Promise.race([held.connection.ended, Promise.resolve(undefined)]);
       dropListing(options, held);
+      if (machines !== undefined && death !== undefined && death === error) {
+        const before = diedEarly.get(options);
+        const failures = before !== undefined && before.inputs === inputs ? before.failures + 1 : 1;
+        const waitMs = Math.min(SPAWN_RETRY_FIRST_MS * 2 ** (failures - 1), SPAWN_RETRY_MOST_MS);
+        diedEarly.set(options, { inputs, death, failures, retryAt: Date.now() + waitMs });
+        options.log?.(`${provider}: server ended before initialize (${death.message}); next spawn attempt in ${waitMs / 60_000} min`, 'error');
+        throw error;
+      }
       options.log?.(`${provider}: session/list failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
       if (machines !== undefined) throw error;
       failedOnHost.add(options);
@@ -773,6 +821,7 @@ const listedBy = async (
   machine?: SessionMachine,
 ): Promise<Listed[] | undefined> => {
   const handshake = await connection.initialize();
+  handshaken.add(connection);
   /*
    * What the server said it can do, kept for the agent's `delete` and
    * `chats.fork` rather than for this read: the handshake is the only place
