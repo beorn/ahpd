@@ -199,27 +199,29 @@ it('lists both the machine and this host for an agent with sessions in both', as
   expect(requests(log).some((one) => one.method === 'session/list')).toBe(true);
 });
 
-it('answers the watched rows after a host listing fails, with one line, until its record changes', async () => {
+it('answers the watched rows after a host listing fails, with one line, until the wait is over or its record changes', async () => {
   const provider = 'acp-fallback';
   watchSession({ provider, id: 'kept', cwd: '/tmp', additional: [], title: 'Kept' });
   const starts = hostStarts();
   const { agent, lines } = backend(provider, starts.args);
+  // One line per spawn that failed, naming the wait before the next (#37753: a wait, never a stop).
+  const failures = (said: string[]): string[] => said.filter((line) => line.startsWith(`${provider}: `) && line.includes('next spawn attempt in'));
 
   expect((await agent.list?.(undefined, true))?.map((one) => one.id)).toEqual(['kept']);
   // The failure says nothing about a server that may exist only in a machine,
   // so it is one line, and the read answers what this process watched.
-  expect(lines.filter((line) => line.startsWith(`${provider}: session/list failed:`))).toHaveLength(1);
+  expect(failures(lines)).toHaveLength(1);
   expect(starts.seen()).toHaveLength(1);
 
-  // The same record is not spawned again while it answers.
+  // The same record is not spawned again inside the wait.
   expect((await agent.list?.(undefined, true))?.map((one) => one.id)).toEqual(['kept']);
-  expect(lines.filter((line) => line.startsWith(`${provider}: session/list failed:`))).toHaveLength(1);
+  expect(failures(lines)).toHaveLength(1);
   expect(starts.seen()).toHaveLength(1);
 
   // A new record is a new command, so the read is tried again.
   const second = backend(provider, starts.args);
   expect((await second.agent.list?.(undefined, true))?.map((one) => one.id)).toEqual(['kept']);
-  expect(second.lines.filter((line) => line.startsWith(`${provider}: session/list failed:`))).toHaveLength(1);
+  expect(failures(second.lines)).toHaveLength(1);
   expect(starts.seen()).toHaveLength(2);
 });
 
