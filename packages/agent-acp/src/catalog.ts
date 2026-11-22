@@ -66,15 +66,40 @@ const machineOf = new Map<string, SessionMachine>();
 const locations = new WeakMap<AcpOptions, { machines?: SessionMachine[]; host?: boolean }>();
 
 /**
- * The records whose host listing failed while they kept no session.
+ * The records whose host listing failed, with what the server was spawned
+ * from and when to spawn it again: one retry policy with two triggers.
  *
- * The command may exist only in a machine, so a host listing of one is a
- * failure that says nothing about the server. Asked again at every read it
- * would spawn and fail a subprocess each time, with a line each: kept here
- * instead, so the record answers from the watched rows until it changes,
- * which a new record changes by being a new object.
+ * A record that keeps no session has its listing fail for any reason here: its
+ * command may exist only in a machine, so a host listing of one is a failure
+ * that says nothing about the server, and while it waits it answers from the
+ * watched rows. A record that keeps sessions is the host's to list at every
+ * pass, so only a server that died before it answered the handshake waits -
+ * its env file gone, its command exiting at once (#37753) - and a read while
+ * it waits is answered with the same failure. A server that answered the
+ * handshake and then failed its listing is asked again at the next read.
+ *
+ * Asked again at every read, either would spawn and fail a subprocess each
+ * time, with a line each. A read before `retryAt` spawns nothing; the wait
+ * doubles from a minute up to fifteen with each failure, one line per spawn,
+ * so a failure that heals - a command back after a switch, a token file
+ * minted again at the same path - heals by itself rather than leaving the
+ * record on stale rows. A changed input or a listing that answers clears it.
+ * The inputs are compared rather than the record itself, because an edit
+ * updates the record `open` was handed in place (`sdk/src/agents/channel.ts`).
  */
-const failedOnHost = new WeakSet<AcpOptions>();
+const hostRetry = new WeakMap<AcpOptions, { inputs: string; error: unknown; failures: number; retryAt: number }>();
+
+/** The first wait after a host listing failed, doubled at each failure after it. */
+const HOST_RETRY_FIRST_MS = 60_000;
+/** The longest wait between spawns of a host listing that keeps failing. */
+const HOST_RETRY_MOST_MS = 15 * 60_000;
+
+/** The listing connections whose server answered the handshake, so a later failure is not taken for a death before it. */
+const handshaken = new WeakSet<AcpConnection>();
+
+/** What a listing's server is spawned from, as one string to compare; never logged, since `env` may hold a secret. */
+const spawnInputsOf = (options: AcpOptions): string =>
+  JSON.stringify([options.command, options.args ?? [], options.cwd ?? null, Object.entries(options.env ?? {}).sort()]);
 
 /**
  * The machine lines one record has already said.
@@ -728,20 +753,43 @@ export async function catalogueOf(
     }
   }
   const onHost = host ?? true;
-  if (onHost && !failedOnHost.has(options)) {
+  const inputs = spawnInputsOf(options);
+  const waiting = hostRetry.get(options);
+  if (waiting !== undefined && waiting.inputs !== inputs) hostRetry.delete(options);
+  const due = hostRetry.get(options);
+  if (onHost && due !== undefined && Date.now() < due.retryAt) {
+    // Waiting: a record that keeps sessions is answered with the failure, one that keeps none from the watched rows.
+    if (machines !== undefined) throw due.error;
+  }
+  else if (onHost) {
     const held = listingFor(options);
     try {
       const read = await listedBy(options, provider, held.connection);
+      hostRetry.delete(options);
       if (read !== undefined) {
         listed = true;
         for (const row of read) if (!rows.has(row.id)) rows.set(row.id, row);
       }
     }
     catch (error) {
+      // The server's own death before it answered the handshake, not a timeout or a refusal (#37753).
+      const death = handshaken.has(held.connection)
+        ? undefined
+        : await Promise.race([held.connection.ended, Promise.resolve(undefined)]);
       dropListing(options, held);
-      options.log?.(`${provider}: session/list failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+      const message = error instanceof Error ? error.message : String(error);
+      const diedEarly = death !== undefined && death === error;
+      if (machines === undefined || diedEarly) {
+        const failures = due !== undefined ? due.failures + 1 : 1;
+        const waitMs = Math.min(HOST_RETRY_FIRST_MS * 2 ** (failures - 1), HOST_RETRY_MOST_MS);
+        hostRetry.set(options, { inputs, error, failures, retryAt: Date.now() + waitMs });
+        const what = diedEarly ? `server ended before initialize (${message})` : `session/list failed: ${message}`;
+        options.log?.(`${provider}: ${what}; next spawn attempt in ${waitMs / 60_000} min`, 'error');
+      }
+      else {
+        options.log?.(`${provider}: session/list failed: ${message}`, 'error');
+      }
       if (machines !== undefined) throw error;
-      failedOnHost.add(options);
     }
     finally {
       idleClose(options, held);
@@ -773,6 +821,7 @@ const listedBy = async (
   machine?: SessionMachine,
 ): Promise<Listed[] | undefined> => {
   const handshake = await connection.initialize();
+  handshaken.add(connection);
   /*
    * What the server said it can do, kept for the agent's `delete` and
    * `chats.fork` rather than for this read: the handshake is the only place
