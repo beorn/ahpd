@@ -459,6 +459,29 @@ it.each([false, true])('retains usage across a zero tail and append (historical 
   expect(said.some(message => message.includes(JSON.stringify(first)) || message.includes(JSON.stringify(historical)))).toBe(false);
 });
 
+// Crash damage can also arrive AFTER this process began appending: a resident
+// store writes a record, a kill or a second writer leaves zeros at the tail, and
+// the same store then records again. The boundary must be read again, or the
+// second record is glued onto the tail and lost on the reopen (33944).
+it('keeps the next record on its own line when a zero tail appears after this process wrote one', async () => {
+  const usage = fileUsage({ folder, timezone: 'UTC' });
+  const first = modelUse('2026-10-04T10:00:00.000Z', ['p'], { input: 7 });
+  await usage.record(first);
+  const file = join(folder, '2026-10-model.jsonl');
+  writeFileSync(file, '\0'.repeat(32), { flag: 'a' });
+
+  const second = modelUse('2026-10-04T11:00:00.000Z', ['p'], { input: 8 });
+  await usage.record(second);
+
+  const text = readFileSync(file, 'utf8');
+  expect(text).toContain(`${'\0'.repeat(32)}\n${JSON.stringify(second)}\n`);
+  expect(text.endsWith('\n')).toBe(true);
+
+  const reopened = fileUsage({ folder, timezone: 'UTC' });
+  expect((await reopened.records('p', month.from, month.until)).map((one) => one.at))
+    .toEqual([second.at, first.at]);
+});
+
 it('answers this month and the newest of them when the range names no bounds', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
