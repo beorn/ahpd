@@ -882,6 +882,8 @@ export const checkShape = (module: unknown, url: string): string | undefined => 
 
 /** What one plugin is loaded with. */
 export interface LoadOneOptions {
+  /** Startup custody, available only to a plugin with a literal source binding grant. */
+  serviceIdentityEnvironment?: () => Readonly<{ HAB_ID_TOKEN_FILE: string }>;
   /** The first directory the host serves, which a plugin reads as its `path`. */
   path: string;
   /** Every directory the host serves. */
@@ -1588,6 +1590,7 @@ export async function loadOne(resolved: Resolved, options: LoadOneOptions, impor
     ...(options.vault === undefined ? {} : { vault: options.vault }),
     ...(options.personKey === undefined ? {} : { personKey: options.personKey }),
     ...(options.acceptsToken === undefined ? {} : { acceptsToken: options.acceptsToken }),
+    ...(options.serviceIdentityEnvironment === undefined ? {} : { serviceIdentityEnvironment: options.serviceIdentityEnvironment }),
     ...(options.nodes === undefined ? {} : { nodes: options.nodes }),
     ...(options.alert === undefined ? {} : { alert: options.alert }),
     ...(options.clearAlert === undefined ? {} : { clearAlert: options.clearAlert }),
@@ -1731,6 +1734,8 @@ export const optionsSchemaLoaded = (name: string): Record<string, unknown> | und
 
 /** What `loadPlugins` is given besides the specs. */
 export interface LoadOptions {
+  /** Startup custody, retained across plugin reloads without an ambient env fallback. */
+  serviceIdentityEnvironment?: () => Readonly<{ HAB_ID_TOKEN_FILE: string }>;
   /** The options the daemon already built, which every contribution folds into. */
   base: HostOptions;
   /** Whether the daemon accepts a token, which a plugin asks through `acceptsToken`. */
@@ -2248,6 +2253,7 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
       vault: vaultInForce,
       personKey: (person) => mintPersonKey(id, person),
       ...(options.acceptsToken === undefined ? {} : { acceptsToken: options.acceptsToken }),
+      ...(options.serviceIdentityEnvironment === undefined ? {} : { serviceIdentityEnvironment: options.serviceIdentityEnvironment }),
       ...(options.base.nodes === undefined ? {} : { nodes: options.base.nodes }),
       sessions: () => hosted.then((host) => host.sessions),
       records: () => hosted.then((host) => host.records),

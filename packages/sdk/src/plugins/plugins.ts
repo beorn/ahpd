@@ -28,7 +28,7 @@ import type { Vault } from '../types/vault.js';
 import type { Catalogs } from '../i18n.js';
 import { idOf, schemeOf } from '../sessions/catalog.js';
 import { frozenCopy } from '../utils/frozen.js';
-import { holds, OPERATIONS } from '../access/users.js';
+import { grantProblem, holds, OPERATIONS } from '../access/users.js';
 import { SESSION_TOOL_NAMES } from '../tools/session.js';
 import { grantEntries } from '../host/root.js';
 import { createPair } from '../utils/pair.js';
@@ -1031,6 +1031,8 @@ const noYaml = (): never => {
 
 /** What a plugin host is given besides its context. */
 export interface HostRecordingOptions {
+  /** Native startup's private service FILE pointer, exposed only through an exact binding grant. */
+  serviceIdentityEnvironment?: () => Readonly<{ HAB_ID_TOKEN_FILE: string }>;
   /**
    * What configuration named this plugin by, a package or a path, kept on the
    * contribution so the host can record it against each agent it registers.
@@ -1526,6 +1528,17 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
      * it cannot do without, so a host nobody gave one to is a host that cannot
      * run it.
      */
+    serviceIdentityEnvironment: (binding) => {
+      const grant = `service-env:${binding}` as const;
+      if (grantProblem(grant) !== undefined || principal.grants?.includes(grant) !== true) {
+        throw new Error(`SERVICE_IDENTITY_NOT_GRANTED: plugin ${by} needs literal ${grant}`);
+      }
+      const environment = options.serviceIdentityEnvironment?.();
+      if (!environment?.HAB_ID_TOKEN_FILE) {
+        throw new Error('SERVICE_IDENTITY_UNAVAILABLE: this host has no service identity FILE pointer');
+      }
+      return Object.freeze({ HAB_ID_TOKEN_FILE: environment.HAB_ID_TOKEN_FILE });
+    },
     secret: async (name, work) => {
       const vault = options.vault?.();
       if (vault === undefined) throw new Error(`${name} cannot be read: this host has no vault`);
