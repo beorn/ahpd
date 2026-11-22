@@ -1,5 +1,5 @@
 import { WAIT_MS } from '../../../tools/wait.ts';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +9,9 @@ import {
   resetSdk, actions, claude, createHost, defaultChatOf, echo, emit, flushed, hello, machine, open, peer, sdk, sendAnswered, serving, startedBySend,
   sessionQueries, settle, running, wrote,
 } from './support/host.js';
-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
+import { memorySessions } from '../src/sessions/sessions.js';
+import { fileSessions } from './support/restart-stores.js';
+import type { StoredChat } from '../src/types/sessions.js';
 import { idOf, Status } from '../src/sessions/catalog.js';
 import { chatUriFor } from '../src/host/channels.js';
 import { undeclaredIn } from './support/wire.js';
@@ -17,6 +19,16 @@ import { startedNow } from './support/started.js';
 import type { Agent, Bag, HostOptions, Session, Start } from '@ahpd/sdk';
 import { WORK } from './support/work.js';
 import { uriOf } from '../src/resources/fileuri.js';
+
+/*
+ * #37472: reads of what the folder says take no writer, so they never end a
+ * live host's store; restarts go through the shared fileSessions.
+ */
+const savedChats = (dir: string, id: string): StoredChat[] => {
+  const file = join(dir, `${encodeURIComponent(id)}.json`);
+  if (!existsSync(file)) return [];
+  return (JSON.parse(readFileSync(file, 'utf8')) as { chats?: StoredChat[] }).chats ?? [];
+};
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/claude-sdk.js')).fake);
 
@@ -1345,7 +1357,7 @@ describe('more than one chat in a session', () => {
       expect(said(await opened(second.client, PEER))).toEqual(['second', 'third']);
       expect(said(await opened(second.client, session.state.defaultChat as string))).toEqual(['first']);
       expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
-      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
+      expect(savedChats(dir, 'live').map((chat) => chat.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
     }
     finally {
       rmSync(root, { recursive: true, force: true });
@@ -1366,7 +1378,7 @@ describe('more than one chat in a session', () => {
       const base = backend(starts);
       const agent: Agent = { ...base, create: (start) => {
         if (starts.length === 0) {
-          expect(fileSessions({ dir }).chats(idOf(start.uri)).find((chat) => chat.uri === start.chatUri)?.sessionConversation).toBe(true);
+          expect(savedChats(dir, idOf(start.uri)).find((chat) => chat.uri === start.chatUri)?.sessionConversation).toBe(true);
         }
         return base.create(start);
       } };
@@ -1382,7 +1394,7 @@ describe('more than one chat in a session', () => {
         [uri, original, true], [uri, PEER, false], [uri, chatUriFor(uri), false],
         [TWO, String((await opened(client, TWO)).state.defaultChat), true],
       ]);
-      expect(new Map(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation]))).toEqual(new Map([
+      expect(new Map(savedChats(dir, UUID).map((chat) => [chat.uri, chat.sessionConversation]))).toEqual(new Map([
         [original, true], [PEER, false], [chatUriFor(uri), false],
       ]));
     }
@@ -1448,7 +1460,7 @@ describe('more than one chat in a session', () => {
       await settle();
       await new Promise((tick) => { setTimeout(tick, 5); });
       // A hidden close retains provenance on the retained occurrence.
-      expect(fileSessions({ dir }).chats('live').find((chat) => chat.uri === PEER)).toMatchObject({ closed: true, sessionConversation: false });
+      expect(savedChats(dir, 'live').find((chat) => chat.uri === PEER)).toMatchObject({ closed: true, sessionConversation: false });
       const before = starts.length;
 
       const second = await hostAt(dir, agent);
@@ -1475,7 +1487,7 @@ describe('more than one chat in a session', () => {
       await send(first.client, LIVE, 't0', 'first');
       await send(first.client, PEER, 't1', 'made here');
       await new Promise((tick) => { setTimeout(tick, 5); });
-      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual([true, false]);
+      expect(savedChats(dir, 'live').map((chat) => chat.sessionConversation)).toEqual([true, false]);
 
       const second = await hostAt(dir, agent);
       /*
@@ -1527,7 +1539,7 @@ describe('more than one chat in a session', () => {
                 known = true;
                 start.onHandshake?.();
               }
-              bindingsAtPrompt.push(fileSessions({ dir }).chats(idOf(start.uri))
+              bindingsAtPrompt.push(savedChats(dir, idOf(start.uri))
                 .find((chat) => chat.uri === start.chatUri)?.backendId);
               return session.sendMessage(turnId, text, from, attachments, options);
             },
@@ -2609,7 +2621,7 @@ describe('more than one chat in a session', () => {
       expect((there.state as { lifecycle?: string }).lifecycle ?? 'ready').toBe('ready');
       expect(listed(there)).toEqual([PEER]);
       expect(there.state.defaultChat).toBe(PEER);
-      expect(fileSessions({ dir: join(root, 'sessions') }).chats(idOf(answer.session)).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
+      expect(savedChats(join(root, 'sessions'), idOf(answer.session)).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
     }
     finally {
       rmSync(root, { recursive: true, force: true });
