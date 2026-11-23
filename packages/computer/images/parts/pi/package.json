@@ -2,7 +2,7 @@
   "name": "ahpd-part-pi",
   "private": true,
   "dependencies": {
-    "pi-acp": "0.0.34",
+    "pi-acp": "0.0.35",
     "@earendil-works/pi-coding-agent": "1.5.2"
   }
 }
