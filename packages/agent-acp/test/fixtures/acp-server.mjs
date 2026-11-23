@@ -381,8 +381,13 @@ const listed = () => ({
   ],
 });
 
-/** The sessions `session/list` reports, one titled and one not. */
-const LISTED = [
+/**
+ * The sessions `session/list` reports, one titled and one not. `ACP_LISTED`
+ * replaces them with a JSON array, which is one account's store that every
+ * record spawning this server with the same value reads, as Codex records on
+ * one CODEX_HOME do.
+ */
+const LISTED = process.env.ACP_LISTED !== undefined ? JSON.parse(process.env.ACP_LISTED) : [
   { sessionId: 'listed-1', cwd: '/tmp/one', title: 'One', updatedAt: '2026-01-01T00:00:00.000Z' },
   { sessionId: 'listed-2', cwd: '/tmp/two', additionalDirectories: ['/tmp/two-b'] },
 ];
