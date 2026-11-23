@@ -12,7 +12,7 @@
  * catalogue is `catalog.ts`.
  */
 
-import type { Agent, Bag, Listed, MachineNeed, Offered, Session, SessionMachine } from '@ahpd/sdk';
+import type { Agent, Bag, Listed, MachineNeed, Offered, Session, SessionAt, SessionMachine } from '@ahpd/sdk';
 import { catalogueOf, deletes, findListed, forgetSession, forks, loadedSession, machineFor, stateFile } from './catalog.js';
 import { acpSession } from './session.js';
 import type { Choice } from './session/config.js';
@@ -185,13 +185,15 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
     /*
      * One session's row, by id: this process's own record for a session it
      * watched, and otherwise one listing of this server, which is the only call
-     * ACP has that describes a session at all.
+     * ACP has that describes a session at all. A session the host recorded in a
+     * folder the record does not run in is asked about in that folder, because
+     * the listing asks about the record's own.
      *
      * A plain property rather than a getter, unlike `delete`: it does not depend
      * on the handshake, because a server that cannot list still has the watched
      * records to answer from.
      */
-    find: (id: string): Promise<Listed | undefined> => findListed(options, provider, id),
+    find: (id: string, at?: SessionAt): Promise<Listed | undefined> => findListed(options, provider, id, at?.workingDirectory),
 
     /*
      * What this process watched of a session, or what the server replays of one

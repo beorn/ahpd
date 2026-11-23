@@ -14,6 +14,7 @@
  * catalogue row still needs its transcript, so only the live connection goes.
  */
 
+import { isAbsolute } from 'node:path';
 import { RequestError } from '@agentclientprotocol/sdk';
 import type { AgentCapabilities, SessionInfo, SessionUpdate } from '@agentclientprotocol/sdk';
 import { bag, uriOf } from '@ahpd/sdk';
@@ -798,6 +799,10 @@ export async function catalogueOf(
   return listed ? [...rows.values()] : watchedRows(provider);
 }
 
+/** The folder a listing on this host asks its server about: the record's own, where it names an absolute one. */
+const listedFolder = (options: AcpOptions): string | undefined =>
+  options.cwd !== undefined && isAbsolute(options.cwd) ? options.cwd : undefined;
+
 /**
  * The rows one server lists, or nothing when its handshake advertises no
  * catalogue.
@@ -813,12 +818,25 @@ export async function catalogueOf(
  * `machine` is where the server ran, when it ran in one: every session it
  * lists is remembered as that machine's, so a replay reaches the store that
  * holds the conversation rather than this host's store, which never did.
+ *
+ * A server on this host is asked about the record's own folder when the
+ * record names an absolute one, which is the `cwd` filter ACP gives
+ * `session/list`. Records on one account share the server's store (Codex keeps
+ * every thread of an account in one CODEX_HOME), and the host gives a session
+ * it has no record of to the first agent that listed it: asked about no folder,
+ * every record lists every thread, and a thread made in one record's folder is
+ * credited to whichever record loaded first. A record with no folder, or a
+ * relative one ACP does not take, still asks about none, and a server in a
+ * machine is asked about none, because the record's folder is this host's and
+ * the machine runs it in its own. `at` asks about another folder instead, which
+ * is how `findListed` reaches a session recorded outside the record's folder.
  */
 const listedBy = async (
   options: AcpOptions,
   provider: string,
   connection: AcpConnection,
   machine?: SessionMachine,
+  at?: string,
 ): Promise<Listed[] | undefined> => {
   const handshake = await connection.initialize();
   handshaken.add(connection);
@@ -832,9 +850,11 @@ const listedBy = async (
   const sessions: SessionInfo[] = [];
   const seenCursors = new Set<string>();
   const pagesMost = options.sessionListMaxPages ?? SESSION_LIST_MAX_PAGES;
+  const asked = at ?? (machine === undefined ? listedFolder(options) : undefined);
+  const folder = asked === undefined ? {} : { cwd: asked };
   let cursor: string | undefined;
   for (let pages = 1; ; pages += 1) {
-    const page = await connection.listSessions(cursor === undefined ? {} : { cursor });
+    const page = await connection.listSessions(cursor === undefined ? folder : { ...folder, cursor });
     sessions.push(...page.sessions);
     const nextCursor = page.nextCursor ?? undefined;
     if (nextCursor === undefined) break;
@@ -909,9 +929,39 @@ const rowsForFind = (options: AcpOptions, provider: string): Promise<Listed[]> =
  * not. A server that does not list at all is answered from the watched records
  * by `catalogueOf` itself, and a listing that failed by `rowsForFind`.
  */
-export async function findListed(options: AcpOptions, provider: string, id: string): Promise<Listed | undefined> {
-  return (await rowsForFind(options, provider)).find((row) => row.id === id);
+export async function findListed(options: AcpOptions, provider: string, id: string, folder?: string): Promise<Listed | undefined> {
+  const row = (await rowsForFind(options, provider)).find((one) => one.id === id);
+  const own = listedFolder(options);
+  if (row !== undefined || own === undefined || folder === undefined || !isAbsolute(folder) || folder === own) return row;
+  return (await listedIn(options, provider, folder))?.find((one) => one.id === id);
 }
+
+/**
+ * The rows this host's server lists for one folder other than the record's.
+ *
+ * A listing asks about the record's own folder (`listedBy`), so a session the
+ * host recorded in another one - a worktree, a subfolder - is in no listing,
+ * and the host asks `find` about it with the folder it recorded. This is that
+ * folder's listing, on the record's listing server. Nothing is asked while the
+ * record's host spawn is backing off or its kept sessions all ran in machines;
+ * a listing that fails throws, and the host keeps the record without a row.
+ */
+const listedIn = async (options: AcpOptions, provider: string, folder: string): Promise<Listed[] | undefined> => {
+  const due = hostRetry.get(options);
+  if (due !== undefined && Date.now() < due.retryAt) return undefined;
+  if (locations.get(options)?.host === false) return undefined;
+  const held = listingFor(options);
+  try {
+    return await listedBy(options, provider, held.connection, undefined, folder);
+  }
+  catch (error) {
+    dropListing(options, held);
+    throw error;
+  }
+  finally {
+    idleClose(options, held);
+  }
+};
 
 /**
  * Where this backend keeps a session's own state file.

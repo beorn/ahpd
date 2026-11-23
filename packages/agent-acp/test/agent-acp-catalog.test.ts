@@ -966,14 +966,24 @@ it('lists every page of a catalogue the server did not fit into one answer', asy
 });
 
 /*
- * Every session the server holds, asked for with no folder named, as VS Code's
- * Codex agent lists every thread: a server asked about one folder answers that
- * folder's sessions alone.
+ * A record that names an absolute folder asks its server about that folder,
+ * which is ACP's `cwd` filter: records on one account read one store, and the
+ * host gives a session it has no record of to the first agent that listed it
+ * (agent-acp-listing-cwd.test.ts). A record with no folder, or a relative one
+ * ACP does not take, asks about none and lists every session the server holds,
+ * as VS Code's Codex agent lists every thread.
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/codex/codexThreadList.ts#L34-L40
  */
-it('lists every session the server holds, whatever folder the server runs in', async () => {
-  const agent = acpAgent({ command: process.execPath, args: [FIXTURE], cwd: scratch(), provider: 'acp-every' });
-  expect((await agent.list?.())?.map((one) => one.id)).toEqual(['listed-1', 'listed-2']);
+it('lists the sessions of the folder the record runs in, and every session for a record with no absolute folder', async () => {
+  const log = join(scratch(), 'requests.jsonl');
+  const inOne = acpAgent({ command: process.execPath, args: [FIXTURE], cwd: '/tmp', env: { ACP_LOG: log }, provider: 'acp-folder' });
+  expect((await inOne.list?.())?.map((one) => one.id)).toEqual([]);
+  expect(requests(log).filter((one) => one.method === 'session/list').map((one) => one.params?.cwd)).toEqual(['/tmp']);
+
+  const none = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'acp-every' });
+  expect((await none.list?.())?.map((one) => one.id)).toEqual(['listed-1', 'listed-2']);
+  const relative = acpAgent({ command: process.execPath, args: [FIXTURE], cwd: '.', provider: 'acp-relative' });
+  expect((await relative.list?.())?.map((one) => one.id)).toEqual(['listed-1', 'listed-2']);
 });
 
 /*
