@@ -1714,6 +1714,30 @@ const promptScript = async (id, params) => {
     return;
   }
   respond(id, { stopReason: stopReasonOf(text), ...countedFor(text) });
+  // A turn of this server's own, once the prompted one has been answered.
+  if (text.includes('selfturn')) setTimeout(() => { ownTurn(text); }, 5);
+};
+
+/**
+ * A turn this server starts itself, as an agent woken by its own schedule
+ * does, with no prompt asking for it (#38159): its updates carry the
+ * `ahpd/agentTurn` mark, a start and an end on a `session_info_update`.
+ * `stray` says one update with no mark instead; `unended` stops after the
+ * turn's first words, and `quit` exits there, as a server killed mid-turn.
+ */
+const ownTurn = (text) => {
+  const mark = (phase, reason) => ({
+    _meta: { 'ahpd/agentTurn': { turnId: 'own-1', phase, ...(reason === undefined ? {} : { reason }) } },
+  });
+  if (text.includes('stray')) {
+    notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'said to nobody' } });
+    return;
+  }
+  notify({ sessionUpdate: 'session_info_update', ...mark('start') });
+  notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working on my own' }, ...mark('update') });
+  if (text.includes('quit')) setTimeout(() => { process.exit(0); }, 5);
+  if (text.includes('unended') || text.includes('quit')) return;
+  notify({ sessionUpdate: 'session_info_update', ...mark('end', 'complete') });
 };
 
 /**

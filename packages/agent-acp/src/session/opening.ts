@@ -491,6 +491,9 @@ export function createOpening(ctx: SessionContext): Opening {
         if (ctx.live !== connection) return;
         ctx.live = undefined;
         ctx.opening = undefined;
+        // A turn the server started itself has no prompt to fail with it, so
+        // it ends here, or no client would ever see it end.
+        if (ctx.agentTurnId !== undefined) ctx.agentTurn({ turnId: ctx.agentTurnId, phase: 'end', reason: 'abandoned' });
       });
       const initializeResponse = await connection.initialize();
       const { agentCapabilities } = initializeResponse;
