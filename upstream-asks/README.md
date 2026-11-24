@@ -26,6 +26,11 @@ commits.
 `git format-patch` series against `upstream/main` `41dcfaa0b`), the tests that prove it, and the
 files it touches.
 
+Of the 24, **22 post as issues and 2 are AHP schema proposals first** — `host-turn-id-fence`
+(`turnId` on `chat/inputRequested`) and `acp-opening-meta-session-state` (`_meta` on the opening
+reply). Both are marked **waits on protocol** in their batch files and stay fork patches until the
+schema is accepted (@cto, 2026-11-24).
+
 ## Before posting a batch
 
 1. **Rebase the series onto current `upstream/main`.** These were cut against `41dcfaa0b`; the fork

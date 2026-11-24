@@ -1,9 +1,11 @@
 # Patches this fork carries over upstream
 
 **70 carried · 46 asks to post · 22 retire with hab · 1 PR prepared · 1 superseded** — the
-zero-patch progress number (@cto ruling 2026-11-24, `ac13954a`). These are commit counts: the 46
-patches are 45 distinct changes, because `84441da3c` is `2ab6dcb47` replayed by a rebase and batch
-02 carries that change once.
+zero-patch progress number (@cto ruling 2026-11-24, `ac13954a`; accepted with the two flags
+below, `c8bea788`). These are commit counts: the 46 patches are 45 distinct changes, because
+`84441da3c` is `2ab6dcb47` replayed by a rebase and batch 02 carries that change once. Of the asks,
+44 post as issues and 2 (`3c0500e36`, `861b34309`) go as AHP schema proposals first and are marked
+`waits on protocol` until that schema is accepted.
 
 Seeded 2026-11-24 from #38158 (@dev/6, per @cto 193269b5 / b443133f); completed 2026-11-24 by
 @dev/1 from the 70-patch rebase census (#38120).
@@ -65,7 +67,7 @@ Upstream status is one of:
 - `26303059d` · a throwing close still releases the session folder; restart cases release the old store · #37472 · upstream ask not written
 
 ### Host: turn, join and catalogue
-- `3c0500e36` · stamp `turnId` on chatInput requests and fence the post-abort unwind across host, agent-acp, agent-claude and agent-cofold · #35154 · upstream ask not written (`heldAgentTurns`/`agentTurnId` absent upstream)
+- `3c0500e36` · stamp `turnId` on chatInput requests and fence the post-abort unwind across host, agent-acp, agent-claude and agent-cofold · #35154 · waits on protocol (AHP schema proposal first: `turnId` on `chat/inputRequested`; the patch stays ours until the schema is accepted) (`heldAgentTurns`/`agentTurnId` absent upstream)
 - `d0e6bf9b5`, `2453628ee`, `e107907ed` · scope nested child sessions by hub and inner id, dispose joined sessions from their durable scope, with the two-host test · #37250 · upstream ask not written (`joinedSessionIds` absent upstream)
 - `780688f0f` · avoid duplicate provider assignments and track fork identity honestly · #34955 · upstream ask not written
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
@@ -78,7 +80,7 @@ Upstream status is one of:
 - `4ec4c8a2f` · retain shared capabilities with isolated launch options · #32996 · upstream ask not written
 - `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · retires with hab: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
 - `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · retires with hab: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
-- `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · upstream ask not written (`openedMeta` absent upstream)
+- `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · waits on protocol (AHP schema proposal first: `_meta` on the opening reply; the patch stays ours until the schema is accepted) (`openedMeta` absent upstream)
 
 ### acp / server: failure handling and retries
 - `7ee8395a9`, `863a43a85` · preserve records read failures across open and watch, and keep unknown and spoken no-rollout errors · #35127 · upstream ask not written

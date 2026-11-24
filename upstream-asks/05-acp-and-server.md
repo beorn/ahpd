@@ -32,6 +32,8 @@
 
 **Patch:** `patches/acp-opening-meta-session-state.patch` (1 commit: 861b3430)
 
+**Status: waits on protocol.** This goes upstream as an AHP schema proposal first — `_meta` on the opening reply. The code follows only if the schema is accepted; until then it stays a fork patch (@cto, 2026-11-24).
+
 **What happens today.** Answers to `session/new`, `session/load`, `session/resume` and `session/fork` may carry `_meta`. A bridge that resumed a transcript it already held on `session/new` says so there, and a client moving a conversation onto the host has that as its only proof the move carried. `createOpening` kept only `sessionId`, modes, models and config options, so `_meta` never reached `sessionState()`.
 
 **What the patch does.** Adds `openedMeta`, reads `_meta` from whichever reply opened the conversation (`openedMetaOf` accepts only a plain object), and serves a structured clone on the session state. A server that said nothing yields none.

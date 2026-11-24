@@ -8,6 +8,8 @@
 
 **Patch:** `patches/host-turn-id-fence.patch` (1 commit: `3c0500e`)
 
+**Status: waits on protocol.** This goes upstream as an AHP schema proposal first — `turnId` on `chat/inputRequested`. The code follows only if the schema is accepted; until then it stays a fork patch (@cto, 2026-11-24).
+
 **What happens today.** `chat/inputRequested` names no turn, so an elicitation emitted while an aborted prompt unwinds has nothing to attribute it to. Once a successor has started, the host passes the request on and the catalogue raises the `session/inputNeededSet` entry under that turn: a client waits on an answer that belonged to a turn nobody is running.
 
 **What the patch does.** The ACP, Claude, cofold and bot adapters stamp the turn id on every `chat/inputRequested`. The host drops a request whose turn id is not the active turn, or that arrives with none, and remembers which turn asked so the catalogue carries `turnId` only when it matches. ACP also answers one with `cancelled` once its turn was cancelled or replaced.
