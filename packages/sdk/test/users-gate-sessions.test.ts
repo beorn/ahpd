@@ -442,8 +442,17 @@ it('asks an automation\'s owner for computer:write, and refuses a run it cannot 
       session: { ...session, config: { ...session.config } }, triggers: [],
     }, owner);
     await call(admin.client, 'runAutomation', { channel: 'ahp-automations://', automation: resource, requestId: resource });
-    // `!`: the run was just made, so the entry already shows it.
-    return store.get(resource)!.runs[0] as { lifecycle: { status: string; error?: { message: string } } };
+    /*
+     * The run is answered as it is recorded and started after, so what the
+     * store holds is `pending` until the start settles - which is what the
+     * gate below is: the run is refused rather than left waiting.
+     */
+    type Run = { lifecycle: { status: string; error?: { message: string } } };
+    const read = (): Run => store.get(resource)!.runs[0] as Run;
+    for (let i = 0; i < 3000 && read().lifecycle.status === 'pending'; i++) {
+      await new Promise((settled) => { setTimeout(settled, 1); });
+    }
+    return read();
   };
 
   // An owner who may not make machines, refused in the words the boundary

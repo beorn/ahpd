@@ -525,12 +525,14 @@ it('runs a terminal a session in a machine asks for in the machine', async () =>
 });
 
 /*
- * A machine whose port refuses to start the server: by default the turn says
+ * A machine whose port refuses to start the server: by default the start says
  * one short sentence with no host path, and the log holds the port's own
  * message; with `portFailures: "message"` the port's message is the error.
+ *
+ * The refusal is the `create` call's, because this bridge answers a session
+ * only once its server is open, and an open that fails is the caller's.
  */
 const refusedIn = async (portFailures?: 'spawn' | 'message') => {
-  const actions: Bag[] = [];
   const logged: string[] = [];
   const agent = acpAgent({
     command: process.execPath,
@@ -539,38 +541,39 @@ const refusedIn = async (portFailures?: 'spawn' | 'message') => {
     log: (line: string) => { logged.push(line); },
     ...(portFailures === undefined ? {} : { portFailures }),
   });
-  const session = await agent.create({
-    uri: `ahp-session:/refused-${String(portFailures)}`,
-    chatUri: `ahp-chat:/refused-${String(portFailures)}`,
-    workingDirectory: join(REPO, 'packages', 'agent-acp'),
-    settings: { computer: 'computer://box' },
-    trusted: () => true,
-    computers: {
-      how: async () => { throw new Error('cannot connect to /var/run/docker.sock: image registry.example.com/box:1'); },
-    },
-    schema: () => ({ type: 'object', properties: {} }),
-    emit: (_channel: string, action: Bag) => { actions.push(action); },
-  } as never);
-  started.push(session);
-  session.sendMessage('t1', 'hello');
-  const over = (): boolean => actions.some((one) => one.type === 'chat/turnComplete' || one.type === 'chat/error');
-  for (let i = 0; i < 3000 && !over(); i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
-  return { said: actions.filter((one) => one.type === 'chat/error').map((one) => String(((one.part as Bag | undefined)?.['error'] as Bag | undefined)?.['message'])), logged };
+  let refused = '';
+  try {
+    const session = await agent.create({
+      uri: `ahp-session:/refused-${String(portFailures)}`,
+      chatUri: `ahp-chat:/refused-${String(portFailures)}`,
+      workingDirectory: join(REPO, 'packages', 'agent-acp'),
+      settings: { computer: 'computer://box' },
+      trusted: () => true,
+      computers: {
+        how: async () => { throw new Error('cannot connect to /var/run/docker.sock: image registry.example.com/box:1'); },
+      },
+      schema: () => ({ type: 'object', properties: {} }),
+      emit: () => {},
+    } as never);
+    started.push(session);
+  }
+  catch (error) {
+    refused = error instanceof Error ? error.message : String(error);
+  }
+  return { refused, logged };
 };
 
 it('says a machine that could not start the agent in one short sentence, and logs the port\'s message', async () => {
-  const { said, logged } = await refusedIn();
-  expect(said).toHaveLength(1);
-  expect(said[0]).toContain('The agent could not start in computer://box.');
-  expect(said[0]).not.toContain('docker.sock');
-  expect(said[0]).not.toContain('registry.example.com');
+  const { refused, logged } = await refusedIn();
+  expect(refused).toBe('The agent could not start in computer://box.');
+  expect(refused).not.toContain('docker.sock');
+  expect(refused).not.toContain('registry.example.com');
   expect(logged.some((line) => line.includes('computer://box') && line.includes('/var/run/docker.sock'))).toBe(true);
 });
 
 it('passes the port\'s own message on with portFailures message', async () => {
-  const { said } = await refusedIn('message');
-  expect(said).toHaveLength(1);
-  expect(said[0]).toContain('cannot connect to /var/run/docker.sock');
+  const { refused } = await refusedIn('message');
+  expect(refused).toContain('cannot connect to /var/run/docker.sock');
 });
 
 it('keeps a terminal of a session on this host on the host, without asking the port', async () => {

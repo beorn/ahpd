@@ -116,8 +116,6 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
   page: { type: 'string', description: "The vendor's install page, for a system the install lines do not cover." },
   env: { type: 'object', additionalProperties: envValue, description: "Environment variables merged over the daemon's own for the child, by variable name. A variable is a credential wherever the server keeps one, so each answers <set>; a value written { \"$secret\": \"host:<name>\" } is read from the vault for this agent's owner." },
   cwd: { type: 'string', description: "The directory the server runs in; the session's working directory when absent." },
-  sessionIdEnv: { type: 'string', description: 'Host-only environment variable supported by this server for its forced conversation UUID.' },
-  spawnGuard: { type: 'string', enum: ['inherited-fd-v1'], description: 'Qualified bridge capability: retain the inherited child guard until OS exit.' },
   authenticate: {
     type: 'object',
     properties: { methodId: { type: 'string' } },
@@ -200,6 +198,10 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
     minimum: 0,
     description: 'How long, in milliseconds, a session waits for the server to answer session/close before the connection goes. Defaults to 1000.',
   },
+  // Host-only, and last because nobody filling in a record sets them: what the
+  // bridge writes for its own servers rather than a field a form draws.
+  sessionIdEnv: { type: 'string', description: 'Host-only environment variable supported by this server for its forced conversation UUID.' },
+  spawnGuard: { type: 'string', enum: ['inherited-fd-v1'], description: 'Qualified bridge capability: retain the inherited child guard until OS exit.' },
 };
 
 /**

@@ -2252,7 +2252,13 @@ describe('a run whose first turn the host ends', () => {
     const run = await client.handle({
       method: 'runAutomation', params: { channel: AUTOMATIONS, automation: ONE, requestId: 'req-1' },
     }) as { resource: string };
-    await until(async () => (await runState(client, run.resource)).lifecycle.status !== 'running');
+    /*
+     * Until it has ended, not merely until it has left `running`: the run is
+     * recorded `pending` and answered at once, so a session whose start takes
+     * a durable write or two is still pending the first time a test looks.
+     */
+    const over = (status: string): boolean => status === 'failed' || status === 'completed' || status === 'cancelled';
+    await until(async () => over((await runState(client, run.resource)).lifecycle.status));
     return runState(client, run.resource);
   };
 

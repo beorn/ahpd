@@ -82,6 +82,8 @@ it('lists its options and a record\'s fields by purpose', async () => {
     'stderrBytes',
     'killGraceMs',
     'closeGraceMs',
+    'sessionIdEnv',
+    'spawnGuard',
   ]);
 });
 

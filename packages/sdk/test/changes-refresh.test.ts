@@ -987,7 +987,10 @@ it('offers the pull request pair on the first subscribe in a directory outside t
   expect(ids).toContain('create-pr');
   expect(ids).toContain('prepare-pull-request');
   // Asked about the branch before answering, which needs the facts' remote.
-  expect(fake.asked).toEqual(['main']);
+  // Asked more than once is fine - a session's start refreshes the folder's
+  // facts too - so what is checked is that every ask was about 'main' and none
+  // was about anything else.
+  expect(new Set(fake.asked)).toEqual(new Set(['main']));
 });
 
 it('offers no pull request on the first subscribe when there is no GitHub to ask', async () => {
