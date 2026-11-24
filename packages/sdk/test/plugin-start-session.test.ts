@@ -247,16 +247,17 @@ it('resumes the same reservation after a lost mapping acknowledgment', async () 
 it('serializes two recoverers behind the original naming callback', async () => {
   const order: string[] = [];
   const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
-  const gate = Promise.withResolvers<void>();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
   let mapped = '';
   const original = plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async (uri) => {
     mapped = uri;
-    await gate.promise;
+    await gate;
   });
   await until(() => mapped !== '', 'reservation naming');
   const recovering = [plugin.startSession({ owner: 'user:soft', resume: mapped }), plugin.startSession({ owner: 'user:soft', resume: mapped })];
   expect(order).toEqual([]);
-  gate.resolve();
+  release();
   expect(await Promise.all([original, ...recovering])).toEqual([mapped, mapped, mapped]);
   expect(order).toEqual(['spawn']);
 });
