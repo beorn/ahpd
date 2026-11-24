@@ -562,6 +562,59 @@ it('keeps a secret a client sent empty, and never asks it to send one back', asy
   await close();
 });
 
+it('keeps every secret a row sends back untouched, and refuses one it does not hold', async () => {
+  const { host, users, collection, vault, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine',
+    engine: 'checker',
+    owner: 'user:cy',
+    name: 'Mine',
+    config: { target: 'a', secret: 'sk-agent-1', env: { API_KEY: 'sk-env-2' } },
+  });
+  // A form that draws the row holds the references, and saving it untouched
+  // sends them back: that is the record, so nothing moved.
+  const row = (await cy.rows())['mine'] as Bag;
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', config: { ...row['config'], target: 'b' },
+  });
+  expect(vault.held.get('user:cy/agent/mine/secret')).toBe('sk-agent-1');
+  expect(vault.held.get('user:cy/agent/mine/env.API_KEY')).toBe('sk-env-2');
+  expect((await collection.get('mine'))?.config).toMatchObject({
+    target: 'b',
+    secret: { $secret: 'user:cy/agent/mine/secret' },
+    env: { API_KEY: { $secret: 'user:cy/agent/mine/env.API_KEY' } },
+  });
+  // A reference to a secret this record does not hold at that path is refused
+  // by name: a client is never given another secret's name.
+  expect(await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine',
+    config: { target: 'b', secret: { $secret: 'user:cy/agent/mine/env.API_KEY' } },
+  })).toMatchObject({ code: -32602, message: "An agent's secret is a secret: send its value, not a reference to it" });
+  expect(vault.held.get('user:cy/agent/mine/secret')).toBe('sk-agent-1');
+  await close();
+});
+
+it('keeps a host agent\'s own secret when the row is saved back', async () => {
+  const { host, users, collection, vault, close } = await served();
+  const root = await as(host, users, 'fa');
+  await root.call('x-ahpd/agents/put', {
+    id: 'ours', engine: 'checker', owner: 'host', name: 'Ours', config: { target: 'a', secret: 'sk-host-1' },
+  });
+  expect(vault.held.get('host:agent/ours/secret')).toBe('sk-host-1');
+  const row = (await root.rows())['ours'] as Bag;
+  await root.call('x-ahpd/agents/put', {
+    id: 'ours', engine: 'checker', owner: 'host', name: 'Ours', config: { ...row['config'], target: 'b' },
+  });
+  // The reference it named is the one it already held, so the vault keeps it.
+  expect(vault.held.get('host:agent/ours/secret')).toBe('sk-host-1');
+  expect((await collection.get('ours'))?.config).toMatchObject({
+    target: 'b',
+    secret: { $secret: 'host:agent/ours/secret' },
+  });
+  await close();
+});
+
 it('refuses an engine this host does not serve', async () => {
   const { host, users, close } = await served();
   const cy = await as(host, users, 'cy');
