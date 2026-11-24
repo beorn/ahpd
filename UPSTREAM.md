@@ -2,6 +2,8 @@
 
 What VS Code's agent host changed since this host was last read against it, and what each change asks of this repository. One pass per review; a box is ticked by the commit that lands the work, and the pass stays here so the next one starts from a known point rather than from a clone's `HEAD`.
 
+Every change this pass produces goes through the prior-art check in [AGENTS.md](AGENTS.md) before it is built or posted: what AHP and ACP say, how VS Code, Zed and one other client handle it, and every new abstraction named with its justification.
+
 How a pass is made is in [REFERENCE.md](REFERENCE.md). The short of it: `git -C /github/externals/vscode fetch --depth=200 origin main && git merge --ff-only origin/main`, then `git log <last>..HEAD -- src/vs/platform/agentHost`, reading `common/state/protocol/` first because that is the wire, then `node/claude/`, `node/protocolServerHandler.ts`, and the workbench client under `src/vs/workbench/contrib/chat/browser/agentSessions/agentHost`, which is what VS Code *sends* to a host. The `.md` files were reflowed to one-line paragraphs upstream, so read them with `--word-diff`.
 
 ## Pass 8 - 2026-11-10, VS Code 1.145.2
