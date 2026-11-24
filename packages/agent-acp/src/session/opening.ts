@@ -552,6 +552,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         if (ctx.live !== connection) return;
         ctx.live = undefined;
         ctx.opening = undefined;
+        // A turn the server started itself has no prompt to fail with it, so
+        // it ends here, or no client would ever see it end.
+        if (ctx.agentTurnId !== undefined) ctx.agentTurn({ turnId: ctx.agentTurnId, phase: 'end', reason: 'abandoned' });
       });
       if (custody !== undefined) {
         // A failed stamp keeps `spawning` and the lock until the child's end is recorded: nothing manufactures `ended`.
