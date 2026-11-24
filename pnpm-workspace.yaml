@@ -5,6 +5,7 @@ packages:
 # This consumer supplies the same released lock implementation explicitly.
 overrides:
   '@bearly/durable-file>@bearly/flock': '0.2.3'
+  '@ahpio/sandbox-runtime>zod': ^4.6.6
 
 # Native and prebuilt-fetching packages, which pnpm will not run install scripts
 # for unless they are named here. `node-pty` is optional - the terminals port
@@ -25,8 +26,8 @@ allowBuilds:
 
 # The sandbox runtime allows zod 3 or 4; only zod 4.6.6 has the fix for
 # GHSA-mrhx-c7xc-m3w5, and the runtime's `zod/v3` imports work under it.
-overrides:
-  '@ahpio/sandbox-runtime>zod': ^4.6.6
+#
+# Both pins ride the one `overrides` map above.
 
 minimumReleaseAgeExclude:
   - '@microsoft/agent-host-protocol@1.0.0 || 1.1.0'
