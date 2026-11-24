@@ -3080,7 +3080,6 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
   return {
     removeSession, mayDispose, endMovedSession, respawning, restart, moveSession, moveChatWorkspace, relaunchChat, chatIdOf, disposeProviderChat, ranIn, backendsOwn,
     getProviderForChat, chatConfig, effectiveChatConfigValues, initialChatConfig, keepChatOwnConfigValues, isolated, oweTree,
-    requestSessionWorktreeRemoval, worktreeRemovals, worktreeRecorded: recordedTree, restoreSessionWorktree, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
     requestSessionWorktreeRemoval, worktreeRemovals, worktreeRecorded: recordedTree, restoreSessionWorktree, runSessionExclusive: runExclusive, inSessionExclusive, checkSessionProvider, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
     beginOrRun, startTurn, commandIn, beginTurn, modelIn, messageFrom, messageOf, messageAttachments, scratchFolder, createProviderSession,
   };

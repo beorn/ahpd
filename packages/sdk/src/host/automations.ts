@@ -909,7 +909,13 @@ export function createAutomations(ctx: HostContext): Automations {
         ...(origin === undefined ? {} : { origin }),
       };
     }
-    wanted = structuredClone(wanted);
+    /*
+     * Everything a start carries is data except the function a store hands the
+     * run, which `structuredClone` refuses: it is a closure, not a value, and
+     * the same one however many times the start is read.
+     */
+    const { running: beganRun, ...data } = wanted;
+    wanted = { ...structuredClone(data), ...(beganRun === undefined ? {} : { running: beganRun }) };
     const provider = wanted.provider ?? ctx.first?.provider;
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
