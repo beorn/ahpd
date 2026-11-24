@@ -53,10 +53,16 @@ const started: Daemon[] = [];
 const daemon = (value: unknown, args: string[] = []): Promise<Daemon> => new Promise((resolve, reject) => {
   const config = join(home, 'config.json');
   writeFileSync(config, JSON.stringify(value));
+  /*
+   * One configuration home per daemon. A test file keeps several daemons alive
+   * until its own afterAll, and the file store takes one writer per sessions
+   * directory: sharing a home would have the second daemon refused by name.
+   */
+  const runHome = mkdtempSync(join(home, 'run-'));
   const child = spawn(
     process.execPath,
     ['--conditions', 'development', '--import', './scripts/dev.mjs', MAIN, '--config-file', config, '--port', '0', '--no-update-check', ...args],
-    { cwd: REPO, env: { ...process.env, XDG_CONFIG_HOME: home, CI: '1' }, stdio: ['pipe', 'pipe', 'pipe'] },
+    { cwd: REPO, env: { ...process.env, XDG_CONFIG_HOME: runHome, CI: '1' }, stdio: ['pipe', 'pipe', 'pipe'] },
   );
   let stdout = '';
   let stderr = '';
