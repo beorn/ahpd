@@ -62,7 +62,7 @@ Upstream status is one of:
 - `d0e6bf9b5`, `2453628ee`, `e107907ed` · scope nested child sessions by hub and inner id, dispose joined sessions from their durable scope, with the two-host test · #37250 · upstream ask not written (`joinedSessionIds` absent upstream)
 - `780688f0f` · avoid duplicate provider assignments and track fork identity honestly · #34955 · upstream ask not written
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
-- `c6f74e9d0` · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · PR pending card (beorn fix/updates-outside-a-turn)
+- `c6f74e9d0` · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
 
 ### acp: openings, native identity and custody
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written
@@ -109,7 +109,7 @@ are not in the patch count; each waits for the operator's upstream card.
 
 Measured over the 70 patches:
 
-- 1 has upstream text prepared inside the stack (#38159, `c6f74e9d0`) and is `PR pending card`;
+- 1 has an upstream PR posted (#38159, `c6f74e9d0`, ahpio/ahpd#462, 2026-11-24);
 - 1 is superseded (`d17130bbf`, replaced by #38158's `535303cf5`, whose text is also a
   `PR pending card` and which is not counted in the 70 because it is not on `hh/integration` yet);
 - 22 are not upstreamable as written, all for one of two reasons: they speak hab's `HAB_ACP_*` /
