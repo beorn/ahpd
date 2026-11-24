@@ -136,6 +136,18 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   /** The running turn's mapping, so an update knows what it belongs to. */
   mapping: AcpTurn | undefined;
   /**
+   * The id of the running turn when the server started it itself, which its
+   * updates mark with `_meta['ahpd/agentTurn']`; undefined for a turn the
+   * host sent and when nothing runs.
+   */
+  agentTurnId: string | undefined;
+  /**
+   * How many of the server's updates arrived outside every turn and outside a
+   * load, which no client can be shown: counted and logged, never dropped
+   * without a word.
+   */
+  outsideTurn: number;
+  /**
    * The server's updates waiting behind content the host is keeping, in the
    * order they came, and how many wait: a chunk that carries bytes is kept
    * through the host's port before its part is said, and every update after

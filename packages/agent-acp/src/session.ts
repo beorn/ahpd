@@ -187,6 +187,8 @@ export function acpSession(
     pendingTurns: [],
     replaced: new Set<string>(),
     mapping: undefined,
+    agentTurnId: undefined,
+    outsideTurn: 0,
     keeping: Promise.resolve(),
     waiting: 0,
     keptCount: 0,
@@ -449,6 +451,8 @@ export function acpSession(
     settings: () => ({ ...values }),
 
     close: async (): Promise<void> => {
+      // The server's own turn ends with the session, said while it still can be.
+      if (ctx.agentTurnId !== undefined) ctx.agentTurn({ turnId: ctx.agentTurnId, phase: 'end', reason: 'abandoned' });
       ctx.disposed = true;
       /*
        * Everything anybody is still waiting on is let go first.
