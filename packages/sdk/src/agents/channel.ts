@@ -58,6 +58,15 @@
  * disk and is served as `unavailable`: a disabled plugin keeps its agents. The
  * commands run one at a time, so two puts of one id cannot both find it free.
  *
+ * Every row also carries `revision`, the number of writes the record has taken.
+ * The host writes it and never a caller, and `put`, `remove` and the three mode
+ * commands take an optional `ifRevision` beside their params: the number the
+ * caller read. A write whose number disagrees is refused by name, with
+ * `staleRevision` and the current row in the error's data, so a form that lost a
+ * race redraws from the answer instead of reading again. Omitted is
+ * last-writer-wins, which is what every caller written before the count was is;
+ * `ifRevision: 0` is "only if the id holds nothing", which is create-or-fail.
+ *
  * Beside the commands, the channel lists the same five operations for
  * `x-ahpd/invokeOperation`, and each row carries `operations`, the ids it
  * offers in its mode now.
@@ -462,12 +471,62 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     const shows = views.of(record.id);
     return {
       ...record,
+      // A row always says which write it is, even one read from a file written
+      // before the host counted: 0 is "no write yet" and the first edit is 1.
+      revision: revisionOf(record),
       state: stateOf(record),
       operations: offersOn(modeOf(record)),
       ...(icons.length === 0 ? {} : { icons }),
       ...(shows === undefined ? {} : { views: shows }),
       ...(held.length === 0 ? {} : { alerts: held }),
     };
+  };
+
+  /**
+   * How many writes a record has taken.
+   *
+   * The host's to count and nobody else's, because a client that could set it
+   * could make a stale write look current. A record written before the host
+   * counted reads as 0, so the first edit it takes is 1.
+   */
+  const revisionOf = (record: StoredRecord | undefined): number =>
+    record !== undefined && typeof record.revision === 'number' && Number.isSafeInteger(record.revision) && record.revision >= 0
+      ? record.revision
+      : 0;
+
+  /**
+   * The version a write says it read, checked as a whole number of writes.
+   *
+   * `0` is the one number that can be right about a record that is not there,
+   * which is what makes a create-or-fail form expressible without a second
+   * command.
+   */
+  const ifRevisionOf = (command: string, params: Record<string, unknown>): number | undefined => {
+    const held = params.ifRevision;
+    if (held === undefined) return undefined;
+    if (typeof held !== 'number' || !Number.isSafeInteger(held) || held < 0) {
+      throw new RpcError(INVALID_PARAMS, `${command} takes ifRevision as a whole number of writes, and ${JSON.stringify(held)} is not one`);
+    }
+    return held;
+  };
+
+  /**
+   * Refuse a write whose version is not the record's, in words that name both.
+   *
+   * The row goes back with the refusal, so a form that was editing an agent
+   * somebody else changed draws again from the answer rather than reading a
+   * second time. A record that is not there is refused as not there, and says
+   * so with the same field, so a client branches on one value and not two: a
+   * `staleRevision` of 0 means nothing holds the id, and anything else comes
+   * with the current row beside it.
+   */
+  const refuseStale = (id: string, ifRevision: number, before: StoredRecord | undefined): void => {
+    const now = revisionOf(before);
+    if (now === ifRevision) return;
+    if (before === undefined) {
+      throw new RpcError(INVALID_PARAMS, `${SCHEME} holds no ${id}, so it is not at revision ${ifRevision}`, { staleRevision: 0 });
+    }
+    throw new RpcError(INVALID_PARAMS, `${id} is at revision ${now}, not ${ifRevision}: re-read the agent and try again`, { staleRevision: now, row: row(before) });
   };
 
   /** The values a record is read through, before any secret is read back. */
@@ -907,6 +966,9 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
    */
   const putOne = async (params: Record<string, unknown>, reader: Principal | undefined): Promise<unknown> => {
     const id = idParam(PUT, params);
+    // What the caller read, if it says: a put that omits it is last-writer-wins,
+    // which is what every caller written before this was.
+    const ifRevision = ifRevisionOf(PUT, params);
     // An edit is not a toggle: the record keeps the mode it has, and a client
     // turns it off, on or paused through the commands that say so.
     if (params.mode !== undefined) {
@@ -934,6 +996,9 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     const model = optionalString(params, 'model', PUT);
     const icon = iconParam(params, PUT);
     const before = await options.collection.get(id);
+    // Before anything of this write is prepared: a stale put has no business
+    // moving secrets or opening a backend.
+    if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
     const was = before === undefined ? undefined : asOwner(before.owner);
     /*
      * An id is unique across every agent, not only across the records: the
@@ -988,6 +1053,9 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       ...(model === undefined ? {} : { model }),
       ...keptMode(before),
       config: moved,
+      // Every write counts, and the caller's number is never what is written:
+      // it said what it read, and this is what it is now.
+      revision: revisionOf(before) + 1,
     };
     let built: Opened | undefined;
     if (before === undefined) {
@@ -1028,8 +1096,10 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
    */
   const removeOne = async (params: Record<string, unknown>, reader: Principal | undefined): Promise<unknown> => {
     const id = idParam(REMOVE, params);
+    const ifRevision = ifRevisionOf(REMOVE, params);
     const before = await options.collection.get(id);
     if (before === undefined) throw new RpcError(INVALID_PARAMS, `${SCHEME} holds no ${id}`);
+    if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
     const owner = asOwner(before.owner);
     /*
      * A record naming no scope is one written by hand, and only a caller the
@@ -1186,14 +1256,18 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     reader: Principal | undefined,
   ): Promise<unknown> => {
     const id = idParam(command, params);
+    const ifRevision = ifRevisionOf(command, params);
     const before = await options.collection.get(id);
     if (before === undefined) throw new RpcError(INVALID_PARAMS, `${SCHEME} holds no ${id}`);
+    if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
     const owner = asOwner(before.owner);
     if (owner !== undefined) refuseOwner('agent', mode === 'enabled' ? 'enable' : mode === 'paused' ? 'pause' : 'disable', owner, reader, 'put');
     if (owner === undefined) {
       throw new RpcError(INVALID_PARAMS, `${id} names no owner, so it cannot be served`);
     }
-    const record: StoredRecord = { ...before, mode };
+    // A toggle is a write like any other: a form that turns an agent off from a
+    // row it read is exactly as able to be stale as one that edits it.
+    const record: StoredRecord = { ...before, mode, revision: revisionOf(before) + 1 };
     await options.collection.put(record);
     try {
       await take(await sync());

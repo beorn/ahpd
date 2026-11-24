@@ -328,7 +328,7 @@ const as = async (host: Host, users: Users, id: string, locale?: string) => {
   await client.handle({ method: 'authenticate', params: { channel: ROOT, resource: users.resource.resource, token } });
   const call = async (method: string, params: Bag) => client.handle({ method, params }).then(
     (result) => ({ result: result as Bag }),
-    (error: { code: number; message: string }) => ({ code: error.code, message: error.message }),
+    (error: { code: number; message: string; data?: Bag }) => ({ code: error.code, message: error.message, data: error.data }),
   );
   /** Every row a subscribe to `channel` answered, by id. */
   const rows = async (channel = URI): Promise<Record<string, Bag>> => {
@@ -1482,3 +1482,110 @@ it('lists its operations in the locale the client sent, and in English for one t
   await close();
 });
 
+
+/*
+ * One record, one revision.
+ *
+ * The host's own record is the version authority - Hightea never is - so a
+ * form that edits an agent says which write it read and is refused by name when
+ * somebody else got there first. The refusal carries the current row, because
+ * redrawing from it is the whole point: a form with the new row does not need a
+ * second read to show what changed.
+ */
+
+/** A record that is a plain put, so a case can say what only it cares about. */
+const PUT_ONE = (id: string, over: Bag = {}): Bag => ({
+  id, engine: 'checker', owner: 'user:cy', name: id, config: { target: 'a' }, ...over,
+});
+
+it('counts every write on the record and says the count on every row', async () => {
+  const { host, users, collection, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  const made = await cy.call('x-ahpd/agents/put', PUT_ONE('mine'));
+  expect((made['result'] as Bag)['revision']).toBe(1);
+  expect((await collection.get('mine'))?.['revision']).toBe(1);
+
+  const edited = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine, renamed' }));
+  expect((edited['result'] as Bag)['revision']).toBe(2);
+
+  // The list says it too, which is what a form reads before it edits.
+  expect((await cy.rows())['mine']?.['revision']).toBe(2);
+
+  // A toggle is a write as well: it changes what a form was reading.
+  const paused = await cy.call('x-ahpd/agents/pause', { id: 'mine' });
+  expect((paused['result'] as Bag)['revision']).toBe(3);
+  await close();
+});
+
+it('refuses a put that read a revision somebody else has moved past, and hands back the row', async () => {
+  const { host, users, collection, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine'));
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Somebody else got here first' }));
+
+  const stale = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine, from the old row', ifRevision: 1 }));
+
+  expect(stale['code']).toBe(-32602);
+  expect(stale['message']).toContain('at revision 2, not 1');
+  expect((stale['data'] as Bag)['staleRevision']).toBe(2);
+  // The row the refusal carries is the current one, so a form redraws from it.
+  expect((stale['data'] as Bag)['row']).toMatchObject({ id: 'mine', name: 'Somebody else got here first', revision: 2 });
+  // And nothing of the refused write landed: not the name, not a revision.
+  expect((await collection.get('mine'))?.['name']).toBe('Somebody else got here first');
+  expect((await collection.get('mine'))?.['revision']).toBe(2);
+
+  // The same write with the number it actually read goes through.
+  const fresh = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine now', ifRevision: 2 }));
+  expect((fresh['result'] as Bag)['revision']).toBe(3);
+  await close();
+});
+
+it('takes ifRevision: 0 as create-or-fail, and says so when the id is taken', async () => {
+  const { host, users, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  const made = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { ifRevision: 0 }));
+  expect((made['result'] as Bag)['revision']).toBe(1);
+
+  const taken = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Second', ifRevision: 0 }));
+  expect(taken['code']).toBe(-32602);
+  expect((taken['data'] as Bag)['staleRevision']).toBe(1);
+  expect((taken['data'] as Bag)['row']).toMatchObject({ id: 'mine', name: 'mine' });
+
+  // And a version about a record that is not there refuses as not there, with
+  // the same field a client already branches on.
+  const gone = await cy.call('x-ahpd/agents/put', PUT_ONE('other', { ifRevision: 3 }));
+  expect(gone['code']).toBe(-32602);
+  expect(gone['message']).toContain('holds no other');
+  expect((gone['data'] as Bag)['staleRevision']).toBe(0);
+  expect((gone['data'] as Bag)['row']).toBeUndefined();
+  await close();
+});
+
+it('refuses a remove that read a revision somebody else has moved past, and keeps the record', async () => {
+  const { host, users, collection, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine'));
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Still here' }));
+
+  const stale = await cy.call('x-ahpd/agents/remove', { id: 'mine', ifRevision: 1 });
+  expect(stale['code']).toBe(-32602);
+  expect((stale['data'] as Bag)['staleRevision']).toBe(2);
+  expect(await collection.get('mine')).toBeDefined();
+
+  const gone = await cy.call('x-ahpd/agents/remove', { id: 'mine', ifRevision: 2 });
+  expect(gone['result']).toEqual({});
+  expect(await collection.get('mine')).toBeUndefined();
+  await close();
+});
+
+it('refuses an ifRevision that is not a whole number of writes, in words naming the command', async () => {
+  const { host, users, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  const bad = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { ifRevision: 1.5 }));
+  expect(bad['code']).toBe(-32602);
+  expect(bad['message']).toContain('takes ifRevision as a whole number of writes');
+  await close();
+});

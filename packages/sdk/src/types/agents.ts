@@ -69,6 +69,21 @@ export interface AgentRecord {
   config: Record<string, unknown>;
   /** Whether the agent is on, paused or off. A record that names none is enabled. */
   mode?: AgentMode;
+  /**
+   * How many writes the record has taken, counted by the host and nobody else.
+   *
+   * A client that could set it could make a stale write look current, so it is
+   * written only by the host: 1 on the record's first write, one more on each
+   * after that, and never by a caller's `put`. A row read from the channel
+   * always carries it, and a record written before the host counted reads as 0,
+   * which is why this is absent rather than 0 on such a file.
+   *
+   * A form sends the number it read as `ifRevision` on `put` and `remove`;
+   * `0` there means "only if this id holds nothing". A disagreeing number is
+   * refused by name with the current row, so the form redraws without a second
+   * read.
+   */
+  revision?: number;
 }
 
 /**
