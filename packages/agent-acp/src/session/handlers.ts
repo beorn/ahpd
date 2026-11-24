@@ -31,6 +31,7 @@ import type { AcpTurn, PermissionAnswer } from '../types.js';
 import { messageIdOf } from '../transcript.js';
 import { bag } from './common.js';
 import { askMachine, machineIdOf } from './opening.js';
+import { agentTurnOf, notShown } from './turn.js';
 import type { HeldTerminal, SessionContext } from './context.js';
 
 /** Everything the server sends this session: its updates, its requests and the answers to them. */
@@ -224,6 +225,14 @@ export function createHandlers(ctx: SessionContext): Handlers {
      */
     const at = Date.now();
 
+    /*
+     * A turn the server started itself opens before its first update is
+     * mapped, and ends after the ones already said for it: its mark says
+     * which, on the update it rides on.
+     */
+    const mark = agentTurnOf(update);
+    if (mark !== undefined && ctx.agentTurn(mark, () => { sessionUpdate(sessionId, update); })) return;
+
     if (update.sessionUpdate === 'session_info_update') {
       const said = update.title;
       /*
@@ -371,7 +380,16 @@ export function createHandlers(ctx: SessionContext): Handlers {
       replay.push(update);
       return;
     }
-    if (current === undefined || ctx.mapping !== current) return;
+    /*
+     * Outside every turn, and no load's: an update no client can be shown,
+     * because a turn is where a chat shows what the agent says. Counted and
+     * logged by its kind rather than lost without a word, since an agent
+     * working where nobody can see it is the case a person most needs told.
+     */
+    if (current === undefined || ctx.mapping !== current) {
+      notShown(ctx, `an update outside every turn, ${update.sessionUpdate},`);
+      return;
+    }
     const messageId = messageIdOf(update);
     if (current.prompted === true && current.recordedMessageId === undefined && messageId !== undefined) {
       current.recordedMessageId = messageId;

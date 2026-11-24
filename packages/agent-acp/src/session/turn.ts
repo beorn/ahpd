@@ -1,7 +1,7 @@
 import type { ContentBlock, StopReason, Usage } from '@agentclientprotocol/sdk';
 import type { Bag, Chosen, MessageAttachment, MessageFrom, TurnOptions } from '@ahpd/sdk';
 import { endedParts, partsOf, titleFrom } from '@ahpd/sdk';
-import type { AcpConnection } from '../types.js';
+import type { AcpConnection, AcpTurn } from '../types.js';
 import { bag, messageOf, UNTITLED } from './common.js';
 import type { SessionContext } from './context.js';
 
@@ -37,7 +37,59 @@ export interface Turn {
     ending: 'complete' | 'cancelled' | 'error',
     failure?: { errorType: string; message: string },
   ): void;
+  /** A turn the server started itself, as its mark says: opened, or ended. */
+  /**
+   * Said for each update a turn the server started itself marks; `replay`
+   * says that update again. True when the update is held, to be said once the
+   * turn running here ends, and so must not be mapped now.
+   */
+  agentTurn(mark: AgentTurnMark, replay?: () => void): boolean;
 }
+
+/**
+ * The `_meta` key a server marks the updates of a turn it started itself with,
+ * a turn no prompt asked for: a scheduled wakeup, a notification, words typed
+ * into the agent's own terminal. ACP has no message for such a turn, so
+ * without the mark its updates arrive outside every turn and are not shown.
+ */
+export const AGENT_TURN_META = 'ahpd/agentTurn';
+
+/** What the mark says: which turn, and whether it starts, goes on or ends, with how it ended. */
+export interface AgentTurnMark {
+  turnId: string;
+  phase: 'start' | 'update' | 'end';
+  /** How it ended: `complete`, or a reason it did not, such as `abandoned`. */
+  reason?: string;
+}
+
+/** The mark an update carries, or nothing when it carries none or one this bridge cannot read. */
+/** At most one log line a minute for updates no client can be shown: the first, then the running count. */
+export const NOT_SHOWN_LOG_MS = 60_000;
+
+/**
+ * Something the server said that no client can be shown, counted and logged
+ * rather than lost without a word: the first one at once, then at most once
+ * a minute with the running count, and the session's tally at its close.
+ */
+export const notShown = (ctx: SessionContext, what: string): void => {
+  ctx.outsideTurn += 1;
+  const now = Date.now();
+  if (ctx.outsideTurnWarnedAt !== undefined && now - ctx.outsideTurnWarnedAt < NOT_SHOWN_LOG_MS) return;
+  ctx.outsideTurnWarnedAt = now;
+  ctx.options.log?.(
+    `${ctx.provider}: ${what} was not shown (${String(ctx.outsideTurn)} so far outside every turn; more are counted and logged at most once a minute)`,
+    'warn',
+  );
+};
+
+export const agentTurnOf = (update: { _meta?: { [key: string]: unknown } | null }): AgentTurnMark | undefined => {
+  const mark = update._meta?.[AGENT_TURN_META];
+  if (typeof mark !== 'object' || mark === null) return undefined;
+  const { turnId, phase, reason } = mark as Record<string, unknown>;
+  if (typeof turnId !== 'string' || turnId === '') return undefined;
+  if (phase !== 'start' && phase !== 'update' && phase !== 'end') return undefined;
+  return { turnId, phase, ...(typeof reason === 'string' && reason !== '' ? { reason } : {}) };
+};
 
 export function createTurn(ctx: SessionContext): Turn {
   const { emit, start, inside, turns } = ctx;
@@ -97,6 +149,66 @@ export function createTurn(ctx: SessionContext): Turn {
     };
   };
 
+  /** Remember a turn of the server's own this bridge ended, the latest 64, so what comes late for it is expected. */
+  const endedHere = (turnId: string): void => {
+    ctx.endedAgentTurns.delete(turnId);
+    ctx.endedAgentTurns.add(turnId);
+    if (ctx.endedAgentTurns.size > 64) ctx.endedAgentTurns.delete(ctx.endedAgentTurns.values().next().value as string);
+  };
+
+  /**
+   * Open the first turn held while a turn the host sent was ending, with what
+   * it said; true when one opened and is still running, whose end opens the
+   * next. A held turn the server started another after, without its own end,
+   * was taken over by it and ends so. None opens behind a prompt a client has
+   * already handed, which every client now shows as the running turn, nor
+   * once the server has gone: what those said is counted, never lost without
+   * a word.
+   */
+  let replaying = false;
+  const openHeld = (): boolean => {
+    if (ctx.heldAgentTurns.length === 0) return false;
+    if (ctx.pendingTurns.length > 0 || ctx.live === undefined) {
+      // Said in one line, whatever the once-a-minute limit, and counted by
+      // every update dropped, as the session's tally counts them.
+      const dropped = ctx.heldAgentTurns.splice(0);
+      for (const held of dropped) {
+        endedHere(held.turnId);
+        ctx.outsideTurn += held.updates.length;
+      }
+      const why = ctx.live === undefined ? 'the server went away before' : 'a prompt took the place of before';
+      const named = dropped.map((held) => `${held.turnId} (${String(held.updates.length)} updates)`).join(', ');
+      ctx.options.log?.(
+        `${ctx.provider}: turns the server started itself that ${why} they opened were not shown: ${named} ` +
+          `(${String(ctx.outsideTurn)} so far outside every turn)`,
+        'warn',
+      );
+      return false;
+    }
+    const held = ctx.heldAgentTurns.shift() as { turnId: string; updates: (() => void)[]; ended: boolean };
+    replaying = true;
+    try { for (const said of held.updates) said(); }
+    finally { replaying = false; }
+    if (ctx.agentTurnId !== held.turnId) return ctx.active !== undefined;
+    if (!held.ended && ctx.heldAgentTurns.length > 0) {
+      endAgentTurn(held.turnId, 'superseded');
+      return true;
+    }
+    return true;
+  };
+
+  /**
+   * End a turn the server started itself the way its reason says: complete;
+   * superseded (a turn that took its place) and interrupted (the person stopped
+   * it) as cancelled; any other reason as
+   * an error of that type, abandoned among them.
+   */
+  const endAgentTurn = (turnId: string, reason: string): void => {
+    if (reason === 'complete') endTurn(turnId, 'complete');
+    else if (reason === 'superseded' || reason === 'interrupted') endTurn(turnId, 'cancelled');
+    else endTurn(turnId, 'error', { errorType: reason, message: `The agent's own turn ended without finishing: ${reason}` });
+  };
+
   /**
    * The first turn handed while another ran, once nothing runs: a session runs
    * one prompt at a time, as the reference agent runs each send after the one
@@ -104,7 +216,15 @@ export function createTurn(ctx: SessionContext): Turn {
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L1810-L1814
    */
   const sendNext = (): void => {
-    if (ctx.disposed || ctx.active !== undefined) return;
+    if (ctx.disposed) return;
+    // A prompt the host sent takes the place of a turn the server started
+    // itself, as the server says of its own turn when a prompt arrives; its
+    // ending runs this again.
+    if (ctx.agentTurnId !== undefined && ctx.pendingTurns.length > 0) {
+      endAgentTurn(ctx.agentTurnId, 'superseded');
+      return;
+    }
+    if (ctx.active !== undefined) return;
     const next = ctx.pendingTurns.shift();
     if (next === undefined) return;
     ctx.cancelRequested = false;
@@ -115,6 +235,40 @@ export function createTurn(ctx: SessionContext): Turn {
     const instructions = (next.options?.instructions?.() ?? []).filter((one) => one.trim() !== '');
     void send(next.turnId, next.text, next.model, next.attachments, instructions);
   };
+
+  /**
+   * A turn's mapping: what its updates are mapped into and with, the same for
+   * a turn the host sent and one the server started itself.
+   */
+  const mappingFor = (turnId: string, turn: Bag): AcpTurn => ({
+    turnId,
+    parts: turn.responseParts as Bag[],
+    calls: new Map(),
+    opening: [],
+    reach: {
+      within: inside,
+      changed: (path, before) => {
+        if (before !== undefined) start.onFileEdit?.(turnId, path, 'before', before);
+        start.onFileEdit?.(turnId, path, 'after');
+      },
+      completed: (toolCallId, path, before, after) => {
+        const edit = start.onEditCompleted?.(toolCallId, path, before, after);
+        return edit === undefined ? undefined : { type: 'fileEdit', ...edit };
+      },
+      // A server's terminal id is the host's name for it, which the
+      // session holds its handle under.
+      isPty: (uri) => ctx.terminals.get(uri)?.handle.isPty,
+      exited: (uri) => {
+        const held = ctx.terminals.get(uri);
+        return held?.exited === true ? held.handle.output() : undefined;
+      },
+    },
+    // The clients' tools, read off what the host last said this session may
+    // offer: a call the agent reports for one is held for the client that
+    // owns it, and asks that client to run it.
+    clientToolOf: ctx.clientToolOf,
+    ...(ctx.cumulative !== undefined ? { costAtStart: ctx.cumulative } : {}),
+  });
 
   /*
    * A turn handed while the server runs another takes its place in every
@@ -148,6 +302,10 @@ export function createTurn(ctx: SessionContext): Turn {
   ): void => {
     const turn = ctx.active;
     if (turn === undefined || String(turn.id) !== turnId) return;
+    if (ctx.agentTurnId === turnId) {
+      ctx.agentTurnId = undefined;
+      endedHere(turnId);
+    }
     const duration = Date.now() - Date.parse(String(turn.startedAt));
     turn.state = ending;
     turn.duration = duration;
@@ -199,6 +357,10 @@ export function createTurn(ctx: SessionContext): Turn {
     // A turn's end moves the stamp to its start plus its duration, as the
     // reducer's does; a turn a later one took the place of ends in no state.
     if (!gone) ctx.setModifiedAt(new Date(Date.parse(String(turn.startedAt)) + duration).toISOString());
+    // A turn the server started while this one was ending opens now, with
+    // the updates held for it, in the order they came; the next one held
+    // opens when it ends in its turn.
+    if (openHeld()) return;
     // The turn handed behind this one runs whatever the ending: each send is its own.
     sendNext();
   };
@@ -410,35 +572,7 @@ export function createTurn(ctx: SessionContext): Turn {
        * counts from what the session had spent once the replay was counted in
        * and not from what it had spent before.
        */
-      ctx.mapping = {
-        turnId,
-        parts: turn.responseParts as Bag[],
-        calls: new Map(),
-        opening: [],
-        reach: {
-          within: inside,
-          changed: (path, before) => {
-            if (before !== undefined) start.onFileEdit?.(turnId, path, 'before', before);
-            start.onFileEdit?.(turnId, path, 'after');
-          },
-          completed: (toolCallId, path, before, after) => {
-            const edit = start.onEditCompleted?.(toolCallId, path, before, after);
-            return edit === undefined ? undefined : { type: 'fileEdit', ...edit };
-          },
-          // A server's terminal id is the host's name for it, which the
-          // session holds its handle under.
-          isPty: (uri) => ctx.terminals.get(uri)?.handle.isPty,
-          exited: (uri) => {
-            const held = ctx.terminals.get(uri);
-            return held?.exited === true ? held.handle.output() : undefined;
-          },
-        },
-        // The clients' tools, read off what the host last said this session may
-        // offer: a call the agent reports for one is held for the client that
-        // owns it, and asks that client to run it.
-        clientToolOf: ctx.clientToolOf,
-        ...(ctx.cumulative !== undefined ? { costAtStart: ctx.cumulative } : {}),
-      };
+      ctx.mapping = mappingFor(turnId, turn);
       /*
        * A model the server would not take ends the turn as a failed model
        * selection, the stage VS Code's host names for it, and leaves the
@@ -500,5 +634,70 @@ export function createTurn(ctx: SessionContext): Turn {
     }
   };
 
-  return { sendMessage, endTurn };
+  /**
+   * A turn the server started itself, said by the mark on its updates.
+   *
+   * It opens as a turn whose message is the agent's own, when nothing runs:
+   * a mark on an update opens it too, for a bridge that came up after its
+   * start. It ends the way its mark says, after the updates already kept for
+   * it, and as abandoned when the server goes away first, so no client holds
+   * a turn open that nothing will end.
+   */
+  const agentTurn: Turn['agentTurn'] = (mark, replay) => {
+    if (ctx.disposed) return false;
+    // A turn this bridge already ended stays ended: what the server still
+    // says for it is not shown in the turn now running, nor opens it again.
+    if (ctx.endedAgentTurns.has(mark.turnId) && ctx.agentTurnId !== mark.turnId) {
+      if (mark.phase === 'end' || replay === undefined) return false;
+      notShown(ctx, `an update for a turn the server started itself that already ended here (${mark.turnId})`);
+      return true;
+    }
+    const held = ctx.heldAgentTurns.find((one) => one.turnId === mark.turnId);
+    if (held !== undefined && replay !== undefined) {
+      held.updates.push(replay);
+      if (mark.phase === 'end') held.ended = true;
+      return true;
+    }
+    if (mark.phase === 'end') {
+      if (ctx.agentTurnId !== mark.turnId) {
+        // The late end of one this bridge already ended is expected; any other is not.
+        if (!ctx.endedAgentTurns.has(mark.turnId)) notShown(ctx, `the end of a turn the server started itself that never opened here (${mark.turnId})`);
+        return false;
+      }
+      void ctx.keeping.then(() => {
+        if (ctx.agentTurnId === mark.turnId) endAgentTurn(mark.turnId, mark.reason ?? 'complete');
+      });
+      return false;
+    }
+    if (ctx.agentTurnId === mark.turnId) return false;
+    // Another of the server's own turns took the place of the one running.
+    if (ctx.agentTurnId !== undefined) endAgentTurn(ctx.agentTurnId, 'superseded');
+    if (ctx.active !== undefined || (!replaying && ctx.heldAgentTurns.length > 0)) {
+      // A turn the host sent is still ending here, which the server has
+      // already answered: this one waits for it, with its updates, behind
+      // any held before it.
+      if (replay === undefined) return false;
+      ctx.heldAgentTurns.push({ turnId: mark.turnId, updates: [replay], ended: false });
+      return true;
+    }
+    ctx.cancelRequested = false;
+    ctx.error = undefined;
+    const from: MessageFrom = { origin: { kind: 'agent' } };
+    startTurn(mark.turnId, '', from, undefined);
+    // Read again: `startTurn` set it, which the check above cannot know.
+    const turn = ctx.active as Bag | undefined;
+    if (turn === undefined) return false;
+    ctx.agentTurnId = mark.turnId;
+    ctx.mapping = mappingFor(mark.turnId, turn);
+    ctx.mapping.prompted = true;
+    emit('chat', {
+      type: 'chat/turnStarted',
+      turnId: mark.turnId,
+      startedAt: turn.startedAt,
+      message: { text: '', origin: { kind: 'agent' } },
+    });
+    return false;
+  };
+
+  return { sendMessage, endTurn, agentTurn };
 }

@@ -141,6 +141,11 @@ export function acpSession(
     pendingTurns: [],
     replaced: new Set<string>(),
     mapping: undefined,
+    agentTurnId: undefined,
+    outsideTurn: 0,
+    outsideTurnWarnedAt: undefined,
+    heldAgentTurns: [],
+    endedAgentTurns: new Set(),
     keeping: Promise.resolve(),
     waiting: 0,
     keptCount: 0,
@@ -395,6 +400,14 @@ export function acpSession(
     settings: () => ({ ...values }),
 
     close: async (): Promise<void> => {
+      // The server's own turn ends with the session, said while it still can be.
+      if (ctx.agentTurnId !== undefined) ctx.agentTurn({ turnId: ctx.agentTurnId, phase: 'end', reason: 'abandoned' });
+      // A turn still held never opens now: what it said is counted with the rest.
+      for (const held of ctx.heldAgentTurns.splice(0)) ctx.outsideTurn += held.updates.length;
+      // What was not shown, said once for the whole session.
+      if (ctx.outsideTurn > 0) {
+        ctx.options.log?.(`${ctx.provider}: ${String(ctx.outsideTurn)} updates outside every turn were not shown in this session`, 'warn');
+      }
       ctx.disposed = true;
       /*
        * Everything anybody is still waiting on is let go first.

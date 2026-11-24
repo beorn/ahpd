@@ -134,6 +134,30 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   /** The running turn's mapping, so an update knows what it belongs to. */
   mapping: AcpTurn | undefined;
   /**
+   * The id of the running turn when the server started it itself, which its
+   * updates mark with `_meta['ahpd/agentTurn']`; undefined for a turn the
+   * host sent and when nothing runs.
+   */
+  agentTurnId: string | undefined;
+  /**
+   * How many of the server's updates arrived outside every turn and outside a
+   * load, which no client can be shown: counted and logged, never dropped
+   * without a word.
+   */
+  outsideTurn: number;
+  /** When an update outside every turn was last logged: logged at most once a minute, with the running count. */
+  outsideTurnWarnedAt: number | undefined;
+  /**
+   * Turns the server started itself while a turn the host sent was still
+   * ending here, which the server had already answered, in the order they
+   * started: each one's updates are held, in order, and said once the turn
+   * before it has ended, so none is mapped into a turn that is not its own.
+   * `ended` says its own end is among them.
+   */
+  heldAgentTurns: { turnId: string; updates: (() => void)[]; ended: boolean }[];
+  /** The server's own turns this bridge ended, the latest few: a late update or end for one is expected, not unknown. */
+  endedAgentTurns: Set<string>;
+  /**
    * The server's updates waiting behind content the host is keeping, in the
    * order they came, and how many wait: a chunk that carries bytes is kept
    * through the host's port before its part is said, and every update after

@@ -474,8 +474,12 @@ const fields = (token, n) => {
   return [...out, rest];
 };
 
+/** Lines held to go out in one write, while a burst is being said; null otherwise. */
+let burst = null;
+
 const write = (message) => {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  if (burst !== null) burst.push(`${JSON.stringify(message)}\n`);
+  else process.stdout.write(`${JSON.stringify(message)}\n`);
 };
 
 const respond = (id, result) => {
@@ -1713,7 +1717,74 @@ const promptScript = async (id, params) => {
     write({ jsonrpc: '2.0', id, error: { code: -32603, message: 'the model gave up at the end' } });
     return;
   }
+  // A turn of this server's own, once the prompted one has been answered.
+  // `burst` says its own turn in one write with this answer, ahead of it, so
+  // the bridge reads it while the prompted turn still runs there, as it does
+  // when the answer and the start race.
+  const together = text.includes('selfturn') && text.includes('burst');
+  if (together) {
+    burst = [];
+    ownTurn(text);
+  }
   respond(id, { stopReason: stopReasonOf(text), ...countedFor(text) });
+  if (text.includes('selfturn') && !together) setTimeout(() => { ownTurn(text); }, 5);
+  if (together) {
+    const lines = burst;
+    burst = null;
+    process.stdout.write(lines.join(''));
+  }
+};
+
+/**
+ * A turn this server starts itself, as an agent woken by its own schedule
+ * does, with no prompt asking for it (#38159): its updates carry the
+ * `ahpd/agentTurn` mark, a start and an end on a `session_info_update`.
+ * `stray` says one update with no mark instead (`stray three`, three);
+ * `ghost` ends a turn that never started; `unended` stops after the turn's
+ * first words, and `quit` exits there, as a server killed mid-turn; `burst`
+ * says it in the same write burst as the prompt's answer; `interrupt` ends
+ * it as the person stopping it; `two` says two back to back.
+ */
+const ownTurn = (text) => {
+  const markOf = (turnId) => (phase, reason) => ({
+    _meta: { 'ahpd/agentTurn': { turnId, phase, ...(reason === undefined ? {} : { reason }) } },
+  });
+  const mark = markOf('own-1');
+  // `three`: three turns of its own back to back, each a start, its words and its end.
+  if (text.includes('three turns')) {
+    for (const turnId of ['own-1', 'own-2', 'own-3']) {
+      const each = markOf(turnId);
+      notify({ sessionUpdate: 'session_info_update', ...each('start') });
+      notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `words of ${turnId}` }, ...each('update') });
+      notify({ sessionUpdate: 'session_info_update', ...each('end', 'complete') });
+    }
+    return;
+  }
+  // `two`: two turns of its own back to back, the first ending unless `first unended`.
+  if (text.includes('two')) {
+    const second = markOf('own-2');
+    notify({ sessionUpdate: 'session_info_update', ...mark('start') });
+    notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first of mine' }, ...mark('update') });
+    if (!text.includes('first unended')) notify({ sessionUpdate: 'session_info_update', ...mark('end', 'complete') });
+    notify({ sessionUpdate: 'session_info_update', ...second('start') });
+    notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'second of mine' }, ...second('update') });
+    notify({ sessionUpdate: 'session_info_update', ...second('end', 'complete') });
+    return;
+  }
+  if (text.includes('stray')) {
+    const times = text.includes('three') ? 3 : 1;
+    for (let i = 0; i < times; i += 1) notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'said to nobody' } });
+    return;
+  }
+  if (text.includes('ghost')) {
+    notify({ sessionUpdate: 'session_info_update', _meta: { 'ahpd/agentTurn': { turnId: 'nobody', phase: 'end', reason: 'complete' } } });
+    return;
+  }
+  notify({ sessionUpdate: 'session_info_update', ...mark('start') });
+  notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working on my own' }, ...mark('update') });
+  if (text.includes('quit')) setTimeout(() => { process.exit(0); }, 5);
+  if (text.includes('unended') || text.includes('quit')) return;
+  notify({ sessionUpdate: 'session_info_update', ...mark('end', text.includes('interrupt') ? 'interrupted' : 'complete') });
 };
 
 /**
