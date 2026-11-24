@@ -119,8 +119,8 @@ importers:
         specifier: ^1.8.0
         version: 1.8.0(zod@4.6.7)
       '@bearly/durable-file':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: ^0.2.0
+        version: 0.2.0
       '@bearly/flock':
         specifier: 0.2.3
         version: 0.2.3
@@ -616,10 +616,6 @@ packages:
   '@babel/types@7.29.8':
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
-
-  '@bearly/durable-file@0.1.0':
-    resolution: {integrity: sha512-mHCRg+rzye+/1OxHbZREcqUjtnABJRvChOjDNBiiC8uvcfstTywxGNsLgH3i48iVoey/ofT3pe9oNyJDTJfzAA==}
-    engines: {bun: '>=1.3.13'}
 
   '@bearly/durable-file@0.2.0':
     resolution: {integrity: sha512-3zXN2TNWUjvo+YMstGoU3GqnxtLdA6fqbTJ91WUSR++O9K6V4xU8rP2pN+6niZhM/S5zhrAxg9mz5OLK0uqS+A==}
@@ -3508,8 +3504,6 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
-
-  '@bearly/durable-file@0.1.0': {}
 
   '@bearly/durable-file@0.2.0':
     dependencies:
