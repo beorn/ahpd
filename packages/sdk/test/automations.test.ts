@@ -107,6 +107,9 @@ const entries = async (client: { handle(r: { method: string; params: Record<stri
 };
 
 /** The run channel's state, read the way a client watching it would. */
+/** Whether a run's lifecycle has reached an end, rather than `pending` or `running`. */
+const ended = (status: string): boolean => status === 'completed' || status === 'failed' || status === 'cancelled';
+
 const runState = async (
   client: { handle(r: { method: string; params: Record<string, unknown> }): Promise<unknown> },
   resource: string,
@@ -2121,7 +2124,9 @@ it('refuses a run of an automation whose agent has become somebody else\'s', asy
     method: 'runAutomation', params: { channel: AUTOMATIONS, automation: ONE, requestId: 'req-1' },
   }) as { resource: string };
   // The run is answered once it is recorded, and its start is tried after.
-  await until(async () => (await runState(client, run.resource)).lifecycle.status !== 'running');
+  // `pending` is the run before its start is even tried, so only an ending is
+  // the end of this wait.
+  await until(async () => ended((await runState(client, run.resource)).lifecycle.status));
   const state = await runState(client, run.resource);
   expect(state.lifecycle).toMatchObject({ status: 'failed', error: { message: 'No agent provider registered for: echo' } });
   expect(state.sessions).toEqual([]);
@@ -2252,7 +2257,9 @@ describe('a run whose first turn the host ends', () => {
     const run = await client.handle({
       method: 'runAutomation', params: { channel: AUTOMATIONS, automation: ONE, requestId: 'req-1' },
     }) as { resource: string };
-    await until(async () => (await runState(client, run.resource)).lifecycle.status !== 'running');
+    // `pending` is the run before its start is even tried: only an ending
+    // finishes this wait, whatever the start's steps take.
+    await until(async () => ended((await runState(client, run.resource)).lifecycle.status));
     return runState(client, run.resource);
   };
 

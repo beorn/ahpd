@@ -875,7 +875,15 @@ export function createAutomations(ctx: HostContext): Automations {
         ...(origin === undefined ? {} : { origin }),
       };
     }
-    wanted = structuredClone(wanted);
+    /*
+     * A copy of what was asked for, so a caller editing its own object after
+     * the call cannot change what the stores below are asked to keep. The
+     * `running` callback is the caller's own function and stays theirs: it is
+     * not data, and a clone of it is a `DataCloneError` that refuses every run
+     * that passes one.
+     */
+    const { running, ...data } = wanted;
+    wanted = running === undefined ? structuredClone(data) : { ...structuredClone(data), running };
     const provider = wanted.provider ?? ctx.first?.provider;
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
@@ -936,6 +944,24 @@ export function createAutomations(ctx: HostContext): Automations {
       ctx.checkSessionProvider(provider, config, forWhom(owner));
       if (sessions.has(uri)) return uri;
     }
+    /*
+     * One creation phase, written only if its commit landed.
+     *
+     * The row in memory is what the next reader sees and what a restart's
+     * repair reads, so a phase that its commit refused leaves the row saying
+     * what the disk still says rather than an admission nobody persisted.
+     */
+    const advance = async (patch: Partial<SessionCreation>): Promise<void> => {
+      const id = idOf(uri);
+      const previous = kept.creation(id);
+      if (previous === undefined) throw new Error(`session ${id} has no creation record to advance`);
+      kept.setCreation(id, { ...previous, ...patch });
+      try { await kept.commit(id); }
+      catch (error: unknown) {
+        kept.setCreation(id, previous);
+        throw error;
+      }
+    };
     const prepare = async (): Promise<void> => {
       if (wanted.trusted === true && wanted.workingDirectory !== undefined) kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
       if (!recovering) kept.setCreation(idOf(uri), {
@@ -949,8 +975,7 @@ export function createAutomations(ctx: HostContext): Automations {
       await kept.commit(idOf(uri));
       if (named !== undefined) await named(uri);
       if (ctx.closed) throw new Error(CLOSING);
-      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "admitted" });
-      await kept.commit(idOf(uri));
+      await advance({ phase: "admitted" });
       // A source in the config is made into a machine before anything runs, the
       // same step a client's `createSession` takes.
       await placedIn(uri, provider, config, where, wanted.owner);
@@ -1006,12 +1031,8 @@ export function createAutomations(ctx: HostContext): Automations {
         ...(wanted.userSettings === undefined ? {} : { userSettings: wanted.userSettings }),
       },
     );
-    kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "complete" });
-    await kept.commit(idOf(uri));
-    if (wanted.text.trim() !== "") {
-      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, initialPrompt: "admitted" });
-      await kept.commit(idOf(uri));
-    }
+    await advance({ phase: "complete" });
+    if (wanted.text.trim() !== "") await advance({ initialPrompt: "admitted" });
     ctx.oweTree(uri, {}, () => ({}));
     fireRun(wanted);
     beginIn(uri, wanted);
