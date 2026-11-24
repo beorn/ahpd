@@ -969,7 +969,7 @@ export function createSpawn(ctx: HostContext): Spawn {
   };
 
   /**
-   * The session's tree, written down as a commit of its own.
+   * The session's tree, written down as a checkpoint of its own.
    *
    * A source with no checkpoints is a source that answers the session's
    * changes from what it saw the tools write, which is what every host did
@@ -2166,8 +2166,15 @@ export function createSpawn(ctx: HostContext): Spawn {
      *
      * The baseline is what a session's own changes are measured from, so it is
      * written as the session starts and left alone from then on - a session
-     * started again finds the ref already there. This is the one road to a
-     * running backend, so it is the one place every session is given one.
+     * started again in this host keeps the tree it was given. This is the one
+     * road to a running backend, so it is the one place every session is given
+     * one.
+     *
+     * Only a session that starts here: one brought back from its backend's
+     * record began on a tree this host never saw, and the tree there now is
+     * not it, so a baseline written now would count its earlier work as none.
+     * It keeps the one this host holds, or has none, and its counts are then
+     * unknown. A fork is a new session, and starts from the tree it finds.
      *
      * The session's counts are read behind it, so that a row says what this
      * session did rather than what its folder holds: until a turn has ended
@@ -2175,8 +2182,9 @@ export function createSpawn(ctx: HostContext): Spawn {
      * of nothing and the right answer for a session that has done nothing yet.
      */
     if (held.workingDirectory !== undefined) {
+      const broughtBack = resuming?.resume !== undefined && resuming.forkAt === undefined;
       // Held until written, which a turn waits on before its backend is handed it.
-      const written = checkpointOf(held.workingDirectory, uri, BASELINE_TURN)
+      const written = (broughtBack ? Promise.resolve() : checkpointOf(held.workingDirectory, uri, BASELINE_TURN))
         .finally(() => { if (ctx.baselineCheckpoints.get(uri) === written) ctx.baselineCheckpoints.delete(uri); });
       ctx.baselineCheckpoints.set(uri, written);
       void written.then(() => refreshSessionChangesSummary(uri));
