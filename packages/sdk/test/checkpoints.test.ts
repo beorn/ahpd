@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BASELINE_TURN } from '../src/types/changes.js';
-import { baselineOf, captureBaseline, captureTurn, latestOf, removeAll } from '../src/sessions/checkpoints.js';
 import { gitChanges } from '../src/sessions/changes.js';
 import { uriOf } from '../src/resources/fileuri.js';
 import { gitSync } from '../../../tools/git.ts';
@@ -13,9 +12,10 @@ import { gitSync } from '../../../tools/git.ts';
  *
  * A checkpoint is the whole of "what did this session change": git can say
  * what a working tree looks like now and nothing about which of two sessions
- * in one folder made it look that way. What is checked here is that the
- * commits are written where a client never sees them and that the person's
- * own branch, index and working tree are not touched on the way.
+ * in one folder made it look that way. What is checked here is that the trees
+ * are written where nothing of the person's names them - no ref, no commit -
+ * and that the person's own branch, index and working tree are not touched on
+ * the way.
  */
 
 let made: string[] = [];
@@ -41,37 +41,43 @@ const repository = (): string => {
   return dir;
 };
 
-/** Every ref one session left in a folder, as git names them. */
+/** Every ref in a folder, with what it points at: the whole of what a ref write could move. */
+const everyRef = (dir: string): string =>
+  gitIn(dir, 'for-each-ref', '--format=%(objectname) %(refname)');
+
+/** Every ref one session's checkpoints were once written under, as git names them. */
 const refsOf = (dir: string, session: string): string[] =>
   gitIn(dir, 'for-each-ref', '--format=%(refname)', `refs/agents/${session}/checkpoints/`)
     .split('\n')
     .filter((line) => line !== '')
     .sort();
 
-/** The files in the tree one checkpoint holds. */
-const filesIn = (dir: string, at: string): string[] =>
-  gitIn(dir, 'ls-tree', '-r', '--name-only', at).split('\n').filter((line) => line !== '');
+/**
+ * The baseline taken away, as `git gc` takes it once it has aged: an object
+ * nothing names is pruned. An untracked file at the session's start is what
+ * makes its baseline a tree of its own rather than HEAD's, which a ref keeps.
+ */
+const pruned = (dir: string): void => { gitIn(dir, 'prune', '--expire=now'); };
 
 describe('what a session leaves in its folder', () => {
-  it('writes one commit per turn and moves nothing of the person\'s', async () => {
+  it('writes a tree per turn and moves nothing of the person\'s, no ref among them', async () => {
     const dir = repository();
+    const source = gitChanges();
     const head = gitIn(dir, 'rev-parse', 'HEAD');
     const index = gitIn(dir, 'ls-files', '--stage');
+    const refs = everyRef(dir);
 
-    await captureBaseline(dir, 's1');
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
     writeFileSync(join(dir, 'tracked.txt'), 'two\n');
-    await captureTurn(dir, 's1', '1');
+    await source.checkpoint?.(dir, 's1', '1');
     writeFileSync(join(dir, 'second.txt'), 'new\n');
-    await captureTurn(dir, 's1', '2');
+    await source.checkpoint?.(dir, 's1', '2');
 
-    expect(refsOf(dir, 's1')).toEqual([
-      'refs/agents/s1/checkpoints/turn/0',
-      'refs/agents/s1/checkpoints/turn/1',
-      'refs/agents/s1/checkpoints/turn/2',
-    ]);
-    // The person's own, as they were: the commits are made with `commit-tree`
-    // and the refs are under `refs/agents/`, so neither HEAD nor the branch
-    // has anywhere to move to.
+    // The trees are there: the two turns' work is what the session counts.
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual({ files: 2, additions: 2, deletions: 1 });
+    // And nothing names them: every ref is what it was, `refs/agents/` empty.
+    expect(everyRef(dir)).toBe(refs);
+    expect(refsOf(dir, 's1')).toEqual([]);
     expect(gitIn(dir, 'rev-parse', 'HEAD')).toBe(head);
     expect(gitIn(dir, 'ls-files', '--stage')).toBe(index);
     /*
@@ -84,6 +90,7 @@ describe('what a session leaves in its folder', () => {
 
   it('writes a checkpoint where git has no identity configured', async () => {
     const dir = repository();
+    const source = gitChanges();
     const run = (...args: string[]): void => { gitSync(['-C', dir, ...args]); };
     run('config', '--unset', 'user.email');
     run('config', '--unset', 'user.name');
@@ -93,8 +100,9 @@ describe('what a session leaves in its folder', () => {
     process.env.GIT_CONFIG_GLOBAL = '/dev/null';
     process.env.GIT_CONFIG_NOSYSTEM = '1';
     try {
-      await captureBaseline(dir, 's1');
-      expect(await baselineOf(dir, 's1')).toBeDefined();
+      await source.checkpoint?.(dir, 's1', BASELINE_TURN);
+      writeFileSync(join(dir, 'made.txt'), 'x\n');
+      expect(await source.sessionSummary?.(dir, 's1', true)).toEqual({ files: 1, additions: 1, deletions: 0 });
     }
     finally {
       if (saved.global === undefined) delete process.env.GIT_CONFIG_GLOBAL;
@@ -106,55 +114,55 @@ describe('what a session leaves in its folder', () => {
 
   it('counts a file a shell command wrote as part of the turn', async () => {
     const dir = repository();
-    await captureBaseline(dir, 's1');
+    const source = gitChanges();
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
     // What a terminal tool of the agent does, and what the edit tracker of a
     // session never sees: a file written behind its back, on any system.
     writeFileSync(join(dir, 'shell.txt'), 'from a shell\n');
-    await captureTurn(dir, 's1', '1');
+    await source.checkpoint?.(dir, 's1', '1');
 
-    const at = await latestOf(dir, 's1');
-    expect(at).toBeDefined();
-    expect(filesIn(dir, at as string)).toContain('shell.txt');
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual({ files: 1, additions: 1, deletions: 0 });
+    expect((await source.state(dir, 's1', 'session'))?.files.map((one) => one.id)).toEqual([uriOf(join(dir, 'shell.txt'))]);
   });
 
-  it('keeps the first baseline it wrote, and answers it as the newest until a turn runs', async () => {
+  it('keeps the first baseline it wrote', async () => {
     const dir = repository();
-    await captureBaseline(dir, 's1');
-    const first = await baselineOf(dir, 's1');
-    expect(first).toBeDefined();
-    expect(await latestOf(dir, 's1')).toBe(first);
-
+    const source = gitChanges();
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
     writeFileSync(join(dir, 'later.txt'), 'x\n');
-    await captureBaseline(dir, 's1');
-    expect(await baselineOf(dir, 's1')).toBe(first);
-    expect(refsOf(dir, 's1')).toEqual([`refs/agents/s1/checkpoints/turn/${BASELINE_TURN}`]);
+    // Asked again, as a second chat of the session starts: the tree it began
+    // from is the one that is kept, so the file above is the session's.
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
+    await source.checkpoint?.(dir, 's1', '1');
+
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual({ files: 1, additions: 1, deletions: 0 });
   });
 
-  it('takes a session\'s refs with it, and only its own', async () => {
+  it('takes the refs an older build left for a session with it, and only its own', async () => {
     const dir = repository();
-    await captureBaseline(dir, 's1');
-    await captureTurn(dir, 's1', '1');
-    await captureBaseline(dir, 's2');
-    await captureTurn(dir, 's2', '1');
+    const source = gitChanges();
+    const head = gitIn(dir, 'rev-parse', 'HEAD').trim();
+    // What builds before this one wrote: a commit per turn under a ref.
+    for (const ref of ['s1/checkpoints/turn/0', 's1/checkpoints/turn/1', 's2/checkpoints/turn/0']) {
+      gitIn(dir, 'update-ref', `refs/agents/${ref}`, head);
+    }
 
-    await removeAll(dir, 's1');
+    await source.removeCheckpoints?.(dir, 's1');
 
     expect(refsOf(dir, 's1')).toEqual([]);
-    expect(refsOf(dir, 's2')).toEqual([
-      'refs/agents/s2/checkpoints/turn/0',
-      'refs/agents/s2/checkpoints/turn/1',
-    ]);
+    expect(refsOf(dir, 's2')).toEqual(['refs/agents/s2/checkpoints/turn/0']);
   });
 
   it('says nothing at all in a folder that is not a repository', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'ahpd-plain-'));
     made.push(plain);
+    const source = gitChanges();
 
-    await expect(captureBaseline(plain, 's1')).resolves.toBeUndefined();
-    await expect(captureTurn(plain, 's1', '1')).resolves.toBeUndefined();
-    await expect(removeAll(plain, 's1')).resolves.toBeUndefined();
-    expect(await baselineOf(plain, 's1')).toBeUndefined();
-    expect(await latestOf(plain, 's1')).toBeUndefined();
+    await expect(source.checkpoint?.(plain, 's1', BASELINE_TURN)).resolves.toBeUndefined();
+    await expect(source.checkpoint?.(plain, 's1', '1')).resolves.toBeUndefined();
+    await expect(source.removeCheckpoints?.(plain, 's1')).resolves.toBeUndefined();
+    // No trees, and the tracker answers, as it does for a folder git has none of.
+    expect(await source.sessionSummary?.(plain, 's1')).toEqual({ files: 0, additions: 0, deletions: 0 });
   });
 });
 
@@ -165,21 +173,22 @@ describe('what a session leaves in its folder', () => {
  * commit in the folder takes the folder's to nothing, and two sessions in one
  * folder have the same folder. Session Changes is the difference between the
  * session's baseline checkpoint and the last turn it finished, which git can
- * answer once both ends are commits - and the edit tracker answers where it
- * cannot, which is a folder that is not a repository.
+ * answer once both ends are trees - and the edit tracker answers where it
+ * cannot, which is a folder that is not a repository. A repository where the
+ * session's baseline is not held is neither: its counts are unknown.
  */
 describe('what a session changed', () => {
   it('gives two sessions in one folder their own changes', async () => {
     const dir = repository();
     const source = gitChanges();
-    await captureBaseline(dir, 's1');
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
     writeFileSync(join(dir, 'one.txt'), 'from s1\n');
-    await captureTurn(dir, 's1', '1');
+    await source.checkpoint?.(dir, 's1', '1');
     // The second session starts on the tree the first one left, which is what
     // makes what it did next its own.
-    await captureBaseline(dir, 's2');
+    await source.checkpoint?.(dir, 's2', BASELINE_TURN);
     writeFileSync(join(dir, 'two.txt'), 'from s2\n');
-    await captureTurn(dir, 's2', '1');
+    await source.checkpoint?.(dir, 's2', '1');
 
     const mine = await source.state(dir, 's1', 'session');
     const theirs = await source.state(dir, 's2', 'session');
@@ -196,9 +205,9 @@ describe('what a session changed', () => {
   it('is not moved by a commit in the folder', async () => {
     const dir = repository();
     const source = gitChanges();
-    await captureBaseline(dir, 's1');
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
     writeFileSync(join(dir, 'made.txt'), 'by the session\n');
-    await captureTurn(dir, 's1', '1');
+    await source.checkpoint?.(dir, 's1', '1');
     const before = await source.sessionSummary?.(dir, 's1');
 
     gitSync(['-C', dir, 'add', '-A']);
@@ -211,9 +220,9 @@ describe('what a session changed', () => {
   it('leaves an edit made by hand after the last turn out of the counts', async () => {
     const dir = repository();
     const source = gitChanges();
-    await captureBaseline(dir, 's1');
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
     writeFileSync(join(dir, 'made.txt'), 'by the session\n');
-    await captureTurn(dir, 's1', '1');
+    await source.checkpoint?.(dir, 's1', '1');
     // Typing in the file afterwards is not the session's work, and the
     // checkpoints are what say so.
     writeFileSync(join(dir, 'made.txt'), 'by the session\nand by hand\n');
@@ -237,20 +246,41 @@ describe('what a session changed', () => {
     expect(await source.sessionSummary?.(plain, 's2')).toEqual({ files: 0, additions: 0, deletions: 0 });
   });
 
-  it('exposes no per-turn checkpoint capture while keeping removeCheckpoints and answering changes from the tool tracker in a git repository', async () => {
+  it('says a session\'s counts are unknown, not zero, once git has collected its baseline', async () => {
     const dir = repository();
     const source = gitChanges();
-    expect(source.checkpoint).toBeUndefined();
-    expect(source.removeCheckpoints).toBeTypeOf('function');
+    writeFileSync(join(dir, 'scratch.txt'), 'there before the session\n');
+    await source.checkpoint?.(dir, 's1', BASELINE_TURN);
+    // The tracker saw this edit, and would answer one file as if that were all.
+    const file = join(dir, 'tracked.txt');
+    await source.observe?.(dir, 's1', '1', file, 'before', 'one\n');
+    writeFileSync(file, 'one\ntwo\n');
+    await source.observe?.(dir, 's1', '1', file, 'after', 'one\ntwo\n');
+    writeFileSync(join(dir, 'shell.txt'), 'from a shell\n');
 
+    pruned(dir);
+
+    const unknown = { unknown: true, reason: expect.stringContaining('git collected it') };
+    expect(await source.sessionSummary?.(dir, 's1', true)).toEqual(unknown);
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual(unknown);
+  });
+
+  it('says a session\'s counts are unknown, not zero, where it holds no baseline, as after a restart', async () => {
+    const dir = repository();
+    // A host process that started after the session did: it was never asked
+    // for this session's baseline, and the tree on disk now is not it.
+    const source = gitChanges();
     const file = join(dir, 'tracked.txt');
     await source.observe?.(dir, 's1', '1', file, 'before', 'one\n');
     writeFileSync(file, 'one\ntwo\n');
     await source.observe?.(dir, 's1', '1', file, 'after', 'one\ntwo\n');
 
-    expect(refsOf(dir, 's1')).toEqual([]);
-    expect(await source.sessionSummary?.(dir, 's1')).toEqual({ files: 1, additions: 1, deletions: 0 });
-    expect((await source.state(dir, 's1', 'session'))?.files.map((one) => one.id)).toEqual([uriOf(file)]);
+    const unknown = { unknown: true, reason: expect.stringContaining('started before this host process') };
+    expect(await source.sessionSummary?.(dir, 's1', true)).toEqual(unknown);
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual(unknown);
+    // A turn asked for with no baseline writes nothing to measure from.
+    await source.checkpoint?.(dir, 's1', '1');
+    expect(await source.sessionSummary?.(dir, 's1')).toEqual(unknown);
   });
 
   it('offers the scope under VS Code\'s own name', async () => {

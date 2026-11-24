@@ -5,7 +5,7 @@ import { localPath, uriOf } from '../resources/fileuri.js';
 import { isDeepStrictEqual } from 'node:util';
 import { isWorkspaceless } from './lifecycle.js';
 import type { Summary, SummaryChat } from '../types/catalog.js';
-import type { ChangesSummary } from '../types/changes.js';
+import { CHANGES_UNKNOWN_META, isChangesUnknown, type ChangesSummary, type ChangesUnknown } from '../types/changes.js';
 import { computerId, computersFor } from '../machines/computers.js';
 import type { Agent, Listed, SessionMachine } from '../types/agent.js';
 import type { Account } from '../types/probe.js';
@@ -718,8 +718,31 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    * what goes in a row is what was read the last time the counts moved.
    */
   const changesOf = (uri: string): Bag => {
+    // Counts nobody can give are none at all, never zero: the reason is said
+    // beside them, under the row's `_meta`.
+    if (unknownChanges.has(uri)) return { changes: {} };
     const read = kept.changes(idOf(uri));
     return read?.files ? { changes: read } : {};
+  };
+  /**
+   * Why a session's counts are unknown, by its URI, where the last read could
+   * not give them: its source holds no baseline for it.
+   *
+   * In memory, as the baseline it is about is: a read that gives counts again
+   * clears it, and the stored counts are left as the last ones read.
+   */
+  const unknownChanges = new Map<string, string>();
+  /** A row's `_meta`, with the reason its counts are unknown where they are. */
+  /** A description, its `_meta` carrying the same reason. */
+  const withChangesMeta = (uri: string, described: Bag): Bag => {
+    const { _meta: meta, ...rest } = described;
+    return { ...rest, ...metaOf(uri, meta) };
+  };
+  const metaOf = (uri: string, meta: unknown): Bag => {
+    const why = unknownChanges.get(uri);
+    const own = typeof meta === 'object' && meta !== null ? meta as Bag : undefined;
+    if (why === undefined) return own === undefined ? {} : { _meta: own };
+    return { _meta: { ...own, [CHANGES_UNKNOWN_META]: why } };
   };
   /**
    * A running session's catalogue row: the summary fields of the state the
@@ -776,7 +799,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       // it, so it is added here, to the row.
       ...changesOf(uri),
       ...(state.project !== undefined ? { project: state.project } : {}),
-      ...(state._meta !== undefined ? { _meta: state._meta } : {}),
+      ...metaOf(uri, state._meta),
     };
   };
   /**
@@ -948,7 +971,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
   const rowOf = (uri: string): Bag => {
     const summary = summaryOf(uri);
     const counts = { changes: NO_CHANGES, ...changesOf(uri) };
-    if (summary === undefined) return { status: statusOf(uri), ...counts };
+    if (summary === undefined) return { status: statusOf(uri), ...counts, ...metaOf(uri, undefined) };
     const { resource: _resource, provider: _provider, createdAt: _createdAt, ...mutable } = summary;
     return { ...mutable, ...counts };
   };
@@ -1047,8 +1070,8 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    *
    * Called where the checkpoint is taken, because reading it is a `git diff`
    * and a catalogue of a hundred rows is asked a hundred times per listing.
-   * The session's own id, which names its checkpoints: they are commits under
-   * `refs/agents/<id>`.
+   * The session's own id, which names its checkpoints: trees its source holds
+   * under that id.
    *
    * A source that cannot answer for a session leaves the counts as they were,
    * so a row nobody could read for keeps whatever it had. That is every source
@@ -1099,7 +1122,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
         if (dir === undefined) return;
         const source = options.changes;
         const branch = getSummaryChangesetKind(uri) === 'branch';
-        let read: ChangesSummary | undefined;
+        let read: ChangesSummary | ChangesUnknown | undefined;
         try {
           const tree = ctx.worktreeOf(uri);
           read = branch
@@ -1107,19 +1130,31 @@ export function createCatalogue(ctx: HostContext): Catalogue {
             : await source?.sessionSummary?.(dir, idOf(uri), whileRunning);
         }
         catch { /* a count that could not be read is the count that was there */ }
+        /*
+         * Counts nobody can give leave the stored ones as they were read last
+         * and say unknown on the row, with why; counts read again clear it.
+         */
+        const unknown = read !== undefined && isChangesUnknown(read) ? read : undefined;
+        const counted = read !== undefined && !isChangesUnknown(read) ? read : undefined;
         if (read !== undefined && (sessions.has(uri) || ctx.respawning.has(uri))) {
-          kept.setChanges(idOf(uri), read);
+          if (unknown !== undefined) unknownChanges.set(uri, unknown.reason);
+          else {
+            unknownChanges.delete(uri);
+            if (counted !== undefined) kept.setChanges(idOf(uri), counted);
+          }
           markSummaryDirty(uri);
         }
         const held = sessions.get(uri);
         for (const chat of held?.chats.keys() ?? []) {
           let own: ChangesSummary | undefined;
           if (chat === held?.defaultChat) {
-            own = branch ? undefined : read;
+            let mine: ChangesSummary | ChangesUnknown | undefined = branch ? undefined : read;
             if (branch) {
-              try { own = await source?.sessionSummary?.(dir, idOf(uri), whileRunning); }
+              try { mine = await source?.sessionSummary?.(dir, idOf(uri), whileRunning); }
               catch { /* a count that could not be read is the count that was there */ }
             }
+            // A chat's entry has no `_meta` of its own: unknown is no counts.
+            own = mine === undefined ? undefined : isChangesUnknown(mine) ? {} : mine;
           }
           else {
             // The chat's turns as its state holds them, the one running last.
@@ -1644,7 +1679,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       workingDirectories: row.workingDirectories,
       ...storedChatsOf(row.id, row.title),
       ...changesOf(resource),
-      ...ctx.describes(resource),
+      ...withChangesMeta(resource, ctx.describes(resource)),
     };
   };
   /**
@@ -1890,7 +1925,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       ...(started === undefined ? {} : { origin: started }),
       ...storedChatsOf(idFor(row.resource), row.title),
       ...changesOf(row.resource),
-      ...ctx.describes(row.resource),
+      ...withChangesMeta(row.resource, ctx.describes(row.resource)),
     };
   };
 
