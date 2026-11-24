@@ -1744,6 +1744,41 @@ const promptScript = async (id, params) => {
     return;
   }
   respond(id, { stopReason: stopReasonOf(text), ...countedFor(text) });
+  // A turn of this server's own, once the prompted one has been answered.
+  // `burst` says its own turn in the same write burst as this answer, with no gap.
+  if (text.includes('selfturn')) {
+    if (text.includes('burst')) ownTurn(text);
+    else setTimeout(() => { ownTurn(text); }, 5);
+  }
+};
+
+/**
+ * A turn this server starts itself, as an agent woken by its own schedule
+ * does, with no prompt asking for it (#38159): its updates carry the
+ * `ahpd/agentTurn` mark, a start and an end on a `session_info_update`.
+ * `stray` says one update with no mark instead (`stray three`, three);
+ * `ghost` ends a turn that never started; `unended` stops after the turn's
+ * first words, and `quit` exits there, as a server killed mid-turn; `burst`
+ * says it in the same write burst as the prompt's answer.
+ */
+const ownTurn = (text) => {
+  const mark = (phase, reason) => ({
+    _meta: { 'ahpd/agentTurn': { turnId: 'own-1', phase, ...(reason === undefined ? {} : { reason }) } },
+  });
+  if (text.includes('stray')) {
+    const times = text.includes('three') ? 3 : 1;
+    for (let i = 0; i < times; i += 1) notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'said to nobody' } });
+    return;
+  }
+  if (text.includes('ghost')) {
+    notify({ sessionUpdate: 'session_info_update', _meta: { 'ahpd/agentTurn': { turnId: 'nobody', phase: 'end', reason: 'complete' } } });
+    return;
+  }
+  notify({ sessionUpdate: 'session_info_update', ...mark('start') });
+  notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working on my own' }, ...mark('update') });
+  if (text.includes('quit')) setTimeout(() => { process.exit(0); }, 5);
+  if (text.includes('unended') || text.includes('quit')) return;
+  notify({ sessionUpdate: 'session_info_update', ...mark('end', 'complete') });
 };
 
 /**
