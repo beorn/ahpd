@@ -1,0 +1,56 @@
+From 780688f0f49a2ca415ad34729edd20275a32e4d4 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 22:06:23 -0800
+Subject: [PATCH] fix(sdk): avoid duplicate provider assignments and track fork
+ identity honestly
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ packages/sdk/src/host/spawn.ts             | 4 ++--
+ packages/sdk/test/session-provider.test.ts | 9 +++++++--
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/packages/sdk/src/host/spawn.ts b/packages/sdk/src/host/spawn.ts
+index ae1ac113d..6c81a4d1f 100644
+--- a/packages/sdk/src/host/spawn.ts
++++ b/packages/sdk/src/host/spawn.ts
+@@ -946,11 +946,11 @@ export function createSpawn(ctx: HostContext): Spawn {
+    * keyed by and what a listed session is found again by.
+    */
+   const recordSessionProvider = (uri: string, agent: Agent, session: Session): void => {
+-    kept.setProvider(idOf(uri), agent.provider);
++    if (kept.provider(idOf(uri)) !== agent.provider) kept.setProvider(idOf(uri), agent.provider);
+     if (kept.uri?.(idOf(uri)) === undefined) kept.setUri?.(idOf(uri), uri);
+     const own = session.agentId();
+     if (own !== undefined && own !== '') {
+-      kept.setProvider(own, agent.provider);
++      if (kept.provider(own) !== agent.provider) kept.setProvider(own, agent.provider);
+       keepFolder(own, sessions.get(uri)?.workingDirectory);
+     }
+   };
+diff --git a/packages/sdk/test/session-provider.test.ts b/packages/sdk/test/session-provider.test.ts
+index 8ae172449..61ba8f379 100644
+--- a/packages/sdk/test/session-provider.test.ts
++++ b/packages/sdk/test/session-provider.test.ts
+@@ -71,11 +71,16 @@ function late(provider = 'echo'): Agent {
+     provider,
+     chats: { ...base.chats, fork: true },
+     create: (start: Start) => {
+-      const session = base.create(start);
++      // A fork inherits turns from its source; only this chat's own completion names its new transcript.
++      let namedByOwnTurn = false;
++      const session = base.create({ ...start, emit: (channel, action) => {
++        if (channel === 'chat' && action.type === 'chat/turnComplete') namedByOwnTurn = true;
++        start.emit(channel, action);
++      } });
+       const named = start.forkAt !== undefined ? `forked-${idOf(start.chatUri)}` : `own-${idOf(start.uri)}`;
+       return {
+         ...session,
+-        agentId: () => (session.allTurns().length === 0 ? undefined : named),
++        agentId: () => (namedByOwnTurn ? named : undefined),
+         forkPoint: () => 'the-prompt',
+       };
+     },
+-- 
+2.56.0
+

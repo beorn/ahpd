@@ -1,0 +1,330 @@
+From 19c3eec8ae6090816f7517caa6ec9cbce26291ee Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Sat, 14 Nov 2026 09:51:49 -0800
+Subject: [PATCH] fix(acp): reject superseded asynchronous openings before
+ spawn
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/32986-move-fleet-onto-ahpd/32996-codex-head
+---
+ packages/agent-acp/src/session/opening.ts     | 13 +++-
+ .../agent-acp/test/agent-acp-failure.test.ts  | 66 ++++++++++++++++++-
+ 2 files changed, 75 insertions(+), 4 deletions(-)
+
+diff --git a/packages/agent-acp/src/session/opening.ts b/packages/agent-acp/src/session/opening.ts
+index add565f75..6388755b2 100644
+--- a/packages/agent-acp/src/session/opening.ts
++++ b/packages/agent-acp/src/session/opening.ts
+@@ -385,9 +385,11 @@ export function createOpening(ctx: SessionContext): Opening {
+      * session's own are what the open sends.
+      */
+     const values = { ...ctx.values };
++    const startingWith = spawnOf(options);
+     /** The server this open spawned, once it has. */
+     let made: AcpConnection | undefined;
+-    const pending = (async () => {
++    // Install the pending identity before the opening body can reach placement.
++    const pending: Promise<{ connection: AcpConnection; sessionId: string }> = Promise.resolve().then(async () => {
+       /*
+        * A folder the host did not vouch for, and an agent that loads the
+        * folder's own hooks and settings unchecked.
+@@ -403,6 +405,9 @@ export function createOpening(ctx: SessionContext): Opening {
+         throw new Error(`${provider}: ${cwd} is not a folder this host trusts, and an ACP agent loads a project's own settings and hooks from the folder it runs in; trust the folder, or set honoursTrust on this preset if its agent asks before it loads them`);
+       }
+       const moved = await placed();
++      if (ctx.disposed || ctx.opening !== pending || spawnOf(options) !== startingWith) {
++        throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
++      }
+       /*
+        * The folder as the agent reaches it: the host's own for an agent on this
+        * host, and its machine path for one in a machine - the same text on
+@@ -633,7 +638,7 @@ export function createOpening(ctx: SessionContext): Opening {
+       replay.length = 0;
+       if (ctx.watchedTurn !== undefined && !ctx.record.turns.includes(ctx.watchedTurn)) ctx.record.turns.push(ctx.watchedTurn);
+       return { connection, sessionId: ctx.acpSessionId };
+-    })();
++    });
+     ctx.opening = pending;
+     /*
+      * The replay ends where the open does, whether it worked or not: what the
+@@ -643,6 +648,7 @@ export function createOpening(ctx: SessionContext): Opening {
+      * with, once the values the session holds have been sent.
+      */
+     const opened = (): void => {
++      if (ctx.opening !== pending) return;
+       ctx.loading = false;
+       ctx.syncConfig(values);
+     };
+@@ -706,6 +712,7 @@ export function createOpening(ctx: SessionContext): Opening {
+     const was = ctx.live;
+     ctx.live = undefined;
+     ctx.opening = undefined;
++    ctx.loading = false;
+     // The conversation is kept by `acpSessionId`, so the old server is only
+     // stopped: awaiting that close here would hold the turn on a process that
+     // is no longer answering for it.
+@@ -714,4 +721,4 @@ export function createOpening(ctx: SessionContext): Opening {
+   };
+ 
+   return { open, refreshOptions, authenticationFailure, toolsEndpoint: () => endpoint };
+-}
+\ No newline at end of file
++}
+diff --git a/packages/agent-acp/test/agent-acp-failure.test.ts b/packages/agent-acp/test/agent-acp-failure.test.ts
+index 2f0dd1024..83ba5b759 100644
+--- a/packages/agent-acp/test/agent-acp-failure.test.ts
++++ b/packages/agent-acp/test/agent-acp-failure.test.ts
+@@ -1,9 +1,14 @@
+ import { fileURLToPath } from 'node:url';
+-import { afterEach, beforeEach, expect, it } from 'vitest';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+ import type { Bag, Session, Start } from '@ahpd/sdk';
+ import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
+ import { posix } from '../../../tools/posix.ts';
+ import { acpAgent, connectAcp, watchSession } from '../src/index.js';
++import * as connectionPort from '../src/connection.js';
++import { createOpening } from '../src/session/opening.js';
++import type { SessionContext } from '../src/session/context.js';
++import type { AcpConnection, AcpOptions } from '../src/types.js';
++import type { Spawn } from '@ahpd/sdk';
+ 
+ /*
+  * A server that never starts, and one that exits mid-prompt.
+@@ -52,6 +57,65 @@ const pause = async (times: number): Promise<void> => {
+   for (let i = 0; i < times; i++) await new Promise((r) => { setTimeout(r, 1); });
+ };
+ 
++it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement invalidated by %s without spawning or replacing its successor', async (invalidated) => {
++  // 32996: the opening owner must revalidate after placement; subprocess tests cannot schedule this continuation.
++  // The connection port only holds initialize pending. createOpening owns all identity and live-state decisions.
++  const placements: ((spawn: Spawn) => void)[] = [];
++  const handshakes: ((error: Error) => void)[] = [];
++  let current: AcpOptions = { command: 'old-acp', provider: 'placement-race', honoursTrust: true };
++  const ctx = {
++    options: { ...current, presetOf: () => current },
++    provider: 'placement-race', cwd: '/fixture', values: {}, replay: [], startedWith: '',
++    syncConfig: () => {},
++    start: {
++      settings: { computer: 'computer://box' },
++      computers: { how: () => new Promise<Spawn>((resolve) => { placements.push(resolve); }) },
++    },
++  } as unknown as SessionContext;
++  const connected = vi.spyOn(connectionPort, 'connectAcp').mockImplementation(() => ({
++    initialize: () => new Promise<Awaited<ReturnType<AcpConnection['initialize']>>>((_resolve, reject) => { handshakes.push(reject); }),
++    ended: new Promise<void>(() => {}),
++    close: async () => {},
++  } as unknown as AcpConnection));
++  const opening = createOpening(ctx);
++  const pending: Promise<unknown>[] = [];
++  try {
++    opening.refreshOptions();
++    pending.push(opening.open().catch((error: unknown) => error));
++    await until(() => placements.length === 1);
++    if (invalidated !== 'refresh') {
++      if (invalidated === 'inputs') ctx.options.command = 'changed-during-placement';
++      else ctx.disposed = true;
++      placements[0]!({ command: 'old-acp', args: [] });
++      await pause(2);
++      expect(connected).not.toHaveBeenCalled();
++      expect(await pending[0]).toBeInstanceOf(Error);
++      expect(ctx.live).toBeUndefined();
++      expect(ctx.loading).toBe(false);
++      return;
++    }
++    current = { ...current, command: 'successor-acp' };
++    opening.refreshOptions();
++    const successor = opening.open();
++    pending.push(successor.catch((error: unknown) => error));
++    await until(() => placements.length === 2);
++    placements[1]!({ command: 'successor-acp', args: [] });
++    await until(() => connected.mock.calls.length === 1);
++    const live = ctx.live;
++    placements[0]!({ command: 'old-acp', args: [] });
++    await pause(2);
++    expect(connected).toHaveBeenCalledTimes(1);
++    expect(ctx.live).toBe(live);
++    expect(ctx.opening).toBe(successor);
++    expect(ctx.loading).toBe(true);
++  }
++  finally {
++    for (const reject of handshakes) reject(new Error('fixture finished'));
++    await Promise.allSettled(pending);
++    connected.mockRestore();
++  }
++});
++
+ /** A session of `command`, with every action it emits kept, and every line the agent logs. */
+ async function start(
+   command: string,
+-- 
+2.56.0
+
+From 37bceecb9b042795656d8217dd42103014a97750 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Sat, 14 Nov 2026 12:54:34 -0800
+Subject: [PATCH] fix(acp): discard obsolete native replies before changing
+ opening state
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/32986-move-fleet-onto-ahpd/32996-codex-head
+---
+ packages/agent-acp/src/session/opening.ts     | 11 ++++-
+ .../agent-acp/test/agent-acp-failure.test.ts  | 49 +++++++++++++++++++
+ .../agent-acp/test/agent-acp-plugin.test.ts   | 12 ++++-
+ 3 files changed, 69 insertions(+), 3 deletions(-)
+
+diff --git a/packages/agent-acp/src/session/opening.ts b/packages/agent-acp/src/session/opening.ts
+index 071d75819..88f89ac77 100644
+--- a/packages/agent-acp/src/session/opening.ts
++++ b/packages/agent-acp/src/session/opening.ts
+@@ -485,6 +485,9 @@ export function createOpening(ctx: SessionContext): Opening {
+       });
+       ctx.live = connection;
+       made = connection;
++      const assertCurrent = (): void => {
++        if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
++      };
+       // A server that dies between turns is let go, so the next turn spawns
+       // another rather than prompting a process that is no longer there.
+       void connection.ended.then(() => {
+@@ -503,6 +506,7 @@ export function createOpening(ctx: SessionContext): Opening {
+         atomicWriteFileSync(`${prefix}.pid`, custody.pid);
+       }
+       const initializeResponse = await connection.initialize();
++      assertCurrent();
+       const { agentCapabilities } = initializeResponse;
+       ctx.closes = advertised(agentCapabilities?.sessionCapabilities?.close);
+       ctx.loads = agentCapabilities?.loadSession === true;
+@@ -583,6 +587,7 @@ export function createOpening(ctx: SessionContext): Opening {
+           mcpServers: servers,
+           ...extra,
+         });
++        assertCurrent();
+         ctx.acpSessionId = copied.sessionId;
+         ctx.learnModes(copied.modes);
+         ctx.learnConfigOptions(copied.configOptions);
+@@ -619,6 +624,7 @@ export function createOpening(ctx: SessionContext): Opening {
+         const taken = taking
+           ? await connection.resumeSession(request)
+           : await connection.loadSession(request);
++        assertCurrent();
+         ctx.acpSessionId = reopen;
+         ctx.learnModes(taken.modes);
+         ctx.learnConfigOptions(taken.configOptions);
+@@ -631,6 +637,7 @@ export function createOpening(ctx: SessionContext): Opening {
+           mcpServers: servers,
+           ...extra,
+         });
++        assertCurrent();
+         ctx.acpSessionId = created.sessionId;
+         ctx.learnModes(created.modes);
+         ctx.learnConfigOptions(created.configOptions);
+@@ -642,7 +649,7 @@ export function createOpening(ctx: SessionContext): Opening {
+        * `Session.models` and put the list on the agent, as agent-claude and
+        * agent-pi do. Without this a client is never offered a model.
+        */
+-      if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
++      assertCurrent();
+       ctx.start.onHandshake?.();
+       /*
+        * The catalogue's record starts here, where the server has named the
+@@ -657,7 +664,7 @@ export function createOpening(ctx: SessionContext): Opening {
+        * the host was still keeping content of goes in once it is kept.
+        */
+       await ctx.keeping;
+-      if (ctx.opening !== pending || ctx.live !== connection || ctx.disposed) throw new Error(`${provider}: opening was superseded`);
++      assertCurrent();
+       ctx.record = watchSession({
+         provider,
+         id: ctx.acpSessionId,
+diff --git a/packages/agent-acp/test/agent-acp-failure.test.ts b/packages/agent-acp/test/agent-acp-failure.test.ts
+index 1e68c2f27..e7d348f4c 100644
+--- a/packages/agent-acp/test/agent-acp-failure.test.ts
++++ b/packages/agent-acp/test/agent-acp-failure.test.ts
+@@ -119,6 +119,55 @@ it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement in
+   }
+ });
+ 
++it.each(['new', 'load', 'resume', 'fork'].flatMap((method) => ['refresh', 'dispose'].map((invalidated) => ({ method, invalidated }))))('a late successful native $method reply cannot overwrite the selected opening after $invalidated', async ({ method, invalidated }) => {
++  // 32996: placement refusal alone misses an obsolete reply arriving after its successor completed.
++  const replies: ((reply: { sessionId: string }) => void)[] = [];
++  const handshake = vi.fn();
++  const learned = vi.fn();
++  let current: AcpOptions = { command: 'old-acp', provider: 'late-native', honoursTrust: true, hostTools: false };
++  const ctx = {
++    options: { ...current, presetOf: () => current }, provider: 'late-native', cwd: '/fixture',
++    values: {}, replay: [], turns: method === 'fork' ? [{ id: 'cut' }] : [], title: 'Fixture', startedWith: '', keeping: Promise.resolve(),
++    syncConfig: () => {}, learnModes: learned, learnConfigOptions: () => {}, learnModels: () => {},
++    sendAsked: async () => {},
++    start: { uri: 'ahp-session:/late-native', chatUri: 'ahp-chat:/selected', settings: {}, onHandshake: handshake,
++      ...(method === 'new' ? {} : { resume: 'kept-native' }), ...(method === 'fork' ? { forkAt: 'cut' } : {}),
++    },
++  } as unknown as SessionContext;
++  const reply = () => new Promise<{ sessionId: string }>((resolve) => { replies.push(resolve); });
++  const connected = vi.spyOn(connectionPort, 'connectAcp').mockImplementation(() => ({
++    initialize: async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true,
++      sessionCapabilities: { ...(method === 'resume' ? { resume: {} } : {}), ...(method === 'fork' ? { fork: {} } : {}) },
++    } }),
++    newSession: reply, loadSession: reply, resumeSession: reply, forkSession: reply,
++    ended: new Promise<void>(() => {}), close: async () => {},
++  } as unknown as AcpConnection));
++  const opening = createOpening(ctx);
++  const pending: Promise<unknown>[] = [];
++  try {
++    opening.refreshOptions();
++    const old = opening.open().catch((error: unknown) => error);
++    pending.push(old);
++    await until(() => replies.length === 1);
++    if (invalidated === 'refresh') {
++      current = { ...current, command: 'current-acp' };
++      opening.refreshOptions();
++      const selected = opening.open();
++      pending.push(selected);
++      await until(() => replies.length === 2);
++      replies[1]!({ sessionId: 'current-native' });
++      expect((await selected).sessionId).toBe(method === 'load' || method === 'resume' ? 'kept-native' : 'current-native');
++    }
++    else ctx.disposed = true;
++    replies[0]!({ sessionId: 'obsolete-native' });
++    expect(await old).toBeInstanceOf(Error);
++    expect(ctx.acpSessionId).toBe(invalidated === 'refresh' ? (method === 'load' || method === 'resume' ? 'kept-native' : 'current-native') : undefined);
++    expect(handshake).toHaveBeenCalledTimes(invalidated === 'refresh' ? 1 : 0);
++    expect(learned).toHaveBeenCalledTimes(invalidated === 'refresh' ? 1 : 0);
++  }
++  finally { connected.mockRestore(); await Promise.allSettled(pending); }
++});
++
+ it.skipIf(process.platform !== 'linux')('catalog connections never publish custody for a managed backend', async () => {
+   // 32996: catalog initialization is a real child connection, but never an actual selected opening.
+   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-catalog-'));
+diff --git a/packages/agent-acp/test/agent-acp-plugin.test.ts b/packages/agent-acp/test/agent-acp-plugin.test.ts
+index d2afe9d74..32de92259 100644
+--- a/packages/agent-acp/test/agent-acp-plugin.test.ts
++++ b/packages/agent-acp/test/agent-acp-plugin.test.ts
+@@ -167,7 +167,7 @@ const begin = (
+   });
+ };
+ 
+-it.each(['eager', 'lazy', 'file-store resume'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
++it.each(['eager', 'lazy', 'file-store resume', 'failed replacement'] as const)('loads the package and serves current native identity after %s opening', async (opening) => {
+   const { options, loaded, problems } = await load([SPEC]);
+ 
+   expect(problems).toEqual([]);
+@@ -229,6 +229,16 @@ it.each(['eager', 'lazy', 'file-store resume'] as const)('loads the package and
+   expect((beforeClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBe(actual?.agentId());
+   expect(actual?.agentId()).toMatch(/^acp-session-/u);
+   expect((beforeClose.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
++  if (opening === 'failed replacement') {
++    const native = actual?.agentId();
++    configured = { command: 'ahpd-no-such-acp-server' };
++    begin(client, chatUri, 't2', 'hello there again');
++    await until(() => actions(said, chatUri).some(({ action }) => action.type === 'chat/error' && action.turnId === 't2'));
++    const failed = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
++    expect(actual?.agentId()).toBe(native);
++    expect((failed.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
++    expect((failed.snapshot.state._meta as Bag)?.['fixture/unrelated']).toBe('kept');
++  }
+   await actual?.close();
+   const afterClose = await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: { state: Bag } };
+   expect((afterClose.snapshot.state._meta as Bag)?.['ahpd/backendSessionId']).toBeUndefined();
+-- 
+2.56.0
+

@@ -1,0 +1,568 @@
+From 22a3b0bcda731c7766280d9b1b6ec992d7177b24 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 16:02:42 -0800
+Subject: [PATCH] feat(sdk): persist owned creation intent in session rows
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/sdk/AHP.md                       |  2 ++
+ packages/sdk/src/index.ts             |  2 +-
+ packages/sdk/src/sessions/sessions.ts | 45 +++++++++++++++++++++++++--
+ packages/sdk/src/types/sessions.ts    | 16 ++++++++++
+ packages/sdk/test/sessions.test.ts    | 35 ++++++++++++++++++++-
+ 5 files changed, 95 insertions(+), 5 deletions(-)
+
+diff --git a/docs/sdk/AHP.md b/docs/sdk/AHP.md
+index cb6b5bb4e..ac9027b79 100644
+--- a/docs/sdk/AHP.md
++++ b/docs/sdk/AHP.md
+@@ -467,6 +467,8 @@ What these things are, rather than how they behave on the wire: a session is [SE
+ 
+ Await `SessionStore.commit(id)` before an external effect to acknowledge that row's pending changes. A persistent adapter rejects on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter resolves immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
+ 
++The required `creation(id)` and `setCreation(id, value)` methods keep `SessionCreation` in that same row. It contains `phase` (reserved, admitted or complete), initial-prompt admission, and otherwise missing instructions, protocol model selection, prompt and captured customizations. Owner, provider, config, title, folder and chat remain in their ordinary fields. The store takes a detached snapshot of creation values; a later template change cannot change the saved request. Custom store adapters must implement these methods and acknowledged row commits together.
++
+ An unreadable, malformed, unsupported-version or filename-mismatched session row remains listed by its filename identity. Reads and writes for that identity throw a named error and preserve its bytes; valid sibling rows remain readable. The store does not rename bad rows away. Repair the file explicitly and reopen the store to read it again. An unreadable store directory is an error; only an absent directory opens empty.
+ 
+ ### A client that stops reading
+diff --git a/packages/sdk/src/index.ts b/packages/sdk/src/index.ts
+index 6823cda24..4c0cfe604 100644
+--- a/packages/sdk/src/index.ts
++++ b/packages/sdk/src/index.ts
+@@ -169,7 +169,7 @@ export type { Membership, Scope, ScopeAnswer } from './usage/scopes.js';
+ export { githubIssuer, isIssuerUrl, issuerFrom, issuerKind, oidcIssuer } from './access/issuers.js';
+ export type { Fetcher, GitHubIssuerOptions, IssuerKind, OidcIssuerOptions } from './access/issuers.js';
+ export type { Issuer, IssuerAnswer } from './types/users.js';
+-export type { AutomationOrigin, CreatedBy, NestedRecord, RemoteOrigin, SessionStore, StoredChat, StoredWorktree } from './types/sessions.js';
++export type { AutomationOrigin, CreatedBy, NestedRecord, RemoteOrigin, SessionCreation, SessionStore, StoredChat, StoredWorktree } from './types/sessions.js';
+ export { uriFor, idFor, idOf, Status, statusOf, activityOf, titleFrom, holdsTheQueue, endedParts, mergeLogicalTurnUsage } from './sessions/catalog.js';
+ export { ensureWorkspacelessScratchDir } from './sessions/scratch.js';
+ export type { Activity, StatusBits } from './sessions/catalog.js';
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 4b858104b..298161152 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -6,7 +6,7 @@ import { readJson, writeJsonAtomic } from '../utils/jsonfile.js';
+ import { asCreatedBy, asMultiRoot, asOrigin } from './remotesession.js';
+ import type { Scope } from '../usage/scopes.js';
+ import type { ChangesSummary } from '../types/changes.js';
+-import type { AutomationOrigin, CreatedBy, MultiRoot, NestedRecord, PullRequestBaseline, RemoteOrigin, SessionStore, StoredChat, StoredWorktree } from '../types/sessions.js';
++import type { AutomationOrigin, CreatedBy, MultiRoot, NestedRecord, PullRequestBaseline, RemoteOrigin, SessionCreation, SessionStore, StoredChat, StoredWorktree } from '../types/sessions.js';
+ import type { Owner } from '../types/usage.js';
+ import { ownerOf } from '../utils/values.js';
+ 
+@@ -100,6 +100,12 @@ export function memorySessions(): SessionStore & Held {
+ 
+   return {
+     commit: async () => {},
++    creation: (id) => rows.get(id)?.creation,
++    setCreation: (id, value) => {
++      const creation = creationOf(value);
++      if (creation === undefined) throw new Error(`Invalid creation intent for session ${id}`);
++      patch(id, { creation: structuredClone(creation) });
++    },
+     flags: (id) => rows.get(id)?.flags ?? 0,
+     setFlags: (id, value) => { patch(id, { flags: value === 0 ? undefined : value }); },
+     config: (id) => rows.get(id)?.config,
+@@ -288,6 +294,7 @@ export function memorySessions(): SessionStore & Held {
+       // Written in the field order the file has always used, so a row read back
+       // and written again is the same bytes.
+       return {
++        ...(held.creation === undefined ? {} : { creation: held.creation }),
+         ...(held.flags === undefined ? {} : { flags: held.flags }),
+         ...(held.config === undefined ? {} : { config: held.config }),
+         ...(held.scope === undefined ? {} : { scope: held.scope }),
+@@ -501,6 +508,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
+  * hands over to clear it, and nothing else in the store ever writes a row.
+  */
+ interface Row {
++  creation?: SessionCreation | undefined;
+   flags?: number | undefined;
+   config?: Record<string, unknown> | undefined;
+   /** `null` is charged to nothing on purpose, which is not the same as never decided. */
+@@ -550,7 +558,7 @@ interface Row {
+  * nothing this host ran, and a row with one writes no file.
+  */
+ const empty = (row: Row): boolean =>
+-  row.flags === undefined && row.config === undefined && row.scope === undefined
++  row.creation === undefined && row.flags === undefined && row.config === undefined && row.scope === undefined
+   && row.owner === undefined && row.senders === undefined && row.provider === undefined
+   && row.tools === undefined && row.trustedFolder === undefined && row.userSettings === undefined && row.external === undefined
+   && row.artifacts === undefined && row.pullRequests === undefined && row.customTitle === undefined && row.chatTitles === undefined
+@@ -570,6 +578,7 @@ const empty = (row: Row): boolean =>
+ interface Saved {
+   version: 1;
+   id: string;
++  creation?: SessionCreation;
+   flags?: number;
+   config?: Record<string, unknown>;
+   scope?: Scope | null;
+@@ -624,6 +633,31 @@ interface Saved {
+   changes?: ChangesSummary;
+ }
+ 
++/** The creation facts must survive a write without dropping a request field. */
++const creationOf = (value: unknown): SessionCreation | undefined => {
++  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
++  const held = value as Partial<SessionCreation>;
++  if (Object.keys(value).some((key) => !['phase', 'initialPrompt', 'instructions', 'customizations', 'model', 'prompt'].includes(key))) return undefined;
++  if (!['reserved', 'admitted', 'complete'].includes(held.phase as string)
++    || !['none', 'pending', 'admitted', 'settled'].includes(held.initialPrompt as string)
++    || (held.prompt !== undefined && typeof held.prompt !== 'string')
++    || (held.instructions !== undefined && (!Array.isArray(held.instructions) || held.instructions.some((one) => typeof one !== 'string')))) return undefined;
++  if (held.customizations !== undefined && (!Array.isArray(held.customizations) || held.customizations.some((one) =>
++    typeof one !== 'object' || one === null || one.type !== 'plugin' || typeof one.id !== 'string'
++    || typeof one.uri !== 'string' || typeof one.name !== 'string' || one.load?.kind !== 'loaded'
++    || Object.keys(one).some((key) => !['type', 'id', 'uri', 'name', 'load'].includes(key))
++    || Object.keys(one.load).some((key) => key !== 'kind')))) return undefined;
++  if (held.model !== undefined) {
++    const model = held.model;
++    if (typeof model !== 'object' || model === null || Array.isArray(model) || typeof model.id !== 'string'
++      || Object.keys(model).some((key) => key !== 'id' && key !== 'config')) return undefined;
++    if (model.config !== undefined && (typeof model.config !== 'object' || model.config === null || Array.isArray(model.config)
++      || Object.values(model.config).some((one) => one !== null && typeof one !== 'string' && typeof one !== 'boolean'
++        && !(typeof one === 'number' && Number.isFinite(one))))) return undefined;
++  }
++  return value as SessionCreation;
++};
++
+ /**
+  * An id as the name of the file that holds it, and the name back as an id.
+  *
+@@ -753,6 +787,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     return {
+       version: 1,
+       id,
++      ...(held.creation === undefined ? {} : { creation: held.creation }),
+       ...(held.flags === undefined ? {} : { flags: held.flags }),
+       ...(held.config === undefined ? {} : { config: held.config }),
+       ...(held.scope === undefined ? {} : { scope: held.scope }),
+@@ -866,7 +901,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         problem = `Could not read ${file}: ${read.kind === 'unreadable' ? read.code ?? 'unreadable' : 'it is not JSON'}`;
+       }
+       else if (typeof read.value === 'object' && read.value !== null && !Array.isArray(read.value)
+-        && (read.value as Partial<Saved>).version === 1 && (read.value as Partial<Saved>).id === id) {
++        && (read.value as Partial<Saved>).version === 1 && (read.value as Partial<Saved>).id === id
++        && ((read.value as Partial<Saved>).creation === undefined || creationOf((read.value as Partial<Saved>).creation) !== undefined)) {
+         row = read.value as Saved;
+       }
+       else problem = `Could not read ${file}: it is not a session store this version can read or its id differs from its filename`;
+@@ -878,6 +914,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         continue;
+       }
+       heard.add(row.id);
++      if (row.creation !== undefined) inner.setCreation(row.id, row.creation);
+       if (typeof row.flags === 'number') inner.setFlags(row.id, row.flags);
+       if (typeof row.config === 'object' && row.config !== null && !Array.isArray(row.config)) inner.setConfig(row.id, row.config);
+       // A scope is a team and optionally a project. A row written by a version
+@@ -1021,6 +1058,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+   load();
+ 
+   return {
++    creation: (id) => readable(id).creation(id),
++    setCreation: (id, value) => { touched(id, () => { inner.setCreation(id, value); }); },
+     commit: async (id) => {
+       if (writing !== undefined) {
+         clearTimeout(writing);
+diff --git a/packages/sdk/src/types/sessions.ts b/packages/sdk/src/types/sessions.ts
+index 6c55f102f..b1fc945f8 100644
+--- a/packages/sdk/src/types/sessions.ts
++++ b/packages/sdk/src/types/sessions.ts
+@@ -1,6 +1,18 @@
+ import type { Scope } from '../usage/scopes.js';
+ import type { ChangesSummary } from './changes.js';
+ import type { Owner } from './usage.js';
++import type { ModelSelection } from '@microsoft/agent-host-protocol';
++import type { CapturedPlugin } from './clientplugins.js';
++
++/** Facts needed to finish owned creation that have no ordinary session field. */
++export interface SessionCreation {
++  readonly phase: 'reserved' | 'admitted' | 'complete';
++  readonly instructions?: readonly string[];
++  readonly customizations?: readonly CapturedPlugin[];
++  readonly model?: ModelSelection;
++  readonly prompt?: string;
++  readonly initialPrompt: 'none' | 'pending' | 'admitted' | 'settled';
++}
+ 
+ /**
+  * The pull requests a session's branch had when it started, and the ones it
+@@ -233,6 +245,10 @@ export interface StoredChat {
+  * scheme is only whose it is.
+  */
+ export interface SessionStore {
++  /** Creation admission and request facts, in this session's existing row. */
++  creation(id: string): SessionCreation | undefined;
++  /** Replace those facts before acknowledging the row with commit(id). */
++  setCreation(id: string, value: SessionCreation): void;
+   /**
+    * Commit this row's pending changes before an external effect. A failed commit
+    * rejects and retains uncommitted changes for an explicit retry. An in-memory
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index 8f43a7a70..e3c86dd24 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -417,6 +417,34 @@ it('remembers it across a restart when the store writes it down', async () => {
+   expect(await statusOf(second.client) & ARCHIVED).toBe(ARCHIVED);
+ });
+ 
++it('commits creation admission and missing request facts in the existing session row', async () => {
++  const dir = join(root, 'sessions');
++  const store = fileSessions({ dir });
++  const customizations = [{ type: 'plugin', id: 'rules', uri: 'file:///captured/rules', name: 'Project rules', load: { kind: 'loaded' } }] as const;
++  const creation = {
++    phase: 'reserved', initialPrompt: 'pending', prompt: 'Review the change',
++    instructions: ['Read the project rules'], model: { id: 'echo', config: { effort: 'low' } }, customizations,
++  } as const;
++  const snapshot = structuredClone(creation);
++  store.setOwner('owned', 'user:ana');
++  store.setProvider('owned', 'echo');
++  store.setConfig('owned', { safe: true });
++  store.setCreation('owned', creation);
++  await store.commit('owned');
++  // The source template can change or disappear without changing this request.
++  Object.assign(customizations[0], { name: 'Changed template' });
++  expect(store.creation('owned')).toEqual(snapshot);
++  expect(readdirSync(dir)).toEqual(['owned.json']);
++  expect(row(dir, 'owned')).toEqual({
++    version: 1, id: 'owned', owner: 'user:ana', provider: 'echo', config: { safe: true }, creation: snapshot,
++  });
++  const next = fileSessions({ dir });
++  expect(next.creation('owned')).toEqual(snapshot);
++  next.setCreation('owned', { ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
++  await next.commit('owned');
++  expect(fileSessions({ dir }).creation('owned')).toEqual({ ...snapshot, phase: 'admitted', initialPrompt: 'admitted' });
++});
++
+ it('keeps one file per session, and writes only the one that changed', async () => {
+   const dir = join(root, 'sessions');
+   const store = fileSessions({ dir });
+@@ -1487,7 +1515,12 @@ it('keeps the time the host archived a session across a restart, and ignores one
+   expect(memorySessions().autoArchivedAt?.('a')).toBeUndefined();
+ });
+ 
+-it.each(['this is not json', 'null', '[]', '{"version":1,"id":"different"}'])('keeps an unreadable session addressable without replacing its bytes: %s', (bytes) => {
++it.each([
++  'this is not json', 'null', '[]', '{"version":1,"id":"different"}',
++  '{"version":1,"id":"a","creation":{"phase":"corrupt","initialPrompt":"none"}}',
++  '{"version":1,"id":"a","creation":{"phase":"reserved","initialPrompt":"unknown"}}',
++  '{"version":1,"id":"a","creation":{"phase":"reserved","initialPrompt":"none","model":null}}',
++])('keeps an unreadable session addressable without replacing its bytes: %s', (bytes) => {
+   const dir = join(root, 'sessions');
+   mkdirSync(dir, { recursive: true });
+   writeFileSync(join(dir, 'a.json'), bytes);
+-- 
+2.56.0
+
+From 5b1bdc0e718bab77a2412bd2f8b5bb68b23c370d Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 16:13:04 -0800
+Subject: [PATCH] fix(sdk): commit owned creation before mapping and backend
+ start
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ packages/sdk/src/host/automations.ts          | 116 +++++++++---------
+ packages/sdk/src/host/lifecycle.ts            |  22 +++-
+ .../sdk/test/plugin-start-session.test.ts     |  37 +++++-
+ 3 files changed, 111 insertions(+), 64 deletions(-)
+
+diff --git a/packages/sdk/src/host/automations.ts b/packages/sdk/src/host/automations.ts
+index 45b26b25f..827d46495 100644
+--- a/packages/sdk/src/host/automations.ts
++++ b/packages/sdk/src/host/automations.ts
+@@ -20,6 +20,7 @@ import type { RuleMatch } from '../automations/triggers.js';
+ import type { WakeFacts } from '../automations/wakemessage.js';
+ import type { AutomationWake, SessionEventKind, SessionRule } from '../types/triggers.js';
+ import type { Owner } from '../types/usage.js';
++import type { SessionCreation } from '../types/sessions.js';
+ import type { HostContext } from './context.js';
+ import { mayTrust } from './trust.js';
+ 
+@@ -737,23 +738,14 @@ export function createAutomations(ctx: HostContext): Automations {
+    * its own.
+    */
+   const beginSession = async (wanted: StartSession, named?: (uri: string) => void | Promise<void>): Promise<string> => {
++    wanted = structuredClone(wanted);
+     const provider = wanted.provider ?? ctx.first?.provider;
+     if (provider === undefined) throw new Error(noProvider(provider));
+     // Named the way a client's `createSession` names a session.
+     const uri = uriFor(crypto.randomUUID());
+     unheld(uri);
+-    /*
+-     * Told before anything is made, which is what puts a plugin's own answer
+-     * in the first tool list: the backend is spawned with the list built
+-     * while the session is being set up, so a reader that learns the URI after
+-     * the start answers has already missed it.
+-     *
+-     * The caller can commit its mapping before any backend is made. A thrown
+-     * or rejected callback refuses this start rather than creating work whose
+-     * caller never durably learned its identity.
+-     */
+-    if (named !== undefined) await named(uri);
+     const config = wanted.config ?? {};
++    if (!isDeepStrictEqual(config, JSON.parse(JSON.stringify(config)))) throw new RpcError(INVALID_PARAMS, "Session config cannot be recovered without losing values");
+     // The same steps a client's `createSession` takes: the folder the daemon's
+     // `workspacelessFolder` says where none is named, the host's own keys are
+     // not the backend's to read, and a worktree is made at the first send,
+@@ -798,51 +790,56 @@ export function createAutomations(ctx: HostContext): Automations {
+     }
+     const wrong = await admitted(person, charged.get(uri)?.scope, config, provider, uri, owner);
+     if (wrong !== undefined) throw new RpcError(-32009, wrong);
+-    // A source in the config is made into a machine before anything runs, the
+-    // same step a client's `createSession` takes.
+-    await placedIn(uri, provider, config, where, wanted.owner);
+-    /*
+-     * The plugins this automation captured, put on the session before it is.
+-     *
+-     * The same path a client announcing itself takes - the active client goes
+-     * into the presence a session's state is built from, and the chats are
+-     * retooled - because what loads a client plugin is one route and a run may
+-     * not take a shorter one. It is the host that is the client here, which is
+-     * the whole point: nobody is at the keyboard when nine o'clock comes.
+-     *
+-     * Awaited, which a client's own announcement never is. A backend takes its
+-     * plugins when it starts and offers no way to add one after, so a session
+-     * opened while the copy was still being made would run with none of them.
+-     *
+-     * The copies' URIs are this host's own paths, under the directory they were
+-     * copied into, so the copy a session makes of them is the directory it is
+-     * already in and no client is asked for a byte.
+-     *
+-     * And they are this run's for as long as it lasts, which is said here for
+-     * the same reason: an automation removed while this turn is still working
+-     * would otherwise take the directory out from under it.
+-     */
+-    if (wanted.customizations !== undefined && wanted.customizations.length > 0) {
+-      options.clientPlugins?.spare(wanted.customizations.map((one) => localPath(one.uri)));
+-      ctx.presence.set(idOf(uri), new Map([[AUTOMATION_CLIENT, {
+-        clientId: AUTOMATION_CLIENT,
+-        displayName: 'Automation',
+-        tools: [],
+-        customizations: wanted.customizations.map((one) => ({ ...one, clientId: AUTOMATION_CLIENT })),
+-      }]]));
+-      ctx.retool(uri);
+-      await ctx.pluginsSettled(uri);
+-    }
+-    /*
+-     * The folder a trusted request asked for, kept with the session before it
+-     * is opened: the backend is told what is trusted when it starts, and the
+-     * row is what a restart reads. So the folder is trusted again after a
+-     * restart without anybody repeating the request, and it is the one folder
+-     * named rather than everything under it.
+-     */
+-    if (wanted.trusted === true && wanted.workingDirectory !== undefined) {
+-      kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
+-    }
++    const prepare = async (): Promise<void> => {
++      if (wanted.trusted === true && wanted.workingDirectory !== undefined) kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
++      kept.setCreation(idOf(uri), {
++        phase: "reserved", initialPrompt: wanted.text.trim() === "" ? "none" : "pending",
++        ...(wanted.text.trim() === "" ? {} : { prompt: wanted.text }),
++        ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
++        ...(wanted.customizations === undefined ? {} : { customizations: wanted.customizations }),
++        ...(wanted.model === undefined ? {} : { model: wanted.model as NonNullable<SessionCreation["model"]> }),
++      });
++      if (wanted.customizations !== undefined) options.clientPlugins?.spare(wanted.customizations.map((one) => localPath(one.uri)));
++      await kept.commit(idOf(uri));
++      if (named !== undefined) await named(uri);
++      if (ctx.closed) throw new Error(CLOSING);
++      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "admitted" });
++      await kept.commit(idOf(uri));
++      // A source in the config is made into a machine before anything runs, the
++      // same step a client's `createSession` takes.
++      await placedIn(uri, provider, config, where, wanted.owner);
++      /*
++       * The plugins this automation captured, put on the session before it is.
++       *
++       * The same path a client announcing itself takes - the active client goes
++       * into the presence a session's state is built from, and the chats are
++       * retooled - because what loads a client plugin is one route and a run may
++       * not take a shorter one. It is the host that is the client here, which is
++       * the whole point: nobody is at the keyboard when nine o'clock comes.
++       *
++       * Awaited, which a client's own announcement never is. A backend takes its
++       * plugins when it starts and offers no way to add one after, so a session
++       * opened while the copy was still being made would run with none of them.
++       *
++       * The copies' URIs are this host's own paths, under the directory they were
++       * copied into, so the copy a session makes of them is the directory it is
++       * already in and no client is asked for a byte.
++       *
++       * And they are this run's for as long as it lasts, which is said here for
++       * the same reason: an automation removed while this turn is still working
++       * would otherwise take the directory out from under it.
++       */
++      if (wanted.customizations !== undefined && wanted.customizations.length > 0) {
++        ctx.presence.set(idOf(uri), new Map([[AUTOMATION_CLIENT, {
++          clientId: AUTOMATION_CLIENT,
++          displayName: 'Automation',
++          tools: [],
++          customizations: wanted.customizations.map((one) => ({ ...one, clientId: AUTOMATION_CLIENT })),
++        }]]));
++        ctx.retool(uri);
++        await ctx.pluginsSettled(uri);
++      }
++    };
+     await createProviderSession(
+       uri,
+       provider,
+@@ -857,11 +854,18 @@ export function createAutomations(ctx: HostContext): Automations {
+       wanted.title,
+       forWhom(wanted.owner),
+       {
++        beforeCreate: prepare,
+         ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
+         ...(wanted.tools === undefined ? {} : { tools: wanted.tools }),
+         ...(wanted.userSettings === undefined ? {} : { userSettings: wanted.userSettings }),
+       },
+     );
++    kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, phase: "complete" });
++    await kept.commit(idOf(uri));
++    if (wanted.text.trim() !== "") {
++      kept.setCreation(idOf(uri), { ...kept.creation(idOf(uri))!, initialPrompt: "admitted" });
++      await kept.commit(idOf(uri));
++    }
+     ctx.oweTree(uri, {}, () => ({}));
+     fireRun(wanted);
+     beginIn(uri, wanted);
+diff --git a/packages/sdk/src/host/lifecycle.ts b/packages/sdk/src/host/lifecycle.ts
+index 5cd076657..f6b84b184 100644
+--- a/packages/sdk/src/host/lifecycle.ts
++++ b/packages/sdk/src/host/lifecycle.ts
+@@ -241,7 +241,7 @@ export interface Lifecycle {
+     additional?: string[],
+     title?: string,
+     by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
+-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean },
++    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
+     progress?: (message: string) => void,
+   ): Promise<void>;
+ }
+@@ -2589,7 +2589,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+     additional?: string[],
+     title?: string,
+     by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
+-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean },
++    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
+     progress?: (message: string) => void,
+   ): Promise<void> => {
+     named(uri, 'session');
+@@ -2698,6 +2698,20 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+     // default chat inherit its title.
+     // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostStateManager.ts#L1668-L1675
+     if (title !== undefined) kept.setCustomTitle?.(idOf(uri), title);
++    const existing = kept.creation(idOf(uri)) === undefined ? undefined : kept.chats(idOf(uri)).find((one) => one.default === true);
++    const legacy = by?.legacyChatUris ?? by?.sender?.legacyChatUris === true;
++    const defaultChat = existing?.uri ?? mintDefaultChatUri(legacy ? "shaped" : "opaque", uri, undefined);
++    if (asked?.beforeCreate !== undefined && (kept.setUri === undefined || (where !== undefined && kept.setWorkingDirectory === undefined))) {
++      throw new Error("Session store cannot preserve creation identity and folder");
++    }
++    if (asked?.beforeCreate !== undefined) {
++      kept.setUri?.(idOf(uri), uri);
++      kept.setProvider(idOf(uri), provider);
++      kept.setConfig(idOf(uri), { ...config });
++      if (where !== undefined) kept.setWorkingDirectory?.(idOf(uri), localPath(where));
++      ctx.keepChat(uri, defaultChat, idOf(uri), true, undefined, undefined, true);
++      await asked.beforeCreate();
++    }
+     // Its row goes out whole once it is added, and moves from then on.
+     markSessionProvisional(uri);
+     try {
+@@ -2719,8 +2733,6 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+        * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L10109-L10116
+        * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L10149-L10150
+        */
+-      const legacy = by?.legacyChatUris ?? by?.sender?.legacyChatUris === true;
+-      const defaultChat = mintDefaultChatUri(legacy ? 'shaped' : 'opaque', uri, undefined);
+       // The last wait of a create, in the client's words for it, said before
+       // the backend is asked to start.
+       progress?.('Starting the agent');
+@@ -2739,7 +2751,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+       // The session never existed, so what was written for it before its
+       // backend started goes whole: its origin, and the flags and title kept.
+       origins.delete(uri);
+-      kept.forget(idOf(uri));
++      if (kept.creation(idOf(uri)) === undefined) kept.forget(idOf(uri));
+       removeNotifiedSummary(uri);
+       // The backend's own words. It is the thing that knows which
+       // directories it serves, and a refusal a client can read beats an
+diff --git a/packages/sdk/test/plugin-start-session.test.ts b/packages/sdk/test/plugin-start-session.test.ts
+index 3e8d6f316..acad74d85 100644
+--- a/packages/sdk/test/plugin-start-session.test.ts
++++ b/packages/sdk/test/plugin-start-session.test.ts
+@@ -1,9 +1,11 @@
+ import { loggerOf } from '../src/log.js';
++import { readFileSync } from 'node:fs';
++import { join } from 'node:path';
+ import { beforeEach, expect, it, vi } from 'vitest';
+ import { idOf } from '../src/sessions/catalog.js';
+ import { ROOT } from '../src/host.js';
+ import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
+-import { memorySessions } from '../src/sessions/sessions.js';
++import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
+ import { sdkVersion } from '../src/version.js';
+ import {
+   claude, createHost, echo, machine, resetSdk, sdk,
+@@ -68,7 +70,7 @@ async function open(host: ReturnType<typeof createHost>, who: string) {
+  * something no daemon does.
+  */
+ function starting(tokens: Record<string, Grant[]>, over: Partial<HostOptions> = {}) {
+-  const sessions = memorySessions();
++  const sessions = over.sessions ?? memorySessions();
+   const { host: plugin, contribution } = pluginHost('bots', context());
+   const base: HostOptions = {
+     path: DIR,
+@@ -153,12 +155,27 @@ const watched = (order: string[]): Agent => {
+ 
+ it('names the session once, with the URI it answers, before the backend spawns', async () => {
+   const order: string[] = [];
+-  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
++  const dir = join(DIR, `creation-${crypto.randomUUID()}`);
++  const store = fileSessions({ dir });
++  const base = watched(order);
++  let reservedChat: string | undefined;
++  const agent: Agent = { ...base, create: (start) => {
++    const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(start.uri))}.json`), 'utf8'));
++    expect(saved.creation.phase).toBe('admitted');
++    expect(start.chatUri).toBe(reservedChat);
++    return base.create(start);
++  } };
++  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
+   const seen: string[] = [];
+ 
+   const uri = await plugin.startSession({ owner: 'user:soft', provider: 'watched', prompt: 'Say hello' }, (one) => {
+     order.push('named');
+     seen.push(one);
++    const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(one))}.json`), 'utf8'));
++    expect(saved.owner).toBe('user:soft');
++    expect(saved.provider).toBe('watched');
++    expect(saved.creation).toEqual({ phase: 'reserved', initialPrompt: 'pending', prompt: 'Say hello' });
++    reservedChat = saved.chats.find((chat: { default?: boolean }) => chat.default === true).uri;
+   });
+ 
+   // The URI the start answers is the one the plugin was told, and it was told
+@@ -166,6 +183,20 @@ it('names the session once, with the URI it answers, before the backend spawns',
+   // one built during `isolated`, which is after this.
+   expect(seen).toEqual([uri]);
+   expect(order).toEqual(['named', 'spawn']);
++  expect(fileSessions({ dir }).creation(idOf(uri))?.phase).toBe('complete');
++});
++
++it.each(['reserved', 'admitted'] as const)('starts no backend when the %s row commit fails', async (phase) => {
++  const order: string[] = [];
++  const store = memorySessions();
++  const failure = new Error(`cannot commit ${phase}`);
++  const failing = { ...store, commit: async (id: string) => {
++    if (store.creation(id)?.phase === phase) throw failure;
++    await store.commit(id);
++  } };
++  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)], sessions: failing });
++  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, () => { order.push('named'); })).rejects.toBe(failure);
++  expect(order).toEqual(phase === 'reserved' ? [] : ['named']);
+ });
+ 
+ it.each(['sync', 'async'] as const)('refuses creation before backend spawn when the %s mapping callback fails', async (mode) => {
+-- 
+2.56.0
+

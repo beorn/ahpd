@@ -1,5 +1,10 @@
 # Patches this fork carries over upstream
 
+**70 carried · 46 asks to post · 22 retire with hab · 1 PR prepared · 1 superseded** — the
+zero-patch progress number (@cto ruling 2026-11-24, `ac13954a`). These are commit counts: the 46
+patches are 45 distinct changes, because `84441da3c` is `2ab6dcb47` replayed by a rebase and batch
+02 carries that change once.
+
 Seeded 2026-11-24 from #38158 (@dev/6, per @cto 193269b5 / b443133f); completed 2026-11-24 by
 @dev/1 from the 70-patch rebase census (#38120).
 
@@ -9,7 +14,9 @@ This list measures the operator's "zero patches" target. One line is one patch c
 Upstream status is one of:
 - `PR pending card` — upstream text is ready and is posted only on the operator's upstream card;
 - `posted <url>` — an upstream PR exists;
-- `not upstreamable: <reason>` — the change exists only for our fork, with the reason;
+- `retires with hab` — the change exists only because hab spawns our agents, and is deleted when
+  hab stops being the spawner (@cto ruling 2026-11-24: no upstream ask is written for these; if hab
+  stays, they are ruled again then);
 - `upstream ask not written` — checked and absent upstream, plausibly upstreamable, but nobody has
   written the ask yet (the remaining work on the zero-patch target).
 
@@ -66,11 +73,11 @@ Upstream status is one of:
 
 ### acp: openings, native identity and custody
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written
-- `0f5066257`, `ba2b264b8`, `e6d0fde75`, `710f46432` · publish selected child custody before initialize, clear the owned stat after a partial publication, with the catalog-exclusion and cleanup tests · #34599 · not upstreamable as written: the custody record is keyed on `HAB_ACP_PID_PREFIX`/`HAB_ACP_SESSION_URI`/`HAB_ACP_CHAT_URI`, which hab sets for the child it launches; the underlying early-publication bug is upstreamable against upstream's own identity
-- `3400a70d0`, `1d14f2ce8`, `322b91d98`, `e5fb82b7a` · project only the current successful native chat identity, checkpoint it per start, and preserve identity capabilities and opening failures · #32996 · not upstreamable as written: same `HAB_ACP_*` protocol (`successfulOpening` absent upstream)
+- `0f5066257`, `ba2b264b8`, `e6d0fde75`, `710f46432` · publish selected child custody before initialize, clear the owned stat after a partial publication, with the catalog-exclusion and cleanup tests · #34599 · retires with hab: the custody record is keyed on `HAB_ACP_PID_PREFIX`/`HAB_ACP_SESSION_URI`/`HAB_ACP_CHAT_URI`, which hab sets for the child it launches (the underlying early-publication bug could be upstreamed against upstream's own identity — a new ask, not this patch)
+- `3400a70d0`, `1d14f2ce8`, `322b91d98`, `e5fb82b7a` · project only the current successful native chat identity, checkpoint it per start, and preserve identity capabilities and opening failures · #32996 · retires with hab: same `HAB_ACP_*` protocol (`successfulOpening` absent upstream)
 - `4ec4c8a2f` · retain shared capabilities with isolated launch options · #32996 · upstream ask not written
-- `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · not upstreamable as written: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
-- `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · not upstreamable as written: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
+- `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · retires with hab: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
+- `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · retires with hab: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
 - `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · upstream ask not written (`openedMeta` absent upstream)
 
 ### acp / server: failure handling and retries
@@ -82,28 +89,32 @@ Upstream status is one of:
 - `9b4d713d0`, `7c8074aeb`, `d7d038c2d` · arbitrate create-only record creation on disk with an exclusive lock, with the cross-process proof · #35139 · upstream ask not written (`tryAcquireFlock` absent upstream; upstream `createOnly` is an unrelated bot option)
 
 ### Plugins: service identity
-- `88f113085`, `379acf190` · delegate plugin service identity to exact source bindings, and prove record refs cannot recover the startup credential · #35090 · not upstreamable: reads `HAB_ID_TOKEN_FILE`/`AHPD_SERVICE_TOKEN_FILE`, the token files hab writes; `serviceIdentityEnvironment` does not exist upstream
+- `88f113085`, `379acf190` · delegate plugin service identity to exact source bindings, and prove record refs cannot recover the startup credential · #35090 · retires with hab: reads `HAB_ID_TOKEN_FILE`/`AHPD_SERVICE_TOKEN_FILE`, the token files hab writes; `serviceIdentityEnvironment` does not exist upstream
 
 ### Test infrastructure
 - `0535e7929`, `bb37b23c8` · detect checkout Git mutations during ahpd tests, and isolate ahpd workspaces from ancestor Git discovery · #37182 · upstream ask not written (tests only; `AHPD_TEST_REPOSITORY` absent upstream)
 
 ### usage: inhab JSONL source
-- `31d558b65`, `2a73aba1b`, `ab933f119`, `f3f3f3937`, `0ac4f15c2` · re-derive the usage JSONL append source from Ag (three provenance pins), preserve the zero-tail repair, and re-read the append boundary so a later record is never glued to a zero tail · #35067, #33944 · not upstreamable: reads hh's inhab JSONL journals and pins an Ag commit (`inhab-jsonl.provenance.json`), a format upstream does not have
+- `31d558b65`, `2a73aba1b`, `ab933f119`, `f3f3f3937`, `0ac4f15c2` · re-derive the usage JSONL append source from Ag (three provenance pins), preserve the zero-tail repair, and re-read the append boundary so a later record is never glued to a zero tail · #35067, #33944 · retires with hab: reads hh's inhab JSONL journals and pins an Ag commit (`inhab-jsonl.provenance.json`), a format upstream does not have
 
 ### Superseded
 - `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0)
 
 ## What is left on the zero-patch target
 
-Measured over the 70 patches:
+Measured over the 70 patches, after @cto's 2026-11-24 ruling (`ac13954a`):
 
 - 1 has upstream text prepared inside the stack (#38159, `c6f74e9d0`) and is `PR pending card`;
 - 1 is superseded (`d17130bbf`, replaced by #38158's `535303cf5`, whose text is also a
   `PR pending card` and which is not counted in the 70 because it is not on `hh/integration` yet);
-- 22 are not upstreamable as written, all for one of two reasons: they speak hab's `HAB_ACP_*` /
+- 22 retire with hab — no upstream ask is written for them: they speak hab's `HAB_ACP_*` /
   `HAB_ID_TOKEN_FILE` child protocol (17), or they read hh's inhab JSONL journals pinned to an Ag
-  commit (5);
-- 46 are absent upstream with no ask written — the real remaining work on the zero-patch target.
+  commit (5). They are deleted when hab stops being the spawner; if hab stays, they are ruled
+  again then;
+- 46 are absent upstream and get an ask each — the real remaining work on the zero-patch target.
+  The asks are drafted in `upstream-asks/` in six package-grouped batches of 6–10
+  (see `upstream-asks/README.md`), and **posting is gated on one operator upstream card covering
+  every batch** (@cto 2026-11-24). Nothing is posted before that card.
 
-The honest shape of the target is therefore: 46 upstream asks plus the 1 prepared, and a decision on
-the 22 fork-protocol patches, which stay ours unless upstream grows hab's protocol.
+The honest shape of the target is therefore: 46 upstream asks plus the 1 prepared. The 22
+fork-protocol patches are out of scope and go away with hab.

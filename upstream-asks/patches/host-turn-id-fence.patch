@@ -1,0 +1,434 @@
+From 3c0500e36c2876809196546eeb39cd52b574a684 Mon Sep 17 00:00:00 2001
+From: "@dev/6" <dev-6@main.hh.invalid>
+Date: Fri, 20 Nov 2026 04:34:11 -0800
+Subject: [PATCH] fix(host,agent-acp,agent-claude,agent-cofold): stamp turnId
+ on chatInput requests and fence post-abort unwind (#35154)
+
+---
+ packages/agent-acp/src/session/handlers.ts    | 13 +++---
+ .../agent-acp/test/agent-acp-ports.test.ts    | 24 +++++++++++
+ .../agent-acp/test/fixtures/acp-server.mjs    | 40 +++++++++++++++++++
+ packages/agent-claude/src/session/asking.ts   |  6 ++-
+ .../test/agent-claude-tool-input.test.ts      |  2 +
+ packages/agent-cofold/src/mapping.ts          |  6 ++-
+ .../test/agent-cofold-approval.test.ts        |  2 +
+ packages/bot/src/chat.ts                      |  2 +-
+ packages/sdk/src/host.ts                      | 19 ++++++++-
+ packages/sdk/src/host/asking.ts               |  1 +
+ packages/sdk/src/host/catalogue.ts            | 12 +++++-
+ packages/sdk/src/host/context.ts              |  2 +
+ packages/sdk/test/host-input-needed.test.ts   | 32 ++++++++++++++-
+ tools/schema.mjs                              |  7 ++++
+ 14 files changed, 150 insertions(+), 18 deletions(-)
+
+diff --git a/packages/agent-acp/src/session/handlers.ts b/packages/agent-acp/src/session/handlers.ts
+index 5d843ac65..5844c7e42 100644
+--- a/packages/agent-acp/src/session/handlers.ts
++++ b/packages/agent-acp/src/session/handlers.ts
+@@ -617,7 +617,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
+      * rejects a permission without an active turn.
+      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L1739-L1748
+      */
+-    if (ctx.mapping === undefined) {
++    if (ctx.mapping === undefined || ctx.cancelRequested || ctx.replaced?.has(ctx.mapping.turnId) === true) {
+       ctx.options.log?.(`${ctx.provider}: refusing a permission with no turn running: ${request.toolCall.toolCallId}`, 'warn');
+       return 'cancelled';
+     }
+@@ -799,7 +799,9 @@ export function createHandlers(ctx: SessionContext): Handlers {
+      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeAgentSession.ts#L1346-L1349
+      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeElicitationBridge.ts#L50-L59
+      */
+-    if (ctx.mapping === undefined || (page === undefined && questions.length === 0)) return Promise.resolve({ action: 'cancel' });
++    if (ctx.mapping === undefined || ctx.cancelRequested || ctx.replaced?.has(ctx.mapping.turnId) === true
++      || (page === undefined && questions.length === 0)) return Promise.resolve({ action: 'cancel' });
++    const turnId = ctx.mapping.turnId;
+     const id = nameOf(request, str(held.toolCallId));
+     const message = str(held.message);
+     const asking: Bag = {
+@@ -808,10 +810,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
+       ...(page === undefined ? {} : { url: page.url }),
+       ...(questions.length === 0 ? {} : { questions }),
+     };
+-    // The chat input entry, which is the one kind of input request that names
+-    // no turn: a question stands on the chat rather than in the turn that
+-    // happened to be running when the server asked it.
+-    const entry: Bag = { id, chat: start.chatUri, kind: 'chatInput', request: asking };
++    const entry: Bag = { id, chat: start.chatUri, kind: 'chatInput', turnId, request: asking };
+     const answered = new Promise<CreateElicitationResponse>((resolve) => {
+       elicitations.set(id, {
+         fields: new Set(questions.map((one) => String(one.id))),
+@@ -820,7 +819,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
+         settle: resolve,
+       });
+     });
+-    emit('chat', { type: 'chat/inputRequested', request: asking });
++    emit('chat', { type: 'chat/inputRequested', turnId, request: asking });
+     emit('session', { type: 'session/inputNeededSet', request: entry });
+     /*
+      * The question the server takes back.
+diff --git a/packages/agent-acp/test/agent-acp-ports.test.ts b/packages/agent-acp/test/agent-acp-ports.test.ts
+index ad2dda3bf..16a199740 100644
+--- a/packages/agent-acp/test/agent-acp-ports.test.ts
++++ b/packages/agent-acp/test/agent-acp-ports.test.ts
+@@ -1293,3 +1293,27 @@ it('answers the question a stopped turn left standing with `cancel`', async () =
+   // on rather than a turn that waits for a person for ever.
+   expect(readFileSync(log, 'utf8')).toContain('"method":"session/cancel"');
+ });
++
++it('refuses a late elicitation and permission emitted during post-abort prompt unwind so a queued successor turn runs (#35154)', async () => {
++  const { client, peer: p, uri, chatUri } = await talking();
++  begin(client, chatUri, 't1', 'elicitlateaftercancel please');
++  await until(() => types(p, chatUri).includes('chat/inputRequested'));
++
++  // Stop turn 1 and immediately hand turn 2 while turn 1's prompt is still unwinding.
++  client.handle({
++    method: 'dispatchAction',
++    params: { channel: chatUri, action: { type: 'chat/turnCancelled', turnId: 't1', duration: 0 } },
++  });
++  begin(client, chatUri, 't2', 'plain reply after unwind');
++
++  await endedTurn(p, chatUri, 1);
++  expect(actions(p, chatUri).filter((e) => e.action.type === 'chat/inputRequested')).toHaveLength(1);
++  expect(actions(p, chatUri).filter((e) => e.action.type === 'chat/inputRequested')[0]?.action.turnId).toBe('t1');
++  expect(actions(p, chatUri).some((e) => e.action.type === 'chat/toolCallReady' && e.action.toolCallId === 'call-late-unwind')).toBe(false);
++  expect(actions(p, uri).filter((e) => e.action.type === 'session/inputNeededSet')).toHaveLength(1);
++  expect(actions(p, uri).filter((e) => e.action.type === 'session/inputNeededSet')[0]?.action.request).toMatchObject({
++    kind: 'chatInput',
++    turnId: 't1',
++  });
++  expect(actions(p, chatUri).some((e) => e.action.type === 'chat/turnComplete' && e.action.turnId === 't2')).toBe(true);
++});
+diff --git a/packages/agent-acp/test/fixtures/acp-server.mjs b/packages/agent-acp/test/fixtures/acp-server.mjs
+index fe322fd6b..1c0771724 100644
+--- a/packages/agent-acp/test/fixtures/acp-server.mjs
++++ b/packages/agent-acp/test/fixtures/acp-server.mjs
+@@ -1282,6 +1282,46 @@ const promptScript = async (id, params) => {
+     });
+   }
+ 
++  if (text.includes('elicitlateaftercancel')) {
++    /*
++     * A server that asks a second question and a permission after the bridge's
++     * stop has settled its first question, before finishing its prompt unwind.
++     * Without the cancelRequested/replaced fence on askElicitation and
++     * requestPermission, that post-abort request parks after settleElicitations
++     * and deadlocks turn 1's prompt unwind, starving turn 2 in pendingTurns.
++     */
++    await ask('elicitation/create', {
++      mode: 'form',
++      sessionId: session,
++      message: 'First question before stop',
++      requestedSchema: {
++        type: 'object',
++        properties: { title: { type: 'string', title: 'The name' } },
++        required: ['title'],
++      },
++    });
++    await ask('elicitation/create', {
++      mode: 'form',
++      sessionId: session,
++      message: 'Late question during unwind',
++      requestedSchema: {
++        type: 'object',
++        properties: { late: { type: 'string', title: 'Late field' } },
++        required: ['late'],
++      },
++    });
++    await ask('session/request_permission', {
++      sessionId: session,
++      toolCall: { toolCallId: 'call-late-unwind', title: 'Late permission during unwind', name: 'late_tool', kind: 'execute' },
++      options: [
++        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
++        { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
++      ],
++    });
++    respond(id, { stopReason: 'cancelled' });
++    return;
++  }
++
+   if (text.includes('elicitcancel')) {
+     /*
+      * A question left standing when the turn is stopped.
+diff --git a/packages/agent-claude/src/session/asking.ts b/packages/agent-claude/src/session/asking.ts
+index c059fd57b..9cea74d46 100644
+--- a/packages/agent-claude/src/session/asking.ts
++++ b/packages/agent-claude/src/session/asking.ts
+@@ -218,6 +218,7 @@ export function createAsking(ctx: SessionContext): Asking {  /**
+      */
+     const writing = writeOf(toolName, input);
+     const shown = writing === undefined ? undefined : await ctx.options.onEditProposed?.(id, writing.path, writing.apply);
++    if (Boolean(signal?.aborted) || ctx.openTurn(scope) !== turn) return { behavior: 'deny', message: NO_TURN };
+     const edits: Bag | undefined = shown === undefined ? undefined : { items: [shown] };
+     if (edits !== undefined) previews.add(id);
+     return await new Promise<Held>((settle) => {
+@@ -272,10 +273,11 @@ export function createAsking(ctx: SessionContext): Asking {  /**
+         // The same builder a restored question is drawn from, so the two are
+         // one thing rather than two that have to be kept alike.
+         const { request, asked } = questionRequest(input, id);
++        const turnId = String(turn.id);
+         // `chat` is required on every session input request.
+-        const sessionRequest: Bag = { id, chat: where, kind: 'chatInput', request };
++        const sessionRequest: Bag = { id, chat: where, kind: 'chatInput', turnId, request };
+         pending.set(id, { id, request: sessionRequest, input, asked, answers: new Map(), settle: done });
+-        ctx.emitOn(scope, { type: 'chat/inputRequested', request });
++        ctx.emitOn(scope, { type: 'chat/inputRequested', turnId, request });
+         ctx.inputNeededSet(sessionRequest);
+         return;
+       }
+diff --git a/packages/agent-claude/test/agent-claude-tool-input.test.ts b/packages/agent-claude/test/agent-claude-tool-input.test.ts
+index 9ae40668d..9bd04aef5 100644
+--- a/packages/agent-claude/test/agent-claude-tool-input.test.ts
++++ b/packages/agent-claude/test/agent-claude-tool-input.test.ts
+@@ -703,6 +703,8 @@ it('holds a part-way answer on the request, and says nothing of the client\'s an
+   expect(sent.some((one) => one.type === 'chat/inputAnswerChanged')).toBe(false);
+   // A client that arrives now reads it off the request.
+   const needed = (session.sessionState().inputNeeded ?? []) as Bag[];
++  expect(needed.find((one) => one.kind === 'chatInput')?.turnId).toBe('t1');
++  expect(sent.find((one) => one.type === 'chat/inputRequested')?.turnId).toBe('t1');
+   expect((needed.find((one) => one.kind === 'chatInput')?.request as Bag | undefined)?.answers).toEqual({ Colour: said.Colour });
+   sdk.hold = Promise.resolve();
+ });
+diff --git a/packages/agent-cofold/src/mapping.ts b/packages/agent-cofold/src/mapping.ts
+index dbc3ac7f2..45a7ac7a6 100644
+--- a/packages/agent-cofold/src/mapping.ts
++++ b/packages/agent-cofold/src/mapping.ts
+@@ -623,6 +623,7 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
+          * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeCanUseTool.ts#L167-L178
+          */
+         case 'approval.requested': {
++          if (options.cancelled()) return only([]);
+           const displayName = options.displayNameOf(event.name);
+           const prompt = event.prompt ?? `Run ${displayName}?`;
+           const held = open.get(event.callId);
+@@ -698,11 +699,12 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
+          * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeCanUseTool.ts#L292-L295
+          */
+         case 'input.requested': {
++          if (options.cancelled()) return only([]);
+           const chatRequest: Bag = {
+             id: event.requestId,
+             questions: event.questions.map(questionOf),
+           };
+-          const request: Bag = { id: `input:${event.requestId}`, chat: options.chatUri, kind: 'chatInput', request: chatRequest };
++          const request: Bag = { id: `input:${event.requestId}`, chat: options.chatUri, kind: 'chatInput', turnId, request: chatRequest };
+           const opened: OpenRequest = {
+             requestId: event.requestId,
+             kind: 'input',
+@@ -711,7 +713,7 @@ export function mapTurn(options: TurnMappingOptions): TurnMapping {
+           };
+           requests.set(event.requestId, opened);
+           return {
+-            actions: [{ type: 'chat/inputRequested', request: chatRequest }, { type: 'session/inputNeededSet', request }],
++            actions: [{ type: 'chat/inputRequested', turnId, request: chatRequest }, { type: 'session/inputNeededSet', request }],
+             opened,
+           };
+         }
+diff --git a/packages/agent-cofold/test/agent-cofold-approval.test.ts b/packages/agent-cofold/test/agent-cofold-approval.test.ts
+index eb5b893e1..490dec522 100644
+--- a/packages/agent-cofold/test/agent-cofold-approval.test.ts
++++ b/packages/agent-cofold/test/agent-cofold-approval.test.ts
+@@ -603,8 +603,10 @@ it('raises a chatInput entry for cofold\'s own ask tool and answers it back', as
+ 
+   const entry = needed(p, uri, 'chatInput') as {
+     id: string;
++    turnId?: string;
+     request: { id: string; questions: { id: string; kind: string; message: string; options: { label: string }[] }[] };
+   };
++  expect(entry.turnId).toBe('t1');
+   expect(entry.request.questions[0]).toMatchObject({ id: 'which', kind: 'single-select', message: 'Which note?' });
+   expect(entry.request.questions[0]?.options.map((one) => one.label)).toEqual(['monday', 'tuesday']);
+   // The questions say what is asked, with no message of the host's own, as
+diff --git a/packages/bot/src/chat.ts b/packages/bot/src/chat.ts
+index 8a0bdd00d..1d270d943 100644
+--- a/packages/bot/src/chat.ts
++++ b/packages/bot/src/chat.ts
+@@ -732,7 +732,7 @@ export function botChatAgent(
+           held.asked.push({ id, part });
+         }
+         else known.part = part;
+-        start.emit('chat', { type: 'chat/inputRequested', request: copy });
++        start.emit('chat', { type: 'chat/inputRequested', turnId: held.id, request: copy });
+         return;
+       }
+       if (kind !== 'toolConfirmation') return;
+diff --git a/packages/sdk/src/host.ts b/packages/sdk/src/host.ts
+index a1db7ab02..1b6173ad0 100644
+--- a/packages/sdk/src/host.ts
++++ b/packages/sdk/src/host.ts
+@@ -1025,6 +1025,9 @@ export function createHost(options: HostOptions): Host {
+       asks.clearTurn(channel, String(action.turnId ?? ''));
+       // And a resumed turn is over, its time with it.
+       ctx.resumedTurns.delete(`${channel}\n${String(action.turnId ?? '')}`);
++      for (const key of ctx.inputTurns.keys()) {
++        if (key.startsWith(`${channel}\n`)) ctx.inputTurns.delete(key);
++      }
+     }
+     /*
+      * A backend's removal of an entry the session no longer holds is not said
+@@ -1050,9 +1053,15 @@ export function createHost(options: HostOptions): Host {
+     if (origin === undefined && held?.kind === 'chat' && typeof action.turnId === 'string' && action.type !== 'chat/truncated') {
+       const stale = active !== undefined
+         ? action.turnId !== active
+-        : action.type === 'chat/turnComplete' && ctx.cancelledTurns.get(channel)?.has(action.turnId) === true;
++        : action.type === 'chat/inputRequested'
++          || (action.type === 'chat/turnComplete' && ctx.cancelledTurns.get(channel)?.has(action.turnId) === true);
+       if (stale) return;
+     }
++    if (action.type === 'chat/inputRequested' && held?.kind === 'chat') {
++      const key = `${channel}\n${String((action.request as Record<string, unknown> | undefined)?.id ?? '')}`;
++      if (typeof action.turnId === 'string' && action.turnId !== '') ctx.inputTurns.set(key, action.turnId);
++      else ctx.inputTurns.delete(key);
++    }
+     // Whether this action ends the chat's active turn, which the reducer ends only when the ids match.
+     const ending = ends && held?.kind === 'chat' && active === action.turnId;
+     /*
+@@ -1426,6 +1435,9 @@ export function createHost(options: HostOptions): Host {
+       if (one !== session && (open.kind !== 'chat' || sessionFor(one) !== session)) continue;
+       states.delete(one);
+       ctx.cancelledTurns.delete(one);
++      for (const key of ctx.inputTurns.keys()) {
++        if (key.startsWith(`${one}\n`)) ctx.inputTurns.delete(key);
++      }
+       ctx.forgetChatQueue(one);
+     }
+   };
+@@ -1666,7 +1678,7 @@ export function createHost(options: HostOptions): Host {
+     ],
+     replayable, releaseActiveClientForSession, attachWatch, projectActionForClient, claims, agents, first: options.agents[0], connections, clientsChanged, relays: new Map(), holders, sessions, byChat, subagents, owners, names,
+     leadOf, wheres, worktrees, worktreeOf, githubFacts, kept, offered, decided, about, terminals,
+-    madeFrom, chatInteractivity, chatTools, origins, births, moves, listedMeta, browsable, broadcast, presence, beside, marks, lives, lifeOf, restarting, relaunches: new Map(), chatRelaunches: new Map(), baselineCheckpoints: new Map(), resumedTurns: new Map(), cancelledTurns: new Map(), learned, starting,
++    madeFrom, chatInteractivity, chatTools, origins, births, moves, listedMeta, browsable, broadcast, presence, beside, marks, lives, lifeOf, restarting, relaunches: new Map(), chatRelaunches: new Map(), baselineCheckpoints: new Map(), resumedTurns: new Map(), cancelledTurns: new Map(), inputTurns: new Map(), learned, starting,
+     logs, detached, refuse,
+     serverSeq: 0,
+     closed: false, shutdown: () => host.close(), refusing: undefined, bareSessions: new Set<string>(), startedWorkspaceless: new Set<string>(), commandTurns: new Set<string>(), described, links,
+@@ -1692,6 +1704,9 @@ export function createHost(options: HostOptions): Host {
+     closeState: (channel: string) => {
+       states.delete(channel);
+       ctx.cancelledTurns.delete(channel);
++      for (const key of ctx.inputTurns.keys()) {
++        if (key.startsWith(`${channel}\n`)) ctx.inputTurns.delete(key);
++      }
+       ctx.forgetChatQueue(channel);
+     },
+     heldStates: states as ReadonlyMap<string, HeldState>,
+diff --git a/packages/sdk/src/host/asking.ts b/packages/sdk/src/host/asking.ts
+index 8955c5d87..38231b213 100644
+--- a/packages/sdk/src/host/asking.ts
++++ b/packages/sdk/src/host/asking.ts
+@@ -151,6 +151,7 @@ export function createAsking(options: AskingOptions): Asking {
+       try {
+         options.dispatch(chat, {
+           type: 'chat/inputRequested',
++          turnId: turn,
+           request: { id, questions: questions.map(questionOf) },
+         });
+       }
+diff --git a/packages/sdk/src/host/catalogue.ts b/packages/sdk/src/host/catalogue.ts
+index adf9ab14e..226f63395 100644
+--- a/packages/sdk/src/host/catalogue.ts
++++ b/packages/sdk/src/host/catalogue.ts
+@@ -2137,8 +2137,16 @@ export function createCatalogue(ctx: HostContext): Catalogue {
+     if (turn === undefined) return [];
+     return (Array.isArray(turn.responseParts) ? turn.responseParts as Bag[] : []).flatMap((part): Bag[] => {
+       const request = part.request as Bag | undefined;
+-      if (part.kind === 'inputRequest' && part.response === undefined && request !== undefined)
+-        return [{ id: `chatInput:${chat}:${String(request.id)}`, kind: 'chatInput', chat, request }];
++      if (part.kind === 'inputRequest' && part.response === undefined && request !== undefined) {
++        const turnId = ctx.inputTurns.get(`${chat}\n${String(request.id)}`);
++        return [{
++          id: `chatInput:${chat}:${String(request.id)}`,
++          kind: 'chatInput',
++          chat,
++          ...(turnId === turn.id ? { turnId } : {}),
++          request,
++        }];
++      }
+       const toolCall = part.toolCall as Bag | undefined;
+       if (toolCall === undefined) return [];
+       const ids = `${chat}:${String(turn.id)}:${String(toolCall.toolCallId)}`;
+diff --git a/packages/sdk/src/host/context.ts b/packages/sdk/src/host/context.ts
+index 20f26af77..fed8745b3 100644
+--- a/packages/sdk/src/host/context.ts
++++ b/packages/sdk/src/host/context.ts
+@@ -495,6 +495,8 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
+    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L472-L486
+    */
+   cancelledTurns: Map<string, Set<string>>;
++  /** The originating turn each chat's input request named, by `<chat>\n<requestId>`. */
++  inputTurns: Map<string, string>;
+   /** What this host has learned about each backend, by the id clients name it by. */
+   learned: Map<string, Learned>;
+   /** The lead chat of a held session, when it has one. */
+diff --git a/packages/sdk/test/host-input-needed.test.ts b/packages/sdk/test/host-input-needed.test.ts
+index 7913b6a2f..3f28e5dd4 100644
+--- a/packages/sdk/test/host-input-needed.test.ts
++++ b/packages/sdk/test/host-input-needed.test.ts
+@@ -200,10 +200,10 @@ it('raises a call\'s confirmation under VS Code\'s id, and takes it down with it
+ 
+ it('raises a question under VS Code\'s id, and takes it down once the question has its response', async () => {
+   const { start, entries } = await opened();
+-  start.emit('chat', { type: 'chat/inputRequested', request: { id: 'q1', message: 'Which one?' } });
++  start.emit('chat', { type: 'chat/inputRequested', turnId: 't1', request: { id: 'q1', message: 'Which one?' } });
+   await settle();
+   expect(await entries()).toEqual([
+-    { id: `chatInput:${start.chatUri}:q1`, kind: 'chatInput', chat: start.chatUri, request: { id: 'q1', message: 'Which one?' } },
++    { id: `chatInput:${start.chatUri}:q1`, kind: 'chatInput', chat: start.chatUri, turnId: 't1', request: { id: 'q1', message: 'Which one?' } },
+   ]);
+ 
+   start.emit('chat', { type: 'chat/inputCompleted', requestId: 'q1', response: 'cancel' });
+@@ -211,6 +211,34 @@ it('raises a question under VS Code\'s id, and takes it down once the question h
+   expect(await entries()).toEqual([]);
+ });
+ 
++it('drops a stale chat/inputRequested from an ended or superseded turn when activeTurn is undefined or a successor', async () => {
++  const { start, entries, sent, said } = await opened();
++  await sent(1, { type: 'chat/turnCancelled', turnId: 't1', duration: 0 });
++  start.emit('chat', { type: 'chat/inputRequested', turnId: 't1', request: { id: 'late-idle', message: 'Too late (idle)' } });
++  await settle();
++  expect(said().filter((one) => one.type === 'chat/inputRequested')).toEqual([]);
++  expect(await entries()).toEqual([]);
++
++  start.emit('chat', {
++    type: 'chat/turnStarted',
++    turnId: 't2',
++    startedAt: new Date().toISOString(),
++    message: { text: 'next', origin: { kind: 'user' } },
++  });
++  await settle();
++  start.emit('chat', { type: 'chat/inputRequested', turnId: 't1', request: { id: 'late-active', message: 'Too late (t2 active)' } });
++  await settle();
++  expect(said().filter((one) => one.type === 'chat/inputRequested')).toEqual([]);
++  expect(await entries()).toEqual([]);
++
++  // A turnless chat/inputRequested never guesses turnId from the active turn.
++  start.emit('chat', { type: 'chat/inputRequested', request: { id: 'unattributed', message: 'No turnId' } });
++  await settle();
++  expect(await entries()).toEqual([
++    { id: `chatInput:${start.chatUri}:unattributed`, kind: 'chatInput', chat: start.chatUri, request: { id: 'unattributed', message: 'No turnId' } },
++  ]);
++});
++
+ /*
+  * An entry names a call in the state its kind is raised for: the reference
+  * host raises a confirmation at a pending confirmation, a client execution
+diff --git a/tools/schema.mjs b/tools/schema.mjs
+index 0f466a171..c00a5e610 100644
+--- a/tools/schema.mjs
++++ b/tools/schema.mjs
+@@ -342,6 +342,13 @@ for (const [name, schema] of defs) {
+   void name;
+ }
+ 
++for (const name of ['ChatInputRequestedAction', 'SessionChatInputRequest']) {
++  const def = defs.get(name);
++  if (def && typeof def === 'object' && def.properties) {
++    def.properties.turnId = { type: 'string' };
++  }
++}
++
+ const out = {
+   $schema: 'https://json-schema.org/draft/2020-12/schema',
+   $id: 'ahp-strict',
+-- 
+2.56.0
+

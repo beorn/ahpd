@@ -1,0 +1,527 @@
+From c47099fa176a880c0cf2ff24cb77cb818a26f894 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 16:44:41 -0800
+Subject: [PATCH] fix(sdk): read reserved session ownership without restoring
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/plugins/PLUGINS.md                       |  2 ++
+ packages/sdk/src/plugins/plugins.ts           | 16 +++++++++---
+ packages/sdk/src/types/plugin.ts              |  9 +++++--
+ .../sdk/test/plugin-session-owner.test.ts     | 25 +++++++++++++++++++
+ 4 files changed, 47 insertions(+), 5 deletions(-)
+
+diff --git a/docs/plugins/PLUGINS.md b/docs/plugins/PLUGINS.md
+index 34e3ad414..da5ae5fb1 100644
+--- a/docs/plugins/PLUGINS.md
++++ b/docs/plugins/PLUGINS.md
+@@ -1205,6 +1205,8 @@ An optional second argument, `named: (uri: string) => void | Promise<void>`, rec
+ 
+ Two reads go with it. `host.sessionKept(uri)` answers whether this host keeps the session at a URI, which is how a plugin decides whether a leftover machine is one of its own to adopt. `host.sessionOwner(uri)` answers whose that session is, or nothing where this host has none, which is how a plugin adopts a session somebody else started - a bot linking one its owner already has - without putting work into a place its writer has no business being. Both are promises read from the host's own store when they are called, because the plugin that registers that store may load after yours.
+ 
++A durable creation reservation answers its saved owner at its exact canonical URI, including after `named` rejects. That read does not probe backend history, admit the reservation or start a provider. It is ownership metadata, not proof of a usable session. Required creation metadata that is missing or unreadable rejects the read rather than reporting an absent session.
++
+ ### Starting a chat on a backend
+ 
+ A plugin that already has a session and needs one more conversation inside it - a bot's Back chat answering the message that woke it - says so with `host.startChat(session, wanted)`, which answers the new chat's URI. The session is named by its URI and stays what it is: its owner, its provider, its tree and its other chats.
+diff --git a/packages/sdk/src/plugins/plugins.ts b/packages/sdk/src/plugins/plugins.ts
+index 244ff9e65..f7251800a 100644
+--- a/packages/sdk/src/plugins/plugins.ts
++++ b/packages/sdk/src/plugins/plugins.ts
+@@ -1540,21 +1540,31 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
+      * and nothing where it has never opened this one, which are the two
+      * answers a plugin linking somebody else's session has to tell apart.
+      *
+-     * A row is not a session, though, and the store keeps one for longer than
+-     * the session lasts: a process that ran no turn leaves nothing on a
++     * A legacy row without creation intent is not a session. The store keeps
++     * one for longer than the session lasts: a process that ran no turn leaves nothing on a
+      * backend's disk, so after a restart the row is all there is and the host
+      * answers `No agent for session` to a subscribe. The owner is therefore
+      * answered only where the host can still open the session, which is the
+      * question `opens` asks of the live catalogue - so a plugin reusing a
+      * session starts a new one instead of sending to the one that is gone.
+      *
++     * A durable creation reservation is different: its canonical URI and
++     * owner are metadata even if its callback rejected or creation has not
++     * completed. Reading that owner must not restore or admit the session.
++     *
+      * With no host built over this plugin there is no catalogue to ask, and
+      * the store's answer is the whole of what is known: a host handed to a
+      * test rather than folded into one behaves as it always did.
+      */
+     sessionOwner: async (uri) => {
+       const sessions = await options.sessions?.();
+-      const owner = sessions?.owner(idOf(uri));
++      const id = idOf(uri);
++      const owner = sessions?.owner(id);
++      if (sessions?.creation(id) !== undefined) {
++        const canonical = sessions.uri?.(id);
++        if (canonical === undefined) throw new Error(`Session creation ${id} has no canonical URI; repair its stored metadata before reuse`);
++        return canonical === uri ? owner : undefined;
++      }
+       if (owner === undefined || starts.opens === undefined) return owner;
+       return await starts.opens(uri) ? owner : undefined;
+     },
+diff --git a/packages/sdk/src/types/plugin.ts b/packages/sdk/src/types/plugin.ts
+index 0d312e81a..217fad8f7 100644
+--- a/packages/sdk/src/types/plugin.ts
++++ b/packages/sdk/src/types/plugin.ts
+@@ -1209,14 +1209,19 @@ export interface PluginHost extends PluginContext {
+    * host has never opened answers nothing, which is a different answer from a
+    * session of the host's own that nobody owns.
+    *
+-   * A row is not a session. What the store keeps about one outlives the
+-   * process that ran it, and a session that ran no turn leaves nothing on a
++   * A legacy row without creation intent is not a session. Its metadata
++   * outlives the process that ran it, and a session that ran no turn leaves nothing on a
+    * backend's disk for a restart to read back - so its owner is answered only
+    * where this host can still open it, running now or in its catalogue. A
+    * plugin that reuses a session is told nothing for the one that is gone and
+    * starts a new one, rather than sending to a session `No agent for session`
+    * answers.
+    *
++   * A durable creation reservation answers its saved owner at its exact
++   * canonical URI even before creation completes or after its naming callback
++   * rejects. This is a metadata read: it does not restore, admit or start the
++   * reserved session. Missing required creation metadata rejects the read.
++   *
+    * Read the way `sessionKept` is, and for the same reason: the store is named
+    * by the fold that runs after every plugin has applied, so a plugin asking
+    * while the later ones are still loading waits rather than being told there
+diff --git a/packages/sdk/test/plugin-session-owner.test.ts b/packages/sdk/test/plugin-session-owner.test.ts
+index bf659f355..c948f4496 100644
+--- a/packages/sdk/test/plugin-session-owner.test.ts
++++ b/packages/sdk/test/plugin-session-owner.test.ts
+@@ -1,6 +1,7 @@
+ import { loggerOf } from '../src/log.js';
+ import { beforeEach, expect, it, vi } from 'vitest';
+ import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
++import { idOf } from '../src/sessions/catalog.js';
+ import { memorySessions } from '../src/sessions/sessions.js';
+ import { sdkVersion } from '../src/version.js';
+ import {
+@@ -77,6 +78,30 @@ it('answers nothing for a session only the store remembers', async () => {
+   expect(await plugin.sessionOwner('claude:/gone')).toBeUndefined();
+ });
+ 
++// A rejected callback leaves a durable reservation, not a missing session to
++// replace. Ownership reads must not restore it or ask the backend for history.
++it('answers the reserved owner after mapping rejection without opening the backend', async () => {
++  const { plugin, host, sessions } = owned();
++  const client = host.accept(peer());
++  await hello(client, 'soft');
++  await signIn(client, 'soft');
++  const failure = new Error('mapping did not land');
++  let uri = '';
++  await expect(plugin.startSession({ owner: 'user:soft' }, async (named) => {
++    uri = named;
++    throw failure;
++  })).rejects.toBe(failure);
++  const id = idOf(uri);
++  expect(sessions.creation(id)?.phase).toBe('reserved');
++  const before = { asked: sdk.asked, reads: sdk.reads, listed: sdk.listed, queries: sdk.queries.length };
++  expect(await plugin.sessionOwner(uri)).toBe('user:soft');
++  expect(await plugin.sessionOwner(`claude:/${id}`)).toBeUndefined();
++  expect({ asked: sdk.asked, reads: sdk.reads, listed: sdk.listed, queries: sdk.queries.length }).toEqual(before);
++  expect(sessions.creation(id)?.phase).toBe('reserved');
++  sessions.setUri?.(id, undefined);
++  await expect(plugin.sessionOwner(uri)).rejects.toThrow('has no canonical URI');
++});
++
+ it('answers the owner of a session this host is running', async () => {
+   const { plugin, host } = owned();
+   const client = host.accept(peer());
+-- 
+2.56.0
+
+From 7ec7b53215e0edd9d7a8460a572cfd5969b0689f Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 17:04:15 -0800
+Subject: [PATCH] feat(sdk): resume owned reservations on the existing session
+ lifecycle
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/plugins/PLUGINS.md                       |  2 +
+ packages/sdk/src/host/automations.ts          | 58 ++++++++++++++--
+ packages/sdk/src/host/lifecycle.ts            | 69 +++++++++++++------
+ packages/sdk/src/plugins/plugins.ts           |  3 +
+ packages/sdk/src/plugins/validate.ts          |  9 +++
+ packages/sdk/src/types/automations.ts         |  2 +
+ packages/sdk/src/types/plugin.ts              |  2 +
+ .../sdk/test/plugin-start-session.test.ts     | 43 ++++++++++++
+ 8 files changed, 161 insertions(+), 27 deletions(-)
+
+diff --git a/docs/plugins/PLUGINS.md b/docs/plugins/PLUGINS.md
+index da5ae5fb1..09a12e980 100644
+--- a/docs/plugins/PLUGINS.md
++++ b/docs/plugins/PLUGINS.md
+@@ -1207,6 +1207,8 @@ Two reads go with it. `host.sessionKept(uri)` answers whether this host keeps th
+ 
+ A durable creation reservation answers its saved owner at its exact canonical URI, including after `named` rejects. That read does not probe backend history, admit the reservation or start a provider. It is ownership metadata, not proof of a usable session. Required creation metadata that is missing or unreadable rejects the read rather than reporting an absent session.
+ 
++After validating its own authoritative saved mapping, an owner can explicitly use that original session with `host.startSession({ owner, resume: uri })`. Supply only `owner` and `resume`, without a naming callback or creation overrides. The host validates the exact canonical URI and owner, reconstructs the saved request and default chat, and serializes this use with any original start still finishing. A naming callback must not await a resume of its own session. The host never remints its URI or replays an already admitted or uncertain initial prompt. This API does not by itself qualify a provider's native crash recovery; that still requires its custody and persistence guarantees.
++
+ ### Starting a chat on a backend
+ 
+ A plugin that already has a session and needs one more conversation inside it - a bot's Back chat answering the message that woke it - says so with `host.startChat(session, wanted)`, which answers the new chat's URI. The session is named by its URI and stays what it is: its owner, its provider, its tree and its other chats.
+diff --git a/packages/sdk/src/host/automations.ts b/packages/sdk/src/host/automations.ts
+index 827d46495..224f9f92a 100644
+--- a/packages/sdk/src/host/automations.ts
++++ b/packages/sdk/src/host/automations.ts
+@@ -737,13 +737,50 @@ export function createAutomations(ctx: HostContext): Automations {
+    * of a worktree session - and what each road adds is the question that is
+    * its own.
+    */
+-  const beginSession = async (wanted: StartSession, named?: (uri: string) => void | Promise<void>): Promise<string> => {
++  const beginSession = (given: StartSession, named?: (uri: string) => void | Promise<void>, requester?: PluginStarts): Promise<string> => {
++    const uri = given.resume ?? uriFor(crypto.randomUUID());
++    if (given.resume !== undefined && ctx.inSessionExclusive(uri)) {
++      return Promise.reject(new Error(`Cannot resume ${uri} from its own session lifecycle`));
++    }
++    return ctx.runSessionExclusive(uri, async () => {
++    let wanted = given;
++    const recovering = given.resume !== undefined;
++    if (recovering) {
++      const id = idOf(uri);
++      const creation = kept.creation(id);
++      if (given.owner === undefined || kept.uri?.(id) !== uri || creation === undefined || kept.owner(id) !== given.owner) {
++        throw new Error(`Cannot resume ${uri}: exact owned creation reservation not found`);
++      }
++      const provider = kept.provider(id);
++      const chat = kept.chats(id).find((one) => one.default === true);
++      const config = kept.config(id);
++      if (provider === undefined || chat === undefined || config === undefined) {
++        throw new Error(`Cannot resume ${uri}: required provider, config or default chat metadata is missing`);
++      }
++      const trusted = kept.trustedFolder?.(id);
++      const directory = kept.workingDirectory?.(id);
++      const title = kept.customTitle?.(id);
++      const userSettings = kept.userSettings?.(id);
++      const tools = kept.tools?.(id);
++      const origin = kept.automationOrigin?.(id);
++      wanted = {
++        owner: given.owner, provider, config, text: creation.initialPrompt === 'pending' ? creation.prompt ?? '' : '',
++        trusted: trusted !== undefined,
++        ...(directory === undefined ? {} : { workingDirectory: directory }),
++        ...(title === undefined ? {} : { title }),
++        ...(userSettings === undefined ? {} : { userSettings }),
++        ...(tools === undefined ? {} : { tools }),
++        ...(creation.instructions === undefined ? {} : { instructions: [...creation.instructions] }),
++        ...(creation.customizations === undefined ? {} : { customizations: structuredClone([...creation.customizations]) }),
++        ...(creation.model === undefined ? {} : { model: creation.model }),
++        ...(origin === undefined ? {} : { origin }),
++      };
++    }
+     wanted = structuredClone(wanted);
+     const provider = wanted.provider ?? ctx.first?.provider;
+     if (provider === undefined) throw new Error(noProvider(provider));
+     // Named the way a client's `createSession` names a session.
+-    const uri = uriFor(crypto.randomUUID());
+-    unheld(uri);
++    if (!recovering) unheld(uri);
+     const config = wanted.config ?? {};
+     if (!isDeepStrictEqual(config, JSON.parse(JSON.stringify(config)))) throw new RpcError(INVALID_PARAMS, "Session config cannot be recovered without losing values");
+     // The same steps a client's `createSession` takes: the folder the daemon's
+@@ -763,6 +800,12 @@ export function createAutomations(ctx: HostContext): Automations {
+      */
+     const owner = wanted.owner;
+     const person = principalFor(owner);
++    if (requester !== undefined && options.users !== undefined && owner?.startsWith('user:') === true && person !== undefined && !person.can('session:create')) {
++      throw new RpcError(-32009, refusalReason(person.id, 'session:create'), {});
++    }
++    if (recovering && wanted.trusted === true && (wanted.workingDirectory === undefined || !mayTrust(requester, wanted.workingDirectory))) {
++      throw new RpcError(-32009, refusalReason(`plugin:${requester?.by ?? 'unknown'}`, 'session:trust'), {});
++    }
+     /*
+      * `computer:write`, which only a source asks for: naming one is a machine
+      * made for this run, held to the same grant a client's `createSession` is.
+@@ -790,9 +833,13 @@ export function createAutomations(ctx: HostContext): Automations {
+     }
+     const wrong = await admitted(person, charged.get(uri)?.scope, config, provider, uri, owner);
+     if (wrong !== undefined) throw new RpcError(-32009, wrong);
++    if (recovering) {
++      ctx.checkSessionProvider(provider, config, forWhom(owner));
++      if (sessions.has(uri)) return uri;
++    }
+     const prepare = async (): Promise<void> => {
+       if (wanted.trusted === true && wanted.workingDirectory !== undefined) kept.setTrustedFolder?.(idOf(uri), localPath(wanted.workingDirectory));
+-      kept.setCreation(idOf(uri), {
++      if (!recovering) kept.setCreation(idOf(uri), {
+         phase: "reserved", initialPrompt: wanted.text.trim() === "" ? "none" : "pending",
+         ...(wanted.text.trim() === "" ? {} : { prompt: wanted.text }),
+         ...(wanted.instructions === undefined ? {} : { instructions: wanted.instructions }),
+@@ -870,6 +917,7 @@ export function createAutomations(ctx: HostContext): Automations {
+     fireRun(wanted);
+     beginIn(uri, wanted);
+     return uri;
++    });
+   };
+ 
+   /**
+@@ -1023,7 +1071,7 @@ export function createAutomations(ctx: HostContext): Automations {
+         throw new RpcError(-32009, refusalReason(person.id, 'session:create'), {});
+       }
+     }
+-    return await beginSession(wanted, named);
++    return await beginSession(wanted, named, who);
+   };
+ 
+   /**
+diff --git a/packages/sdk/src/host/lifecycle.ts b/packages/sdk/src/host/lifecycle.ts
+index f6b84b184..3ca2fcc9e 100644
+--- a/packages/sdk/src/host/lifecycle.ts
++++ b/packages/sdk/src/host/lifecycle.ts
+@@ -1,4 +1,5 @@
+ import { AhpErrorCodes } from '@microsoft/agent-host-protocol';
++import { AsyncLocalStorage } from 'node:async_hooks';
+ import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
+ import { computerId, computersFor } from '../machines/computers.js';
+ import { deleteNested } from '../sessions/nested.js';
+@@ -171,6 +172,10 @@ export interface Lifecycle {
+   requestSessionWorktreeRemoval(uri: string, after?: Promise<unknown>): Promise<void>;
+   /** A session's tree put back at its path on its branch, where `requestSessionWorktreeRemoval` took it, as VS Code restores a session's worktree. */
+   restoreSessionWorktree(uri: string): Promise<void>;
++  /** The existing session chain, shared by creation, explicit use and worktree lifecycle. */
++  runSessionExclusive<T>(uri: string, step: () => Promise<T>): Promise<T>;
++  inSessionExclusive(uri: string): boolean;
++  checkSessionProvider(provider: string, config: Record<string, unknown>, by?: { owner?: Owner; principal?: Principal; sender?: Connection }): Agent;
+   /**
+    * A tree of the window's own, cut for a creating session whose tree is
+    * pending and named after the handle the window holds it by.
+@@ -1693,20 +1698,32 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/AGENTS.md#L352
+    */
+   const worktreeLocks = new Map<string, Promise<void>>();
++  const sessionStep = new AsyncLocalStorage<{ id: string; active: boolean }>();
++  const inSessionExclusive = (uri: string): boolean => {
++    const current = sessionStep.getStore();
++    return current?.active === true && current.id === idOf(uri);
++  };
+ 
+   // What archive does with a dirty tree, from the host's own option: set here
+   // because `requestSessionWorktreeRemoval` is where it is read.
+   ctx.archiveDirtyWorktree = options.archiveDirtyWorktree ?? 'keep';
+ 
+   /** One step on a session's chain, run once the step before it has settled. */
+-  const runExclusive = (uri: string, step: () => Promise<void>): Promise<void> => {
++  const runExclusive = <T,>(uri: string, step: () => Promise<T>): Promise<T> => {
++    // Internal restore steps reuse their current owner instead of waiting on themselves.
++    if (inSessionExclusive(uri)) return step();
+     const id = idOf(uri);
+-    const next = (worktreeLocks.get(id) ?? Promise.resolve()).then(step).catch((error: unknown) => {
+-      log.error(`worktree of ${uri}: ${error instanceof Error ? error.message : String(error)}`);
++    const result = (worktreeLocks.get(id) ?? Promise.resolve()).then(() => {
++      const current = { id, active: true };
++      return sessionStep.run(current, async () => {
++        try { return await step(); }
++        finally { current.active = false; }
++      });
+     });
++    const next = result.then(() => undefined, () => undefined);
+     worktreeLocks.set(id, next);
+     void next.then(() => { if (worktreeLocks.get(id) === next) worktreeLocks.delete(id); });
+-    return next;
++    return result;
+   };
+ 
+   /** Whether something is at a path. */
+@@ -1838,7 +1855,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+           log.warn(`kept ${tree.path}: ${error instanceof Error ? error.message : String(error)}`);
+         });
+     }
+-  });
++  }).catch((error: unknown) => { log.error(`worktree of ${uri}: ${error instanceof Error ? error.message : String(error)}`); });
+ 
+   /*
+    * A session's trees, put back where `requestSessionWorktreeRemoval` took them.
+@@ -1870,7 +1887,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+           log.error(`could not put ${tree.path} back: ${error instanceof Error ? error.message : String(error)}`);
+         });
+     }
+-  });
++  }).catch((error: unknown) => { log.error(`worktree of ${uri}: ${error instanceof Error ? error.message : String(error)}`); });
+ 
+   /**
+    * A message in the protocol's spelling, from what this host was handed: its
+@@ -2579,23 +2596,11 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+    * was made for an older VS Code window that addresses no opaque chat, read
+    * from `sender` where it is left out.
+    */
+-  const createProviderSession = async (
+-    uri: string,
++  const checkSessionProvider = (
+     provider: string,
+     config: Record<string, unknown>,
+-    where: string | undefined,
+-    origin?: { kind: 'automation'; automation: string; run: string },
+-    credentials?: Record<string, string>,
+-    additional?: string[],
+-    title?: string,
+-    by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
+-    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
+-    progress?: (message: string) => void,
+-  ): Promise<void> => {
+-    named(uri, 'session');
+-    if (sessions.has(uri))
+-      throw new RpcError(-32003, `${uri} already exists`);
+-    ctx.unheld(uri);
++    by?: { owner?: Owner; principal?: Principal; sender?: Connection },
++  ): Agent => {
+     // An agent whose record is off or paused starts nothing: the sentence
+     // names the state rather than answering as a provider this host has never
+     // heard of.
+@@ -2628,6 +2633,26 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+      * somebody else's account.
+      */
+     checkBindings(config[BINDINGS_KEY], by?.owner, options.connectors?.refs());
++    return agent;
++  };
++
++  const createProviderSession = async (
++    uri: string,
++    provider: string,
++    config: Record<string, unknown>,
++    where: string | undefined,
++    origin?: { kind: 'automation'; automation: string; run: string },
++    credentials?: Record<string, string>,
++    additional?: string[],
++    title?: string,
++    by?: { owner?: Owner; principal?: Principal; sender?: Connection; legacyChatUris?: boolean },
++    asked?: { instructions?: string[]; tools?: string[]; userSettings?: boolean; beforeCreate?: () => Promise<void> },
++    progress?: (message: string) => void,
++  ): Promise<void> => {
++    named(uri, 'session');
++    if (sessions.has(uri)) throw new RpcError(-32003, `${uri} already exists`);
++    if (asked?.beforeCreate === undefined || kept.creation(idOf(uri)) === undefined) ctx.unheld(uri);
++    const agent = checkSessionProvider(provider, config, by);
+     // Whose this is, written down beside the session rather than in its config:
+     // a backend is handed `config` when it resumes and has no idea what an
+     // owner is, and this outlives the process that decided it.
+@@ -2789,7 +2814,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+   return {
+     removeSession, respawning, restart, moveSession, moveChatWorkspace, relaunchChat, chatIdOf, disposeProviderChat, ranIn, backendsOwn,
+     getProviderForChat, chatConfig, effectiveChatConfigValues, initialChatConfig, keepChatOwnConfigValues, isolated, oweTree,
+-    requestSessionWorktreeRemoval, restoreSessionWorktree, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
++    requestSessionWorktreeRemoval, restoreSessionWorktree, runSessionExclusive: runExclusive, inSessionExclusive, checkSessionProvider, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
+     beginOrRun, startTurn, commandIn, beginTurn, modelIn, messageFrom, messageOf, messageAttachments, scratchFolder, createProviderSession,
+   };
+ }
+diff --git a/packages/sdk/src/plugins/plugins.ts b/packages/sdk/src/plugins/plugins.ts
+index f7251800a..1ac0e18a5 100644
+--- a/packages/sdk/src/plugins/plugins.ts
++++ b/packages/sdk/src/plugins/plugins.ts
+@@ -1623,6 +1623,9 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
+       if (named !== undefined && typeof named !== 'function') {
+         throw new Error(miss(by, 'startSession', 'the door', 'a function to call with the session\'s URI, or nothing'));
+       }
++      if (asked.resume !== undefined && named !== undefined) {
++        throw new Error(miss(by, 'startSession', 'resume', 'no naming callback for an existing session'));
++      }
+       return start(asked, named);
+     },
+     /*
+diff --git a/packages/sdk/src/plugins/validate.ts b/packages/sdk/src/plugins/validate.ts
+index 4c08443b5..9dbb61473 100644
+--- a/packages/sdk/src/plugins/validate.ts
++++ b/packages/sdk/src/plugins/validate.ts
+@@ -542,6 +542,15 @@ export const checkSessionRequest = (value: unknown, by: string): StartSession =>
+   if (typeof owner !== 'string' || !OWNER.test(owner)) {
+     throw new Error(miss(by, 'startSession', String(owner), 'an owner: user:, team:, project:, root: or plugin:'));
+   }
++  if (object.resume !== undefined) {
++    if (typeof object.resume !== 'string' || object.resume.trim() === '') {
++      throw new Error(miss(by, 'startSession', 'resume', 'the exact URI of an existing owned session'));
++    }
++    if (Object.keys(object).some((key) => key !== 'owner' && key !== 'resume')) {
++      throw new Error(miss(by, 'startSession', 'resume', 'owner and resume only, without creation overrides'));
++    }
++    return { owner: owner as Owner, resume: object.resume, text: '' };
++  }
+   const provider = object.provider;
+   if (provider !== undefined && !right(provider, 'string')) {
+     throw new Error(miss(by, 'startSession', 'provider', 'a string, or nothing for the host default'));
+diff --git a/packages/sdk/src/types/automations.ts b/packages/sdk/src/types/automations.ts
+index 3a46f5300..19a6ceeb7 100644
+--- a/packages/sdk/src/types/automations.ts
++++ b/packages/sdk/src/types/automations.ts
+@@ -137,6 +137,8 @@ export interface AutomationRunState extends Omit<AutomationRun, 'owner'> {
+ 
+ /** How a store asks the host to start a session, since only the host can. */
+ export interface StartSession {
++  /** Plugin-authorized use of an existing canonical reservation. */
++  resume?: string;
+   /** The provider named in the automation's session template, or the default. */
+   provider?: string;
+   /** Where it should work. */
+diff --git a/packages/sdk/src/types/plugin.ts b/packages/sdk/src/types/plugin.ts
+index 217fad8f7..3378581a7 100644
+--- a/packages/sdk/src/types/plugin.ts
++++ b/packages/sdk/src/types/plugin.ts
+@@ -102,6 +102,8 @@ export interface SessionRequest {
+    * the session is started under.
+    */
+   owner: Owner;
++  /** Explicitly use this exact existing owned URI; exclusive with creation fields and named. */
++  resume?: string;
+   /** The backend it runs on, or the host's own default. */
+   provider?: string;
+   /** Where it works, or wherever a session with nothing said usually works. */
+diff --git a/packages/sdk/test/plugin-start-session.test.ts b/packages/sdk/test/plugin-start-session.test.ts
+index acad74d85..af4664562 100644
+--- a/packages/sdk/test/plugin-start-session.test.ts
++++ b/packages/sdk/test/plugin-start-session.test.ts
+@@ -227,6 +227,49 @@ it('awaits the mapping callback before the backend spawns', async () => {
+   expect(order).toEqual(['named', 'mapped', 'spawn']);
+ });
+ 
++it('resumes the same reservation after a lost mapping acknowledgment', async () => {
++  const order: string[] = [];
++  const { plugin, sessions } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
++  let mapped = '';
++  const failure = new Error('mapping acknowledgment lost');
++  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched', title: 'Original request' }, (uri) => {
++    mapped = uri;
++    throw failure;
++  })).rejects.toBe(failure);
++  const chat = sessions.chats(idOf(mapped))[0]?.uri;
++  expect(chat).toBeTypeOf('string');
++  expect(await plugin.startSession({ owner: 'user:soft', resume: mapped })).toBe(mapped);
++  expect(sessions.chats(idOf(mapped))[0]?.uri).toBe(chat);
++  expect(sessions.customTitle?.(idOf(mapped))).toBe('Original request');
++  expect(order).toEqual(['spawn']);
++});
++
++it('serializes two recoverers behind the original naming callback', async () => {
++  const order: string[] = [];
++  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
++  const gate = Promise.withResolvers<void>();
++  let mapped = '';
++  const original = plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async (uri) => {
++    mapped = uri;
++    await gate.promise;
++  });
++  await until(() => mapped !== '', 'reservation naming');
++  const recovering = [plugin.startSession({ owner: 'user:soft', resume: mapped }), plugin.startSession({ owner: 'user:soft', resume: mapped })];
++  expect(order).toEqual([]);
++  gate.resolve();
++  expect(await Promise.all([original, ...recovering])).toEqual([mapped, mapped, mapped]);
++  expect(order).toEqual(['spawn']);
++});
++
++it('rejects a naming callback awaiting its own reservation resume', async () => {
++  const order: string[] = [];
++  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
++  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async (uri) => {
++    await plugin.startSession({ owner: 'user:soft', resume: uri });
++  })).rejects.toThrow(/own.*lifecycle/);
++  expect(order).toEqual([]);
++});
++
+ it('refuses a door that is not a function, at the boundary', () => {
+   const { plugin } = starting({ soft: ['session:create'] });
+ 
+-- 
+2.56.0
+

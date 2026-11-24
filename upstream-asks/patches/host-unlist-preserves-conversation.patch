@@ -1,0 +1,654 @@
+From 2dae899b5657bc52b3d5b034f06d49b4ead6dd1a Mon Sep 17 00:00:00 2001
+From: "@dev/8" <dev-8@main.hh.invalid>
+Date: Sat, 21 Nov 2026 13:04:32 -0800
+Subject: [PATCH] feat(sdk): an unlist drops the row and keeps the provider
+ conversation (#37603)
+
+A fleet seat moving off a host needs its row gone from the catalogue while
+the backend keeps the transcript the next host resumes. Disposing did both
+halves, so the only way to drop a row was to destroy the conversation.
+
+`disposeSession` takes `preserveProviderSession: true`: the same disposal,
+minus the two steps that ask a backend to delete - `deleted()` and each
+chat's `disposeProviderChat()` - with the close reason `stopping` for a
+nested backend. It answers `{provider, providerSessionId, directory?,
+chatsRemoved}` so the caller keeps the resume id, and refuses with
+`SessionNotFound`, `session-live` (a running turn, named), `stop-unproven`
+(a session still held here) or a mismatched `expectProviderSessionId`,
+all before anything is dropped. Plain disposal is unchanged.
+
+Durability needs one thing a row cannot hold: the backend still lists the
+conversation, so merging it back in on the next listing resurrects the
+session the caller asked to be rid of - including after a restart, and with
+`showExternalSessions` on. `SessionStore.unlisted` is that mark, kept in
+`unlisted.json` beside the rows (which `forget` drops) and consulted by the
+listing and by `loadUnlisted`; a session made again on the answered id
+clears it.
+
+Tests: red first on bc4c35c4e (6 of 7 fail there), and the durability case
+is only green with the mark - a second store over the same folder, external
+sessions shown, backend still listing the id.
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/32986-move-fleet-onto-ahpd/37603-ahpd-durable-unlist-primitive
+---
+ packages/sdk/src/host/catalogue.ts       |  12 ++
+ packages/sdk/src/host/history.ts         |   5 +-
+ packages/sdk/src/host/lifecycle.ts       | 104 ++++++++++-
+ packages/sdk/src/host/sessionmethods.ts  |  24 ++-
+ packages/sdk/src/host/spawn.ts           |  13 ++
+ packages/sdk/src/sessions/sessions.ts    |  46 +++++
+ packages/sdk/src/types/sessions.ts       |  21 +++
+ packages/sdk/test/session-unlist.test.ts | 217 +++++++++++++++++++++++
+ 8 files changed, 431 insertions(+), 11 deletions(-)
+ create mode 100644 packages/sdk/test/session-unlist.test.ts
+
+diff --git a/packages/sdk/src/host/catalogue.ts b/packages/sdk/src/host/catalogue.ts
+index 226f63395..8cdab01b1 100644
+--- a/packages/sdk/src/host/catalogue.ts
++++ b/packages/sdk/src/host/catalogue.ts
+@@ -1331,6 +1331,18 @@ export function createCatalogue(ctx: HostContext): Catalogue {
+      * session recorded since this host started is one the map built at startup
+      * never saw, so reading the store here is also what keeps that map current.
+      */
++    /*
++     * And the ids somebody unlisted, dropped before anything else reads them.
++     *
++     * The backend still holds the conversation an unlist kept, so it still
++     * lists it: merged in here, that row is the session coming back with a
++     * fresh name and no owner, which is the one thing the caller asked not to
++     * happen. The mark outlives the row (`SessionStore.unlisted`), and only a
++     * session made again on the same id clears it.
++     */
++    for (const id of [...offered.keys()]) {
++      if (kept.unlisted?.(id) === true) offered.delete(id);
++    }
+     const stored = new Set(kept.sessions());
+     for (const id of stored) {
+       const backendId = ctx.sessionBackendId(id);
+diff --git a/packages/sdk/src/host/history.ts b/packages/sdk/src/host/history.ts
+index 317caf9f9..661af3c0f 100644
+--- a/packages/sdk/src/host/history.ts
++++ b/packages/sdk/src/host/history.ts
+@@ -399,7 +399,10 @@ export function createHistory(ctx: HostContext): History {
+      * registered only once the read answers with turns.
+      */
+     const loadUnlisted = async (): Promise<{ row: Summary; turns: WireTurn<Turn>[] } | undefined> => {
+-      // The gate a durable unlist extends, before any load.
++      // The gate a durable unlist extends, before any load: an id somebody
++      // unlisted is not one a client reaches by naming it, because the backend
++      // can still answer for it. It comes back only by being made again.
++      if (ctx.kept.unlisted?.(id) === true) return undefined;
+       if (!ctx.kept.sessions().includes(id)) return undefined;
+       const provider = ctx.kept.provider(id);
+       if (provider === undefined) return undefined;
+diff --git a/packages/sdk/src/host/lifecycle.ts b/packages/sdk/src/host/lifecycle.ts
+index d81b4ef1a..73121fe2c 100644
+--- a/packages/sdk/src/host/lifecycle.ts
++++ b/packages/sdk/src/host/lifecycle.ts
+@@ -98,9 +98,51 @@ export interface RanIn {
+  * ends one, and the turn a message becomes - the checks it answers to, the
+  * `!` command it may turn out to be, and the model and origin it carries.
+  */
++/**
++ * What an unlist answers: a row gone while the provider's conversation stays.
++ *
++ * Kept so the caller can record the id it resumes by, which is the only handle
++ * left once the row is gone (`SessionStore.unlisted`).
++ */
++export interface Unlisted {
++  /** The harness the conversation belongs to. */
++  provider: string;
++  /** The backend's own name for the conversation, which a resume is made with. */
++  providerSessionId: string;
++  /** Where it ran, when this host knew, so the resume starts where the work is. */
++  directory?: string;
++  /** How many chat records went with the row. */
++  chatsRemoved: number;
++}
++
++/** How far a removal goes: all of it, or the row alone (`preserveProviderSession`). */
++export interface Removal {
++  /**
++   * Drop the row and keep the provider's own copy of the conversation.
++   *
++   * The disposal's every step runs as it does today except the two that ask a
++   * backend to delete: the session's (`deleted`) and each chat's
++   * (`disposeProviderChat`). What is left is the conversation, the folder and
++   * the checkpoint refs, and the id this answers with.
++   *
++   * Only a session that has stopped may be unlisted: a live one is
++   * `session-live` where a turn runs, and `stop-unproven` otherwise, because
++   * this call does not stop anything and cannot prove a stop it did not ask
++   * for. Stopping is the sleep path's, which a stop and an archive already
++   * take.
++   */
++  preserveProviderSession?: boolean;
++  /**
++   * The provider session id the caller believes this row is, refused by name
++   * before anything is dropped. A row made again under the same host URI would
++   * otherwise be unlisted in place of the one the caller meant.
++   */
++  expectProviderSessionId?: string;
++}
++
+ export interface Lifecycle {
+   /** A session gone, with everything it held, and the backend's own copy of it. */
+-  removeSession(uri: string, acting?: Principal | Owner): Promise<void>;
++  removeSession(uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | undefined>;
+   /**
+    * The sessions a restart has taken out of `sessions` and not yet put back, by
+    * uri. A listing counts them as running, so it never prunes their records.
+@@ -777,7 +819,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+    * A name in neither map is not a session this host has ever heard of, and
+    * says so rather than deleting nothing successfully.
+    */
+-  const removeSession = async (uri: string, acting?: Principal | Owner): Promise<void> => {
++  const removeSession = async (uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | undefined> => {
+     mayDispose(acting, uri);
+     const held = sessions.get(uri);
+     const id = idOf(uri);
+@@ -787,6 +829,33 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+     if (!held && !owner)
+       throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${uri}`);
+     const agent = held?.agent ?? (owner as Agent);
++    /*
++     * An unlist keeps the conversation, so it is not a disposal that cleans up
++     * after itself: what the backend holds is the thing the caller wants back.
++     * Nothing may be dropped before both checks below have answered, which is
++     * the same reason `mayDispose` is first.
++     *
++     * A live session is not unlistable for the same reason a disposal is not a
++     * stop it can prove: this path does not stop anything. A turn that is
++     * running names itself; a session merely held here - a child still alive,
++     * a restart under way - is a stop this host was told nothing about.
++     */
++    const preserving = removal?.preserveProviderSession === true;
++    if (preserving) {
++      if (held !== undefined || ctx.restarting.has(uri)) {
++        const running = held === undefined
++          ? undefined
++          : [...held.chats].find(([chatUri]) => ctx.hasActiveTurn(chatUri));
++        if (running !== undefined) {
++          const turn = ctx.stateOf(running[0])?.activeTurn as { id?: unknown } | undefined;
++          throw new RpcError(AhpErrorCodes.TurnInProgress, `session-live: ${running[0]} is running turn ${String(turn?.id ?? 'a turn')} in ${uri}`);
++        }
++        throw new RpcError(AhpErrorCodes.Conflict, `stop-unproven: ${uri} is still running on this host, and this call does not stop it; stop it first`);
++      }
++      const expected = removal.expectProviderSessionId;
++      if (expected !== undefined && expected !== ctx.sessionBackendId(id))
++        throw new RpcError(AhpErrorCodes.Conflict, `expectProviderSessionId: ${uri} answers ${ctx.sessionBackendId(id)}, not ${expected}`);
++    }
+     /*
+      * The turn's last words before the session that said them goes.
+      *
+@@ -818,6 +887,13 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+      * read off the config the teardown forgets.
+      */
+     const directory = dirOf(uri) ?? (recorded === undefined ? undefined : kept.workingDirectory?.(id));
++    /*
++     * Where an unlist says the conversation ran, read here rather than at the
++     * answer: the row that holds it is forgotten below, and a caller that only
++     * kept a record of the session never had it live here for `dirOf` to
++     * answer from.
++     */
++    const resumeAt = directory ?? kept.workingDirectory?.(ctx.sessionBackendId(id)) ?? kept.workingDirectory?.(id);
+     const chats = ctx.heldChats(id);
+     const ran = ranIn(uri);
+     /*
+@@ -833,8 +909,10 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+       catch { /* the session goes either way */ }
+     }
+     if (held !== undefined) await teardown(held, uri);
+-    else await deletedInside(uri);
+-    let failure = await deleted(uri, agent, directory, ran);
++    else if (!preserving) await deletedInside(uri);
++    // The two backend deletes, and the only steps an unlist leaves out: what
++    // they remove is the conversation the caller is keeping.
++    let failure = preserving ? undefined : await deleted(uri, agent, directory, ran);
+     /*
+      * And every chat of it, each a conversation of its own that the backend
+      * keeps under an id of its own. Closed ones included: their conversation
+@@ -844,6 +922,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+      */
+     for (const chat of chats) {
+       if (chat.backendId === '' || chat.backendId === idOf(uri)) continue;
++      if (preserving) continue;
+       /*
+        * The backend that holds this chat's conversation, which is the chat's
+        * own where it ran on one - a transcript belongs to the harness that
+@@ -902,9 +981,24 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+       if (channel === uri || (open.kind === 'chat' && ctx.sessionFor(channel) === uri)) ctx.closeState(channel);
+     }
+     activeSessionsChanged();
++    /*
++     * The mark that keeps the row from coming back, written before the
++     * broadcast so a listing a client starts on being told the session is gone
++     * already knows it. It outlives the row: the backend still lists the
++     * conversation, and merging that row back in is the resurrection this
++     * exists to prevent.
++     */
++    if (preserving) kept.setUnlisted?.(id, true);
+     if (announced) broadcast(ROOT, 'root/sessionRemoved', { channel: ROOT, session: uri });
+-    log(`disposed ${uri}`);
++    log(preserving ? `unlisted ${uri}, keeping the ${agent.provider} conversation ${ctx.sessionBackendId(id)}` : `disposed ${uri}`);
+     if (failure !== undefined) throw failure;
++    if (!preserving) return undefined;
++    return {
++      provider: agent.provider,
++      providerSessionId: ctx.sessionBackendId(id),
++      ...(resumeAt === undefined ? {} : { directory: resumeAt }),
++      chatsRemoved: chats.length,
++    };
+   };
+ 
+   const restart = async (
+diff --git a/packages/sdk/src/host/sessionmethods.ts b/packages/sdk/src/host/sessionmethods.ts
+index 97918bbd3..a0f76d102 100644
+--- a/packages/sdk/src/host/sessionmethods.ts
++++ b/packages/sdk/src/host/sessionmethods.ts
+@@ -1889,11 +1889,25 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
+       return null;
+     },
+     disposeSession: async (params) => {
+-      // The caller, because a delete is not a write: `session:write` lets a
+-      // member change their own sessions and says nothing about ending
+-      // somebody else's, and this one cannot be undone.
+-      await removeSession(String(params.channel ?? ''), connection.principal);
+-      return null;
++      /*
++       * The caller, because a delete is not a write: `session:write` lets a
++       * member change their own sessions and says nothing about ending
++       * somebody else's, and this one cannot be undone.
++       *
++       * `preserveProviderSession` is the unlist: the row goes, the provider's
++       * conversation stays, and the answer is the id a resume is made with
++       * rather than `null`. It is an option on this call and not a verb of its
++       * own because every step of the disposal is the same one, and the two
++       * that differ are the backend deletes.
++       */
++      const preserving = params.preserveProviderSession === true;
++      const expected = optionalStringParam(params, 'expectProviderSessionId');
++      if (!preserving && expected !== undefined)
++        throw new RpcError(INVALID_PARAMS, 'expectProviderSessionId names the session an unlist keeps, so it needs preserveProviderSession: true');
++      const unlisted = await removeSession(String(params.channel ?? ''), connection.principal, preserving
++        ? { preserveProviderSession: true, ...(expected === undefined ? {} : { expectProviderSessionId: expected }) }
++        : undefined);
++      return unlisted ?? null;
+     },
+     /**
+      * The configuration a session would have, before one exists.
+diff --git a/packages/sdk/src/host/spawn.ts b/packages/sdk/src/host/spawn.ts
+index d99bed540..51d94bb3a 100644
+--- a/packages/sdk/src/host/spawn.ts
++++ b/packages/sdk/src/host/spawn.ts
+@@ -952,7 +952,20 @@ export function createSpawn(ctx: HostContext): Spawn {
+     if (own !== undefined && own !== '') {
+       if (kept.provider(own) !== agent.provider) kept.setProvider(own, agent.provider);
+       keepFolder(own, sessions.get(uri)?.workingDirectory);
++      /*
++       * A conversation that was unlisted has come back on purpose: this is a
++       * session made again on the id the unlist answered with, and the mark
++       * that kept its row off every listing goes with it (`SessionStore.unlisted`).
++       */
++      if (kept.unlisted?.(own) === true) kept.setUnlisted?.(own, false);
+     }
++    /*
++     * And the host's own id for it, which a backend that names its conversation
++     * only after the first prompt leaves as the row's: a session made on the id
++     * an unlist answered with is that conversation back on purpose, whichever
++     * of the two the mark was written under.
++     */
++    if (kept.unlisted?.(idOf(uri)) === true) kept.setUnlisted?.(idOf(uri), false);
+   };
+ 
+   /**
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 47d9138f3..ff60ed19a 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -62,6 +62,11 @@ interface Held {
+  */
+ export function memorySessions(): SessionStore & Held {
+   const rows = new Map<string, Row>();
++  /*
++   * The ids somebody unlisted, which no row holds: unlisting is what drops the
++   * row, so the mark has to outlive it. See `SessionStore.unlisted`.
++   */
++  const unlistedIds = new Set<string>();
+ 
+   /**
+    * Apply one change to a session's row, keeping it only while it still says
+@@ -334,6 +339,8 @@ export function memorySessions(): SessionStore & Held {
+         ...(held.changes === undefined ? {} : { changes: held.changes }),
+       };
+     },
++    unlisted: (id) => unlistedIds.has(id),
++    setUnlisted: (id, value) => { if (value) unlistedIds.add(id); else unlistedIds.delete(id); },
+     forget: (id) => { rows.delete(id); },
+     prune: (gone) => {
+       // One id per row, since a session is remembered under whichever of the
+@@ -747,6 +754,22 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+   const inner = memorySessions();
+   const told = (message: string): void => { options.onProblem?.(message); };
+   const faults = new Map<string, Error>();
++  /*
++   * The ids somebody unlisted, in a file of their own.
++   *
++   * Not a row and not a field of one: unlisting is what drops the row, so a
++   * mark kept in it would go with the row it is meant to outlive. The name is
++   * reserved - `load` skips it - because a session id is opaque and one could
++   * spell it.
++   */
++  const unlistedFile = 'unlisted.json';
++  const unlistedIds = new Set<string>();
++  const saveUnlisted = (): void => {
++    try { writeJsonAtomic(join(dir, unlistedFile), { version: 1, ids: [...unlistedIds] }, { dirMode: 0o700 }); }
++    catch (error) {
++      told(`Could not write ${join(dir, unlistedFile)}: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  };
+   const readable = (id: string): typeof inner => {
+     const failure = faults.get(id);
+     if (failure !== undefined) throw failure;
+@@ -925,6 +948,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     }
+     for (const name of names) {
+       if (!name.endsWith('.json')) continue;
++      // The unlisted ids' own file, which `loadUnlisted` reads.
++      if (name === unlistedFile) continue;
+       // A name that is not an id this version could have written is not one of
+       // its files.
+       const id = idIn(name.slice(0, -'.json'.length));
+@@ -1129,6 +1154,20 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     }
+     owned();
+     load();
++    /*
++     * Read once, with the rows. A file that cannot be read is a line and no
++     * marks: a store that forgot its unlists lists the sessions again, which
++     * is the answer a host that never unlisted anything gives, and the caller
++     * that asked for the unlist is still the one holding the resume id.
++     */
++    const marked = readJson(join(dir, unlistedFile));
++    if (marked.ok) {
++      const ids = (marked.value as { ids?: unknown } | null)?.ids;
++      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string' && id !== '') unlistedIds.add(id);
++    }
++    else if (marked.kind !== 'missing') {
++      told(`Could not read ${join(dir, unlistedFile)}: ${marked.kind === 'unreadable' ? marked.code ?? 'unreadable' : 'it is not JSON'}`);
++    }
+   }
+   catch (error) { writer.release(); throw error; }
+ 
+@@ -1233,6 +1272,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     // folder, and what it was told since: the composition answers both.
+     sessions: () => [...new Set([...inner.sessions(), ...faults.keys()])],
+     attachmentsDir: (id) => { readable(id); return attachmentsOf(id); },
++    unlisted: (id) => unlistedIds.has(id),
++    setUnlisted: (id, value) => {
++      owned();
++      if (value) unlistedIds.add(id);
++      else unlistedIds.delete(id);
++      saveUnlisted();
++    },
+     forget: (id) => {
+       owned();
+       readable(id);
+diff --git a/packages/sdk/src/types/sessions.ts b/packages/sdk/src/types/sessions.ts
+index 934940929..ab7d73c01 100644
+--- a/packages/sdk/src/types/sessions.ts
++++ b/packages/sdk/src/types/sessions.ts
+@@ -481,6 +481,27 @@ export interface SessionStore {
+   additionalWorktrees?(id: string): StoredWorktree[];
+   /** Record them, or forget them with an empty list. */
+   setAdditionalWorktrees?(id: string, value: StoredWorktree[]): void;
++  /**
++   * Whether this session's row was deliberately unlisted.
++   *
++   * An unlist is a session this host stops offering while the provider keeps
++   * its conversation: the row, the chats and the folder record go exactly as
++   * a disposal's do, and the backend is never asked to delete its own copy.
++   * What is left is this mark, which is what keeps the row from coming back:
++   * the backend still lists the conversation, so a listing that merged it in
++   * again would resurrect the session a caller asked to be rid of, with a
++   * fresh row and no owner.
++   *
++   * It is not a flag on the row, because the row is what unlisting drops. A
++   * session comes back only deliberately, by being made again on the id the
++   * unlist answered with; that clears the mark.
++   *
++   * Optional: a store without it lists every row its backends offer, which is
++   * what a host that was never told to unlist has always done.
++   */
++  unlisted?(id: string): boolean;
++  /** Record it, or clear it for a session made again on this id. */
++  setUnlisted?(id: string, value: boolean): void;
+   /**
+    * When the host archived this session itself, because its pull requests
+    * were merged, as an ISO time. Nothing for a session a person archived, and
+diff --git a/packages/sdk/test/session-unlist.test.ts b/packages/sdk/test/session-unlist.test.ts
+new file mode 100644
+index 000000000..5f6c71ab5
+--- /dev/null
++++ b/packages/sdk/test/session-unlist.test.ts
+@@ -0,0 +1,217 @@
++/*
++ * An unlist: the row goes, the provider's conversation stays.
++ *
++ * `disposeSession` asks a backend to delete its own copy, which is right for a
++ * session nobody wants back and wrong for one a caller is moving off its
++ * catalogue while keeping the transcript - a fleet seat whose next host resumes
++ * the same conversation. What is here is that second half: the same disposal
++ * with `preserveProviderSession: true`, the id it answers with, and the mark
++ * that keeps the next listing from offering the row again because the backend
++ * still holds it.
++ */
++
++import { WAIT_MS } from '../../../tools/wait.ts';
++import { existsSync, mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, expect, it } from 'vitest';
++import { createHost } from '../src/host.js';
++import { fileSessions } from '../src/sessions/sessions.js';
++import { echo } from '../../../examples/echo/agent.js';
++import type { Agent, Listed } from '../src/types/agent.js';
++import type { Peer } from '../src/types/rpc.js';
++import type { SessionStore } from '../src/types/sessions.js';
++
++let dir: string;
++beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'ahpd-unlist-')); });
++afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
++
++const peer = (): Peer & { notes: { method: string; params: unknown }[] } => {
++  const notes: { method: string; params: unknown }[] = [];
++  return {
++    notes,
++    send: () => {},
++    notify: (method, params) => { notes.push({ method, params }); },
++    request: async () => ({}),
++    answered: () => {},
++    close: () => {},
++  };
++};
++
++/** A row the backend lists, dated now, so no external-session window hides it. */
++const listedRow = (id: string): Listed => {
++  const now = new Date().toISOString();
++  return { id, title: id, createdAt: now, modifiedAt: now, workingDirectories: [] };
++};
++
++const settle = async (times = 4): Promise<void> => {
++  for (let i = 0; i < times; i++) await new Promise((r) => { setTimeout(r, 0); });
++};
++
++/** An echo backend that lists `rows` and records every delete it is asked for. */
++const backend = (rows: Listed[], deleted: string[] = []): Agent => {
++  const base = echo({ path: dir, pace: 0 });
++  return {
++    ...base,
++    list: async () => rows,
++    delete: async (id) => { deleted.push(id); },
++  };
++};
++
++/** A store holding one session the host ran, as a restart reads it. */
++const recorded = (store: SessionStore, id: string, folder: string): SessionStore => {
++  store.setProvider(id, 'echo');
++  store.setWorkingDirectory?.(id, folder);
++  return store;
++};
++
++const serving = async (agent: Agent, store?: SessionStore) => {
++  const host = createHost({ path: dir, agents: [agent], ...(store === undefined ? {} : { sessions: store }) });
++  const p = peer();
++  const client = host.accept(p);
++  await client.handle({ method: 'initialize', params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] } });
++  return { host, client, notes: p.notes };
++};
++
++const listing = async (client: Awaited<ReturnType<typeof serving>>['client']): Promise<string[]> => {
++  const rows = await client.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } }) as {
++    items: { resource: string }[];
++  };
++  return rows.items.map((one) => one.resource);
++};
++
++/** Whether the catalogue holds a row for this session, under whichever name the host gave it. */
++const holds = (rows: readonly string[], id: string): boolean => rows.some((one) => one.endsWith(':/' + id));
++
++const unlist = (client: Awaited<ReturnType<typeof serving>>['client'], uri: string, extra: Record<string, unknown> = {}): Promise<unknown> =>
++  client.handle({ method: 'disposeSession', params: { channel: uri, preserveProviderSession: true, ...extra } });
++
++const refused = async (run: Promise<unknown>): Promise<string> =>
++  await run.then(() => { throw new Error('the call was expected to refuse'); }, (error: { message: string }) => error.message);
++
++it('drops the row, keeps the conversation, and never asks the backend to delete it', async () => {
++  const deleted: string[] = [];
++  const rows: Listed[] = [listedRow('ember')];
++  const store = recorded(fileSessions({ dir: join(dir, 'sessions') }), 'ember', dir);
++  expect(store.workingDirectory?.('ember')).toBe(dir);
++  const { client, notes } = await serving(backend(rows, deleted), store);
++
++  expect(holds(await listing(client), 'ember')).toBe(true);
++
++  const answered = await unlist(client, 'echo:/ember') as Record<string, unknown>;
++  await settle();
++
++  // The id a resume is made with, where it ran, and how many chat records went.
++  expect(answered).toMatchObject({ provider: 'echo', providerSessionId: 'ember', directory: dir, chatsRemoved: 0 });
++  // Not this host's row any more, and not the backend's conversation either.
++  expect(holds(await listing(client), 'ember')).toBe(false);
++  expect(deleted).toEqual([]);
++  expect(store.provider('ember')).toBeUndefined();
++  // The watching client is told, through the removal it already knows.
++  expect(notes.some((one) => one.method === 'root/sessionRemoved')).toBe(true);
++  // The folder the conversation worked in is the caller's to remove, so it is still there.
++  expect(existsSync(dir)).toBe(true);
++});
++
++it('a disposal without the option still asks the backend to delete its copy', async () => {
++  const deleted: string[] = [];
++  const rows: Listed[] = [listedRow('ember')];
++  const store = recorded(fileSessions({ dir: join(dir, 'sessions') }), 'ember', dir);
++  const { client } = await serving(backend(rows, deleted), store);
++  await listing(client);
++
++  await client.handle({ method: 'disposeSession', params: { channel: 'echo:/ember' } });
++  await settle();
++
++  expect(deleted).toEqual(['ember']);
++});
++
++it('stays gone after a restart, though the backend still lists the conversation', async () => {
++  const rows: Listed[] = [listedRow('ember')];
++  const store = join(dir, 'sessions');
++
++  const first = await serving(backend(rows), recorded(fileSessions({ dir: store }), 'ember', dir));
++  await listing(first.client);
++  await unlist(first.client, 'echo:/ember');
++  first.client.close();
++  first.host.close?.();
++  await settle();
++
++  // The daemon again on the same folder, with the backend still holding - and
++  // still listing - the conversation the unlist kept. External sessions are
++  // shown, which is what makes this a test of the mark: with them hidden, a
++  // row with no record is dropped by the mode rather than by anything the
++  // unlist did.
++  const second = await serving(backend(rows), fileSessions({ dir: store }));
++  await second.client.handle({
++    method: 'dispatchAction',
++    params: { channel: 'ahp-root://', action: { type: 'root/configChanged', config: { showExternalSessions: 'last30Days' } } },
++  });
++  expect(holds(await listing(second.client), 'ember')).toBe(false);
++  second.client.close();
++});
++
++it('refuses a different provider session id before anything is dropped', async () => {
++  const deleted: string[] = [];
++  const rows: Listed[] = [listedRow('ember')];
++  const store = recorded(fileSessions({ dir: join(dir, 'sessions') }), 'ember', dir);
++  const { client } = await serving(backend(rows, deleted), store);
++  await listing(client);
++
++  const said = await refused(unlist(client, 'echo:/ember', { expectProviderSessionId: 'ash' }));
++  expect(said).toContain('expectProviderSessionId');
++
++  // Nothing moved: the row is still listed and the backend was not even asked.
++  expect(holds(await listing(client), 'ember')).toBe(true);
++  expect(deleted).toEqual([]);
++});
++
++it('comes back when a session is made again on the id the unlist answered with', async () => {
++  const rows: Listed[] = [listedRow('ember')];
++  const store = join(dir, 'sessions');
++  const kept = recorded(fileSessions({ dir: store }), 'ember', dir);
++  const { client } = await serving(backend(rows), kept);
++  await listing(client);
++
++  await unlist(client, 'echo:/ember');
++  expect(holds(await listing(client), 'ember')).toBe(false);
++  expect(kept.unlisted?.('ember')).toBe(true);
++
++  await client.handle({ method: 'createSession', params: { channel: 'echo:/ember', provider: 'echo', workingDirectories: [`file://${dir}`] } });
++  // A session nobody has spoken in is not listed yet, so the mark going is
++  // what is asserted here and the listing is what follows the first message.
++  expect(kept.unlisted?.('ember')).toBe(false);
++  void client.handle({ method: 'createChat', params: { channel: 'echo:/ember', chat: 'ahp-chat:/ember-first', initialMessage: { text: 'back', origin: { kind: 'user' } } } });
++  const end = Date.now() + WAIT_MS;
++  while (Date.now() < end) {
++    if (holds(await listing(client), 'ember')) break;
++    await settle(2);
++  }
++
++  expect(holds(await listing(client), 'ember')).toBe(true);
++  client.close();
++});
++
++it('refuses a session this host is still running, naming the stop it cannot prove', async () => {
++  const { client } = await serving(backend([]));
++  await client.handle({ method: 'createSession', params: { channel: 'ahp-session:/held', provider: 'echo', workingDirectories: [`file://${dir}`] } });
++
++  const said = await refused(unlist(client, 'ahp-session:/held'));
++  expect(said).toContain('stop-unproven');
++  client.close();
++});
++
++it('refuses a turn that is running, naming the chat', async () => {
++  // A paced backend: the turn is still being written when the unlist arrives.
++  const base = echo({ path: dir, pace: 400 });
++  const { client } = await serving({ ...base, list: async () => [] });
++  const uri = 'ahp-session:/talker';
++  await client.handle({ method: 'createSession', params: { channel: uri, provider: 'echo', workingDirectories: [`file://${dir}`] } });
++  void client.handle({ method: 'createChat', params: { channel: uri, chat: 'ahp-chat:/talker', initialMessage: { text: 'one two three four', origin: { kind: 'user' } } } }).catch(() => {});
++  const end = Date.now() + WAIT_MS;
++  while (Date.now() < end) { await settle(1); break; }
++
++  const said = await refused(unlist(client, uri));
++  expect(said).toContain('session-live');
++  client.close();
++});
+-- 
+2.56.0
+

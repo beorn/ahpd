@@ -1,0 +1,453 @@
+From 9f1716148623809e2982091583429179e659750b Mon Sep 17 00:00:00 2001
+From: "@dev/8" <dev-8@main.hh.invalid>
+Date: Sat, 21 Nov 2026 02:54:53 -0800
+Subject: [PATCH] fix(sleep): sleep an archived session whose chat never spoke
+
+An archived session whose chat has not taken a turn was refused by `quiet()`:
+"a chat with no conversation yet has nothing to resume by". That rule is right
+for idle eviction and wrong for a stop. The archive action sleeps the session,
+`chatactions.ts` swallows the refusal, and the host then reports nothing while
+the agent keeps running until its window expires and the window reaps it with
+SIGTERM (#37426).
+
+An archived session is ended, not resumed, so it has nothing to keep either.
+The zero-turn test now applies only to live sessions; every other refusal is
+untouched: an active turn, a pending message, a person being asked, a
+non-resumable or busy chat, and an agent that is gone.
+
+The same seat stopped cleanly whenever it had taken one turn, which is why the
+symptom looked intermittent.
+---
+ packages/sdk/src/host/sleep.ts          |  7 +++++--
+ packages/sdk/test/session-sleep.test.ts | 27 +++++++++++++++++++++----
+ 2 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/packages/sdk/src/host/sleep.ts b/packages/sdk/src/host/sleep.ts
+index d041b5da7..37cea0ba9 100644
+--- a/packages/sdk/src/host/sleep.ts
++++ b/packages/sdk/src/host/sleep.ts
+@@ -185,8 +185,11 @@ export function createSleep(ctx: HostContext): Sleep {
+     for (const [chatUri, chat] of held.chats) {
+       if (hasActiveTurn(chatUri) || pending(chatUri) || waitingOnPerson(chat)) return false;
+       if (chat.resumable?.() === false || chat.busy?.() === true) return false;
+-      // A chat with no conversation yet has nothing to resume by.
+-      if (chat.agentId() === undefined || chat.allTurns().length === 0) return false;
++      // A chat with no conversation yet has nothing to resume by. An archived
++      // session is ended, not resumed: refusing that sleep leaves its agent
++      // running until the window expires and reaps it.
++      if (chat.agentId() === undefined) return false;
++      if (chat.allTurns().length === 0 && !archived(uri)) return false;
+     }
+     return !watched(uri);
+   };
+diff --git a/packages/sdk/test/session-sleep.test.ts b/packages/sdk/test/session-sleep.test.ts
+index 555ad204c..7f31c04f2 100644
+--- a/packages/sdk/test/session-sleep.test.ts
++++ b/packages/sdk/test/session-sleep.test.ts
+@@ -172,8 +172,8 @@ async function serving(knobs: Knobs, options: Options = {}) {
+     params: { clientId: 'window', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] },
+   });
+ 
+-  /** A session with one finished turn, and the channels it is read on. */
+-  const open = async (name: string) => {
++  /** A session, with one finished turn unless `spoke` is false, and the channels it is read on. */
++  const open = async (name: string, spoke = true) => {
+     const channel = `ahp-session:/${name}`;
+     /** The session's own name, which the catalogue lists it by. */
+     const resource = `ahp-session:/${name}`;
+@@ -191,7 +191,7 @@ async function serving(knobs: Knobs, options: Options = {}) {
+       });
+       for (let i = 0; i < 200 && await turns(chatUri) === before; i++) await settle(1);
+     };
+-    await say('hello');
++    if (spoke) await say('hello');
+     /** Stop watching the session and its chat, which leaves it free to sleep. */
+     const leave = async (): Promise<void> => {
+       await client.handle({ method: 'unsubscribe', params: { channel: chatUri } });
+@@ -226,7 +226,7 @@ async function serving(knobs: Knobs, options: Options = {}) {
+     return rows.items.map((one) => one.resource);
+   };
+ 
+-  return { host, client, time, open, active, awake, listed, dir };
++  return { host, client, time, open, turns, active, awake, listed, dir };
+ }
+ 
+ it('sleeps a session quiet for longer than the timeout', async () => {
+@@ -722,6 +722,25 @@ it('sleeps an archived session at once', async () => {
+   expect(awake()).toBe(0);
+ });
+ 
++/*
++ * A session archived before its first turn has nothing to resume by, but it
++ * also has nothing to keep. The archive action sleeps it; refusing there
++ * leaves the agent running until its window expires and the window reaps it.
++ */
++it('sleeps an archived session whose chat never spoke', async () => {
++  const knobs: Knobs = { closes: [] };
++  const { client, open, turns, awake } = await serving(knobs);
++  const one = await open('one', false);
++  expect(await turns(one.chatUri)).toBe(0);
++  await one.leave();
++  await client.handle({
++    method: 'dispatchAction',
++    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true } },
++  });
++  await until(() => knobs.closes.length > 0);
++  expect(awake()).toBe(0);
++});
++
+ /*
+  * VS Code's host refuses an archive of a default chat without restoring the
+  * session it is in.
+-- 
+2.56.0
+
+From 8c1632147ece53b522697ecac2d22d12360624b2 Mon Sep 17 00:00:00 2001
+From: "@dev/8" <dev-8@main.hh.invalid>
+Date: Sat, 21 Nov 2026 04:15:07 -0800
+Subject: [PATCH] fix(sleep): a stop sleeps a never-spoken chat whose session
+ is not resumable (#37426)
+
+---
+ packages/sdk/src/host/chatactions.ts    |  7 ++-
+ packages/sdk/src/host/sleep.ts          | 38 ++++++++++------
+ packages/sdk/test/session-sleep.test.ts | 60 +++++++++++++++++++++++--
+ 3 files changed, 87 insertions(+), 18 deletions(-)
+
+diff --git a/packages/sdk/src/host/chatactions.ts b/packages/sdk/src/host/chatactions.ts
+index c8d591734..e96823744 100644
+--- a/packages/sdk/src/host/chatactions.ts
++++ b/packages/sdk/src/host/chatactions.ts
+@@ -67,8 +67,13 @@ export function sessionFlag(
+   // let go by the residency where nothing holds it.
+   // https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L1457-L1464
+   if (bit === Status.IsArchived && on) {
++    // A stop says so on its own archive offer (#37426): the session is
++    // archived because the seat is being stopped, and a chat that never spoke
++    // has nothing to resume by, so that stop alone may sleep it. The flag is
++    // read here and passed to this one sleep; no other bit is written.
++    const stopping = action.stopping === true;
+     queueMicrotask(() => {
+-      void ctx.sleep(uri).catch(() => undefined);
++      void ctx.sleep(uri, stopping).catch(() => undefined);
+       ctx.reconcile();
+     });
+   }
+diff --git a/packages/sdk/src/host/sleep.ts b/packages/sdk/src/host/sleep.ts
+index 37cea0ba9..6f6c9797b 100644
+--- a/packages/sdk/src/host/sleep.ts
++++ b/packages/sdk/src/host/sleep.ts
+@@ -22,13 +22,19 @@ import type { Turn } from '@microsoft/agent-host-protocol';
+  * automations stay, and only the agent behind it is closed.
+  */
+ export interface Sleep {
+-  /** Whether a live session has nothing in hand, and so may sleep. */
+-  quiet(uri: string): boolean;
++  /**
++   * Whether a live session has nothing in hand, and so may sleep.
++   *
++   * `stopping` is a seat's stop asking: a chat that never spoke has nothing to
++   * resume by, but a stop is still the end of the seat, so for that stop alone
++   * it counts as quiet (#37426). No flag is written by it.
++   */
++  quiet(uri: string, stopping?: boolean): boolean;
+   /**
+    * Let a quiet session's agent go. Answers whether it slept. An archived
+    * session gives its tree back as well, once it has stopped.
+    */
+-  sleep(uri: string): Promise<boolean>;
++  sleep(uri: string, stopping?: boolean): Promise<boolean>;
+   /**
+    * Bring a session that is not live back, resumed in place.
+    *
+@@ -178,18 +184,22 @@ export function createSleep(ctx: HostContext): Sleep {
+     return false;
+   };
+ 
+-  const quiet = (uri: string): boolean => {
++  const quiet = (uri: string, stopping = false): boolean => {
+     const held = sessions.get(uri);
+     const id = idOf(uri);
+     if (held === undefined || restarting.has(uri) || closing.has(id) || waking.has(id) || holds.has(id)) return false;
+     for (const [chatUri, chat] of held.chats) {
+       if (hasActiveTurn(chatUri) || pending(chatUri) || waitingOnPerson(chat)) return false;
+-      if (chat.resumable?.() === false || chat.busy?.() === true) return false;
+-      // A chat with no conversation yet has nothing to resume by. An archived
+-      // session is ended, not resumed: refusing that sleep leaves its agent
+-      // running until the window expires and reaps it.
++      // A chat with no conversation yet has nothing to resume by, and its
++      // agent says so. A stop is still the end of the seat: for that stop
++      // alone, a chat that never spoke counts as quiet (#37426).
++      const unheard = chat.allTurns().length === 0;
++      if (chat.resumable?.() === false && !(stopping && unheard)) return false;
++      if (chat.busy?.() === true) return false;
++      // An archived session is ended, not resumed: refusing that sleep leaves
++      // its agent running until the window expires and reaps it.
+       if (chat.agentId() === undefined) return false;
+-      if (chat.allTurns().length === 0 && !archived(uri)) return false;
++      if (unheard && !archived(uri) && !stopping) return false;
+     }
+     return !watched(uri);
+   };
+@@ -197,7 +207,7 @@ export function createSleep(ctx: HostContext): Sleep {
+   /** Whether a session is archived, which sleeps it without waiting out the timeout. */
+   const archived = (uri: string): boolean => (kept.flags(idOf(uri)) & Status.IsArchived) !== 0;
+ 
+-  const sleep = async (uri: string): Promise<boolean> => {
++  const sleep = async (uri: string, stopping = false): Promise<boolean> => {
+     const id = idOf(uri);
+     /*
+      * An archived session with no agent running here has stopped already, so
+@@ -209,7 +219,7 @@ export function createSleep(ctx: HostContext): Sleep {
+       void ctx.requestSessionWorktreeRemoval(uri);
+       return false;
+     }
+-    if (!quiet(uri)) return false;
++    if (!quiet(uri, stopping)) return false;
+     const held = sessions.get(uri);
+     if (held === undefined) return false;
+     /*
+@@ -222,9 +232,9 @@ export function createSleep(ctx: HostContext): Sleep {
+      * new one. Disposing here would put the transcript out of its reach.
+      */
+     const row = getOverlaySessionSummaries().find((one) => one.resource === uri);
+-    const stopping: Promise<void>[] = [];
++    const stoppingChats: Promise<void>[] = [];
+     for (const [chatUri, chat] of held.chats) {
+-      stopping.push(Promise.resolve(chat.close('stopping')).catch(() => {}));
++      stoppingChats.push(Promise.resolve(chat.close('stopping')).catch(() => {}));
+       byChat.drop(chatUri);
+       // A wake starts it under this session, which is the relaunch a moved
+       // chat owed.
+@@ -244,7 +254,7 @@ export function createSleep(ctx: HostContext): Sleep {
+     log(`slept ${uri}`);
+     activeSessionsChanged();
+     markSummaryDirty(uri);
+-    const closed = Promise.all(stopping).then(() => undefined);
++    const closed = Promise.all(stoppingChats).then(() => undefined);
+     closing.set(id, closed);
+     // An archived session gives its tree back once its agents have closed.
+     // Queued now, so a wake asked for during the close waits behind it.
+diff --git a/packages/sdk/test/session-sleep.test.ts b/packages/sdk/test/session-sleep.test.ts
+index 7f31c04f2..13783841a 100644
+--- a/packages/sdk/test/session-sleep.test.ts
++++ b/packages/sdk/test/session-sleep.test.ts
+@@ -742,10 +742,64 @@ it('sleeps an archived session whose chat never spoke', async () => {
+ });
+ 
+ /*
+- * VS Code's host refuses an archive of a default chat without restoring the
+- * session it is in.
+- * https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L12120-L12122
++ * #37426: the stop does not just archive. It first cancels the seat's turn on
++ * one connection, drops that connection, and offers the archive on another,
++ * while it watches the child go. A never-spoken seat must sleep under that
++ * ordering too, or the window expires and the child is reaped with SIGTERM.
+  */
++it('sleeps a never-spoken session when a stop cancels a turn and then archives', async () => {
++  const knobs: Knobs = { closes: [] };
++  const { client, open, turns, awake } = await serving(knobs);
++  const one = await open('one', false);
++  expect(await turns(one.chatUri)).toBe(0);
++  // The stop's first act: cancel the seat's turn on a watched chat.
++  await client.handle({
++    method: 'dispatchAction',
++    params: { channel: one.chatUri, clientSeq: 1, action: { type: 'chat/turnCancelled' } },
++  });
++  await settle();
++  await one.leave();
++  // And then the archive that asks the host to sleep it.
++  await client.handle({
++    method: 'dispatchAction',
++    params: { channel: one.channel, clientSeq: 2, action: { type: 'session/isArchivedChanged', isArchived: true } },
++  });
++  await until(() => knobs.closes.length > 0);
++  expect(awake()).toBe(0);
++});
++
++it('sleeps a never-spoken archived session whose chat is not resumable', async () => {
++  const knobs: Knobs = { closes: [], resumable: false };
++  const { client, open, turns, awake } = await serving(knobs);
++  const one = await open('one', false);
++  expect(await turns(one.chatUri)).toBe(0);
++  await one.leave();
++  await client.handle({
++    method: 'dispatchAction',
++    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true, stopping: true } },
++  });
++  await until(() => knobs.closes.length > 0, 2000);
++  expect(awake()).toBe(0);
++});
++
++/*
++ * The stopping flag belongs to that stop alone: an archive that is not a stop
++ * still keeps a chat with nothing to resume by awake, as it did before.
++ */
++it('keeps a never-spoken archived session awake when the archive is not a stop', async () => {
++  const knobs: Knobs = { closes: [], resumable: false };
++  const { client, open, awake } = await serving(knobs);
++  const one = await open('one', false);
++  await one.leave();
++  await client.handle({
++    method: 'dispatchAction',
++    params: { channel: one.channel, clientSeq: 1, action: { type: 'session/isArchivedChanged', isArchived: true } },
++  });
++  await settle(16);
++  expect(knobs.closes.length).toBe(0);
++  expect(awake()).toBe(1);
++});
++
+ it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
+   const knobs: Knobs = { closes: [] };
+   const { client, time, open, awake } = await serving(knobs);
+-- 
+2.56.0
+
+From e1b7097f2d0209aac70cd3f1920fde2b85029523 Mon Sep 17 00:00:00 2001
+From: "@dev/8" <dev-8@main.hh.invalid>
+Date: Sat, 21 Nov 2026 11:27:39 -0800
+Subject: [PATCH] fix(sleep): ask for the sleep on every archive offer (#37426)
+
+sessionFlag latched on the bit not moving: a repeated archive offer returned
+before the archived-sleep block, so an offer refused for the watchers of that
+moment was never asked again. The steward's release is asynchronous, so the
+stop's re-offer always lost.
+
+The latch is about dispatch - a client is not woken for a message that moved
+nothing, which is what a7343dc1 put it there for - and it stays for the flag,
+the summary and the movability update. The sleep offer is about the watchers
+right now, so it is made on every offer; the unarchive side keeps the latch.
+
+@cto 2026-11-21 (tribe 341b4ef0): (b), no new control message and no per-stop
+exemption.
+---
+ packages/sdk/src/host/chatactions.ts    | 32 +++++++++++-------
+ packages/sdk/test/session-sleep.test.ts | 45 +++++++++++++++++++++++++
+ 2 files changed, 65 insertions(+), 12 deletions(-)
+
+diff --git a/packages/sdk/src/host/chatactions.ts b/packages/sdk/src/host/chatactions.ts
+index e96823744..8da33c677 100644
+--- a/packages/sdk/src/host/chatactions.ts
++++ b/packages/sdk/src/host/chatactions.ts
+@@ -53,16 +53,18 @@ export function sessionFlag(
+ ): boolean {
+   const before = ctx.kept.flags(idOf(uri));
+   const after = on ? before | bit : before & ~bit;
+-  if (after === before) return false;
+-  ctx.kept.setFlags(idOf(uri), after);
+-  ctx.keepName(idOf(uri));
+-  // Every client watching, and the catalogue: a flag one client sets is a flag
+-  // the others have to see, which is what having a host for this buys over
+-  // each client keeping its own.
+-  ctx.dispatch(uri, action, origin);
+-  ctx.markSummaryDirty(uri);
+-  // Whether its chats may move, which an archived session's may not.
+-  if (bit === Status.IsArchived) for (const chat of ctx.sessions.get(uri)?.chats.keys() ?? []) ctx.updateChatMovability(chat);
++  const moved = after !== before;
++  if (moved) {
++    ctx.kept.setFlags(idOf(uri), after);
++    ctx.keepName(idOf(uri));
++    // Every client watching, and the catalogue: a flag one client sets is a flag
++    // the others have to see, which is what having a host for this buys over
++    // each client keeping its own.
++    ctx.dispatch(uri, action, origin);
++    ctx.markSummaryDirty(uri);
++    // Whether its chats may move, which an archived session's may not.
++    if (bit === Status.IsArchived) for (const chat of ctx.sessions.get(uri)?.chats.keys() ?? []) ctx.updateChatMovability(chat);
++  }
+   // Archived: asleep, or its tree given back where it is asleep already, and
+   // let go by the residency where nothing holds it.
+   // https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L1457-L1464
+@@ -71,6 +73,12 @@ export function sessionFlag(
+     // archived because the seat is being stopped, and a chat that never spoke
+     // has nothing to resume by, so that stop alone may sleep it. The flag is
+     // read here and passed to this one sleep; no other bit is written.
++    //
++    // Every offer asks, not only the one that moved the bit (@cto 2026-11-21,
++    // #37426): the host sleeps only a session no client watches, so a refusal is
++    // about the watchers of that moment and never a mark on the session. The
++    // bit's own latch above is about not waking clients for a message that moved
++    // nothing, and it stays where it is.
+     const stopping = action.stopping === true;
+     queueMicrotask(() => {
+       void ctx.sleep(uri, stopping).catch(() => undefined);
+@@ -79,11 +87,11 @@ export function sessionFlag(
+   }
+   // Unarchived: the tree back before anything wakes the session into it, and
+   // the session is no longer one the host archived.
+-  if (bit === Status.IsArchived && !on) {
++  if (bit === Status.IsArchived && !on && moved) {
+     ctx.kept.setAutoArchivedAt?.(idOf(uri), undefined);
+     void ctx.restoreSessionWorktree(uri);
+   }
+-  return true;
++  return moved;
+ }
+ 
+ /**
+diff --git a/packages/sdk/test/session-sleep.test.ts b/packages/sdk/test/session-sleep.test.ts
+index 13783841a..da610e8a8 100644
+--- a/packages/sdk/test/session-sleep.test.ts
++++ b/packages/sdk/test/session-sleep.test.ts
+@@ -22,6 +22,8 @@ import { join } from 'node:path';
+ import { afterEach, expect, it } from 'vitest';
+ import { chatReducer } from '@microsoft/agent-host-protocol';
+ import { createHost } from '../src/host.js';
++import { sessionFlag } from '../src/host/chatactions.js';
++import { Status } from '../src/sessions/catalog.js';
+ import { memorySessions } from '../src/sessions/sessions.js';
+ import { shellTerminals } from '../src/machines/terminals.js';
+ import { echo } from '../../../examples/echo/agent.js';
+@@ -800,6 +802,49 @@ it('keeps a never-spoken archived session awake when the archive is not a stop',
+   expect(awake()).toBe(1);
+ });
+ 
++/*
++ * #37426, @cto 2026-11-21: an archive offer is a sleep request every time it is
++ * made, not only the once the bit moved. A client watching at the first
++ * evaluation refuses it - the host sleeps only a session nobody watches - and
++ * that refusal is about the watchers of that moment, never a mark on the
++ * session, so the next offer of the same bit asks again and sleeps it. The
++ * bit's own latch stays: a repeated offer still dispatches nothing, because a
++ * client is not woken for a message that moved nothing.
++ */
++it('asks again after a refused archive offer, and only the move dispatches', async () => {
++  const sleeps: string[] = [];
++  const dispatched: string[] = [];
++  const uri = 'ahp-session:/one';
++  let flag = 0;
++  let watched = true;
++  const ctx = {
++    kept: {
++      flags: () => flag,
++      setFlags: (_id: string, value: number): void => { flag = value; },
++    },
++    keepName: (): void => {},
++    dispatch: (channel: string): void => { dispatched.push(channel); },
++    markSummaryDirty: (): void => {},
++    sessions: new Map(),
++    updateChatMovability: (): void => {},
++    sleep: (target: string): Promise<boolean> => { sleeps.push(target); return Promise.resolve(!watched); },
++    reconcile: (): void => {},
++  };
++  const offer = { type: 'session/isArchivedChanged', isArchived: true, stopping: true };
++  const current = async (): Promise<{ moved: boolean; sleeps: number }> => {
++    const moved = sessionFlag(ctx as never, uri, Status.IsArchived, true, offer);
++    await new Promise((r) => { setTimeout(r, 0); });
++    return { moved, sleeps: sleeps.length };
++  };
++  const refused = await current();
++  expect(refused).toEqual({ moved: true, sleeps: 1 });
++  watched = false;
++  const taken = await current();
++  expect(taken).toEqual({ moved: false, sleeps: 2 });
++  expect(dispatched).toEqual([uri]);
++  expect(flag & Status.IsArchived).not.toBe(0);
++});
++
+ it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
+   const knobs: Knobs = { closes: [] };
+   const { client, time, open, awake } = await serving(knobs);
+-- 
+2.56.0
+

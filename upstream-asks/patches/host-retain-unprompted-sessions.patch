@@ -1,0 +1,183 @@
+From 9ac18c25bc15fcd920741aa6b8752a321db96c66 Mon Sep 17 00:00:00 2001
+From: "@dev/fixer" <dev-fixer@main.hh.invalid>
+Date: Thu, 19 Nov 2026 12:33:55 -0800
+Subject: [PATCH] fix(acp): retain unprompted sessions across persistence
+ retries
+
+Refs: 35117
+---
+ packages/agent-acp/src/session/turn.ts        |  7 +-
+ .../agent-acp/test/agent-acp-catalog.test.ts  | 19 +++++-
+ packages/sdk/test/host-chats.test.ts          | 64 +++++++++++++++++++
+ packages/sdk/test/nested-proxy.test.ts        | 25 ++++++++
+ 4 files changed, 113 insertions(+), 2 deletions(-)
+
+diff --git a/packages/agent-acp/src/session/turn.ts b/packages/agent-acp/src/session/turn.ts
+index bf6175920..48a982293 100644
+--- a/packages/agent-acp/src/session/turn.ts
++++ b/packages/agent-acp/src/session/turn.ts
+@@ -456,7 +456,12 @@ export function createTurn(ctx: SessionContext): Turn {
+         endTurn(turnId, 'cancelled');
+         return;
+       }
+-      ctx.start.beforePrompt?.(held.sessionId);
++      try { ctx.start.beforePrompt?.(held.sessionId); }
++      catch (why: unknown) {
++        // The native session is open but has received no prompt. Keep it for a retry of the durable barrier.
++        endTurn(turnId, 'error', { errorType: 'sendFailed', message: messageOf(why) });
++        return;
++      }
+       ctx.neverSpoken = false;
+       ctx.mapping.prompted = true;
+       const response = await held.connection.prompt(held.sessionId, blocks);
+diff --git a/packages/agent-acp/test/agent-acp-catalog.test.ts b/packages/agent-acp/test/agent-acp-catalog.test.ts
+index cf679f728..aa6bdc3e3 100644
+--- a/packages/agent-acp/test/agent-acp-catalog.test.ts
++++ b/packages/agent-acp/test/agent-acp-catalog.test.ts
+@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+-import { afterEach, describe, expect, it } from 'vitest';
++import { afterEach, describe, expect, it, vi } from 'vitest';
+ import type { SessionUpdate } from '@agentclientprotocol/sdk';
+ import { uriOf } from '@ahpd/sdk';
+ import type { Agent, Bag, Emit, McpServer, MessageAttachment, Session, Start } from '@ahpd/sdk';
+@@ -1554,6 +1554,23 @@ it('uses positive no-rollout provenance for an ephemeral read and only the first
+   expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
+ });
+ 
++// AC1: persistence failure must prevent an actual ACP prompt, even after opening minted a native id.
++it('dispatches no provider prompt before a failed durable barrier can be retried', async () => {
++  const { agent, log } = backend(['--no-rollout']);
++  const before = vi.fn().mockImplementationOnce(() => { throw new Error('durable write refused'); });
++  const { session, watch } = await start(agent, 'barrier-refusal', {
++    resume: 'unmaterialized-barrier', neverSpoken: true, beforePrompt: before,
++  });
++  await runTurn(session, watch, 'refused', 'hi');
++  expect(watch.endings()).toEqual(['chat/error']);
++  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
++  expect(requests(log).filter((one) => one.method === 'session/prompt')).toHaveLength(0);
++  await runTurn(session, watch, 'retry', 'hi again');
++  expect(watch.endings().at(-1)).toBe('chat/turnComplete');
++  expect(before.mock.calls.map(([id]) => id)).toEqual([session.agentId(), session.agentId()]);
++  expect(requests(log).filter((one) => one.method === 'session/prompt')).toHaveLength(1);
++});
++
+ it('loads a resumed session when the host holds none of its turns', async () => {
+   const { agent, log } = backend();
+   const { session, watch } = await start(agent, 'resume', { resume: 'acp-session-resumed' });
+diff --git a/packages/sdk/test/host-chats.test.ts b/packages/sdk/test/host-chats.test.ts
+index 7aa5446bd..8dc59852c 100644
+--- a/packages/sdk/test/host-chats.test.ts
++++ b/packages/sdk/test/host-chats.test.ts
+@@ -22,6 +22,70 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/c
+ 
+ beforeEach(resetSdk);
+ 
++describe('35117 durable first-prompt provenance', () => {
++  // AC1: provider-level fallback tests cannot prove the host persisted permission before creating the backend.
++  const opening = async (sessions: ReturnType<typeof memorySessions>, starts: Start[], reported = true) => {
++    const base = echo({ path: WORK, pace: 0 });
++    const agent: Agent = {
++      ...base,
++      ...(reported ? { promptStart: 'reported' as const } : {}),
++      create: (start) => { starts.push(start); return base.create(start); },
++    };
++    const host = createHost({ path: WORK, agents: [agent], sessions });
++    const client = host.accept(peer());
++    await client.handle(hello(['0.9.0']));
++    return { host, create: () => client.handle({
++      method: 'createSession', params: { channel: 'ahp-session:/unspoken', provider: 'echo' },
++    }) };
++  };
++
++  it('does not create a backend when the initial provenance barrier fails', async () => {
++    const starts: Start[] = [];
++    const store = memorySessions();
++    store.flush = () => { throw new Error('birth write refused'); };
++    const { host, create } = await opening(store, starts);
++    try {
++      await expect(create()).rejects.toThrow('birth write refused');
++      expect(starts).toHaveLength(0);
++    } finally { await host.close(); }
++  });
++
++  it('retries the native-id and false-marker barrier after a failed first attempt', async () => {
++    const starts: Start[] = [];
++    const store = memorySessions();
++    const flush = vi.fn();
++    store.flush = flush;
++    const { host, create } = await opening(store, starts);
++    try {
++      await create();
++      expect(starts).toHaveLength(1);
++      const start = starts[0]!;
++      expect(start.neverSpoken).toBe(true);
++      expect(store.chats('unspoken')).toMatchObject([{ sessionConversation: true, neverSpoken: true }]);
++      expect(flush).toHaveBeenCalled();
++      flush.mockImplementationOnce(() => { throw new Error('first prompt write refused'); });
++      expect(() => start.beforePrompt?.('rebound-native')).toThrow('first prompt write refused');
++      start.beforePrompt?.('rebound-native');
++      expect(store.chats('unspoken')).toMatchObject([{ backendId: 'rebound-native', neverSpoken: false }]);
++      expect(flush).toHaveBeenCalledTimes(3);
++    } finally { await host.close(); }
++  });
++
++  it.each(['no durable flush', 'no prompt reporting'])('keeps unknown provenance with %s', async (missing) => {
++    const starts: Start[] = [];
++    const store = memorySessions();
++    if (missing === 'no durable flush') delete store.flush;
++    const { host, create } = await opening(store, starts, missing !== 'no prompt reporting');
++    try {
++      await create();
++      expect(starts).toHaveLength(1);
++      expect(starts[0]).not.toHaveProperty('neverSpoken');
++      expect(starts[0]).not.toHaveProperty('beforePrompt');
++      expect(store.chats('unspoken')[0]).not.toHaveProperty('neverSpoken');
++    } finally { await host.close(); }
++  });
++});
++
+ describe('two people on one chat', () => {
+   it('shows each other what is being typed', async () => {
+     const host = serving(WORK);
+diff --git a/packages/sdk/test/nested-proxy.test.ts b/packages/sdk/test/nested-proxy.test.ts
+index 5a49a6b4f..eca2a17cf 100644
+--- a/packages/sdk/test/nested-proxy.test.ts
++++ b/packages/sdk/test/nested-proxy.test.ts
+@@ -1540,6 +1540,31 @@ const scriptedPort = (
+   };
+ };
+ 
++// #35117 AC1: the actual nested proxy owns unknown inner history, even when its nominal agent reports prompts.
++it('does not publish local never-spoken provenance for an actual nested proxy', async () => {
++  const port = scriptedPort([PROVIDER]);
++  const sessions = fileSessions({ dir: join(port.dir, 'provenance') });
++  const real: Agent = { ...backend(), runsNested: true, promptStart: 'reported' };
++  const host = createHost({
++    path: REPO_ROOT, agents: [real], agentPlugins: { [PROVIDER]: '@ahpd/agent-cofold' },
++    computers: port.computers, sessions,
++  });
++  const client = host.accept(watching());
++  try {
++    await client.handle({ method: 'initialize', params: { clientId: 'window', protocolVersions: ['1.0.0'] } });
++    await client.handle({ method: 'createSession', params: {
++      channel: 'ahp-session:/nested-unknown', provider: PROVIDER, config: { computer: 'computer://box' },
++    } });
++    await until(() => port.stored().length > 0, 1000);
++    const rows = sessions.chats('nested-unknown');
++    expect(rows).toHaveLength(1);
++    expect(rows[0]).not.toHaveProperty('neverSpoken');
++  } finally {
++    await host.close();
++    port.done();
++  }
++});
++
+ it('a variant that is its plugin\'s only agent is not run as the agent the inner host serves', async () => {
+   const port = scriptedPort(['claude']);
+   const real: Agent = { ...backend(), provider: 'claude-openrouter', runsNested: true, variant: true };
+-- 
+2.56.0
+

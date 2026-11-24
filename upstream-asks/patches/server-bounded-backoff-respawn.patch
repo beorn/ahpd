@@ -1,0 +1,454 @@
+From dec3c14243362bfbb9b8fe1504654999e76c4e3a Mon Sep 17 00:00:00 2001
+From: "@dev/6" <dev-6@main.hh.invalid>
+Date: Sat, 21 Nov 2026 23:06:33 -0800
+Subject: [PATCH] fix(agent-acp): back off respawning a host server that dies
+ before initialize, for records that keep sessions (#37753)
+
+hh/integration already keeps a record whose host listing failed out of later
+reads (failedOnHost, 305fc1e0c), but only while the record keeps no session.
+A record that keeps sessions is listed with its machines, rethrows, and is
+spawned again at every pass: ahpd-codex-trial (0.15.0-rc.4, which carries
+305fc1e0c) spawned node and logged "exited with code 9" at every pass for
+dev-8 and dev-luna3, whose --env-file is gone.
+
+For that case, per @cto (32654479): a host server that dies before the
+handshake is remembered against what the record spawns (command, args, cwd,
+env). A read before the next attempt time is answered with the same death and
+spawns nothing; the wait doubles from 1 min, capped at 15 min; each real
+attempt logs one line, "<provider>: server ended before initialize (<death>);
+next spawn attempt in <n> min". A changed input or a listing that answers
+clears it. A failure after the handshake keeps today's retry, and the
+no-session path (failedOnHost) is unchanged.
+
+Tests: a kept-session record with a gone env file logs one line over three
+passes; a died-early server spawns once inside the window, again after it
+with the wait doubled, at once on changed args, and an answering listing
+resets the wait to 1 min. Red on hh/integration's catalog (2 failing).
+agent-acp-failure 40/40; agent-acp 428/431, the 3 custody failures are the
+same without this change (@ahpd/sdk not resolvable in this worktree's
+install); tsc unchanged (19 pre-existing errors in untouched files).
+
+Refs: #37753
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/agent-acp/src/catalog.ts             | 49 ++++++++++++
+ .../agent-acp/test/agent-acp-failure.test.ts  | 74 +++++++++++++++++++
+ 2 files changed, 123 insertions(+)
+
+diff --git a/packages/agent-acp/src/catalog.ts b/packages/agent-acp/src/catalog.ts
+index 3dfa2e434..d5d0f19a6 100644
+--- a/packages/agent-acp/src/catalog.ts
++++ b/packages/agent-acp/src/catalog.ts
+@@ -76,6 +76,37 @@ const locations = new WeakMap<AcpOptions, { machines?: SessionMachine[]; host?:
+  */
+ const failedOnHost = new WeakSet<AcpOptions>();
+ 
++/**
++ * The records that keep sessions whose host server died before it answered
++ * the handshake, with what it was spawned from and when to try again (#37753).
++ *
++ * A record that keeps sessions is not put in `failedOnHost`: its listing is
++ * the host's, and the host asks again at every pass. A server that dies before
++ * the handshake - its env file gone, its command exiting at once - mostly dies
++ * the same way at each, so without this it is spawned, and its failure logged,
++ * at every pass. A read before `retryAt` is answered with the same death and
++ * nothing is spawned; the wait doubles from a minute up to fifteen with each
++ * death, so a failure that heals - a command back after a switch, a token file
++ * minted again at the same path - heals by itself. A changed input or a
++ * listing that answers clears it. The inputs are compared rather than the
++ * record itself, because an edit updates the record `open` was handed in place
++ * (`sdk/src/agents/channel.ts`). A server that answered the handshake and then
++ * failed its listing is asked again at the next read, as before.
++ */
++const diedEarly = new WeakMap<AcpOptions, { inputs: string; death: Error; failures: number; retryAt: number }>();
++
++/** The first wait after a host server died before the handshake, doubled at each death after it. */
++const SPAWN_RETRY_FIRST_MS = 60_000;
++/** The longest wait between spawns of a host server that keeps dying before the handshake. */
++const SPAWN_RETRY_MOST_MS = 15 * 60_000;
++
++/** The listing connections whose server answered the handshake, so a later failure is not taken for a death before it. */
++const handshaken = new WeakSet<AcpConnection>();
++
++/** What a listing's server is spawned from, as one string to compare; never logged, since `env` may hold a secret. */
++const spawnInputsOf = (options: AcpOptions): string =>
++  JSON.stringify([options.command, options.args ?? [], options.cwd ?? null, Object.entries(options.env ?? {}).sort()]);
++
+ /**
+  * The machine lines one record has already said.
+  *
+@@ -729,16 +760,33 @@ export async function catalogueOf(
+   }
+   const onHost = host ?? true;
+   if (onHost && !failedOnHost.has(options)) {
++    const inputs = spawnInputsOf(options);
++    const early = diedEarly.get(options);
++    if (early !== undefined && early.inputs !== inputs) diedEarly.delete(options);
++    else if (early !== undefined && Date.now() < early.retryAt) throw early.death;
+     const held = listingFor(options);
+     try {
+       const read = await listedBy(options, provider, held.connection);
++      diedEarly.delete(options);
+       if (read !== undefined) {
+         listed = true;
+         for (const row of read) if (!rows.has(row.id)) rows.set(row.id, row);
+       }
+     }
+     catch (error) {
++      // The server's own death before it answered the handshake, not a timeout or a refusal (#37753).
++      const death = handshaken.has(held.connection)
++        ? undefined
++        : await Promise.race([held.connection.ended, Promise.resolve(undefined)]);
+       dropListing(options, held);
++      if (machines !== undefined && death !== undefined && death === error) {
++        const before = diedEarly.get(options);
++        const failures = before !== undefined && before.inputs === inputs ? before.failures + 1 : 1;
++        const waitMs = Math.min(SPAWN_RETRY_FIRST_MS * 2 ** (failures - 1), SPAWN_RETRY_MOST_MS);
++        diedEarly.set(options, { inputs, death, failures, retryAt: Date.now() + waitMs });
++        options.log?.(`${provider}: server ended before initialize (${death.message}); next spawn attempt in ${waitMs / 60_000} min`, 'error');
++        throw error;
++      }
+       options.log?.(`${provider}: session/list failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+       if (machines !== undefined) throw error;
+       failedOnHost.add(options);
+@@ -773,6 +821,7 @@ const listedBy = async (
+   machine?: SessionMachine,
+ ): Promise<Listed[] | undefined> => {
+   const handshake = await connection.initialize();
++  handshaken.add(connection);
+   /*
+    * What the server said it can do, kept for the agent's `delete` and
+    * `chats.fork` rather than for this read: the handshake is the only place
+diff --git a/packages/agent-acp/test/agent-acp-failure.test.ts b/packages/agent-acp/test/agent-acp-failure.test.ts
+index 8cf962809..4ab9f6e63 100644
+--- a/packages/agent-acp/test/agent-acp-failure.test.ts
++++ b/packages/agent-acp/test/agent-acp-failure.test.ts
+@@ -468,6 +468,80 @@ it('answers the watched rows after a listing whose command is missing, with one
+   expect(escaped).toEqual([]);
+ });
+ 
++/*
++ * #37753: a record that keeps sessions is listed by the host at every pass (it
++ * passes the record's machines, none here), so a host server that dies before
++ * it answers the handshake - its env file gone, its command exiting at once -
++ * was spawned, and its failure logged, at every pass. Inside the wait after a
++ * death the read is answered with that death and nothing is spawned; the wait
++ * doubles from a minute up to fifteen, and a changed input or a listing that
++ * answers clears it, so a failure that heals heals by itself.
++ */
++const MINUTE = 60_000;
++const later = (ms: number): void => {
++  const now = Date.now() + ms;
++  vi.spyOn(Date, 'now').mockReturnValue(now);
++};
++const spawnsIn = (file: string): number => (existsSync(file) ? readFileSync(file, 'utf8').length : 0);
++
++it('logs one line, not one per pass, for a record that keeps sessions and whose env file is gone', async () => {
++  const lines: string[] = [];
++  const goneEnv = `--env-file=/nonexistent/ahpd-37753-${process.pid}.provider-env`;
++  const agent = acpAgent({ command: process.execPath, args: [goneEnv, FIXTURE], provider: 'acp-gone-env', log: (line) => { lines.push(line); } });
++  for (let passes = 0; passes < 3; passes += 1) await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
++  expect(lines.filter((line) => line.startsWith('acp-gone-env:'))).toEqual([
++    `acp-gone-env: server ended before initialize (${process.execPath} exited with code 9); next spawn attempt in 1 min`,
++  ]);
++  await pause(20);
++  expect(escaped).toEqual([]);
++});
++
++it('spawns a died-before-handshake host server again only after a doubling wait, at once on a changed input, and resets on an answer', async () => {
++  const dir = mkdtempSync(join(tmpdir(), 'ahpd-37753-'));
++  const counter = join(dir, 'spawns');
++  const healed = join(dir, 'healed');
++  // Counts each spawn, then dies at once unless `healed` exists, when it runs the fixture server.
++  const script = join(dir, 'server.mjs');
++  writeFileSync(script, [
++    `import { appendFileSync, existsSync } from 'node:fs';`,
++    `appendFileSync(${JSON.stringify(counter)}, 'x');`,
++    `if (!existsSync(${JSON.stringify(healed)})) process.exit(9);`,
++    `await import(${JSON.stringify(FIXTURE)});`,
++  ].join('\n'));
++  const lines: string[] = [];
++  const options = { command: process.execPath, args: [script], provider: 'acp-dies-early', log: (line: string) => { lines.push(line); } };
++  const agent = acpAgent(options);
++  const waits = (): string[] => lines.filter((line) => line.includes('next spawn attempt')).map((line) => line.replace(/.*attempt in /u, ''));
++  try {
++    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
++    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
++    expect(spawnsIn(counter)).toBe(1);
++    later(MINUTE + 1);
++    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
++    expect(spawnsIn(counter)).toBe(2);
++    expect(waits()).toEqual(['1 min', '2 min']);
++    // The record is edited in place (channel.ts: an edit updates the view `open` was handed): spawned at once.
++    options.args = [script, '--edited'];
++    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
++    expect(spawnsIn(counter)).toBe(3);
++    expect(waits()).toEqual(['1 min', '2 min', '1 min']);
++    // Healed after the wait: the listing answers, and the next death waits a minute again, not two.
++    writeFileSync(healed, '');
++    vi.restoreAllMocks();
++    later(2 * MINUTE + 2);
++    await expect(agent.list?.([], true)).resolves.toBeDefined();
++    expect(spawnsIn(counter)).toBe(4);
++    rmSync(healed);
++    await pause(50);
++    await expect(agent.list?.([], true)).rejects.toThrow('exited with code 9');
++    expect(waits()).toEqual(['1 min', '2 min', '1 min', '1 min']);
++  }
++  finally {
++    vi.restoreAllMocks();
++    rmSync(dir, { recursive: true, force: true });
++  }
++});
++
+ it('fails the turn with the exit code when the server exits mid-prompt', async () => {
+   const { session, actions } = await start(process.execPath, [FIXTURE]);
+   session.sendMessage('t1', 'die now');
+-- 
+2.56.0
+
+From 64ddcd26b88d4ded104bab3138ebce928941da66 Mon Sep 17 00:00:00 2001
+From: "@dev/6" <dev-6@main.hh.invalid>
+Date: Sat, 21 Nov 2026 23:11:01 -0800
+Subject: [PATCH] fix(agent-acp): one host-listing retry policy: failedOnHost
+ becomes the same bounded backoff (#37753)
+
+Per @cto (0de9edd2): two policies for "the host's listing server failed" in
+one file is a second implementation, and failedOnHost's permanent stop is
+the silent-outage shape (a transient failure left a no-session record on
+stale watched rows until something recreated its object).
+
+hostRetry replaces both failedOnHost and the kept-session map: keyed by
+spawn inputs, the wait doubles from 1 min to 15 min, one line per spawn
+("<provider>: server ended before initialize (...)" or "session/list
+failed: ..."; "; next spawn attempt in <n> min"), cleared by a changed input
+or a listing that answers. Two triggers: a record with no kept session
+waits after any failure and answers from the watched rows meanwhile, as
+before; a record that keeps sessions waits only after a pre-handshake death
+and is answered with that failure meanwhile.
+
+Tests: the missing-command no-session record now tries again after the wait
+(the wait doubling to 2 min) instead of never; the machines fallback test
+reads the new line; the kept-session pair is unchanged. Red on
+hh/integration's catalog (3 failing). agent-acp 428/431: the 3 custody
+failures are the same without this change (@ahpd/sdk unresolved in this
+worktree's install); tsc unchanged.
+
+Refs: #37753
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/agent-acp/src/catalog.ts             | 92 +++++++++----------
+ .../agent-acp/test/agent-acp-failure.test.ts  | 22 ++++-
+ .../agent-acp/test/agent-acp-machines.test.ts | 12 ++-
+ 3 files changed, 70 insertions(+), 56 deletions(-)
+
+diff --git a/packages/agent-acp/src/catalog.ts b/packages/agent-acp/src/catalog.ts
+index d5d0f19a6..b7ce8bbd0 100644
+--- a/packages/agent-acp/src/catalog.ts
++++ b/packages/agent-acp/src/catalog.ts
+@@ -66,39 +66,33 @@ const machineOf = new Map<string, SessionMachine>();
+ const locations = new WeakMap<AcpOptions, { machines?: SessionMachine[]; host?: boolean }>();
+ 
+ /**
+- * The records whose host listing failed while they kept no session.
+- *
+- * The command may exist only in a machine, so a host listing of one is a
+- * failure that says nothing about the server. Asked again at every read it
+- * would spawn and fail a subprocess each time, with a line each: kept here
+- * instead, so the record answers from the watched rows until it changes,
+- * which a new record changes by being a new object.
+- */
+-const failedOnHost = new WeakSet<AcpOptions>();
+-
+-/**
+- * The records that keep sessions whose host server died before it answered
+- * the handshake, with what it was spawned from and when to try again (#37753).
+- *
+- * A record that keeps sessions is not put in `failedOnHost`: its listing is
+- * the host's, and the host asks again at every pass. A server that dies before
+- * the handshake - its env file gone, its command exiting at once - mostly dies
+- * the same way at each, so without this it is spawned, and its failure logged,
+- * at every pass. A read before `retryAt` is answered with the same death and
+- * nothing is spawned; the wait doubles from a minute up to fifteen with each
+- * death, so a failure that heals - a command back after a switch, a token file
+- * minted again at the same path - heals by itself. A changed input or a
+- * listing that answers clears it. The inputs are compared rather than the
+- * record itself, because an edit updates the record `open` was handed in place
+- * (`sdk/src/agents/channel.ts`). A server that answered the handshake and then
+- * failed its listing is asked again at the next read, as before.
++ * The records whose host listing failed, with what the server was spawned
++ * from and when to spawn it again: one retry policy with two triggers.
++ *
++ * A record that keeps no session has its listing fail for any reason here: its
++ * command may exist only in a machine, so a host listing of one is a failure
++ * that says nothing about the server, and while it waits it answers from the
++ * watched rows. A record that keeps sessions is the host's to list at every
++ * pass, so only a server that died before it answered the handshake waits -
++ * its env file gone, its command exiting at once (#37753) - and a read while
++ * it waits is answered with the same failure. A server that answered the
++ * handshake and then failed its listing is asked again at the next read.
++ *
++ * Asked again at every read, either would spawn and fail a subprocess each
++ * time, with a line each. A read before `retryAt` spawns nothing; the wait
++ * doubles from a minute up to fifteen with each failure, one line per spawn,
++ * so a failure that heals - a command back after a switch, a token file
++ * minted again at the same path - heals by itself rather than leaving the
++ * record on stale rows. A changed input or a listing that answers clears it.
++ * The inputs are compared rather than the record itself, because an edit
++ * updates the record `open` was handed in place (`sdk/src/agents/channel.ts`).
+  */
+-const diedEarly = new WeakMap<AcpOptions, { inputs: string; death: Error; failures: number; retryAt: number }>();
++const hostRetry = new WeakMap<AcpOptions, { inputs: string; error: unknown; failures: number; retryAt: number }>();
+ 
+-/** The first wait after a host server died before the handshake, doubled at each death after it. */
+-const SPAWN_RETRY_FIRST_MS = 60_000;
+-/** The longest wait between spawns of a host server that keeps dying before the handshake. */
+-const SPAWN_RETRY_MOST_MS = 15 * 60_000;
++/** The first wait after a host listing failed, doubled at each failure after it. */
++const HOST_RETRY_FIRST_MS = 60_000;
++/** The longest wait between spawns of a host listing that keeps failing. */
++const HOST_RETRY_MOST_MS = 15 * 60_000;
+ 
+ /** The listing connections whose server answered the handshake, so a later failure is not taken for a death before it. */
+ const handshaken = new WeakSet<AcpConnection>();
+@@ -759,15 +753,19 @@ export async function catalogueOf(
+     }
+   }
+   const onHost = host ?? true;
+-  if (onHost && !failedOnHost.has(options)) {
+-    const inputs = spawnInputsOf(options);
+-    const early = diedEarly.get(options);
+-    if (early !== undefined && early.inputs !== inputs) diedEarly.delete(options);
+-    else if (early !== undefined && Date.now() < early.retryAt) throw early.death;
++  const inputs = spawnInputsOf(options);
++  const waiting = hostRetry.get(options);
++  if (waiting !== undefined && waiting.inputs !== inputs) hostRetry.delete(options);
++  const due = hostRetry.get(options);
++  if (onHost && due !== undefined && Date.now() < due.retryAt) {
++    // Waiting: a record that keeps sessions is answered with the failure, one that keeps none from the watched rows.
++    if (machines !== undefined) throw due.error;
++  }
++  else if (onHost) {
+     const held = listingFor(options);
+     try {
+       const read = await listedBy(options, provider, held.connection);
+-      diedEarly.delete(options);
++      hostRetry.delete(options);
+       if (read !== undefined) {
+         listed = true;
+         for (const row of read) if (!rows.has(row.id)) rows.set(row.id, row);
+@@ -779,17 +777,19 @@ export async function catalogueOf(
+         ? undefined
+         : await Promise.race([held.connection.ended, Promise.resolve(undefined)]);
+       dropListing(options, held);
+-      if (machines !== undefined && death !== undefined && death === error) {
+-        const before = diedEarly.get(options);
+-        const failures = before !== undefined && before.inputs === inputs ? before.failures + 1 : 1;
+-        const waitMs = Math.min(SPAWN_RETRY_FIRST_MS * 2 ** (failures - 1), SPAWN_RETRY_MOST_MS);
+-        diedEarly.set(options, { inputs, death, failures, retryAt: Date.now() + waitMs });
+-        options.log?.(`${provider}: server ended before initialize (${death.message}); next spawn attempt in ${waitMs / 60_000} min`, 'error');
+-        throw error;
++      const message = error instanceof Error ? error.message : String(error);
++      const diedEarly = death !== undefined && death === error;
++      if (machines === undefined || diedEarly) {
++        const failures = due !== undefined ? due.failures + 1 : 1;
++        const waitMs = Math.min(HOST_RETRY_FIRST_MS * 2 ** (failures - 1), HOST_RETRY_MOST_MS);
++        hostRetry.set(options, { inputs, error, failures, retryAt: Date.now() + waitMs });
++        const what = diedEarly ? `server ended before initialize (${message})` : `session/list failed: ${message}`;
++        options.log?.(`${provider}: ${what}; next spawn attempt in ${waitMs / 60_000} min`, 'error');
++      }
++      else {
++        options.log?.(`${provider}: session/list failed: ${message}`, 'error');
+       }
+-      options.log?.(`${provider}: session/list failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+       if (machines !== undefined) throw error;
+-      failedOnHost.add(options);
+     }
+     finally {
+       idleClose(options, held);
+diff --git a/packages/agent-acp/test/agent-acp-failure.test.ts b/packages/agent-acp/test/agent-acp-failure.test.ts
+index 4ab9f6e63..e6b1abb4c 100644
+--- a/packages/agent-acp/test/agent-acp-failure.test.ts
++++ b/packages/agent-acp/test/agent-acp-failure.test.ts
+@@ -450,20 +450,32 @@ it('rejects the handshake with a sentence naming a missing command', async () =>
+  * A backend with no kept session lists on the host, and its command may exist
+  * only in a machine. One failure says nothing about the server, so the read
+  * answers from the watched rows with one line, and the record does not spawn
+- * and fail again at every listing until it changes.
++ * and fail again at every listing: it tries again after a wait that doubles
++ * from a minute, so a command that comes back is listed again (#37753).
+  */
+-it('answers the watched rows after a listing whose command is missing, with one line', async () => {
++it('answers the watched rows after a listing whose command is missing, with one line, and tries again after the wait', async () => {
+   watchSession({ provider: 'acp-missing-list', id: 'kept', cwd: '/tmp', additional: [], title: 'Kept' });
+   const lines: string[] = [];
+   const agent = acpAgent({ command: MISSING, provider: 'acp-missing-list', log: (line) => { lines.push(line); } });
+ 
+   await expect(agent.list?.()).resolves.toMatchObject([{ id: 'kept' }]);
+-  const failed = (): string[] => lines.filter((line) => line.startsWith('acp-missing-list: session/list failed:'));
+-  expect(failed()).toHaveLength(1);
++  const failed = (): string[] => lines.filter((line) => line.startsWith('acp-missing-list:'));
++  expect(failed()).toEqual([expect.stringMatching(/^acp-missing-list: server ended before initialize \(.* was not found.*\); next spawn attempt in 1 min$/u)]);
+ 
+-  // The same record answers from the same rows, and tries no second time.
++  // Inside the wait the same record answers from the same rows, and tries no second time.
+   await expect(agent.list?.()).resolves.toMatchObject([{ id: 'kept' }]);
+   expect(failed()).toHaveLength(1);
++
++  // After it, one more try, and the wait doubles.
++  try {
++    later(MINUTE + 1);
++    await expect(agent.list?.()).resolves.toMatchObject([{ id: 'kept' }]);
++    expect(failed()).toHaveLength(2);
++    expect(failed()[1]).toMatch(/next spawn attempt in 2 min$/u);
++  }
++  finally {
++    vi.restoreAllMocks();
++  }
+   await pause(20);
+   expect(escaped).toEqual([]);
+ });
+diff --git a/packages/agent-acp/test/agent-acp-machines.test.ts b/packages/agent-acp/test/agent-acp-machines.test.ts
+index 1094bbf21..0b5469051 100644
+--- a/packages/agent-acp/test/agent-acp-machines.test.ts
++++ b/packages/agent-acp/test/agent-acp-machines.test.ts
+@@ -199,27 +199,29 @@ it('lists both the machine and this host for an agent with sessions in both', as
+   expect(requests(log).some((one) => one.method === 'session/list')).toBe(true);
+ });
+ 
+-it('answers the watched rows after a host listing fails, with one line, until its record changes', async () => {
++it('answers the watched rows after a host listing fails, with one line, until the wait is over or its record changes', async () => {
+   const provider = 'acp-fallback';
+   watchSession({ provider, id: 'kept', cwd: '/tmp', additional: [], title: 'Kept' });
+   const starts = hostStarts();
+   const { agent, lines } = backend(provider, starts.args);
++  // One line per spawn that failed, naming the wait before the next (#37753: a wait, never a stop).
++  const failures = (said: string[]): string[] => said.filter((line) => line.startsWith(`${provider}: `) && line.includes('next spawn attempt in'));
+ 
+   expect((await agent.list?.(undefined, true))?.map((one) => one.id)).toEqual(['kept']);
+   // The failure says nothing about a server that may exist only in a machine,
+   // so it is one line, and the read answers what this process watched.
+-  expect(lines.filter((line) => line.startsWith(`${provider}: session/list failed:`))).toHaveLength(1);
++  expect(failures(lines)).toHaveLength(1);
+   expect(starts.seen()).toHaveLength(1);
+ 
+-  // The same record is not spawned again while it answers.
++  // The same record is not spawned again inside the wait.
+   expect((await agent.list?.(undefined, true))?.map((one) => one.id)).toEqual(['kept']);
+-  expect(lines.filter((line) => line.startsWith(`${provider}: session/list failed:`))).toHaveLength(1);
++  expect(failures(lines)).toHaveLength(1);
+   expect(starts.seen()).toHaveLength(1);
+ 
+   // A new record is a new command, so the read is tried again.
+   const second = backend(provider, starts.args);
+   expect((await second.agent.list?.(undefined, true))?.map((one) => one.id)).toEqual(['kept']);
+-  expect(second.lines.filter((line) => line.startsWith(`${provider}: session/list failed:`))).toHaveLength(1);
++  expect(failures(second.lines)).toHaveLength(1);
+   expect(starts.seen()).toHaveLength(2);
+ });
+ 
+-- 
+2.56.0
+

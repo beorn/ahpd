@@ -1,0 +1,487 @@
+From daa329f0870a42ec523a28f207cc4c94b90684a7 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Sat, 14 Nov 2026 09:21:05 -0800
+Subject: [PATCH] feat(sdk): persist chat conversation provenance
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/32986-move-fleet-onto-ahpd/32996-codex-head
+---
+ packages/sdk/src/sessions/sessions.ts |  1 +
+ packages/sdk/src/types/sessions.ts    |  2 ++
+ packages/sdk/test/sessions.test.ts    | 17 +++++++++++++++++
+ 3 files changed, 20 insertions(+)
+
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index a44071142..873ba8f2b 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -463,6 +463,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
+     return [{
+       uri: held.uri,
+       backendId: held.backendId,
++      ...(typeof held.sessionConversation === 'boolean' ? { sessionConversation: held.sessionConversation } : {}),
+       ...(text(held.provider) ? { provider: held.provider } : {}),
+       ...(typeof config === 'object' && config !== null && !Array.isArray(config)
+         ? { config: config as Record<string, unknown> }
+diff --git a/packages/sdk/src/types/sessions.ts b/packages/sdk/src/types/sessions.ts
+index ff6379706..28106fb3e 100644
+--- a/packages/sdk/src/types/sessions.ts
++++ b/packages/sdk/src/types/sessions.ts
+@@ -131,6 +131,8 @@ export interface StoredChat {
+    * has not said one, which is a chat nothing can be resumed from.
+    */
+   backendId: string;
++  /** Host-recorded original conversation: true for the original, false for a peer, absent for legacy unknown. */
++  sessionConversation?: boolean;
+   /**
+    * The backend that serves this chat, where it is not the session's own.
+    *
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index 106195e90..09205b178 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -655,6 +655,23 @@ it('keeps the backend a chat runs on, and its config, so a restart starts it the
+   expect(loaded[1]).toEqual({ uri: 'ahp-chat:/odd', backendId: 'odd' });
+ });
+ 
++it('keeps original, peer and unknown conversation provenance across a synchronous file-store restart', () => {
++  // 32996: provenance must survive before create is accepted; backend/default fields cannot recover it.
++  // Existing store cases contain no true/false/absent provenance and miss a parser dropping that fact.
++  const dir = join(root, 'sessions');
++  const held = [
++    { uri: 'ahp-chat:/original', backendId: 'replaced-id', sessionConversation: true },
++    { uri: 'ahp-chat:/peer', backendId: 'peer', default: true, sessionConversation: false },
++    { uri: 'ahp-chat:/legacy', backendId: 'legacy' },
++  ];
++  fileSessions({ dir }).setChats('a', held);
++  const restarted = fileSessions({ dir });
++  expect(restarted.chats('a')).toEqual(held);
++  restarted.setChats('a', restarted.chats('a').map((chat) => ({ ...chat, closed: true })));
++  restarted.close?.();
++  expect(fileSessions({ dir }).chats('a')).toEqual(held.map((chat) => ({ ...chat, closed: true })));
++});
++
+ it('forgets a session entirely, whatever was set on it', () => {
+   const store = memorySessions();
+   store.setFlags('a', ARCHIVED);
+-- 
+2.56.0
+
+From 46db0cb63050701324044eab5c44982aab5e231f Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Sat, 14 Nov 2026 09:31:52 -0800
+Subject: [PATCH] feat(sdk): project host-owned conversation provenance at
+ startup
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/32986-move-fleet-onto-ahpd/32996-codex-head
+---
+ packages/sdk/src/host/chatrecord.ts     |  6 +++--
+ packages/sdk/src/host/lifecycle.ts      |  4 +--
+ packages/sdk/src/host/sessionmethods.ts |  2 +-
+ packages/sdk/src/host/spawn.ts          |  7 +++++
+ packages/sdk/src/types/agent.ts         |  2 ++
+ packages/sdk/test/host-chats.test.ts    | 36 +++++++++++++++++++++++++
+ 6 files changed, 52 insertions(+), 5 deletions(-)
+
+diff --git a/packages/sdk/src/host/chatrecord.ts b/packages/sdk/src/host/chatrecord.ts
+index a8d1108d9..17952529d 100644
+--- a/packages/sdk/src/host/chatrecord.ts
++++ b/packages/sdk/src/host/chatrecord.ts
+@@ -54,7 +54,7 @@ export interface ChatRecord {
+    */
+   keepChat(
+     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
+-    provider?: string, config?: Record<string, unknown>,
++    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
+   ): void;
+   /**
+    * The values a chat of a session set for itself, as VS Code's
+@@ -154,7 +154,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+ 
+   const keepChat = (
+     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
+-    provider?: string, config?: Record<string, unknown>,
++    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
+   ): void => {
+     const id = idOf(uri);
+     const list = stored(id);
+@@ -174,6 +174,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+     // a chat that has not changed backend, so the row keeps what it had.
+     const served = provider ?? was?.provider;
+     const settings = config ?? was?.config;
++    const conversation = sessionConversation ?? was?.sessionConversation;
+     // Built field by field, so a chat that is being started is open: the mark
+     // a closed one carries is not among them.
+     const next: StoredChat = {
+@@ -181,6 +182,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+       // The name the backend keeps this conversation under: the id it was
+       // handed, and the session's own id for the chat that is the session.
+       backendId: backendId ?? was?.backendId ?? chatIdFor(uri, chatUri) ?? id,
++      ...(conversation === undefined ? {} : { sessionConversation: conversation }),
+       ...(served === undefined ? {} : { provider: served }),
+       ...(settings === undefined ? {} : { config: settings }),
+       ...(was?.configValues === undefined ? {} : { configValues: was.configValues }),
+diff --git a/packages/sdk/src/host/lifecycle.ts b/packages/sdk/src/host/lifecycle.ts
+index 6ac734468..5cd076657 100644
+--- a/packages/sdk/src/host/lifecycle.ts
++++ b/packages/sdk/src/host/lifecycle.ts
+@@ -2724,7 +2724,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+       // The last wait of a create, in the client's words for it, said before
+       // the backend is asked to start.
+       progress?.('Starting the agent');
+-      const lead = await spawn(agent, uri, defaultChat, undefined, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions);
++      const lead = await spawn(agent, uri, defaultChat, undefined, backendsOwn(config), undefined, where, credentials, additional, by?.sender, asked?.instructions, undefined, true);
+       // Written down for the same reason a rename is: a first name outlives a
+       // restart too.
+       if (title !== undefined) ctx.persistSessionTitle(uri, title);
+@@ -2780,4 +2780,4 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+     requestSessionWorktreeRemoval, restoreSessionWorktree, canAutomaticallyDeleteArchivedSession, createDetachedWorktree,
+     beginOrRun, startTurn, commandIn, beginTurn, modelIn, messageFrom, messageOf, messageAttachments, scratchFolder, createProviderSession,
+   };
+-}
+\ No newline at end of file
++}
+diff --git a/packages/sdk/src/host/sessionmethods.ts b/packages/sdk/src/host/sessionmethods.ts
+index be7e74009..97918bbd3 100644
+--- a/packages/sdk/src/host/sessionmethods.ts
++++ b/packages/sdk/src/host/sessionmethods.ts
+@@ -1788,7 +1788,7 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
+        */
+       let chat: Session;
+       try {
+-        chat = await spawn(agent, uri, chatUri, chatIdFor(uri, chatUri), backendsOwn(config), made, held.workingDirectory, undefined, peers, connection);
++        chat = await spawn(agent, uri, chatUri, chatIdFor(uri, chatUri), backendsOwn(config), made, held.workingDirectory, undefined, peers, connection, undefined, undefined, false);
+       }
+       catch (error) {
+         madeFrom.delete(chatUri);
+diff --git a/packages/sdk/src/host/spawn.ts b/packages/sdk/src/host/spawn.ts
+index 95bf99531..ef67d2c77 100644
+--- a/packages/sdk/src/host/spawn.ts
++++ b/packages/sdk/src/host/spawn.ts
+@@ -144,6 +144,7 @@ export interface Spawn {
+     sender?: Connection,
+     askedInstructions?: string[],
+     own?: { agent: Agent; config: Record<string, unknown> },
++    freshConversation?: boolean,
+   ): Promise<Session>;
+   /**
+    * Set every plugin plan's `changed` on the entry it closes over.
+@@ -1120,6 +1121,7 @@ export function createSpawn(ctx: HostContext): Spawn {
+     sender?: Connection,
+     askedInstructions?: string[],
+     own?: { agent: Agent; config: Record<string, unknown> },
++    freshConversation?: boolean,
+   ): Promise<Session> => {
+     /*
+      * The backend that actually runs this session.
+@@ -1371,9 +1373,11 @@ export function createSpawn(ctx: HostContext): Spawn {
+     let reported = false;
+     // Whose work the session is, as the store keeps it.
+     const ownerOfSession = kept.owner(idOf(uri));
++    const conversation = freshConversation ?? ctx.heldChats(idOf(uri)).find((one) => one.uri === chatUri)?.sessionConversation;
+     const wired: Start = {
+       uri,
+       chatUri,
++      ...(conversation === undefined ? {} : { sessionConversation: conversation }),
+       trusted: trustedBy,
+       // The operator's `eligibleForAutoApproval`, read for the backend at each call by the same reading as a question's.
+       ...(options.managedRules === 'handed' ? {} : {
+@@ -2025,6 +2029,8 @@ export function createSpawn(ctx: HostContext): Spawn {
+      * make first, and the session is held once that step is made, the start's
+      * failure being the failure of whatever asked for it.
+      */
++    // Only initial host creation establishes original ownership, before any backend handshake can run.
++    if (freshConversation === true) ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true);
+     const made = used.create(wired);
+     const session = made instanceof Promise ? await made : made;
+     titled = session;
+@@ -2104,6 +2110,7 @@ export function createSpawn(ctx: HostContext): Spawn {
+     ctx.keepChat(
+       uri, chatUri, chatId ?? idOf(uri), held.defaultChat === chatUri,
+       foreign ? agent.provider : undefined, foreign ? config : undefined,
++      conversation,
+     );
+     // And the folder it works in, which is where a backend is told to look for
+     // it after a restart. Only on a change, so a chat started again in the
+diff --git a/packages/sdk/src/types/agent.ts b/packages/sdk/src/types/agent.ts
+index f41c4cab7..2ac073056 100644
+--- a/packages/sdk/src/types/agent.ts
++++ b/packages/sdk/src/types/agent.ts
+@@ -272,6 +272,8 @@ export interface Start {
+   uri: string;
+   /** The chat channel URI beneath it. */
+   chatUri: string;
++  /** Host-recorded original conversation: true original, false peer, absent legacy unknown. Independent of aliases and current default. */
++  sessionConversation?: boolean;
+   /**
+    * The name this chat's own conversation is kept under, where it has one.
+    *
+diff --git a/packages/sdk/test/host-chats.test.ts b/packages/sdk/test/host-chats.test.ts
+index 747c2714f..e60e716da 100644
+--- a/packages/sdk/test/host-chats.test.ts
++++ b/packages/sdk/test/host-chats.test.ts
+@@ -1233,6 +1233,9 @@ describe('more than one chat in a session', () => {
+       const first = await hostAt(dir, agent);
+       await first.client.handle({ method: 'createSession', params: { channel: LIVE, provider: 'echo' } });
+       await first.client.handle({ method: 'createChat', params: { channel: LIVE, chat: PEER } });
++      // 32996: backend/default aliases cannot identify original ownership on a restart.
++      // This existing real-host journey owns the content boundary; keep provenance beside it.
++      expect(starts.map((start) => start.sessionConversation)).toEqual([true, false]);
+       await settle();
+       await send(first.client, LIVE, 't1', 'first');
+       await send(first.client, PEER, 't2', 'second');
+@@ -1272,12 +1275,45 @@ describe('more than one chat in a session', () => {
+       ]);
+       expect(said(await opened(second.client, PEER))).toEqual(['second', 'third']);
+       expect(said(await opened(second.client, session.state.defaultChat as string))).toEqual(['first']);
++      expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual([true, false]);
+     }
+     finally {
+       rmSync(root, { recursive: true, force: true });
+     }
+   });
+ 
++  it('records the original before backend create and keeps session-id and legacy aliases as peers', async () => {
++    // 32996: the old chatId/default inference accepts both aliases; only host creation owns this fact.
++    const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
++    try {
++      const dir = join(root, 'sessions');
++      const starts: Start[] = [];
++      const base = backend(starts);
++      const agent: Agent = { ...base, create: (start) => {
++        if (starts.length === 0) {
++          expect(fileSessions({ dir }).chats(idOf(start.uri)).find((chat) => chat.uri === start.chatUri)?.sessionConversation).toBe(true);
++        }
++        return base.create(start);
++      } };
++      const { client } = await hostAt(dir, agent);
++      const uri = `ahp-session:/${UUID}`;
++      await client.handle({ method: 'createSession', params: { channel: uri, provider: 'echo' } });
++      const original = String((await opened(client, uri)).state.defaultChat);
++      for (const chat of [PEER, chatUriFor(uri)]) {
++        await client.handle({ method: 'createChat', params: { channel: uri, chat } });
++      }
++      await client.handle({ method: 'createSession', params: { channel: TWO, provider: 'echo' } });
++      expect(starts.map((start) => [start.uri, start.chatUri, start.sessionConversation])).toEqual([
++        [uri, original, true], [uri, PEER, false], [uri, chatUriFor(uri), false],
++        [TWO, String((await opened(client, TWO)).state.defaultChat), true],
++      ]);
++      expect(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation])).toEqual([
++        [original, true], [PEER, false], [chatUriFor(uri), false],
++      ]);
++    }
++    finally { rmSync(root, { recursive: true, force: true }); }
++  });
++
+   it('finds a chat of a session it has never listed', async () => {
+     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
+     try {
+-- 
+2.56.0
+
+From 5e9bb697c42559ed2c478ee3a985128d77a7cca7 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Sat, 14 Nov 2026 09:39:26 -0800
+Subject: [PATCH] fix(sdk): preserve conversation provenance across chat
+ lifecycle
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/32986-move-fleet-onto-ahpd/32996-codex-head
+---
+ packages/sdk/src/host/changesets.ts   |  3 ++-
+ packages/sdk/src/host/chatrecord.ts   |  1 +
+ packages/sdk/src/host/tooling.ts      |  4 ++--
+ packages/sdk/src/sessions/sessions.ts |  2 +-
+ packages/sdk/test/host-chats.test.ts  | 28 ++++++++++++++++++++++-----
+ packages/sdk/test/sessions.test.ts    |  7 ++++++-
+ 6 files changed, 35 insertions(+), 10 deletions(-)
+
+diff --git a/packages/sdk/src/host/changesets.ts b/packages/sdk/src/host/changesets.ts
+index cc93aa268..269e2ecf4 100644
+--- a/packages/sdk/src/host/changesets.ts
++++ b/packages/sdk/src/host/changesets.ts
+@@ -340,6 +340,7 @@ export function createChangesets(ctx: HostContext): Changesets {
+         held.agent, uri, chatUri, chatIdFor(uri, chatUri), ctx.backendsOwn(held.config),
+         { context: typeof message.text === 'string' ? message.text : '' },
+         held.workingDirectory, undefined, held.additional,
++        undefined, undefined, undefined, false,
+       );
+       ctx.log(`opened ${chatUri} in ${uri} to write the words`);
+       // The default chat takes its own title from here, before the side chat is said.
+@@ -746,4 +747,4 @@ export function createChangesets(ctx: HostContext): Changesets {
+     dirOf, catalogueOf, changesetAt, changesetOf, operationsOf, operationsMoved, contentMoved,
+     changesetsOf, relaysChangesets, relayedChannel, operationContext, opKey, operationLanes, inFlightOperations, shown, operationStatusSaid,
+   };
+-}
+\ No newline at end of file
++}
+diff --git a/packages/sdk/src/host/chatrecord.ts b/packages/sdk/src/host/chatrecord.ts
+index 17952529d..d5e9df302 100644
+--- a/packages/sdk/src/host/chatrecord.ts
++++ b/packages/sdk/src/host/chatrecord.ts
+@@ -279,6 +279,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+       rows[at] = {
+         uri: held.uri,
+         backendId: held.backendId,
++        ...(held.sessionConversation === undefined ? {} : { sessionConversation: held.sessionConversation }),
+         ...(held.provider === undefined ? {} : { provider: held.provider }),
+         ...(held.config === undefined ? {} : { config: held.config }),
+         ...(held.title === undefined ? {} : { title: held.title }),
+diff --git a/packages/sdk/src/host/tooling.ts b/packages/sdk/src/host/tooling.ts
+index 626150786..4660f4874 100644
+--- a/packages/sdk/src/host/tooling.ts
++++ b/packages/sdk/src/host/tooling.ts
+@@ -2052,7 +2052,7 @@ export function createTooling(ctx: HostContext): Tooling {
+     if (asked.tools !== undefined && asked.tools.length > 0) ctx.chatTools.set(chatUri, [...asked.tools]);
+     let chat: Session;
+     try {
+-      chat = await spawn(agent, at, chatUri, chatIdFor(at, chatUri), config, preamble === undefined ? undefined : { context: preamble }, held.workingDirectory, undefined, held.additional);
++      chat = await spawn(agent, at, chatUri, chatIdFor(at, chatUri), config, preamble === undefined ? undefined : { context: preamble }, held.workingDirectory, undefined, held.additional, undefined, undefined, undefined, false);
+     }
+     catch (error) {
+       ctx.madeFrom.delete(chatUri);
+@@ -3047,4 +3047,4 @@ export function createTooling(ctx: HostContext): Tooling {
+     toolsServersGone, boundTools, sessionlessTools, instructions, turnInstructions, reportDiscarded, openChat,
+     moving, served,
+   };
+-}
+\ No newline at end of file
++}
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 873ba8f2b..2a8de5229 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -253,7 +253,7 @@ export function memorySessions(): SessionStore & Held {
+        */
+       const target = rows.get(to);
+       const list = [...(target?.chats ?? [])];
+-      if (chat !== undefined) list.push({ ...chat });
++      if (chat !== undefined) list.push({ ...chat, ...(from === to ? {} : { sessionConversation: false }) });
+       const theirs = new Map(target?.senders);
+       for (const [turn, who] of ours) theirs.set(turn, who);
+       const named = new Map(target?.chatTitles);
+diff --git a/packages/sdk/test/host-chats.test.ts b/packages/sdk/test/host-chats.test.ts
+index e60e716da..7aa5446bd 100644
+--- a/packages/sdk/test/host-chats.test.ts
++++ b/packages/sdk/test/host-chats.test.ts
+@@ -1222,7 +1222,7 @@ describe('more than one chat in a session', () => {
+     }
+   });
+ 
+-  it('serves each chat of a session from its own conversation after a restart', async () => {
++  it.each([false, true])('serves each chat of a session from its own conversation after a restart (legacy: %s)', async (legacy) => {
+     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
+     try {
+       const dir = join(root, 'sessions');
+@@ -1243,6 +1243,11 @@ describe('more than one chat in a session', () => {
+       // starts on a folder that has all of it rather than on a race.
+       await new Promise((tick) => { setTimeout(tick, 5); });
+ 
++      if (legacy) {
++        const old = fileSessions({ dir });
++        old.setChats('live', old.chats('live').map(({ sessionConversation: _unknown, ...chat }) => chat));
++        old.close?.();
++      }
+       const second = await hostAt(dir, agent);
+       const listed = await second.client.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } }) as {
+         items: { resource: string }[];
+@@ -1275,18 +1280,24 @@ describe('more than one chat in a session', () => {
+       ]);
+       expect(said(await opened(second.client, PEER))).toEqual(['second', 'third']);
+       expect(said(await opened(second.client, session.state.defaultChat as string))).toEqual(['first']);
+-      expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual([true, false]);
++      expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
++      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
+     }
+     finally {
+       rmSync(root, { recursive: true, force: true });
+     }
+   });
+ 
+-  it('records the original before backend create and keeps session-id and legacy aliases as peers', async () => {
++  it.each([false, true])('records the original before backend create and keeps session-id and legacy aliases as peers (reused URI: %s)', async (reused) => {
+     // 32996: the old chatId/default inference accepts both aliases; only host creation owns this fact.
+     const root = mkdtempSync(join(tmpdir(), 'ahpd-chats-'));
+     try {
+       const dir = join(root, 'sessions');
++      if (reused) {
++        const retired = fileSessions({ dir });
++        retired.setChats(UUID, [{ uri: PEER, backendId: 'retired', sessionConversation: true, closed: true }]);
++        retired.close?.();
++      }
+       const starts: Start[] = [];
+       const base = backend(starts);
+       const agent: Agent = { ...base, create: (start) => {
+@@ -1307,9 +1318,9 @@ describe('more than one chat in a session', () => {
+         [uri, original, true], [uri, PEER, false], [uri, chatUriFor(uri), false],
+         [TWO, String((await opened(client, TWO)).state.defaultChat), true],
+       ]);
+-      expect(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation])).toEqual([
++      expect(new Map(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation]))).toEqual(new Map([
+         [original, true], [PEER, false], [chatUriFor(uri), false],
+-      ]);
++      ]));
+     }
+     finally { rmSync(root, { recursive: true, force: true }); }
+   });
+@@ -1372,6 +1383,8 @@ describe('more than one chat in a session', () => {
+       await first.client.handle({ method: 'disposeChat', params: { channel: PEER } });
+       await settle();
+       await new Promise((tick) => { setTimeout(tick, 5); });
++      // A hidden close retains provenance on the retained occurrence.
++      expect(fileSessions({ dir }).chats('live').find((chat) => chat.uri === PEER)).toMatchObject({ closed: true, sessionConversation: false });
+       const before = starts.length;
+ 
+       const second = await hostAt(dir, agent);
+@@ -1398,6 +1411,7 @@ describe('more than one chat in a session', () => {
+       await send(first.client, LIVE, 't0', 'first');
+       await send(first.client, PEER, 't1', 'made here');
+       await new Promise((tick) => { setTimeout(tick, 5); });
++      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual([true, false]);
+ 
+       const second = await hostAt(dir, agent);
+       /*
+@@ -2530,6 +2544,8 @@ describe('more than one chat in a session', () => {
+       const there = await opened(first.client, answer.session);
+       expect((there.state as { lifecycle?: string }).lifecycle ?? 'ready').toBe('ready');
+       expect(listed(there)).toEqual([PEER]);
++      expect(there.state.defaultChat).toBe(PEER);
++      expect(fileSessions({ dir: join(root, 'sessions') }).chats(idOf(answer.session)).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
+     }
+     finally {
+       rmSync(root, { recursive: true, force: true });
+@@ -2979,6 +2995,8 @@ describe('a chat of another backend', () => {
+     // The chat that took the default is the one a client gets by naming none.
+     const state = await opened(second.client, SESSION);
+     expect(state.state.defaultChat).toBe(PEER);
++    expect(startsTwo.slice(beganTwo).map((start) => start.sessionConversation)).toEqual([false]);
++    expect(store.chats(id).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
+     // And no chat of `one` was started to hold the session: the default chat is
+     // the chat of `two`, and it is a chat of the session, not the session.
+     expect(startsOne.slice(beganOne)).toEqual([]);
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index 09205b178..ca489b762 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -670,6 +670,11 @@ it('keeps original, peer and unknown conversation provenance across a synchronou
+   restarted.setChats('a', restarted.chats('a').map((chat) => ({ ...chat, closed: true })));
+   restarted.close?.();
+   expect(fileSessions({ dir }).chats('a')).toEqual(held.map((chat) => ({ ...chat, closed: true })));
++  // A conversation occurrence in another session cannot inherit original ownership.
++  const moving = fileSessions({ dir });
++  moving.moveChat('a', 'b', held[0]!.uri, []);
++  moving.close?.();
++  expect(fileSessions({ dir }).chats('b')).toEqual([{ ...held[0], closed: true, sessionConversation: false }]);
+ });
+ 
+ it('forgets a session entirely, whatever was set on it', () => {
+@@ -775,7 +780,7 @@ it('moves a chat to another session in the store, with its title and the senders
+   const dir = join(root, 'sessions');
+   const store = fileSessions({ dir });
+   const lead = { uri: 'ahp-chat:/one', backendId: 'one', default: true };
+-  const peer = { uri: 'ahp-chat:/peer', backendId: 'peer' };
++  const peer = { uri: 'ahp-chat:/peer', backendId: 'peer', sessionConversation: false };
+   const tail = { uri: 'ahp-chat:/tail', backendId: 'tail', default: true };
+   store.setChats('a', [lead, peer]);
+   store.setChats('b', [tail]);
+-- 
+2.56.0
+

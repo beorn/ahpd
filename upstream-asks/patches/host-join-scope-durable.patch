@@ -1,0 +1,709 @@
+From d0e6bf9b5ab44472c30a157ef12109bb62b94ce3 Mon Sep 17 00:00:00 2001
+From: "@dev/3" <dev-3@main.hh.invalid>
+Date: Fri, 20 Nov 2026 15:29:01 -0800
+Subject: [PATCH] test(join): cover two live nested session hosts
+
+Refs: #37250
+---
+ packages/server/test/join.test.ts | 35 +++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/packages/server/test/join.test.ts b/packages/server/test/join.test.ts
+index 6861f139f..92aabfef3 100644
+--- a/packages/server/test/join.test.ts
++++ b/packages/server/test/join.test.ts
+@@ -210,6 +210,41 @@ it('says its workdir on hello and serves a session in that folder', async () =>
+   await at.close();
+ }, 60_000);
+ 
++it('serves two live session hosts on the same joined node', async () => {
++  const at = await hub();
++  const workdir = join(home, 'node');
++  fixture(workdir);
++  const node = joinUp([at.url, '--token', 'node-token', '--workdir', workdir]);
++  const control = await dialled(at.held, { control: 0 }, node);
++  expect(await control.frame()).toMatchObject({ id: 1, method: 'node/hello' });
++  control.send({ jsonrpc: '2.0', id: 1, result: {} });
++
++  const open = async (request: number, id: string, innerId: string): Promise<Held> => {
++    control.send({ jsonrpc: '2.0', id: request, method: 'node/open', params: {
++      id, plugins: ['./plugin-env/index.ts'], scope: { hostId: 'hub-a', innerId },
++    } });
++    expect(await control.frame()).toMatchObject({ id: request, result: { id } });
++    const data = await dialled(at.held, { data: id }, node);
++    const closed = new Promise<never>((_resolve, reject) => {
++      const fail = (): void => reject(new Error(`session host ${id} closed before initialization. Node stderr:\n${node.said()}`));
++      if (data.socket.readyState !== WebSocket.OPEN) fail();
++      else data.socket.once('close', fail);
++    });
++    const answered = Promise.race([data.frame(), closed]);
++    data.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
++      clientId: 'join-test', protocolVersions: ['0.9.0'],
++    } });
++    expect(await answered).toMatchObject({ id: 1, result: { protocolVersion: expect.any(String) } });
++    return data;
++  };
++
++  const first = await open(2, 'stream-a', 'inner-a');
++  const second = await open(3, 'stream-b', 'inner-b');
++  expect(first.live).toBe(true);
++  expect(second.live).toBe(true);
++  await at.close();
++}, 60_000);
++
+ it('closes a session socket when its host exits', async () => {
+   const at = await hub();
+   const workdir = join(home, 'node');
+-- 
+2.56.0
+
+From 2453628ee6e9ae13de60d668451669b9ad1d511a Mon Sep 17 00:00:00 2001
+From: "@dev/3" <dev-3@main.hh.invalid>
+Date: Fri, 20 Nov 2026 15:40:13 -0800
+Subject: [PATCH] fix(join): scope nested child sessions by hub and inner id
+
+Refs: #37250
+---
+ packages/sdk/src/host/spawn.ts        |  1 +
+ packages/sdk/src/nodes.ts             |  5 +++
+ packages/sdk/src/sessions/nested.ts   | 11 ++++-
+ packages/sdk/src/sessions/sessions.ts | 62 ++++++++++++++++++++++++---
+ packages/sdk/src/types/computers.ts   |  2 +
+ packages/sdk/test/sessions.test.ts    | 44 +++++++++++++++++++
+ packages/server/src/commands/join.ts  | 12 +++++-
+ packages/server/src/commands/run.ts   | 17 ++++++--
+ packages/server/src/joined-session.ts | 19 ++++++++
+ packages/server/test/join.test.ts     | 23 +++++++++-
+ 10 files changed, 183 insertions(+), 13 deletions(-)
+ create mode 100644 packages/server/src/joined-session.ts
+
+diff --git a/packages/sdk/src/host/spawn.ts b/packages/sdk/src/host/spawn.ts
+index 6c81a4d1f..d99bed540 100644
+--- a/packages/sdk/src/host/spawn.ts
++++ b/packages/sdk/src/host/spawn.ts
+@@ -1166,6 +1166,7 @@ export function createSpawn(ctx: HostContext): Spawn {
+           restart: options.nodeRestart ?? 'end',
+           start: (asked: NestedAsked) => connect(asked.id, {
+             plugins: asked.plugins,
++            innerId: asked.innerId,
+             ...(asked.cwd === undefined ? {} : { cwd: asked.cwd }),
+             ...(asked.record === undefined ? {} : { record: asked.record }),
+           }),
+diff --git a/packages/sdk/src/nodes.ts b/packages/sdk/src/nodes.ts
+index 646db60bb..dead6262c 100644
+--- a/packages/sdk/src/nodes.ts
++++ b/packages/sdk/src/nodes.ts
+@@ -280,6 +280,8 @@ const sessionOf = (url: string | undefined): string | undefined => {
+ export interface LiveOptions {
+   /** The file `ahpd node add` wrote, which says who may join. */
+   file: Nodes;
++  /** The hub's durable identity, used to scope joined sessions on the node. */
++  hostId?: string;
+   /** One line worth keeping: a session a node would not open. Nothing is said without one. */
+   log?(line: string, level?: LogLevel): void;
+   /**
+@@ -547,6 +549,9 @@ export function liveNodes(options: LiveOptions): LiveNodes {
+       await live.peer.request('node/open', {
+         id: open,
+         plugins: asked.plugins,
++        ...(options.hostId === undefined || asked.innerId === undefined ? {} : {
++          scope: { hostId: options.hostId, innerId: asked.innerId },
++        }),
+         ...(asked.record === undefined ? {} : { env: { [AGENT_RECORD_VARIABLE]: JSON.stringify(asked.record.bare) } }),
+       }, OPEN_ANSWER_MS);
+     }
+diff --git a/packages/sdk/src/sessions/nested.ts b/packages/sdk/src/sessions/nested.ts
+index 01f0038e2..98463cd81 100644
+--- a/packages/sdk/src/sessions/nested.ts
++++ b/packages/sdk/src/sessions/nested.ts
+@@ -124,6 +124,8 @@ export type { NestedHost, NestedStarted };
+ export interface NestedAsked {
+   /** The machine's id, from the session's `computer://` setting. */
+   id: string;
++  /** The durable session name inside the host. */
++  innerId: string;
+   /** The plugin specs the inner host loads. */
+   plugins: string[];
+   /** Where inside the machine it starts, when the session named a folder. */
+@@ -1233,6 +1235,7 @@ const nestedSession = (provider: string, variant: boolean, start: Start, options
+     if (plugins.length === 0) throw new Error(`this host does not know which plugin serves ${provider}, so it cannot start one there`);
+     const asked: NestedAsked = {
+       id,
++      innerId: sessionId,
+       plugins,
+       ...(start.workingDirectory === undefined ? {} : { cwd: start.workingDirectory }),
+       ...(handed === undefined ? {} : { record: handed.record }),
+@@ -1902,10 +1905,14 @@ export const deleteNested = async (asked: NestedDeleteAsked): Promise<void> => {
+   const where = `computer://${asked.id}`;
+   let started: NestedStarted;
+   try {
+-    started = await startInside({
+-      id: asked.id,
++    const start = {
+       plugins: asked.plugins,
++      innerId: asked.sessionId,
+       ...(asked.record === undefined ? {} : { record: asked.record }),
++    };
++    started = await asked.computers?.connect?.(asked.id, start) ?? await startInside({
++      ...start,
++      id: asked.id,
+       ...(asked.computers === undefined ? {} : { computers: asked.computers }),
+     });
+   }
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 6c64c7481..d8828407d 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -1,8 +1,9 @@
+ /** The two `SessionStore` implementations: one that forgets, one that does not. */
+ 
++import { createHash } from 'node:crypto';
+ import { existsSync, fstatSync, lstatSync, mkdirSync, realpathSync, readdirSync, renameSync, rmSync } from 'node:fs';
+ import { tryAcquireFlock } from '@bearly/flock';
+-import { join, sep } from 'node:path';
++import { basename, dirname, join, sep } from 'node:path';
+ import { readJson, writeJsonAtomic } from '../utils/jsonfile.js';
+ import { asCreatedBy, asMultiRoot, asOrigin } from './remotesession.js';
+ import type { Scope } from '../usage/scopes.js';
+@@ -351,6 +352,10 @@ export interface FileSessionOptions {
+    * answering it for a host embedded in an editor too.
+    */
+   dir: string;
++  /** A joined child keeps its session beneath this store, scoped by hub and inner session. */
++  joined?: { hostId: string; innerId: string };
++  /** The pre-directory store to check for an unmigrated joined session. */
++  legacyFile?: string;
+   /** Somewhere to say that it could not be read or written. */
+   onProblem?(message: string): void;
+ }
+@@ -725,8 +730,15 @@ const idIn = (name: string): string | undefined => {
+  * and neither a read nor a write may mistake those retained bytes for absence.
+  */
+ export function fileSessions(options: FileSessionOptions): SessionStore {
+-  mkdirSync(options.dir, { recursive: true, mode: 0o700 });
+-  const dir = realpathSync(options.dir);
++  const joined = options.joined;
++  const scope = joined === undefined ? undefined
++    : createHash('sha256').update(JSON.stringify([joined.hostId, joined.innerId])).digest('hex');
++  const requestedDir = scope === undefined ? options.dir : join(options.dir, 'nested', scope);
++  // The scoped writer lock lives beside the directory, so it covers both creating and retiring it.
++  const container = scope === undefined ? requestedDir : dirname(requestedDir);
++  mkdirSync(container, { recursive: true, mode: 0o700 });
++  const realContainer = realpathSync(container);
++  const dir = scope === undefined ? realContainer : join(realContainer, basename(requestedDir));
+   const writer = tryAcquireFlock(`${dir}.lock`, { noFollow: true });
+   if (writer === null) throw new Error(`Session store ${dir} already has a writer; close or stop that host before opening another`);
+   const inner = memorySessions();
+@@ -779,11 +791,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+   let writing: ReturnType<typeof setTimeout> | undefined;
+   /** Closed: what was waiting has been written, and nothing is written again. */
+   let closed = false;
++  let removeOnClose = false;
+   const owned = (): void => {
+     if (closed || !writer.held) throw new Error(`Cannot mutate closed session store ${dir}`);
+     const held = fstatSync(writer.fd, { bigint: true });
+     const path = lstatSync(writer.path, { bigint: true });
+-    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || realpathSync(options.dir) !== dir) {
++    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || realpathSync(requestedDir) !== dir) {
+       throw new Error(`Session store ${dir} writer identity changed; refusing a write outside its ownership`);
+     }
+   };
+@@ -1078,7 +1091,42 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     }
+   };
+ 
+-  try { owned(); load(); }
++  try {
++    if (joined !== undefined) {
++      const status = lstatSync(dir, { throwIfNoEntry: false });
++      if (status !== undefined && !status.isDirectory()) throw new Error(`Joined session store ${dir} is not a directory`);
++      const identityPath = join(dir, 'identity');
++      const identity = readJson(identityPath);
++      if (!identity.ok && identity.kind === 'missing') {
++        const legacy = lstatSync(join(options.dir, fileNameOf(joined.innerId)), { throwIfNoEntry: false });
++        const unmigrated = (path: string): Error =>
++          new Error(`session ${joined.innerId} is in the legacy shared store ${path}; not migrated`);
++        if (legacy !== undefined) throw unmigrated(options.dir);
++        if (options.legacyFile !== undefined) {
++          const previous = readJson(options.legacyFile);
++          if (previous.ok) {
++            const whole = previous.value as Partial<Whole> | null;
++            if (whole?.version !== 1 || !Array.isArray(whole.sessions)) {
++              throw new Error(`Could not read legacy session store ${options.legacyFile}`);
++            }
++            if (whole.sessions.some((row) => row?.id === joined.innerId)) throw unmigrated(options.legacyFile);
++          } else if (previous.kind !== 'missing') {
++            throw new Error(`Could not read legacy session store ${options.legacyFile}`);
++          }
++        }
++        mkdirSync(dir, { recursive: true, mode: 0o700 });
++        owned();
++        writeJsonAtomic(identityPath, { hostId: joined.hostId, innerId: joined.innerId });
++      } else {
++        const value = identity.ok ? identity.value as Partial<typeof joined> | null : null;
++        if (value?.hostId !== joined.hostId || value.innerId !== joined.innerId) {
++          throw new Error(`Could not verify joined session identity at ${identityPath}`);
++        }
++      }
++    }
++    owned();
++    load();
++  }
+   catch (error) { writer.release(); throw error; }
+ 
+   return {
+@@ -1188,6 +1236,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+       heard.delete(id);
+       inner.forget(id);
+       attachmentsGone(id);
++      if (id === joined?.innerId) removeOnClose = true;
+       dirty.add(id);
+       later();
+     },
+@@ -1218,6 +1267,9 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         writing = undefined;
+       }
+       save(true);
++      if (removeOnClose && inner.sessions().length === 0 && faults.size === 0) {
++        rmSync(dir, { recursive: true });
++      }
+       closed = true;
+       writer.release();
+     },
+diff --git a/packages/sdk/src/types/computers.ts b/packages/sdk/src/types/computers.ts
+index d4966c45b..c81a3f2e0 100644
+--- a/packages/sdk/src/types/computers.ts
++++ b/packages/sdk/src/types/computers.ts
+@@ -60,6 +60,8 @@ export interface NestedStarted {
+  * there through it.
+  */
+ export interface NestedStart {
++  /** The durable session name inside the host, independent of the connection. */
++  innerId?: string;
+   /**
+    * The plugins the host inside loads, one `--plugin` each.
+    *
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index 90d1a8820..a04cdb57e 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -86,6 +86,50 @@ it('rejects a closed file-store setter before changing its retained row', () =>
+   expect(first.owner('owned')).toBe('user:ana');
+ });
+ 
++it('reopens the same joined session, isolates hubs, and retires only the disposed scope', async () => {
++  const dir = join(root, 'joined');
++  const joined = { hostId: 'hub-a', innerId: 'same' };
++  const first = fileSessions({ dir, joined });
++  const sibling = fileSessions({ dir, joined: { hostId: 'hub-a', innerId: 'sibling' } });
++  const otherHub = fileSessions({ dir, joined: { hostId: 'hub-b', innerId: 'same' } });
++  first.setConfig('same', { model: 'retained' });
++  await first.commit('same');
++  sibling.setConfig('sibling', { model: 'sibling' });
++  otherHub.setConfig('same', { model: 'separate' });
++
++  const attachments = first.attachmentsDir?.('same');
++  if (attachments === undefined) throw new Error('The joined session has no attachment directory');
++  mkdirSync(attachments, { recursive: true });
++  writeFileSync(join(attachments, 'image'), 'retained attachment');
++  const directory = dirname(dirname(attachments));
++  expect(JSON.parse(readFileSync(join(directory, 'identity'), 'utf8'))).toEqual(joined);
++  first.close?.();
++
++  const reopened = fileSessions({ dir, joined });
++  expect(reopened.config('same')).toEqual({ model: 'retained' });
++  expect(reopened.attachmentsDir?.('same')).toBe(attachments);
++  expect(readFileSync(join(attachments, 'image'), 'utf8')).toBe('retained attachment');
++  reopened.forget('same');
++  reopened.close?.();
++
++  expect(existsSync(directory)).toBe(false);
++  expect(sibling.config('sibling')).toEqual({ model: 'sibling' });
++  expect(otherHub.config('same')).toEqual({ model: 'separate' });
++});
++
++it('refuses a joined session still in the legacy shared store without changing that store', async () => {
++  const dir = join(root, 'legacy');
++  const legacy = fileSessions({ dir });
++  legacy.setConfig('saved', { model: 'old' });
++  await legacy.commit('saved');
++  legacy.close?.();
++  const original = readFileSync(join(dir, 'saved.json'), 'utf8');
++  const joined = { hostId: 'hub', innerId: 'saved' };
++  expect(() => fileSessions({ dir, joined })).toThrow(`session saved is in the legacy shared store ${dir}; not migrated`);
++  expect(readFileSync(join(dir, 'saved.json'), 'utf8')).toBe(original);
++  expect(readdirSync(join(dir, 'nested')).every((entry) => entry.endsWith('.lock'))).toBe(true);
++});
++
+ /**
+  * What one session's own file holds, or nothing when it has no file.
+  *
+diff --git a/packages/server/src/commands/join.ts b/packages/server/src/commands/join.ts
+index 2a00b7e7b..474a1f99f 100644
+--- a/packages/server/src/commands/join.ts
++++ b/packages/server/src/commands/join.ts
+@@ -28,6 +28,7 @@ import { resolve } from 'node:path';
+ import { SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
+ import { JOIN_PATH } from '@ahpd/sdk';
+ import type { Command, Registry } from '@cofold/commands';
++import { JOINED_SESSION_ENV, joinedSession, joinedSessions } from '../joined-session.js';
+ import { version } from '../version.js';
+ import { conflict, stop } from './options.js';
+ 
+@@ -74,6 +75,7 @@ interface Hello {
+  */
+ interface Open {
+   id: string;
++  scope?: unknown;
+   plugins?: string[];
+   env?: Record<string, string>;
+ }
+@@ -216,6 +218,14 @@ const serveSession = (options: {
+   const { url, workdir, program, open: asked, say } = options;
+   const at = new URL(url.href);
+   at.searchParams.set('data', asked.id);
++  const env = { ...process.env, ...(asked.env ?? {}) };
++  delete env[JOINED_SESSION_ENV];
++  if (asked.scope !== undefined) {
++    const scope = joinedSession(asked.scope);
++    // Refuse unreadable or legacy state on the control request, before opening a data socket.
++    joinedSessions(scope, say).close?.();
++    env[JOINED_SESSION_ENV] = JSON.stringify(scope);
++  }
+   const child = spawn(process.execPath, [
+     ...process.execArgv,
+     program,
+@@ -226,7 +236,7 @@ const serveSession = (options: {
+     ...(asked.plugins ?? []).flatMap((plugin) => ['--plugin', plugin]),
+   ], {
+     cwd: workdir,
+-    env: { ...process.env, ...(asked.env ?? {}) },
++    env,
+     stdio: ['pipe', 'pipe', 'pipe'],
+     windowsHide: true,
+   });
+diff --git a/packages/server/src/commands/run.ts b/packages/server/src/commands/run.ts
+index 0f603cdfc..0ef540d65 100644
+--- a/packages/server/src/commands/run.ts
++++ b/packages/server/src/commands/run.ts
+@@ -11,6 +11,7 @@
+ import { hostname } from 'node:os';
+ import { join } from 'node:path';
+ import { pathToFileURL } from 'node:url';
++import { JOINED_SESSION_ENV, joinedSession, joinedSessions } from '../joined-session.js';
+ import { canonicalFromCli, check, createRegistry, optionTable, optionsOf, tokenize } from '@cofold/commands';
+ import type { Command, JsonSchema, Registry } from '@cofold/commands';
+ import type { Agent, Alert, LogLevel, AutomationStore, AutomationsOptions, ClientCounts, ClientRegistry, CommandSplitter, Connected, Contribution, DoorOptions, HostEventOf, HostHandlers, HostOptions, Loaded, Opened, Peer, PluginContext, Principal, Raw, RequestHandler, Route, ServedAdapter, ServedEngine, ServedTunnelKind, SessionStore, Tap, TunnelsChannel, Usage, Users, Vault } from '@ahpd/sdk';
+@@ -324,6 +325,12 @@ export const identifyWith = (
+  */
+ export async function runForeground(options: Options, typed: Readonly<Record<string, unknown>> = {}): Promise<void> {
+   const { token, from } = secret(options);
++  const joined = process.env[JOINED_SESSION_ENV];
++  delete process.env[JOINED_SESSION_ENV];
++  if (joined !== undefined && (!options.stdio || options.sessions === 'memory')) {
++    stop('A joined session needs a persistent stdio host');
++  }
++  const scope = joined === undefined ? undefined : joinedSession(JSON.parse(joined) as unknown);
+   /*
+    * Whether `ahpd start` spawned this process, and so will record it. Taken out
+    * of the environment at once, so a shell a session runs does not inherit it.
+@@ -448,7 +455,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
+    */
+   const nodes = options.users === undefined
+     ? undefined
+-    : liveNodes({ file: fileNodes({ path: nodesFileOf(options.users), onProblem: stamp }), log: stamp });
++    : liveNodes({ file: fileNodes({ path: nodesFileOf(options.users), onProblem: stamp }), hostId: hostId(), log: stamp });
+ 
+   /*
+    * The scratch of writers that are gone, cleared once at the start.
+@@ -1617,9 +1624,11 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
+      * an upgrade, and without this every archived session comes back into the
+      * catalogue and every read one is unread, for everybody, with nothing said.
+      */
+-    sessions: options.sessions === 'memory'
+-      ? memorySessions()
+-      : daemonSessions((message) => { stamp(message, 'warn'); }),
++    sessions: scope !== undefined
++      ? joinedSessions(scope, (message) => { stamp(message, 'warn'); })
++      : options.sessions === 'memory'
++        ? memorySessions()
++        : daemonSessions((message) => { stamp(message, 'warn'); }),
+     /*
+      * Automations, with a clock unless asked otherwise.
+      *
+diff --git a/packages/server/src/joined-session.ts b/packages/server/src/joined-session.ts
+new file mode 100644
+index 000000000..a0be60a31
+--- /dev/null
++++ b/packages/server/src/joined-session.ts
+@@ -0,0 +1,19 @@
++import { fileSessions, type FileSessionOptions } from '@ahpd/sdk';
++import { sessionsDir, sessionsPath } from './config.js';
++
++export const JOINED_SESSION_ENV = 'AHPD_JOINED_SESSION';
++
++type JoinedSession = NonNullable<FileSessionOptions['joined']>;
++
++export function joinedSession(value: unknown): JoinedSession {
++  const scope = value as Partial<JoinedSession> | null;
++  if (typeof scope?.hostId !== 'string' || scope.hostId === ''
++    || typeof scope.innerId !== 'string' || scope.innerId === '') {
++    throw new Error('Joined session scope needs a hub identity and an inner session id');
++  }
++  return { hostId: scope.hostId, innerId: scope.innerId };
++}
++
++export function joinedSessions(scope: JoinedSession, onProblem: (message: string) => void) {
++  return fileSessions({ dir: sessionsDir(), joined: scope, legacyFile: sessionsPath(), onProblem });
++}
+diff --git a/packages/server/test/join.test.ts b/packages/server/test/join.test.ts
+index 92aabfef3..36c738ef7 100644
+--- a/packages/server/test/join.test.ts
++++ b/packages/server/test/join.test.ts
+@@ -10,7 +10,7 @@
+ 
+ import { spawn } from 'node:child_process';
+ import type { ChildProcess } from 'node:child_process';
+-import { cpSync, mkdirSync } from 'node:fs';
++import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+ import { createServer } from 'node:http';
+ import type { AddressInfo } from 'node:net';
+ import { join } from 'node:path';
+@@ -245,6 +245,27 @@ it('serves two live session hosts on the same joined node', async () => {
+   await at.close();
+ }, 60_000);
+ 
++it('names the legacy shared store on the control request and leaves its row intact', async () => {
++  const at = await hub();
++  const store = join(home, 'ahpd', 'sessions');
++  mkdirSync(store, { recursive: true });
++  const row = join(store, 'old.json');
++  const bytes = '{"version":1,"id":"old","config":{"model":"saved"}}\n';
++  writeFileSync(row, bytes);
++  const node = joinUp([at.url, '--token', 'node-token']);
++  const control = await dialled(at.held, { control: 0 }, node);
++  expect(await control.frame()).toMatchObject({ id: 1, method: 'node/hello' });
++  control.send({ jsonrpc: '2.0', id: 1, result: {} });
++  control.send({ jsonrpc: '2.0', id: 2, method: 'node/open', params: {
++    id: 'old-stream', scope: { hostId: 'hub-a', innerId: 'old' },
++  } });
++  expect(await control.frame()).toMatchObject({ id: 2, error: {
++    message: `session old is in the legacy shared store ${store}; not migrated`,
++  } });
++  expect(at.held.map((socket) => socket.url).some((url) => url.includes('data=old-stream'))).toBe(false);
++  expect(readFileSync(row, 'utf8')).toBe(bytes);
++}, 60_000);
++
+ it('closes a session socket when its host exits', async () => {
+   const at = await hub();
+   const workdir = join(home, 'node');
+-- 
+2.56.0
+
+From e107907ede12584ef7e504340f1caea8cb7cd6c2 Mon Sep 17 00:00:00 2001
+From: "@dev/3" <dev-3@main.hh.invalid>
+Date: Fri, 20 Nov 2026 16:28:05 -0800
+Subject: [PATCH] fix: dispose joined sessions from their durable scope
+
+Refs: #37250
+---
+ packages/sdk/src/host/lifecycle.ts    | 10 +++++--
+ packages/sdk/src/sessions/nested.ts   | 42 ++++++++++++++++++++-------
+ packages/sdk/src/sessions/sessions.ts | 10 +++++--
+ packages/sdk/test/sessions.test.ts    | 24 +++++++++++++++
+ 4 files changed, 70 insertions(+), 16 deletions(-)
+
+diff --git a/packages/sdk/src/host/lifecycle.ts b/packages/sdk/src/host/lifecycle.ts
+index 8c52423ed..d81b4ef1a 100644
+--- a/packages/sdk/src/host/lifecycle.ts
++++ b/packages/sdk/src/host/lifecycle.ts
+@@ -5,6 +5,7 @@ import { computerId, computersFor } from '../machines/computers.js';
+ import { deleteNested } from '../sessions/nested.js';
+ import { localPath, uriOf } from '../resources/fileuri.js';
+ import { idOf, uriFor, Status } from '../sessions/catalog.js';
++import { joinedSessionId } from '../sessions/sessions.js';
+ import { mkdir, rm, stat } from 'node:fs/promises';
+ import { homedir } from 'node:os';
+ import { isDeepStrictEqual } from 'node:util';
+@@ -779,7 +780,10 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+   const removeSession = async (uri: string, acting?: Principal | Owner): Promise<void> => {
+     mayDispose(acting, uri);
+     const held = sessions.get(uri);
+-    const owner = owners.get(uri);
++    const id = idOf(uri);
++    // The joined store can identify its one recorded session even when its backend does not list it.
++    const recorded = joinedSessionId(kept) === id && kept.uri?.(id) === uri ? kept.provider(id) : undefined;
++    const owner = owners.get(uri) ?? (recorded === undefined ? undefined : ctx.agents.get(recorded));
+     if (!held && !owner)
+       throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${uri}`);
+     const agent = held?.agent ?? (owner as Agent);
+@@ -813,8 +817,8 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
+      * below drops the record they are read from. So does the machine, which is
+      * read off the config the teardown forgets.
+      */
+-    const directory = dirOf(uri);
+-    const chats = ctx.heldChats(idOf(uri));
++    const directory = dirOf(uri) ?? (recorded === undefined ? undefined : kept.workingDirectory?.(id));
++    const chats = ctx.heldChats(id);
+     const ran = ranIn(uri);
+     /*
+      * And the checkpoints its turns left in that folder, which are commits
+diff --git a/packages/sdk/src/sessions/nested.ts b/packages/sdk/src/sessions/nested.ts
+index 98463cd81..e681f7e21 100644
+--- a/packages/sdk/src/sessions/nested.ts
++++ b/packages/sdk/src/sessions/nested.ts
+@@ -42,7 +42,7 @@ import { spawn as startProcess } from 'node:child_process';
+ import { StringDecoder } from 'node:string_decoder';
+ import { AhpClient, RpcError } from '@microsoft/agent-host-protocol/client';
+ import type { AhpTransport, Subscription, TransportFrame } from '@microsoft/agent-host-protocol/client';
+-import { canvasReducer, changesetReducer, chatReducer, rootReducer, sessionReducer, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
++import { AhpErrorCodes, canvasReducer, changesetReducer, chatReducer, rootReducer, sessionReducer, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
+ import type {
+   ActionOrigin, CanvasAction, CanvasState, ChangesetAction, ChangesetState, ChatAction, ChatState, RootAction, RootState, SessionAction, SessionState,
+   StateAction, TerminalState,
+@@ -1887,11 +1887,9 @@ export interface NestedDeleteAsked {
+  * A nested session's copy inside its machine, gone.
+  *
+  * The half of a delete a session that is not running has no close for: a host
+- * is started inside the machine for one question. The listing is what puts the
+- * row in that host's catalogue without opening it - the session is not running
+- * there either, and starting its agent only to delete it would be the work of a
+- * resume nobody asked for - and `disposeSession` then takes it out of the
+- * host's store, which is what the next daemon would have listed and resumed.
++ * is started inside the machine for one question. A joined host can dispose
++ * its recorded session directly. Other hosts list first to load the catalogue
++ * row without opening the session or starting its agent.
+  *
+  * A session the inner host does not list is already gone, which is the answer a
+  * delete twice gets. Everything else - no such machine, a host that will not
+@@ -1904,13 +1902,16 @@ export const deleteNested = async (asked: NestedDeleteAsked): Promise<void> => {
+   const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+   const where = `computer://${asked.id}`;
+   let started: NestedStarted;
++  let joined: boolean;
+   try {
+     const start = {
+       plugins: asked.plugins,
+       innerId: asked.sessionId,
+       ...(asked.record === undefined ? {} : { record: asked.record }),
+     };
+-    started = await asked.computers?.connect?.(asked.id, start) ?? await startInside({
++    const connected = await asked.computers?.connect?.(asked.id, start);
++    joined = connected !== undefined;
++    started = connected ?? await startInside({
+       ...start,
+       id: asked.id,
+       ...(asked.computers === undefined ? {} : { computers: asked.computers }),
+@@ -1944,10 +1945,29 @@ export const deleteNested = async (asked: NestedDeleteAsked): Promise<void> => {
+     if (!SUPPORTED_PROTOCOL_VERSIONS.includes(hello.protocolVersion)) {
+       throw new Error(`the host inside ${where} speaks ${hello.protocolVersion}, and this host offered ${SUPPORTED_PROTOCOL_VERSIONS.join(', ')}`);
+     }
+-    const listed = await client.request('listSessions', { channel: ROOT });
+-    const row = listed.items.find((one) => idOf(one.resource) === asked.sessionId);
+-    if (row === undefined) say(`${asked.sessionId} is not in ${where} any more, so nothing was deleted there`);
+-    else await bounded(client.request('disposeSession', { channel: row.resource }), DISPOSE_WAIT);
++    const dispose = async (channel: string): Promise<void> => {
++      const complete = Symbol();
++      const result = await bounded(client.request('disposeSession', { channel }).then(() => complete), DISPOSE_WAIT);
++      if (result === undefined) throw new Error(`the host inside ${where} did not finish disposing ${channel}`);
++      if (result !== complete) throw result;
++    };
++    let disposed = false;
++    if (joined) {
++      try {
++        await dispose(uriFor(asked.sessionId));
++        disposed = true;
++      }
++      catch (error) {
++        // Unscoped peers may still need their catalogue hydrated before disposal.
++        if (!(error instanceof RpcError) || error.code !== AhpErrorCodes.SessionNotFound) throw error;
++      }
++    }
++    if (!disposed) {
++      const listed = await client.request('listSessions', { channel: ROOT });
++      const row = listed.items.find((one) => idOf(one.resource) === asked.sessionId);
++      if (row === undefined) say(`${asked.sessionId} is not in ${where} any more, so nothing was deleted there`);
++      else await dispose(row.resource);
++    }
+   }
+   catch (error) {
+     say(`could not delete ${asked.sessionId} inside ${where}: ${reason(error)}`);
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index d8828407d..47d9138f3 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -12,6 +12,9 @@ import type { AutomationOrigin, CreatedBy, MultiRoot, NestedRecord, PullRequestB
+ import type { Owner } from '../types/usage.js';
+ import { ownerOf } from '../utils/values.js';
+ 
++const joinedSessionIds = new WeakMap<SessionStore, string>();
++export const joinedSessionId = (store: SessionStore): string | undefined => joinedSessionIds.get(store);
++
+ /**
+  * What the file store needs beyond the port.
+  *
+@@ -1129,7 +1132,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+   }
+   catch (error) { writer.release(); throw error; }
+ 
+-  return {
++  const store: SessionStore = {
+     creation: (id) => readable(id).creation(id),
+     setCreation: (id, value) => { touched(id, () => { inner.setCreation(id, value); }); },
+     commit: async (id) => {
+@@ -1267,13 +1270,16 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         writing = undefined;
+       }
+       save(true);
+-      if (removeOnClose && inner.sessions().length === 0 && faults.size === 0) {
++      // The exact scope includes the session's backend and chat records.
++      if (removeOnClose && joined !== undefined && inner.rowOf(joined.innerId) === undefined && faults.size === 0) {
+         rmSync(dir, { recursive: true });
+       }
+       closed = true;
+       writer.release();
+     },
+   };
++  if (joined !== undefined) joinedSessionIds.set(store, joined.innerId);
++  return store;
+ }
+ 
+ export interface SessionMigrationOptions {
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index a04cdb57e..c8ea2523b 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -117,6 +117,30 @@ it('reopens the same joined session, isolates hubs, and retires only the dispose
+   expect(otherHub.config('same')).toEqual({ model: 'separate' });
+ });
+ 
++it('disposes the joined scope from its durable record when the backend cannot list it', async () => {
++  const dir = join(root, 'unlisted-joined');
++  const joined = { hostId: 'hub', innerId: 'one' };
++  const { list: _list, find: _find, ...agent } = echo({ path: root, pace: 0 });
++  const initial = fileSessions({ dir, joined });
++  initial.setProvider('one', agent.provider);
++  initial.setUri?.('one', SESSION);
++  initial.setWorkingDirectory?.('one', root);
++  initial.setProvider('backend-copy', agent.provider);
++  const attachments = initial.attachmentsDir?.('one');
++  if (attachments === undefined) throw new Error('The joined session has no attachment directory');
++  mkdirSync(attachments, { recursive: true });
++  writeFileSync(join(attachments, 'saved'), 'recorded attachment');
++  initial.close?.();
++
++  const host = createHost({ path: root, agents: [agent], sessions: fileSessions({ dir, joined }) });
++  const client = host.accept(peer());
++  await client.handle({ method: 'initialize', params: { clientId: 'delete', protocolVersions: ['0.9.0'] } });
++  await expect(client.handle({ method: 'disposeSession', params: { channel: 'ahp-session:/backend-copy' } })).rejects.toThrow(/No agent/);
++  await client.handle({ method: 'disposeSession', params: { channel: SESSION } });
++  await host.close();
++  expect(existsSync(dirname(dirname(attachments)))).toBe(false);
++});
++
+ it('refuses a joined session still in the legacy shared store without changing that store', async () => {
+   const dir = join(root, 'legacy');
+   const legacy = fileSessions({ dir });
+-- 
+2.56.0
+

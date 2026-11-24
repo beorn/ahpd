@@ -1,0 +1,115 @@
+From e6ed9944d170722e97d8dd5a07053ce235721ead Mon Sep 17 00:00:00 2001
+From: "@dev/8" <dev-8@main.hh.invalid>
+Date: Sat, 21 Nov 2026 12:32:10 -0800
+Subject: [PATCH] fix(sleep): name a failed sleep instead of swallowing it
+ (#37577)
+
+sessionFlag queued `void ctx.sleep(uri, stopping).catch(() => undefined)`, so a
+sleep that threw left the session resident and the stop's window ended in
+SIGTERM with nothing in the log saying why. The refusal path names the watchers
+that held the sleep off; a swallowed failure read as that same refusal.
+
+The catch now writes one warn line naming the session and the reason, and the
+reconcile after it still runs. Found while reading the latch for #37426
+(@cto 2026-11-21, non-blocking follow-up).
+
+Refs: #37577
+---
+ packages/sdk/src/host/chatactions.ts    |  9 ++++-
+ packages/sdk/test/session-sleep.test.ts | 46 +++++++++++++++++++++++++
+ 2 files changed, 54 insertions(+), 1 deletion(-)
+
+diff --git a/packages/sdk/src/host/chatactions.ts b/packages/sdk/src/host/chatactions.ts
+index 8da33c677..64dce028b 100644
+--- a/packages/sdk/src/host/chatactions.ts
++++ b/packages/sdk/src/host/chatactions.ts
+@@ -81,7 +81,14 @@ export function sessionFlag(
+     // nothing, and it stays where it is.
+     const stopping = action.stopping === true;
+     queueMicrotask(() => {
+-      void ctx.sleep(uri, stopping).catch(() => undefined);
++      // A sleep that throws is a line of its own (#37577, @cto 2026-11-21): the
++      // refusal path names the watchers that held the sleep off, so a failure
++      // swallowed here would read as that same refusal, and the stop would end
++      // in its window with nothing in the log saying why.
++      void ctx.sleep(uri, stopping).catch((error: unknown) => {
++        const why = error instanceof Error ? error.message : String(error);
++        ctx.log.warn(`${uri}: the sleep this ${stopping ? 'stop' : 'archive'} asked for failed: ${why}`);
++      });
+       ctx.reconcile();
+     });
+   }
+diff --git a/packages/sdk/test/session-sleep.test.ts b/packages/sdk/test/session-sleep.test.ts
+index da610e8a8..9f2bf1ea3 100644
+--- a/packages/sdk/test/session-sleep.test.ts
++++ b/packages/sdk/test/session-sleep.test.ts
+@@ -36,6 +36,17 @@ import type { Terminal } from '../src/types/terminals.js';
+ import { WAIT_MS } from '../../../tools/wait.ts';
+ 
+ let made: string[] = [];
++/** The host log the flag tests hand `sessionFlag`: every level lands in one list. */
++const logger = (lines: string[]) => {
++  const log = (line: string): void => { lines.push(line); };
++  return Object.assign(log, {
++    trace: log,
++    debug: log,
++    info: log,
++    warn: log,
++    error: log,
++  });
++};
+ afterEach(() => {
+   for (const dir of made) rmSync(dir, { recursive: true, force: true });
+   made = [];
+@@ -823,6 +834,7 @@ it('asks again after a refused archive offer, and only the move dispatches', asy
+       setFlags: (_id: string, value: number): void => { flag = value; },
+     },
+     keepName: (): void => {},
++    log: logger([]),
+     dispatch: (channel: string): void => { dispatched.push(channel); },
+     markSummaryDirty: (): void => {},
+     sessions: new Map(),
+@@ -845,6 +857,40 @@ it('asks again after a refused archive offer, and only the move dispatches', asy
+   expect(flag & Status.IsArchived).not.toBe(0);
+ });
+ 
++/*
++ * #37577 (@cto 2026-11-21): a sleep that throws is a line naming the session and
++ * the reason. The refusal path names the watchers that held the sleep off, and
++ * a failure swallowed here would read as that same refusal while the stop went
++ * on to end its child in the window.
++ */
++it('names a failed sleep, and reconciles anyway', async () => {
++  const uri = 'ahp-session:/one';
++  let flag = 0;
++  const logged: string[] = [];
++  let reconciled = 0;
++  const ctx = {
++    kept: {
++      flags: () => flag,
++      setFlags: (_id: string, value: number): void => { flag = value; },
++    },
++    keepName: (): void => {},
++    log: logger(logged),
++    dispatch: (): void => {},
++    markSummaryDirty: (): void => {},
++    sessions: new Map(),
++    updateChatMovability: (): void => {},
++    sleep: () => Promise.reject(new Error('backend said no')),
++    reconcile: (): void => { reconciled += 1; },
++  };
++  sessionFlag(ctx as never, uri, Status.IsArchived, true, { type: 'session/isArchivedChanged', isArchived: true, stopping: true });
++  await new Promise((r) => { setTimeout(r, 0); });
++  expect(reconciled).toBe(1);
++  expect(logged.length).toBe(1);
++  expect(logged[0]).toContain(uri);
++  expect(logged[0]).toContain('stop');
++  expect(logged[0]).toContain('backend said no');
++});
++
+ it('wakes nothing for an archive of a sleeping session\'s default chat, and archives nothing', async () => {
+   const knobs: Knobs = { closes: [] };
+   const { client, time, open, awake } = await serving(knobs);
+-- 
+2.56.0
+

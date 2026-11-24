@@ -1,0 +1,407 @@
+From 4ec4c8a2ffc24dfed9c80889e589be1aa59bdca0 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 17:51:28 -0800
+Subject: [PATCH] fix(acp): retain shared capabilities with isolated launch
+ options
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ packages/agent-acp/src/session.ts             | 10 ++++-
+ packages/agent-acp/src/session/opening.ts     |  6 ++-
+ .../agent-acp/test/agent-acp-catalog.test.ts  | 18 ++------
+ .../agent-acp/test/agent-acp-delete.test.ts   | 19 +++++----
+ .../agent-acp/test/agent-acp-failure.test.ts  |  4 +-
+ .../agent-acp/test/agent-acp-machine.test.ts  | 42 ++++++++-----------
+ .../agent-acp/test/agent-acp-signin.test.ts   | 29 ++++---------
+ .../agent-acp/test/agent-acp-trust.test.ts    |  8 ++--
+ packages/agent-acp/test/engine.test.ts        |  4 +-
+ .../agent-acp/test/fixtures/acp-server.mjs    |  2 +-
+ 10 files changed, 61 insertions(+), 81 deletions(-)
+
+diff --git a/packages/agent-acp/src/session.ts b/packages/agent-acp/src/session.ts
+index 0a2c4af05..6cb1eea55 100644
+--- a/packages/agent-acp/src/session.ts
++++ b/packages/agent-acp/src/session.ts
+@@ -220,7 +220,7 @@ export function acpSession(
+ 
+   Object.assign(ctx, createConfig(ctx));
+   Object.assign(ctx, createHandlers(ctx));
+-  Object.assign(ctx, createOpening(ctx));
++  Object.assign(ctx, createOpening(ctx, shared));
+   Object.assign(ctx, createTurn(ctx));
+   Object.assign(ctx, createClientCalls(ctx));
+ 
+@@ -507,5 +507,11 @@ export function acpSession(
+    */
+   const refusal = ctx.refreshOptions();
+   if (refusal !== undefined) return Promise.reject(new Error(refusal));
+-  return ctx.open().then(() => session);
++  return ctx.open().then(() => session).catch((error: unknown) => {
++    const authentication = ctx.authenticationFailure(error);
++    // Keep the protocol error's identity, code and data while using the same
++    // corrective method names that a later prompt failure already reports.
++    if (authentication !== undefined && error instanceof Error) error.message = authentication.message;
++    throw error;
++  });
+ }
+diff --git a/packages/agent-acp/src/session/opening.ts b/packages/agent-acp/src/session/opening.ts
+index 11958a14c..df171e82a 100644
+--- a/packages/agent-acp/src/session/opening.ts
++++ b/packages/agent-acp/src/session/opening.ts
+@@ -229,7 +229,7 @@ const AUTH_REQUIRED = RequestError.authRequired().code;
+ /** How long past the kill grace an opening waits for a predecessor's custody before refusing (#34599). */
+ const ADMIT_MARGIN_MS = 2000;
+ 
+-export function createOpening(ctx: SessionContext): Opening {
++export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions): Opening {
+   const { options, provider, start, cwd, replay } = ctx;
+ 
+   /**
+@@ -523,7 +523,9 @@ export function createOpening(ctx: SessionContext): Opening {
+       ctx.resumes = advertised(agentCapabilities?.sessionCapabilities?.resume);
+       ctx.forks = advertised(agentCapabilities?.sessionCapabilities?.fork);
+       // And for the agent, which offers a fork only where its server can make one.
+-      heardCapabilities(options, agentCapabilities);
++      // Launch options belong to this Start; advertised agent capabilities
++      // remain in the catalog's one existing owner shared by its sessions.
++      heardCapabilities(capabilityOwner, agentCapabilities);
+       ctx.promptCapabilities = agentCapabilities?.promptCapabilities ?? undefined;
+       extras = advertised(agentCapabilities?.sessionCapabilities?.additionalDirectories);
+       authMethods = (initializeResponse.authMethods ?? []).map((one) => one.id);
+diff --git a/packages/agent-acp/test/agent-acp-catalog.test.ts b/packages/agent-acp/test/agent-acp-catalog.test.ts
+index aa6bdc3e3..4f5fa10cd 100644
+--- a/packages/agent-acp/test/agent-acp-catalog.test.ts
++++ b/packages/agent-acp/test/agent-acp-catalog.test.ts
+@@ -1523,9 +1523,7 @@ it.each([
+   const { agent, log } = backend(['--no-rollout']);
+   const native = `unmaterialized-${name}`;
+   await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
+-  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) });
+-  await runTurn(session, watch, 'first-attempt', 'hi');
+-  expect(watch.endings()).toEqual(['chat/error']);
++  await expect(start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) })).rejects.toMatchObject({ code: -32603 });
+   expect(requests(log).some((one) => one.method === 'session/new')).toBe(false);
+   expect(requests(log).some((one) => one.method === 'session/prompt')).toBe(false);
+ });
+@@ -2011,16 +2009,11 @@ it('refuses a fork at a turn the server was never offered one for', async () =>
+   // `t1` is not where the conversation ends, so no control was offered for it
+   // and this is a caller out of step - served rather than refused, it would be
+   // a copy of a conversation that still holds `t2`.
+-  const { session: forked, watch: forkedWatch } = await start(agent, 'forked-earlier', {
++  await expect(start(agent, 'forked-earlier', {
+     resume: String(session.agentId()),
+     forkAt: 't1',
+     seed: session.allTurns(),
+-  });
+-  await runTurn(forked, forkedWatch, 't3', 'third');
+-
+-  expect(forkedWatch.types().at(-1)).toBe('chat/error');
+-  expect(String((forkedWatch.actions.at(-1)?.action as { part?: { error?: { message?: string } } })
+-    .part?.error?.message)).toContain('is not the last turn');
++  })).rejects.toThrow('is not the last turn');
+   expect(requests(log).some((one) => one.method === 'session/fork')).toBe(false);
+ });
+ 
+@@ -2087,10 +2080,7 @@ const running = (pid: number): boolean => {
+  */
+ it('lets go of every server an open that failed had spawned', async () => {
+   const { agent, log } = backend(['--signin']);
+-  const { session, watch } = await start(agent, 'refused');
+-  await runTurn(session, watch, 't1', 'hi');
+-
+-  expect(watch.endings()).toEqual(['chat/error']);
++  await expect(start(agent, 'refused')).rejects.toThrow('wants to be signed in');
+   const spawned = [...new Set(requests(log).flatMap((one) => (one.pid === undefined ? [] : [one.pid])))];
+   expect(spawned.length).toBeGreaterThan(0);
+   await until(() => spawned.every((pid) => !running(pid)));
+diff --git a/packages/agent-acp/test/agent-acp-delete.test.ts b/packages/agent-acp/test/agent-acp-delete.test.ts
+index 5694c70c6..d666919df 100644
+--- a/packages/agent-acp/test/agent-acp-delete.test.ts
++++ b/packages/agent-acp/test/agent-acp-delete.test.ts
+@@ -79,7 +79,7 @@ const opening = (id: string, over: Partial<Start> = {}): Start => ({
+ async function start(agent: Agent, id: string): Promise<Session> {
+   const actions: Bag[] = [];
+   const emit: Emit = (channel, action) => { actions.push(action); void channel; };
+-  const session = await agent.create(opening(id, { emit }));
++  const session = await agent.create(opening(id, { emit, trusted: () => true }));
+   started.push(session);
+   return session;
+ }
+@@ -164,19 +164,20 @@ it('has no delete to send to a server whose handshake did not advertise one', as
+ });
+ 
+ it('forgets a session this process watched, so the next listing does not offer it', async () => {
+-  const { agent } = backend(['--no-load']);
+-  // A server that cannot reopen a conversation still lists its own, so the
+-  // record this process holds is the only catalogue there would be.
++  const { agent } = backend(['--no-load', '--no-list']);
++  // With neither server listing nor replay, the real opened native session's
++  // watched record is the only catalogue and transcript available.
+   const one = await start(agent, 'watched-1');
+-  expect(one).toBeDefined();
+-  await agent.list?.();
++  const native = one.agentId();
++  expect(native).toMatch(/^acp-session-/);
++  expect((await agent.list?.())?.some((row) => row.id === native)).toBe(true);
+ 
+-  await agent.delete?.('watched-1', '/tmp');
++  await agent.delete?.(native!, '/tmp');
+ 
+   const rows = await agent.list?.();
+-  expect(rows?.some((row) => row.id === 'watched-1')).toBe(false);
++  expect(rows?.some((row) => row.id === native)).toBe(false);
+   // And the transcript is gone with it, which is what the record was for.
+-  expect(await agent.transcript?.('watched-1')).toBeUndefined();
++  expect(await agent.transcript?.(native!)).toBeUndefined();
+ });
+ /*
+  * A session that ran in a machine keeps its conversation there, in the store of
+diff --git a/packages/agent-acp/test/agent-acp-failure.test.ts b/packages/agent-acp/test/agent-acp-failure.test.ts
+index 163c9aa72..8cf962809 100644
+--- a/packages/agent-acp/test/agent-acp-failure.test.ts
++++ b/packages/agent-acp/test/agent-acp-failure.test.ts
+@@ -86,7 +86,7 @@ it.each(['refresh', 'inputs', 'dispose'] as const)('discards an old placement in
+     ended: new Promise<void>(() => {}),
+     close: async () => {},
+   } as unknown as AcpConnection));
+-  const opening = createOpening(ctx);
++  const opening = createOpening(ctx, ctx.options);
+   const pending: Promise<unknown>[] = [];
+   try {
+     opening.refreshOptions();
+@@ -148,7 +148,7 @@ it.each(['new', 'load', 'resume', 'fork'].flatMap((method) => ['refresh', 'dispo
+     newSession: reply, loadSession: reply, resumeSession: reply, forkSession: reply,
+     ended: new Promise<void>(() => {}), close: async () => {},
+   } as unknown as AcpConnection));
+-  const opening = createOpening(ctx);
++  const opening = createOpening(ctx, ctx.options);
+   const pending: Promise<unknown>[] = [];
+   try {
+     opening.refreshOptions();
+diff --git a/packages/agent-acp/test/agent-acp-machine.test.ts b/packages/agent-acp/test/agent-acp-machine.test.ts
+index b67045f3a..4dc9507d8 100644
+--- a/packages/agent-acp/test/agent-acp-machine.test.ts
++++ b/packages/agent-acp/test/agent-acp-machine.test.ts
+@@ -203,7 +203,7 @@ it('gives a host spawn none of the machine env', async () => {
+     machine: { env: { AHPD_MACHINE_ONLY: 'machine-value', AHPD_MACHINE_SECRET: { $secret: 'host:codex' } } },
+   });
+   const ended: string[] = [];
+-  const session = await agent.create({
++  await expect(agent.create({
+     uri: 'ahp-session:/host',
+     chatUri: 'ahp-chat:/host',
+     settings: {},
+@@ -213,10 +213,7 @@ it('gives a host spawn none of the machine env', async () => {
+     emit: (_channel: string, action: Bag) => {
+       if (action.type === 'chat/error' || action.type === 'chat/turnComplete') ended.push(String(action.type));
+     },
+-  } as never);
+-  started.push(session);
+-  session.sendMessage('t1', 'hi');
+-  for (let i = 0; i < 3000 && ended.length === 0; i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
++  } as never)).rejects.toThrow('exited with code 0');
+ 
+   const env = JSON.parse(readFileSync(out, 'utf8')) as Record<string, string>;
+   expect(env.AHPD_MACHINE_ONLY).toBeUndefined();
+@@ -232,7 +229,7 @@ it('hands a machine port none of the machine env with the command it runs there'
+     machine: { env: { AHPD_MACHINE_ONLY: 'machine-value' } },
+   });
+   const ended: string[] = [];
+-  const session = await agent.create({
++  await expect(agent.create({
+     uri: 'ahp-session:/boxed',
+     chatUri: 'ahp-chat:/boxed',
+     settings: { computer: 'computer://box' },
+@@ -247,15 +244,11 @@ it('hands a machine port none of the machine env with the command it runs there'
+     emit: (_channel: string, action: Bag) => {
+       if (action.type === 'chat/error') ended.push('error');
+     },
+-  } as never);
+-  started.push(session);
+-  session.sendMessage('t1', 'hi');
+-  for (let i = 0; i < 3000 && ended.length === 0; i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
++  } as never)).rejects.toThrow('There is no computer called box');
+ 
+-  // Asked as the session was opened and again by its first turn, the machine
+-  // having answered no command either time, and neither ask carried the
+-  // machine's own variables.
+-  expect(asked.map((one) => one.env)).toEqual([{ HOST_SIDE: '1' }, { HOST_SIDE: '1' }]);
++  // Failed opening returns no Session to accept a turn. Its one actual
++  // machine request carries only the record's host-side variables.
++  expect(asked.map((one) => one.env)).toEqual([{ HOST_SIDE: '1' }]);
+ });
+ 
+ /*
+@@ -359,7 +352,8 @@ const signedIn = async (placed: boolean) => {
+   const ended: string[] = [];
+   // A folder that is there and that no case removes: a server on this host runs in it.
+   const folder = join(REPO, 'packages', 'agent-acp');
+-  const session = await agent.create({
++  let session: Session | undefined;
++  try { session = await agent.create({
+     uri: `ahp-session:/signin-${String(placed)}`,
+     chatUri: `ahp-chat:/signin-${String(placed)}`,
+     workingDirectory: folder,
+@@ -382,9 +376,12 @@ const signedIn = async (placed: boolean) => {
+         if (action.type === 'chat/error') said.push(String(action.message));
+       }
+     },
+-  } as never);
+-  started.push(session);
+-  session.sendMessage('t1', 'hi');
++  } as never); } catch (error) {
++    ended.push('open/error');
++    said.push(String(error));
++  }
++  if (session !== undefined) started.push(session);
++  session?.sendMessage('t1', 'hi');
+   for (let i = 0; i < 3000 && ended.length === 0; i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
+   const requests = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as { method?: string; params?: Bag });
+   return { ended, said, argv, requests, folder, raw: readFileSync(log, 'utf8') };
+@@ -409,7 +406,7 @@ it('tells an agent in a machine the folder by its machine path', async () => {
+ it('sends no sign-in for a session on this host, which has only the daemon\'s environment', async () => {
+   const { ended, requests, said } = await signedIn(false);
+   expect(requests.find((one) => one.method === 'authenticate')).toBeUndefined();
+-  expect(ended).toEqual(['chat/error']);
++  expect(ended).toEqual(['open/error']);
+   expect(said.join('\n')).not.toContain('machine-key-value');
+ });
+ 
+@@ -559,7 +556,7 @@ it('keeps the row\'s machine variables out of a host spawn', async () => {
+   const { kind } = await load({});
+   const agent = kind.open(viewOf('gemini', () => ({ command: process.execPath, args: ['-e', script] })));
+   const ended: string[] = [];
+-  const session = await agent.create({
++  await expect(agent.create({
+     uri: 'ahp-session:/row-host',
+     chatUri: 'ahp-chat:/row-host',
+     settings: {},
+@@ -568,10 +565,7 @@ it('keeps the row\'s machine variables out of a host spawn', async () => {
+     emit: (_channel: string, action: Bag) => {
+       if (action.type === 'chat/error' || action.type === 'chat/turnComplete') ended.push(String(action.type));
+     },
+-  } as never);
+-  started.push(session);
+-  session.sendMessage('t1', 'hi');
+-  for (let i = 0; i < 3000 && ended.length === 0; i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
++  } as never)).rejects.toThrow('exited with code 0');
+ 
+   const env = JSON.parse(readFileSync(out, 'utf8')) as Record<string, string>;
+   expect(env.GEMINI_CLI_HOME).toBeUndefined();
+diff --git a/packages/agent-acp/test/agent-acp-signin.test.ts b/packages/agent-acp/test/agent-acp-signin.test.ts
+index 3538c2e86..50721e265 100644
+--- a/packages/agent-acp/test/agent-acp-signin.test.ts
++++ b/packages/agent-acp/test/agent-acp-signin.test.ts
+@@ -1,4 +1,5 @@
+ import { fileURLToPath } from 'node:url';
++import { RequestError } from '@agentclientprotocol/sdk';
+ import { afterEach, expect, it } from 'vitest';
+ import type { Bag, Session, Start } from '@ahpd/sdk';
+ import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
+@@ -86,39 +87,27 @@ it('signs in with the method the spec named, and the session runs', async () =>
+ });
+ 
+ it('refuses a session from a server nobody signed in, naming the methods it offers', async () => {
+-  const { session, actions } = await talking(['--signin']);
+-  await turn(session, actions, 't1', 'hi');
+-
+-  // The refusal is the protocol's own rather than a generic failure, and it
+-  // carries the handshake's methods: the spec is what names one, and this is
+-  // the sentence that says which.
+-  expect(errored(actions)?.errorType).toBe('authRequired');
+-  expect(String(errored(actions)?.message)).toContain('api-key');
+-  expect(actions.some((action) => action.type === 'chat/turnComplete')).toBe(false);
++  // Opening preserves the protocol error and its corrective method names;
++  // no usable Session is fabricated to postpone the same error to a turn.
++  await expect(talking(['--signin'])).rejects.toMatchObject({
++    code: RequestError.authRequired().code, message: expect.stringContaining('api-key'),
++  });
+ });
+ 
+ it('refuses a method the server did not offer, and says which it did', async () => {
+-  const { session, actions } = await talking(['--signin'], { authenticate: { methodId: 'oauth' } });
+-  await turn(session, actions, 't1', 'hi');
+-
+   // The bridge does not send a guess, and it does not open a session on a
+   // server that refused one: the sentence is what a person corrects the
+   // configuration with.
+-  expect(String(errored(actions)?.message)).toMatch(/^acp-signin offers api-key, not oauth/);
++  await expect(talking(['--signin'], { authenticate: { methodId: 'oauth' } })).rejects.toThrow(/^acp-signin offers api-key, not oauth/);
+ });
+ 
+-it('fails the turn with what the server said when it refuses the sign-in', async () => {
+-  const { session, actions } = await talking(['--signin-fails'], { authenticate: { methodId: 'api-key' } });
+-  await turn(session, actions, 't1', 'hi');
+-
++it('rejects opening with what the server said when it refuses the sign-in', async () => {
+   // The refusal came from `authenticate` and carries the same code the
+   // protocol's `auth_required` does, so a code alone cannot tell the two
+   // apart. It is not a request for a sign-in: nobody is being asked to set an
+   // option they have already set. It is a send that failed, as VS Code's host
+   // types one.
+-  expect(errored(actions)?.errorType).toBe('sendFailed');
+-  expect(String(errored(actions)?.message)).toMatch(/^acp-signin: sign-in with api-key failed: That API key was rejected/);
+-  expect(actions.some((action) => action.type === 'chat/turnComplete')).toBe(false);
++  await expect(talking(['--signin-fails'], { authenticate: { methodId: 'api-key' } })).rejects.toThrow(/^acp-signin: sign-in with api-key failed: That API key was rejected/);
+ });
+ 
+ it('names the sign-in a turn refused as authRequired, with the methods to use', async () => {
+diff --git a/packages/agent-acp/test/agent-acp-trust.test.ts b/packages/agent-acp/test/agent-acp-trust.test.ts
+index 4a30bfc2a..9eedbea50 100644
+--- a/packages/agent-acp/test/agent-acp-trust.test.ts
++++ b/packages/agent-acp/test/agent-acp-trust.test.ts
+@@ -85,13 +85,11 @@ const failure = (actions: Bag[]): string | undefined => {
+ 
+ it('refuses a folder nobody vouched for, rather than starting the agent in it', async () => {
+   const { folder, log } = foldered();
+-  const { session, actions } = await sessionIn({ workingDirectory: folder, trusted: () => false }, log);
+-  session.sendMessage('t1', 'hi');
+-  await until(() => failure(actions) !== undefined);
++  const opening = sessionIn({ workingDirectory: folder, trusted: () => false }, log);
+   // The sentence names the folder and the way out of it, so a person reading
+   // the failure knows which folder and which flag.
+-  expect(failure(actions)).toContain(folder);
+-  expect(failure(actions)).toContain('honoursTrust');
++  await expect(opening).rejects.toThrow(folder);
++  await expect(opening).rejects.toThrow('honoursTrust');
+   // And nothing was started: the fixture writes its log the moment it is sent
+   // a request, and it was never given one.
+   expect(existsSync(log)).toBe(false);
+diff --git a/packages/agent-acp/test/engine.test.ts b/packages/agent-acp/test/engine.test.ts
+index 093d41457..d28387046 100644
+--- a/packages/agent-acp/test/engine.test.ts
++++ b/packages/agent-acp/test/engine.test.ts
+@@ -133,7 +133,7 @@ it('registers the acp engine, its templates, host-only fields and key variables'
+   expect(engine).toMatchObject({
+     name: 'acp',
+     title: 'Agent Client Protocol',
+-    hostOnly: ['base', 'command', 'args', 'cwd', 'machine', 'install'],
++    hostOnly: ['base', 'command', 'args', 'cwd', 'machine', 'install', 'sessionIdEnv', 'spawnGuard'],
+   });
+   // Each row's vendor key variables: the ones `knownAgents` marks secret and
+   // the ones a row signs in with, which is what any owner may set.
+@@ -160,7 +160,7 @@ it('registers the acp engine, its templates, host-only fields and key variables'
+   // spells.
+   const fields = Object.keys((engine?.schema.properties ?? {}) as Bag).sort();
+   expect(fields).toEqual([
+-    'args', 'authenticate', 'base', 'closeGraceMs', 'command', 'cutTurns', 'cwd', 'env', 'exitGraceMs', 'findFreshMs', 'honoursTrust', 'hostTools', 'install', 'killGraceMs', 'listingIdleMs', 'machine', 'modes', 'page', 'sessionListMaxPages', 'stderrBytes', 'stderrTail', 'toolsChanged', 'unreportedClientCalls',
++    'args', 'authenticate', 'base', 'closeGraceMs', 'command', 'cutTurns', 'cwd', 'env', 'exitGraceMs', 'findFreshMs', 'honoursTrust', 'hostTools', 'install', 'killGraceMs', 'listingIdleMs', 'machine', 'modes', 'page', 'sessionIdEnv', 'sessionListMaxPages', 'spawnGuard', 'stderrBytes', 'stderrTail', 'toolsChanged', 'unreportedClientCalls',
+   ]);
+   for (const owned of ['name', 'description', 'icon', 'model', 'provider']) expect(fields).not.toContain(owned);
+ 
+diff --git a/packages/agent-acp/test/fixtures/acp-server.mjs b/packages/agent-acp/test/fixtures/acp-server.mjs
+index efc37a094..7d8e4139b 100644
+--- a/packages/agent-acp/test/fixtures/acp-server.mjs
++++ b/packages/agent-acp/test/fixtures/acp-server.mjs
+@@ -1809,7 +1809,7 @@ const onLine = (line) => {
+             ? { promptCapabilities: { image: true, embeddedContext: true } }
+             : {}),
+           sessionCapabilities: {
+-            list: {},
++            ...(process.argv.includes('--no-list') ? {} : { list: {} }),
+             ...(process.argv.includes('--no-resume') ? {} : { resume: {} }),
+             ...(process.argv.includes('--fork') ? { fork: {} } : {}),
+             ...(process.argv.includes('--no-close') ? {} : { close: {} }),
+-- 
+2.56.0
+

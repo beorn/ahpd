@@ -1,0 +1,201 @@
+From 861b34309f78899c8657906d49e08dc56f032cb6 Mon Sep 17 00:00:00 2001
+From: "@dev/6" <dev-6@main.hh.invalid>
+Date: Fri, 20 Nov 2026 18:15:31 -0800
+Subject: [PATCH] fix(agent-acp): pass the server's opening _meta through on
+ the session state (#37272)
+
+A bridge that resumes a transcript it already holds on session/new says so
+in that answer's _meta, and a client moving a conversation onto the host
+needs that word as its only proof the move carried. agent-acp kept the
+sessionId and dropped the rest; it now keeps the _meta of whichever of
+session/new, session/load, session/resume or session/fork opened the
+conversation and serves it untouched on the session state, which the host
+already follows from the agent.
+
+Refs: 37272
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/agent-acp/src/session.ts             |  3 ++
+ packages/agent-acp/src/session/context.ts     | 10 ++++++
+ packages/agent-acp/src/session/opening.ts     |  9 +++++
+ .../agent-acp/test/agent-acp-catalog.test.ts  | 15 +++++++++
+ .../agent-acp/test/fixtures/acp-server.mjs    | 33 ++++++++++++++-----
+ 5 files changed, 61 insertions(+), 9 deletions(-)
+
+diff --git a/packages/agent-acp/src/session.ts b/packages/agent-acp/src/session.ts
+index 6cb1eea55..9cca59537 100644
+--- a/packages/agent-acp/src/session.ts
++++ b/packages/agent-acp/src/session.ts
+@@ -194,6 +194,7 @@ export function acpSession(
+     live: undefined,
+     successfulOpening: undefined,
+     acpSessionId: undefined,
++    openedMeta: undefined,
+     closes: false,
+     loads: false,
+     resumes: false,
+@@ -334,6 +335,8 @@ export function acpSession(
+         // where each one sits. The schema carries the server's modes once they
+         // are known, so `permissionMode` has an enum exactly when it can have one.
+         config: { schema: ctx.schemaOf(), values: { ...values } },
++        // The server's own word on opening the conversation, untouched (#37272).
++        ...(ctx.openedMeta !== undefined ? { _meta: structuredClone(ctx.openedMeta) } : {}),
+       };
+     },
+ 
+diff --git a/packages/agent-acp/src/session/context.ts b/packages/agent-acp/src/session/context.ts
+index 83a1bd30b..9527dee82 100644
+--- a/packages/agent-acp/src/session/context.ts
++++ b/packages/agent-acp/src/session/context.ts
+@@ -160,6 +160,16 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
+   successfulOpening: { connection: AcpConnection; opening: Promise<{ connection: AcpConnection; sessionId: string }> } | undefined;
+   /** The server's own id for this conversation, once `session/new` answered. */
+   acpSessionId: string | undefined;
++  /**
++   * The `_meta` the server put on its answer to opening that conversation
++   * (`session/new`, `session/load` or `session/resume`), kept whole.
++   *
++   * Only the server knows what it did on opening: a bridge that resumed a
++   * transcript it already held on `session/new` says so here, and a client
++   * moving a conversation onto this host reads it off the session's state as
++   * the proof the move carried (#37272).
++   */
++  openedMeta: Record<string, unknown> | undefined;
+   /** Whether the server said it can be asked to close that conversation. */
+   closes: boolean;
+   /**
+diff --git a/packages/agent-acp/src/session/opening.ts b/packages/agent-acp/src/session/opening.ts
+index de13aa026..1ea14925d 100644
+--- a/packages/agent-acp/src/session/opening.ts
++++ b/packages/agent-acp/src/session/opening.ts
+@@ -61,6 +61,12 @@ const LIVE_KEYS = [
+ const spawnOf = (one: AcpOptions): string =>
+   JSON.stringify(SPAWN_KEYS.map((key) => [key, (one as unknown as Record<string, unknown>)[key]]));
+ 
++/** The `_meta` a server answered opening a conversation with, when it gave one as an object (#37272). */
++const openedMetaOf = (answer: { _meta?: unknown } | null | undefined): Record<string, unknown> | undefined => {
++  const meta = answer?._meta;
++  return typeof meta === 'object' && meta !== null && !Array.isArray(meta) ? (meta as Record<string, unknown>) : undefined;
++};
++
+ /**
+  * Whether the handshake advertised something ACP writes as an empty object.
+  *
+@@ -640,6 +646,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
+         });
+         assertCurrent();
+         ctx.acpSessionId = copied.sessionId;
++        ctx.openedMeta = openedMetaOf(copied);
+         ctx.learnModes(copied.modes);
+         ctx.learnConfigOptions(copied.configOptions);
+         ctx.learnModels(copied);
+@@ -681,6 +688,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
+         });
+         assertCurrent();
+         ctx.acpSessionId = sessionId;
++        ctx.openedMeta = openedMetaOf(taken);
+         ctx.learnModes(taken.modes);
+         ctx.learnConfigOptions(taken.configOptions);
+         ctx.learnModels(taken);
+@@ -694,6 +702,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
+         });
+         assertCurrent();
+         ctx.acpSessionId = created.sessionId;
++        ctx.openedMeta = openedMetaOf(created);
+         ctx.learnModes(created.modes);
+         ctx.learnConfigOptions(created.configOptions);
+         ctx.learnModels(created);
+diff --git a/packages/agent-acp/test/agent-acp-catalog.test.ts b/packages/agent-acp/test/agent-acp-catalog.test.ts
+index 4f5fa10cd..6e2f4a426 100644
+--- a/packages/agent-acp/test/agent-acp-catalog.test.ts
++++ b/packages/agent-acp/test/agent-acp-catalog.test.ts
+@@ -241,6 +241,21 @@ it('answers the session with the server\'s models, modes and options in its stat
+   expect(configOf(session).values).toMatchObject({ permissionMode: 'ask', model: 'fast', 'acp.thinking': 'off', 'acp.telemetry': false });
+ });
+ 
++// #37272: a backend that says on opening that it resumed a kept transcript is
++// the only proof a moved conversation carried, so its `_meta` reaches clients
++// untouched on the session's state, whichever of new, load or resume opened it.
++it('passes the _meta the server answered opening the conversation through on the session state', async () => {
++  const { agent } = backend(['--says-meta']);
++  const opened = await start(agent, 'meta-new');
++  expect(opened.session.sessionState()._meta).toEqual({ fixture: { answered: 'session/new' } });
++
++  const loaded = await start(agent, 'meta-load', { resume: 'kept-conversation' });
++  expect(loaded.session.sessionState()._meta).toEqual({ fixture: { answered: 'session/load' } });
++
++  const { agent: silent } = backend();
++  expect((await start(silent, 'meta-none')).session.sessionState()._meta).toBeUndefined();
++});
++
+ it('tells the host once the server has named its models', async () => {
+   const { agent } = backend();
+   let told = 0;
+diff --git a/packages/agent-acp/test/fixtures/acp-server.mjs b/packages/agent-acp/test/fixtures/acp-server.mjs
+index 99b390f4e..a2c5a4e9a 100644
+--- a/packages/agent-acp/test/fixtures/acp-server.mjs
++++ b/packages/agent-acp/test/fixtures/acp-server.mjs
+@@ -292,6 +292,12 @@ const nextSession = () => {
+ };
+ 
+ /** What a `--described` server says of a mode or a value, and a server without it says nothing. */
++/**
++ * `--says-meta`: the server answers opening a conversation with a `_meta` of
++ * its own, naming the method it answered, as a server that resumed a kept
++ * transcript on `session/new` says so there.
++ */
++const said = (method) => (process.argv.includes('--says-meta') ? { _meta: { fixture: { answered: method } } } : {});
+ const about = (description) => (process.argv.includes('--described') ? { description } : {});
+ 
+ /** The modes this server offers, with the one currently in force. */
+@@ -1920,9 +1926,12 @@ const onLine = (line) => {
+       // cost before any turn, before it answers, the way `session/load`
+       // replays a resumed conversation before its response.
+       if (process.argv.includes('--books')) notify(charge(0));
+-      respond(message.id, process.argv.includes('--legacy')
+-        ? { sessionId: id, modes: modes(), models: listed() }
+-        : { sessionId: id, modes: modes(), configOptions: configOptions() });
++      respond(message.id, {
++        ...(process.argv.includes('--legacy')
++          ? { sessionId: id, modes: modes(), models: listed() }
++          : { sessionId: id, modes: modes(), configOptions: configOptions() }),
++        ...said('session/new'),
++      });
+       return;
+     }
+ 
+@@ -1939,9 +1948,12 @@ const onLine = (line) => {
+       if (typeof message.params?.cwd === 'string' && message.params.cwd !== '') cwd = message.params.cwd;
+       hostTools = named(message.params?.mcpServers);
+       if (process.argv.includes('--replay')) replayed();
+-      respond(message.id, process.argv.includes('--legacy')
+-        ? { modes: modes(), models: listed() }
+-        : { modes: modes(), configOptions: configOptions() });
++      respond(message.id, {
++        ...(process.argv.includes('--legacy')
++          ? { modes: modes(), models: listed() }
++          : { modes: modes(), configOptions: configOptions() }),
++        ...said('session/load'),
++      });
+       return;
+     }
+ 
+@@ -1958,9 +1970,12 @@ const onLine = (line) => {
+       session = String(message.params?.sessionId ?? nextSession());
+       if (typeof message.params?.cwd === 'string' && message.params.cwd !== '') cwd = message.params.cwd;
+       hostTools = named(message.params?.mcpServers);
+-      respond(message.id, process.argv.includes('--legacy')
+-        ? { modes: modes(), models: listed() }
+-        : { modes: modes(), configOptions: configOptions() });
++      respond(message.id, {
++        ...(process.argv.includes('--legacy')
++          ? { modes: modes(), models: listed() }
++          : { modes: modes(), configOptions: configOptions() }),
++        ...said('session/resume'),
++      });
+       return;
+     }
+ 
+-- 
+2.56.0
+

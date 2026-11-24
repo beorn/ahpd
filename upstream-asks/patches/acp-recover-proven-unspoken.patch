@@ -1,0 +1,529 @@
+From 920ffefcc483bcf61dd7080319018f18c89a8f4e Mon Sep 17 00:00:00 2001
+From: "@dev/fixer" <dev-fixer@main.hh.invalid>
+Date: Thu, 19 Nov 2026 12:13:18 -0800
+Subject: [PATCH] fix(acp): recover only proven unspoken conversations before
+ their first prompt
+
+Refs: 35117
+---
+ packages/agent-acp/src/agent.ts               |  3 +-
+ packages/agent-acp/src/catalog.ts             | 14 +++++
+ packages/agent-acp/src/session.ts             |  1 +
+ packages/agent-acp/src/session/context.ts     |  2 +
+ packages/agent-acp/src/session/opening.ts     | 16 +++---
+ packages/agent-acp/src/session/turn.ts        |  4 +-
+ .../agent-acp/test/agent-acp-catalog.test.ts  | 26 ++++++++-
+ packages/sdk/src/host/chatrecord.ts           |  6 ++-
+ packages/sdk/src/host/localturns.ts           | 12 ++++-
+ packages/sdk/src/host/spawn.ts                | 21 +++++++-
+ packages/sdk/src/sessions/sessions.ts         | 23 ++++++--
+ packages/sdk/src/types/agent.ts               |  8 +++
+ packages/sdk/src/types/sessions.ts            |  8 +++
+ packages/sdk/test/sessions.test.ts            | 53 ++++++++++++++++++-
+ 14 files changed, 178 insertions(+), 19 deletions(-)
+
+diff --git a/packages/agent-acp/src/agent.ts b/packages/agent-acp/src/agent.ts
+index 878fba714..15ebed851 100644
+--- a/packages/agent-acp/src/agent.ts
++++ b/packages/agent-acp/src/agent.ts
+@@ -142,6 +142,7 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
+ 
+   return {
+     provider,
++    promptStart: 'reported',
+     displayName,
+     transcriptTurnIds: 'recorded',
+     ...(options.variant === true ? { variant: true } : {}),
+@@ -201,7 +202,7 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
+      * saying the host has no such session rather than an empty one.
+      */
+     transcript: async (id, at) => {
+-      const found = await loadedSession(options, provider, id, at?.workingDirectory, machineFor(provider, id));
++      const found = await loadedSession(options, provider, id, at?.workingDirectory, machineFor(provider, id), at?.neverSpoken);
+       return found === undefined ? undefined : turnsOf(found);
+     },
+ 
+diff --git a/packages/agent-acp/src/catalog.ts b/packages/agent-acp/src/catalog.ts
+index 1fd70c680..3dfa2e434 100644
+--- a/packages/agent-acp/src/catalog.ts
++++ b/packages/agent-acp/src/catalog.ts
+@@ -112,6 +112,13 @@ const keyOf = (provider: string, id: string): string => `${provider}\n${id}`;
+  */
+ const NOT_FOUND = -32002;
+ 
++/** Only the requested native thread's unmaterialized rollout, never a generic internal error. */
++export function isNoRollout(error: unknown, id: string): boolean {
++  const value = bag(error);
++  return value.code === -32603 && typeof value.message === 'string'
++    && value.message.endsWith(`no rollout found for thread id ${id}`);
++}
++
+ /** The listing connection a provider holds, by the options that opened it. */
+ const listings = new WeakMap<AcpOptions, Listing>();
+ 
+@@ -523,6 +530,7 @@ export async function loadedSession(
+   id: string,
+   recorded?: string,
+   machine?: SessionMachine,
++  neverSpoken?: boolean,
+ ): Promise<WatchedSession | undefined> {
+   const held = watchedSession(provider, id);
+   if (held !== undefined) return held;
+@@ -540,10 +548,16 @@ export async function loadedSession(
+       () => true,
+       (why: unknown) => {
+         if (bag(why).code === RequestError.resourceNotFound().code) return false;
++        if (neverSpoken === true && replay.length === 0 && isNoRollout(why, id)) return 'unspoken' as const;
+         throw why;
+       },
+     );
+     if (!loaded) return undefined;
++    if (loaded === 'unspoken') {
++      // Do not register this exception in watched: a later read needs its own checked observation.
++      const at = new Date().toISOString();
++      return { provider, id, cwd, additional: [], title: '', createdAt: at, modifiedAt: at, turns: [], held: [] };
++    }
+     // A load names no title, so the record holds none, as an untitled row is listed.
+     return watchSession({ provider, id, cwd, additional: [], title: '', replay });
+   }
+diff --git a/packages/agent-acp/src/session.ts b/packages/agent-acp/src/session.ts
+index 5a03b6f56..500ce2d8b 100644
+--- a/packages/agent-acp/src/session.ts
++++ b/packages/agent-acp/src/session.ts
+@@ -114,6 +114,7 @@ export function acpSession(
+   const ctx = {
+     options,
+     start,
++    neverSpoken: start.neverSpoken === true && start.beforePrompt !== undefined,
+     heardModes,
+     levels,
+     provider,
+diff --git a/packages/agent-acp/src/session/context.ts b/packages/agent-acp/src/session/context.ts
+index 4c1a66ae1..83a1bd30b 100644
+--- a/packages/agent-acp/src/session/context.ts
++++ b/packages/agent-acp/src/session/context.ts
+@@ -59,6 +59,8 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
+   options: AcpOptions;
+   /** What this particular session was told. */
+   start: Start;
++  /** One-shot first-prompt provenance; never restored after prompt dispatch, rewind or backend death. */
++  neverSpoken: boolean;
+   /**
+    * How this session tells its agent the modes the server named.
+    *
+diff --git a/packages/agent-acp/src/session/opening.ts b/packages/agent-acp/src/session/opening.ts
+index 4e2c948fb..11958a14c 100644
+--- a/packages/agent-acp/src/session/opening.ts
++++ b/packages/agent-acp/src/session/opening.ts
+@@ -2,7 +2,7 @@ import { RequestError } from '@agentclientprotocol/sdk';
+ import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
+ import { machineAsked, machinePathOf } from '@ahpd/sdk';
+ import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
+-import { heardCapabilities, watchSession } from '../catalog.js';
++import { heardCapabilities, isNoRollout, watchSession } from '../catalog.js';
+ import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
+ import { HOST_TOOLS } from '../mapping.js';
+ import type { AcpConnection, AcpOptions } from '../types.js';
+@@ -631,15 +631,19 @@ export function createOpening(ctx: SessionContext): Opening {
+           mcpServers: servers,
+           ...extra,
+         };
+-        const taken = taking
+-          ? await connection.resumeSession(request)
+-          : await connection.loadSession(request);
++        let sessionId = reopen;
++        const taken = await (taking ? connection.resumeSession(request) : connection.loadSession(request)).catch(async (why: unknown) => {
++          if (!ctx.neverSpoken || held.length > 0 || ctx.turns.length > 0 || replay.length > 0 || !isNoRollout(why, reopen)) throw why;
++          const created = await connection.newSession({ cwd: told, mcpServers: servers, ...extra });
++          sessionId = created.sessionId;
++          return created;
++        });
+         assertCurrent();
+-        ctx.acpSessionId = reopen;
++        ctx.acpSessionId = sessionId;
+         ctx.learnModes(taken.modes);
+         ctx.learnConfigOptions(taken.configOptions);
+         ctx.learnModels(taken);
+-        await ctx.sendAsked({ connection, sessionId: reopen }, values);
++        await ctx.sendAsked({ connection, sessionId }, values);
+       }
+       else {
+         const created = await connection.newSession({
+diff --git a/packages/agent-acp/src/session/turn.ts b/packages/agent-acp/src/session/turn.ts
+index f32b8cef5..bf6175920 100644
+--- a/packages/agent-acp/src/session/turn.ts
++++ b/packages/agent-acp/src/session/turn.ts
+@@ -456,6 +456,8 @@ export function createTurn(ctx: SessionContext): Turn {
+         endTurn(turnId, 'cancelled');
+         return;
+       }
++      ctx.start.beforePrompt?.(held.sessionId);
++      ctx.neverSpoken = false;
+       ctx.mapping.prompted = true;
+       const response = await held.connection.prompt(held.sessionId, blocks);
+       // The parts the host was still keeping are the turn's, said before it ends.
+@@ -501,4 +503,4 @@ export function createTurn(ctx: SessionContext): Turn {
+   };
+ 
+   return { sendMessage, endTurn };
+-}
+\ No newline at end of file
++}
+diff --git a/packages/agent-acp/test/agent-acp-catalog.test.ts b/packages/agent-acp/test/agent-acp-catalog.test.ts
+index e1156d2cf..cf679f728 100644
+--- a/packages/agent-acp/test/agent-acp-catalog.test.ts
++++ b/packages/agent-acp/test/agent-acp-catalog.test.ts
+@@ -1523,13 +1523,37 @@ it.each([
+   const { agent, log } = backend(['--no-rollout']);
+   const native = `unmaterialized-${name}`;
+   await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
+-  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, seed });
++  const { session, watch } = await start(agent, `no-rollout-${name}`, { resume: native, ...(seed === undefined ? {} : { seed }) });
+   await runTurn(session, watch, 'first-attempt', 'hi');
+   expect(watch.endings()).toEqual(['chat/error']);
+   expect(requests(log).some((one) => one.method === 'session/new')).toBe(false);
+   expect(requests(log).some((one) => one.method === 'session/prompt')).toBe(false);
+ });
+ 
++it('uses positive no-rollout provenance for an ephemeral read and only the first provider prompt', async () => {
++  const { agent, log } = backend(['--no-rollout']);
++  const native = 'unmaterialized-positive';
++  expect(await agent.transcript?.(native, { neverSpoken: true })).toEqual([]);
++  // An exception-produced empty read must not cache permission over a later changed/unknown observation.
++  await expect(agent.transcript?.(native, { neverSpoken: false })).rejects.toMatchObject({ code: -32603 });
++  await expect(agent.transcript?.(native)).rejects.toMatchObject({ code: -32603 });
++  const before: string[] = [];
++  const { session, watch } = await start(agent, 'positive-no-rollout', {
++    resume: native, neverSpoken: true, beforePrompt: (id) => { before.push(id); },
++  });
++  expect(before).toEqual([]);
++  await runTurn(session, watch, 'first', 'hi');
++  expect(watch.endings()).toEqual(['chat/turnComplete']);
++  expect(session.agentId()).not.toBe(native);
++  expect(before).toEqual([session.agentId()]);
++  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
++  expect(requests(log).find((one) => one.method === 'session/prompt')?.params?.['sessionId']).toBe(session.agentId());
++  await runTurn(session, watch, 'death', 'die now');
++  await runTurn(session, watch, 'after-death', 'hi again');
++  expect(watch.endings().at(-1)).toBe('chat/error');
++  expect(requests(log).filter((one) => one.method === 'session/new')).toHaveLength(1);
++});
++
+ it('loads a resumed session when the host holds none of its turns', async () => {
+   const { agent, log } = backend();
+   const { session, watch } = await start(agent, 'resume', { resume: 'acp-session-resumed' });
+diff --git a/packages/sdk/src/host/chatrecord.ts b/packages/sdk/src/host/chatrecord.ts
+index d5e9df302..b10a2d5d9 100644
+--- a/packages/sdk/src/host/chatrecord.ts
++++ b/packages/sdk/src/host/chatrecord.ts
+@@ -54,7 +54,7 @@ export interface ChatRecord {
+    */
+   keepChat(
+     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
+-    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
++    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
+   ): void;
+   /**
+    * The values a chat of a session set for itself, as VS Code's
+@@ -154,7 +154,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+ 
+   const keepChat = (
+     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
+-    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean,
++    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
+   ): void => {
+     const id = idOf(uri);
+     const list = stored(id);
+@@ -175,6 +175,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+     const served = provider ?? was?.provider;
+     const settings = config ?? was?.config;
+     const conversation = sessionConversation ?? was?.sessionConversation;
++    const unspoken = neverSpoken ?? was?.neverSpoken;
+     // Built field by field, so a chat that is being started is open: the mark
+     // a closed one carries is not among them.
+     const next: StoredChat = {
+@@ -183,6 +184,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
+       // handed, and the session's own id for the chat that is the session.
+       backendId: backendId ?? was?.backendId ?? chatIdFor(uri, chatUri) ?? id,
+       ...(conversation === undefined ? {} : { sessionConversation: conversation }),
++      ...(unspoken === undefined ? {} : { neverSpoken: unspoken }),
+       ...(served === undefined ? {} : { provider: served }),
+       ...(settings === undefined ? {} : { config: settings }),
+       ...(was?.configValues === undefined ? {} : { configValues: was.configValues }),
+diff --git a/packages/sdk/src/host/localturns.ts b/packages/sdk/src/host/localturns.ts
+index 09a269197..fae56b48d 100644
+--- a/packages/sdk/src/host/localturns.ts
++++ b/packages/sdk/src/host/localturns.ts
+@@ -589,7 +589,17 @@ export function createLocalTurns(ctx: HostContext): LocalTurns {
+   ): Promise<WireTurn<Turn>[] | undefined> => {
+     // Handed the content this host keeps for the session, by the reference it
+     // kept each under, as it is handed the outputs it keeps for the chat.
+-    const turns = await agent.transcript?.(id, at, ctx.outputsFor(session, chat), (toolCallId, ordinal) => ctx.toolResults.kept(session, toolCallId, ordinal));
++    // Never forward a stale caller observation; the exact row and actual backend must qualify this read.
++    const location: SessionAt = at?.workingDirectory === undefined ? {} : { workingDirectory: at.workingDirectory };
++    let proven = false;
++    if (agent.promptStart === 'reported' && ctx.kept.flush !== undefined
++      && ctx.kept.nested?.(idOf(session)) === undefined && ctx.kept.external?.(idOf(session)) !== true) {
++      ctx.kept.flush();
++      const recorded = ctx.recordedChat(idOf(session), chat);
++      proven = recorded?.sessionConversation === true && recorded.neverSpoken === true && recorded.backendId === id;
++    }
++    const observation = proven ? { ...location, neverSpoken: true } : at === undefined ? undefined : location;
++    const turns = await agent.transcript?.(id, observation, ctx.outputsFor(session, chat), (toolCallId, ordinal) => ctx.toolResults.kept(session, toolCallId, ordinal));
+     // A chat whose turns are all this host's own has no transcript, and reads
+     // as the turns it keeps, as a nested session opens from its record.
+     if (turns === undefined) return keptIn(session, chat).length > 0 ? interleaveLocalTurns(session, chat, []) : undefined;
+diff --git a/packages/sdk/src/host/spawn.ts b/packages/sdk/src/host/spawn.ts
+index 0b18c63a3..e0eed8509 100644
+--- a/packages/sdk/src/host/spawn.ts
++++ b/packages/sdk/src/host/spawn.ts
+@@ -1374,7 +1374,8 @@ export function createSpawn(ctx: HostContext): Spawn {
+     // Whose work the session is, as the store keeps it.
+     const ownerOfSession = kept.owner(idOf(uri));
+     const conversation = freshConversation ?? ctx.heldChats(idOf(uri)).find((one) => one.uri === chatUri)?.sessionConversation;
+-    const wired: Start = {
++    // Only this unpublished builder may fill the read-only observation after its birth barrier.
++    const wired: Omit<Start, 'neverSpoken'> & { neverSpoken?: boolean } = {
+       uri,
+       chatUri,
+       ...(conversation === undefined ? {} : { sessionConversation: conversation }),
+@@ -2029,6 +2030,10 @@ export function createSpawn(ctx: HostContext): Spawn {
+      * make first, and the session is held once that step is made, the start's
+      * failure being the failure of whatever asked for it.
+      */
++    const flush = kept.flush?.bind(kept);
++    const reportsPrompt = used === agent && used.promptStart === 'reported' && flush !== undefined
++      && kept.nested?.(idOf(uri)) === undefined && kept.external?.(idOf(uri)) !== true
++      && resuming?.forkAt === undefined;
+     // Only initial host creation establishes original ownership, before any backend handshake can run.
+     if (freshConversation === true) {
+       /*
+@@ -2042,7 +2047,19 @@ export function createSpawn(ctx: HostContext): Spawn {
+        */
+       kept.setProvider(idOf(uri), agent.provider);
+       keepFolder(idOf(uri), workingDirectory);
+-      ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true);
++      ctx.keepChat(uri, chatUri, chatId ?? idOf(uri), true, undefined, undefined, true, reportsPrompt ? true : undefined);
++    }
++    if (reportsPrompt && flush !== undefined) {
++      flush();
++      wired.beforePrompt = (backendId) => {
++        if (backendId === '') throw new Error('A provider prompt needs its actual native conversation id');
++        // Retry both the mutation and the barrier even when a failed prior flush changed memory.
++        ctx.keepChat(uri, chatUri, backendId, false, undefined, undefined, undefined, false);
++        flush();
++      };
++      const recorded = ctx.recordedChat(idOf(uri), chatUri);
++      if (recorded?.sessionConversation === true && recorded.neverSpoken === true
++        && recorded.backendId === (resuming?.resume ?? chatId ?? idOf(uri))) wired.neverSpoken = true;
+     }
+     const made = used.create(wired);
+     const session = made instanceof Promise ? await made : made;
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 2a8de5229..aaf70b739 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -204,6 +204,7 @@ export function memorySessions(): SessionStore & Held {
+     },
+     annotations: (id) => rows.get(id)?.annotations,
+     setAnnotations: (id, value) => { patch(id, { annotations: value }); },
++    flush: () => {},
+     chats: (id) => rows.get(id)?.chats ?? [],
+     // An empty list is held as that absence, the way an empty artifact list is:
+     // a session with no chat left is a session nothing was recorded for.
+@@ -464,6 +465,7 @@ const chatsOf = (value: unknown): StoredChat[] | undefined => {
+       uri: held.uri,
+       backendId: held.backendId,
+       ...(typeof held.sessionConversation === 'boolean' ? { sessionConversation: held.sessionConversation } : {}),
++      ...(typeof held.neverSpoken === 'boolean' ? { neverSpoken: held.neverSpoken } : {}),
+       ...(text(held.provider) ? { provider: held.provider } : {}),
+       ...(typeof config === 'object' && config !== null && !Array.isArray(config)
+         ? { config: config as Record<string, unknown> }
+@@ -776,10 +778,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     };
+   };
+ 
+-  const save = (): void => {
+-    if (closed) return;
++  const save = (strict = false): void => {
++    if (closed) {
++      if (strict) throw new Error('Cannot flush a closed session store');
++      return;
++    }
+     const waiting = [...dirty];
+-    dirty.clear();
+     for (const id of waiting) {
+       const row = rowOf(id);
+       const file = join(dir, fileNameOf(id));
+@@ -788,14 +792,18 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         // flag read and cleared: its file goes with it.
+         if (row === undefined) {
+           rmSync(file, { force: true });
++          dirty.delete(id);
+           continue;
+         }
+         // The folder is made at 0700: every file under it holds a person's
+         // session, which is nobody else's business on a host with more than one
+         // person on it.
+         writeJsonAtomic(file, row, { dirMode: 0o700 });
++        dirty.delete(id);
+       }
+       catch (error) {
++        // A failed soft write is still pending when a later critical barrier asks for acknowledgment.
++        if (strict) throw error;
+         told(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
+       }
+     }
+@@ -1120,13 +1128,20 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+       }
+       later();
+     },
++    flush: () => {
++      if (writing !== undefined) {
++        clearTimeout(writing);
++        writing = undefined;
++      }
++      save(true);
++    },
+     close: () => {
+       if (closed) return;
+       if (writing !== undefined) {
+         clearTimeout(writing);
+         writing = undefined;
+-        save();
+       }
++      save();
+       closed = true;
+     },
+   };
+diff --git a/packages/sdk/src/types/agent.ts b/packages/sdk/src/types/agent.ts
+index 2ac073056..1f8b288d0 100644
+--- a/packages/sdk/src/types/agent.ts
++++ b/packages/sdk/src/types/agent.ts
+@@ -184,6 +184,8 @@ export interface Listed {
+ export interface SessionAt {
+   /** The session's working folder, as a path. Absent where none was recorded. */
+   workingDirectory?: string;
++  /** Checked positive original-chat provenance after the host store's write barrier; absent means unknown. */
++  readonly neverSpoken?: boolean;
+ }
+ 
+ /** Where an agent's `placeSession` puts a session a client creates on it. Each field left out is the client's. */
+@@ -272,6 +274,10 @@ export interface Start {
+   uri: string;
+   /** The chat channel URI beneath it. */
+   chatUri: string;
++  /** Checked positive first-prompt provenance; never inferred from an empty seed. */
++  readonly neverSpoken?: boolean;
++  /** Commit the actual native binding and consume first-prompt provenance before dispatch. A throw prevents send. */
++  beforePrompt?(backendId: string): void;
+   /** Host-recorded original conversation: true original, false peer, absent legacy unknown. Independent of aliases and current default. */
+   sessionConversation?: boolean;
+   /**
+@@ -810,6 +816,8 @@ export interface RestoredSubagent {
+ export interface Agent<Started extends Session | Promise<Session> = Session | Promise<Session>> {
+   /** The id clients name. Unique among a host's agents. */
+   provider: string;
++  /** Every actual provider prompt calls Start.beforePrompt before sending; other backends promise nothing. */
++  promptStart?: 'reported';
+   /** What a person reads instead of the id. */
+   displayName: string;
+   /** One line about what this backend is. */
+diff --git a/packages/sdk/src/types/sessions.ts b/packages/sdk/src/types/sessions.ts
+index 28106fb3e..98db0db6d 100644
+--- a/packages/sdk/src/types/sessions.ts
++++ b/packages/sdk/src/types/sessions.ts
+@@ -133,6 +133,8 @@ export interface StoredChat {
+   backendId: string;
+   /** Host-recorded original conversation: true for the original, false for a peer, absent for legacy unknown. */
+   sessionConversation?: boolean;
++  /** Positive first-prompt provenance. True is unconsumed, false consumed; absent is unknown history. */
++  neverSpoken?: boolean;
+   /**
+    * The backend that serves this chat, where it is not the session's own.
+    *
+@@ -709,4 +711,10 @@ export interface SessionStore {
+    * only writer. Optional: a store that keeps nothing has nothing to finish.
+    */
+   close?(): void;
++  /**
++   * Acknowledge pending writes synchronously, or throw and retain failed work for retry.
++   * File stores commit atomic replacements against process interruption, not a power-loss fsync guarantee.
++   * Memory stores acknowledge only this process's lifetime; absence supplies no persisted provenance.
++   */
++  flush?(): void;
+ }
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index ca489b762..951dabeb8 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -9,7 +9,7 @@
+  * file.
+  */
+ 
+-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
++import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { dirname, join } from 'node:path';
+ import { afterEach, beforeEach, expect, it } from 'vitest';
+@@ -417,6 +417,57 @@ it('remembers it across a restart when the store writes it down', async () => {
+   expect(await statusOf(second.client) & ARCHIVED).toBe(ARCHIVED);
+ });
+ 
++// #35117: neither a positive empty-history fact nor its consumption may disappear on a cold read.
++// Existing chat round-trips predate this field, so they cannot distinguish missing from consumed authority.
++it.each([true, false])('retains explicit never-spoken provenance %s across a cold store', (neverSpoken) => {
++  const dir = join(root, 'first-prompt');
++  const first = fileSessions({ dir });
++  const chat = { uri: 'ahp-chat:/original', backendId: 'native-unmaterialized', sessionConversation: true, neverSpoken };
++  first.setChats('original', [chat]);
++  first.close?.();
++  const second = fileSessions({ dir });
++  expect(second.chats('original')).toMatchObject([{ neverSpoken }]);
++  second.close?.();
++});
++
++// The prompt barrier must retry a failed soft write even when its mutation already changed the cache.
++it('keeps failed native-binding and provenance writes pending until a strict flush commits them', () => {
++  const dir = join(root, 'first-prompt-failed-write');
++  const problems: string[] = [];
++  const store = fileSessions({ dir, onProblem: (message) => { problems.push(message); } });
++  if (store.flush === undefined) throw new Error('File session store must supply a flush acknowledgment');
++  const original = { uri: 'ahp-chat:/original', backendId: 'old-native', neverSpoken: true };
++  store.setChats('original', [original]);
++  store.flush();
++  const file = join(dir, 'original.json');
++  const backup = join(dir, 'before.json.backup');
++  renameSync(file, backup);
++  mkdirSync(file);
++  store.setChats('original', [{ ...original, backendId: 'new-native', neverSpoken: false }]);
++  expect(problems.some((message) => message.includes('Could not write'))).toBe(true);
++  expect(() => store.flush?.()).toThrow();
++  expect(JSON.parse(readFileSync(backup, 'utf8')).chats).toMatchObject([{ backendId: 'old-native', neverSpoken: true }]);
++  rmSync(file, { recursive: true });
++  renameSync(backup, file);
++  store.flush(); // No second mutation: only the failed writer's retained dirty work can commit this.
++  store.close?.();
++  expect(() => store.flush?.()).toThrow(/closed session store/);
++  const reopened = fileSessions({ dir });
++  expect(reopened.chats('original')).toMatchObject([{ backendId: 'new-native', neverSpoken: false }]);
++  reopened.close?.();
++});
++
++it.each([undefined, 'true', 1, null])('does not manufacture provenance from historical or invalid value %s', (value) => {
++  const dir = join(root, 'unknown-first-prompt');
++  mkdirSync(dir);
++  writeFileSync(join(dir, 'original.json'), JSON.stringify({
++    version: 1, id: 'original', chats: [{ uri: 'ahp-chat:/original', backendId: 'native', neverSpoken: value }],
++  }));
++  const store = fileSessions({ dir });
++  expect(store.chats('original')[0]).not.toHaveProperty('neverSpoken');
++  store.close?.();
++});
++
+ it('keeps one file per session, and writes only the one that changed', async () => {
+   const dir = join(root, 'sessions');
+   const store = fileSessions({ dir });
+-- 
+2.56.0
+

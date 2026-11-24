@@ -1,0 +1,352 @@
+From adcbeece73627ff72f29bfc59ea998cd12262203 Mon Sep 17 00:00:00 2001
+From: "@dev/6" <dev-6@main.hh.invalid>
+Date: Mon, 23 Nov 2026 08:38:12 -0800
+Subject: [PATCH] fix(agent-acp): list each record's own folder, so a
+ same-account thread is not credited to another record
+
+Codex records on one account share one CODEX_HOME, and session/list was
+asked about no folder, so every record listed every thread of the account.
+The host gives an unrecorded id to the first lister in load order, so a
+native thread made in one seat's folder was credited to another seat's
+record and `hab up --resume` was refused there (#38033).
+
+- listedBy passes the record's cwd as ACP's session/list cwd filter, merged
+  with the cursor, when the record names an absolute folder and the server
+  runs on this host. No cwd, a relative cwd, or a machine listing asks about
+  no folder, as before.
+- find honours the host's recorded folder (SessionAt.workingDirectory): a
+  session recorded outside the record's folder is in no filtered listing, so
+  the catalogue's recorded-folder lookup now lists that folder on the
+  record's listing server. Without this, the listing fix alone drops a
+  recorded worktree session from the catalogue.
+- Test: two same-account records in different folders, the wrong one loaded
+  first; each thread goes to the record whose folder it ran in, and a
+  recorded session in a third folder still lists under its recorded agent.
+  The fixture takes ACP_LISTED as one shared store.
+- The catalog test that pinned "lists every session whatever folder" now
+  pins the filter for an absolute cwd and the old answer for none/relative.
+
+Refs: @i/32986-agent-host/38033
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/agent-acp/src/agent.ts               |   8 +-
+ packages/agent-acp/src/catalog.ts             |  56 ++++++++-
+ .../agent-acp/test/agent-acp-catalog.test.ts  |  22 +++-
+ .../test/agent-acp-listing-cwd.test.ts        | 113 ++++++++++++++++++
+ .../agent-acp/test/fixtures/acp-server.mjs    |   9 +-
+ 5 files changed, 194 insertions(+), 14 deletions(-)
+ create mode 100644 packages/agent-acp/test/agent-acp-listing-cwd.test.ts
+
+diff --git a/packages/agent-acp/src/agent.ts b/packages/agent-acp/src/agent.ts
+index 15ebed851..af0a20bd1 100644
+--- a/packages/agent-acp/src/agent.ts
++++ b/packages/agent-acp/src/agent.ts
+@@ -12,7 +12,7 @@
+  * catalogue is `catalog.ts`.
+  */
+ 
+-import type { Agent, Bag, Listed, MachineNeed, Offered, Session, SessionMachine } from '@ahpd/sdk';
++import type { Agent, Bag, Listed, MachineNeed, Offered, Session, SessionAt, SessionMachine } from '@ahpd/sdk';
+ import { catalogueOf, deletes, findListed, forgetSession, forks, loadedSession, machineFor, stateFile } from './catalog.js';
+ import { acpSession } from './session.js';
+ import type { Choice } from './session/config.js';
+@@ -185,13 +185,15 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
+     /*
+      * One session's row, by id: this process's own record for a session it
+      * watched, and otherwise one listing of this server, which is the only call
+-     * ACP has that describes a session at all.
++     * ACP has that describes a session at all. A session the host recorded in a
++     * folder the record does not run in is asked about in that folder, because
++     * the listing asks about the record's own.
+      *
+      * A plain property rather than a getter, unlike `delete`: it does not depend
+      * on the handshake, because a server that cannot list still has the watched
+      * records to answer from.
+      */
+-    find: (id: string): Promise<Listed | undefined> => findListed(options, provider, id),
++    find: (id: string, at?: SessionAt): Promise<Listed | undefined> => findListed(options, provider, id, at?.workingDirectory),
+ 
+     /*
+      * What this process watched of a session, or what the server replays of one
+diff --git a/packages/agent-acp/src/catalog.ts b/packages/agent-acp/src/catalog.ts
+index b7ce8bbd0..a92769147 100644
+--- a/packages/agent-acp/src/catalog.ts
++++ b/packages/agent-acp/src/catalog.ts
+@@ -14,6 +14,7 @@
+  * catalogue row still needs its transcript, so only the live connection goes.
+  */
+ 
++import { isAbsolute } from 'node:path';
+ import { RequestError } from '@agentclientprotocol/sdk';
+ import type { AgentCapabilities, SessionInfo, SessionUpdate } from '@agentclientprotocol/sdk';
+ import { bag, uriOf } from '@ahpd/sdk';
+@@ -798,6 +799,10 @@ export async function catalogueOf(
+   return listed ? [...rows.values()] : watchedRows(provider);
+ }
+ 
++/** The folder a listing on this host asks its server about: the record's own, where it names an absolute one. */
++const listedFolder = (options: AcpOptions): string | undefined =>
++  options.cwd !== undefined && isAbsolute(options.cwd) ? options.cwd : undefined;
++
+ /**
+  * The rows one server lists, or nothing when its handshake advertises no
+  * catalogue.
+@@ -813,12 +818,25 @@ export async function catalogueOf(
+  * `machine` is where the server ran, when it ran in one: every session it
+  * lists is remembered as that machine's, so a replay reaches the store that
+  * holds the conversation rather than this host's store, which never did.
++ *
++ * A server on this host is asked about the record's own folder when the
++ * record names an absolute one, which is the `cwd` filter ACP gives
++ * `session/list`. Records on one account share the server's store (Codex keeps
++ * every thread of an account in one CODEX_HOME), and the host gives a session
++ * it has no record of to the first agent that listed it: asked about no folder,
++ * every record lists every thread, and a thread made in one record's folder is
++ * credited to whichever record loaded first. A record with no folder, or a
++ * relative one ACP does not take, still asks about none, and a server in a
++ * machine is asked about none, because the record's folder is this host's and
++ * the machine runs it in its own. `at` asks about another folder instead, which
++ * is how `findListed` reaches a session recorded outside the record's folder.
+  */
+ const listedBy = async (
+   options: AcpOptions,
+   provider: string,
+   connection: AcpConnection,
+   machine?: SessionMachine,
++  at?: string,
+ ): Promise<Listed[] | undefined> => {
+   const handshake = await connection.initialize();
+   handshaken.add(connection);
+@@ -832,9 +850,11 @@ const listedBy = async (
+   const sessions: SessionInfo[] = [];
+   const seenCursors = new Set<string>();
+   const pagesMost = options.sessionListMaxPages ?? SESSION_LIST_MAX_PAGES;
++  const asked = at ?? (machine === undefined ? listedFolder(options) : undefined);
++  const folder = asked === undefined ? {} : { cwd: asked };
+   let cursor: string | undefined;
+   for (let pages = 1; ; pages += 1) {
+-    const page = await connection.listSessions(cursor === undefined ? {} : { cursor });
++    const page = await connection.listSessions(cursor === undefined ? folder : { ...folder, cursor });
+     sessions.push(...page.sessions);
+     const nextCursor = page.nextCursor ?? undefined;
+     if (nextCursor === undefined) break;
+@@ -909,10 +929,40 @@ const rowsForFind = (options: AcpOptions, provider: string): Promise<Listed[]> =
+  * not. A server that does not list at all is answered from the watched records
+  * by `catalogueOf` itself, and a listing that failed by `rowsForFind`.
+  */
+-export async function findListed(options: AcpOptions, provider: string, id: string): Promise<Listed | undefined> {
+-  return (await rowsForFind(options, provider)).find((row) => row.id === id);
++export async function findListed(options: AcpOptions, provider: string, id: string, folder?: string): Promise<Listed | undefined> {
++  const row = (await rowsForFind(options, provider)).find((one) => one.id === id);
++  const own = listedFolder(options);
++  if (row !== undefined || own === undefined || folder === undefined || !isAbsolute(folder) || folder === own) return row;
++  return (await listedIn(options, provider, folder))?.find((one) => one.id === id);
+ }
+ 
++/**
++ * The rows this host's server lists for one folder other than the record's.
++ *
++ * A listing asks about the record's own folder (`listedBy`), so a session the
++ * host recorded in another one - a worktree, a subfolder - is in no listing,
++ * and the host asks `find` about it with the folder it recorded. This is that
++ * folder's listing, on the record's listing server. Nothing is asked while the
++ * record's host spawn is backing off or its kept sessions all ran in machines;
++ * a listing that fails throws, and the host keeps the record without a row.
++ */
++const listedIn = async (options: AcpOptions, provider: string, folder: string): Promise<Listed[] | undefined> => {
++  const due = hostRetry.get(options);
++  if (due !== undefined && Date.now() < due.retryAt) return undefined;
++  if (locations.get(options)?.host === false) return undefined;
++  const held = listingFor(options);
++  try {
++    return await listedBy(options, provider, held.connection, undefined, folder);
++  }
++  catch (error) {
++    dropListing(options, held);
++    throw error;
++  }
++  finally {
++    idleClose(options, held);
++  }
++};
++
+ /**
+  * Where this backend keeps a session's own state file.
+  *
+diff --git a/packages/agent-acp/test/agent-acp-catalog.test.ts b/packages/agent-acp/test/agent-acp-catalog.test.ts
+index 6e2f4a426..47f82c026 100644
+--- a/packages/agent-acp/test/agent-acp-catalog.test.ts
++++ b/packages/agent-acp/test/agent-acp-catalog.test.ts
+@@ -966,14 +966,24 @@ it('lists every page of a catalogue the server did not fit into one answer', asy
+ });
+ 
+ /*
+- * Every session the server holds, asked for with no folder named, as VS Code's
+- * Codex agent lists every thread: a server asked about one folder answers that
+- * folder's sessions alone.
++ * A record that names an absolute folder asks its server about that folder,
++ * which is ACP's `cwd` filter: records on one account read one store, and the
++ * host gives a session it has no record of to the first agent that listed it
++ * (agent-acp-listing-cwd.test.ts). A record with no folder, or a relative one
++ * ACP does not take, asks about none and lists every session the server holds,
++ * as VS Code's Codex agent lists every thread.
+  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/codex/codexThreadList.ts#L34-L40
+  */
+-it('lists every session the server holds, whatever folder the server runs in', async () => {
+-  const agent = acpAgent({ command: process.execPath, args: [FIXTURE], cwd: scratch(), provider: 'acp-every' });
+-  expect((await agent.list?.())?.map((one) => one.id)).toEqual(['listed-1', 'listed-2']);
++it('lists the sessions of the folder the record runs in, and every session for a record with no absolute folder', async () => {
++  const log = join(scratch(), 'requests.jsonl');
++  const inOne = acpAgent({ command: process.execPath, args: [FIXTURE], cwd: '/tmp', env: { ACP_LOG: log }, provider: 'acp-folder' });
++  expect((await inOne.list?.())?.map((one) => one.id)).toEqual([]);
++  expect(requests(log).filter((one) => one.method === 'session/list').map((one) => one.params?.cwd)).toEqual(['/tmp']);
++
++  const none = acpAgent({ command: process.execPath, args: [FIXTURE], provider: 'acp-every' });
++  expect((await none.list?.())?.map((one) => one.id)).toEqual(['listed-1', 'listed-2']);
++  const relative = acpAgent({ command: process.execPath, args: [FIXTURE], cwd: '.', provider: 'acp-relative' });
++  expect((await relative.list?.())?.map((one) => one.id)).toEqual(['listed-1', 'listed-2']);
+ });
+ 
+ /*
+diff --git a/packages/agent-acp/test/agent-acp-listing-cwd.test.ts b/packages/agent-acp/test/agent-acp-listing-cwd.test.ts
+new file mode 100644
+index 000000000..5047ace03
+--- /dev/null
++++ b/packages/agent-acp/test/agent-acp-listing-cwd.test.ts
+@@ -0,0 +1,113 @@
++import { mkdtempSync, readFileSync } from 'node:fs';
++import { rm } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { fileURLToPath } from 'node:url';
++import { afterEach, expect, it } from 'vitest';
++import type { Agent } from '@ahpd/sdk';
++import { createHost } from '../../sdk/src/host.js';
++import { memorySessions } from '../../sdk/src/sessions/sessions.js';
++import type { SessionStore } from '../../sdk/src/types/sessions.js';
++import type { Peer } from '../../sdk/src/types/rpc.js';
++import { acpAgent } from '../src/index.js';
++
++/*
++ * Two records on one account, each listing the folder it runs in.
++ *
++ * Codex keeps every thread of an account in one CODEX_HOME, so two records on
++ * that account spawn servers that read the same store. A record that asked
++ * `session/list` about no folder was answered with every thread the account
++ * holds, and the host gives a thread it has no record of to the first agent
++ * that listed it, in load order: a thread made in one seat's folder was
++ * credited to another seat's record, and resuming it there was refused. Each
++ * record asks about its own folder, as ACP's `cwd` filter means, so a thread
++ * is listed by the record whose folder it ran in.
++ *
++ * The fixture's `ACP_LISTED` is that one store: both records hand the same
++ * value to the servers they spawn.
++ */
++
++const FIXTURE = fileURLToPath(new URL('./fixtures/acp-server.mjs', import.meta.url));
++
++const made: string[] = [];
++
++afterEach(async () => {
++  for (const path of made.splice(0)) await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
++});
++
++const scratch = (): string => {
++  const path = mkdtempSync(join(tmpdir(), 'ahpd-acp-listing-cwd-'));
++  made.push(path);
++  return path;
++};
++
++const peer = (): Peer => ({
++  send: () => {},
++  notify: () => {},
++  request: async () => ({}),
++  answered: () => {},
++  close: async () => {},
++});
++
++/** A record on the shared account, running in `cwd`, with its own request log. */
++const record = (provider: string, cwd: string, store: string): { agent: Agent; log: string } => {
++  const log = join(scratch(), 'requests.jsonl');
++  return { agent: acpAgent({ command: process.execPath, args: [FIXTURE], cwd, env: { ACP_LOG: log, ACP_LISTED: store }, provider }), log };
++};
++
++const thread = (sessionId: string, cwd: string, title: string) => ({ sessionId, cwd, title, updatedAt: new Date().toISOString() });
++
++/** The listing a client reads, as `[session id, provider]`, after asking for every external session. */
++const listing = async (agents: Agent[], sessions: SessionStore, path: string): Promise<Map<string, { provider: string; title: string }>> => {
++  const host = createHost({ path, agents, sessions });
++  const client = host.accept(peer());
++  await client.handle({ method: 'initialize', params: { channel: 'ahp-root://', clientId: 'probe', protocolVersions: ['0.9.0'] } });
++  await client.handle({ method: 'dispatchAction', params: { channel: 'ahp-root://', action: { type: 'root/configChanged', config: { showExternalSessions: 'last30Days' } } } });
++  const answer = await client.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } }) as {
++    items: { resource: string; provider: string; title: string }[];
++  };
++  return new Map(answer.items.map((one) => [one.resource.slice(one.resource.lastIndexOf('/') + 1), { provider: one.provider, title: one.title }]));
++};
++
++const listedCwds = (log: string): unknown[] => readFileSync(log, 'utf8').split('\n')
++  .filter((line) => line !== '')
++  .map((line) => JSON.parse(line) as { method: string; params?: { cwd?: unknown } })
++  .filter((one) => one.method === 'session/list')
++  .map((one) => one.params?.cwd);
++
++it('credits a thread to the record of the folder it ran in, not to the first record on its account', async () => {
++  const six = scratch();
++  const one = scratch();
++  const store = JSON.stringify([thread('native-six', six, 'Made in six'), thread('native-one', one, 'Made in one')]);
++  // The record in the other folder is loaded first, so it is the one that took
++  // every thread when each record listed the whole account.
++  const first = record('acp-cwd-one', one, store);
++  const second = record('acp-cwd-six', six, store);
++
++  const rows = await listing([first.agent, second.agent], memorySessions(), scratch());
++
++  expect(rows.get('native-six')).toEqual({ provider: 'acp-cwd-six', title: 'Made in six' });
++  expect(rows.get('native-one')).toEqual({ provider: 'acp-cwd-one', title: 'Made in one' });
++  // What each record asked its server, read off the wire rather than inferred.
++  expect(new Set(listedCwds(first.log))).toEqual(new Set([one]));
++  expect(new Set(listedCwds(second.log))).toEqual(new Set([six]));
++});
++
++it('still lists a recorded session that ran in a folder neither record runs in, under the agent it was recorded with', async () => {
++  const six = scratch();
++  const one = scratch();
++  const worktree = scratch();
++  const store = JSON.stringify([thread('recorded-six', worktree, 'Recorded in a worktree')]);
++  const first = record('acp-kept-one', one, store);
++  const second = record('acp-kept-six', six, store);
++  // What the host wrote when the session ran: its agent and its folder. This is
++  // the catalogue's recorded-folder lookup (`kept.recordedFolders`), which no
++  // folder-filtered listing offers a row for.
++  const sessions = memorySessions();
++  sessions.setProvider('recorded-six', 'acp-kept-six');
++  sessions.setWorkingDirectory?.('recorded-six', worktree);
++
++  const rows = await listing([first.agent, second.agent], sessions, scratch());
++
++  expect(rows.get('recorded-six')).toEqual({ provider: 'acp-kept-six', title: 'Recorded in a worktree' });
++});
+diff --git a/packages/agent-acp/test/fixtures/acp-server.mjs b/packages/agent-acp/test/fixtures/acp-server.mjs
+index 544c4578a..c9ffa14de 100644
+--- a/packages/agent-acp/test/fixtures/acp-server.mjs
++++ b/packages/agent-acp/test/fixtures/acp-server.mjs
+@@ -381,8 +381,13 @@ const listed = () => ({
+   ],
+ });
+ 
+-/** The sessions `session/list` reports, one titled and one not. */
+-const LISTED = [
++/**
++ * The sessions `session/list` reports, one titled and one not. `ACP_LISTED`
++ * replaces them with a JSON array, which is one account's store that every
++ * record spawning this server with the same value reads, as Codex records on
++ * one CODEX_HOME do.
++ */
++const LISTED = process.env.ACP_LISTED !== undefined ? JSON.parse(process.env.ACP_LISTED) : [
+   { sessionId: 'listed-1', cwd: '/tmp/one', title: 'One', updatedAt: '2026-01-01T00:00:00.000Z' },
+   { sessionId: 'listed-2', cwd: '/tmp/two', additionalDirectories: ['/tmp/two-b'] },
+ ];
+-- 
+2.56.0
+

@@ -1,0 +1,829 @@
+From a49d8265008132680577caf044d7a2e803b39969 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 15:39:26 -0800
+Subject: [PATCH] fix(sdk): await mapping callback before starting sessions
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/plugins/PLUGINS.md                       |  4 ++-
+ packages/sdk/src/host/automations.ts          | 21 +++++-------
+ packages/sdk/src/types/plugin.ts              |  9 ++---
+ .../sdk/test/plugin-start-session.test.ts     | 34 +++++++++++++------
+ 4 files changed, 39 insertions(+), 29 deletions(-)
+
+diff --git a/docs/plugins/PLUGINS.md b/docs/plugins/PLUGINS.md
+index f5eb7c2fb..34e3ad414 100644
+--- a/docs/plugins/PLUGINS.md
++++ b/docs/plugins/PLUGINS.md
+@@ -1197,7 +1197,9 @@ const uri = await host.startSession({
+ });
+ ```
+ 
+-The owner's own `session:create` is asked first, and a refusal reads exactly as it does at the door - `soft may not session:create here` - so a plugin cannot start work the person it names could not have started themselves. A host with no users directory gates nothing, here as anywhere else. The call answers a URI or refuses, and nothing in between, so ask before you keep the answer: a record saved over a start that failed would claim a session it has not got.
++The owner's own `session:create` is asked first, and a refusal reads exactly as it does at the door - `soft may not session:create here` - so a plugin cannot start work the person it names could not have started themselves. A host with no users directory gates nothing, here as anywhere else.
++
++An optional second argument, `named: (uri: string) => void | Promise<void>`, receives the actual URI before isolation or backend creation. Commit the caller's mapping there and return its promise. The host awaits it; a thrown or rejected callback rejects the start and creates no backend for that invocation. Receiving a name does not mean creation completed: retain the mapping if a later start fails, for owner-authorized recovery.
+ 
+ `SessionRequest` carries what a `createSession` does, under the owner's name, and `owner` is the only field a caller must give. `provider` is a backend the host has and `workingDirectory` is where it works, both falling back to what a session with nothing said uses. `config` is the session's own settings and `model` is the protocol's `ModelSelection`, `{ id: 'claude-sonnet-5' }`, which rides on the session's first turn because a session has no model until a turn does. `title` is what the session is called where the plugin already knows, and a session with none is named after its first turn. `prompt` is that first turn, and leaving it out is a session that opens with nobody speaking, which is what a plugin whose new thing has nothing to open with asks for - an automation's empty message, by contrast, is an automation that does nothing. A `prompt` that is there and blank is a mistake rather than a quiet session, the same way a name written as spaces is not a name.
+ 
+diff --git a/packages/sdk/src/host/automations.ts b/packages/sdk/src/host/automations.ts
+index dd71c3327..45b26b25f 100644
+--- a/packages/sdk/src/host/automations.ts
++++ b/packages/sdk/src/host/automations.ts
+@@ -205,7 +205,7 @@ export interface Automations {
+    * `named` is the plugin's own door, called with the URI once the host has
+    * named it - before the tree is made and before the backend spawns.
+    */
+-  startForPlugin(wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void): Promise<string>;
++  startForPlugin(wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void | Promise<void>): Promise<string>;
+   /**
+    * A chat a plugin asked for, in a session this host is running.
+    *
+@@ -736,7 +736,7 @@ export function createAutomations(ctx: HostContext): Automations {
+    * of a worktree session - and what each road adds is the question that is
+    * its own.
+    */
+-  const beginSession = async (wanted: StartSession, named?: (uri: string) => void): Promise<string> => {
++  const beginSession = async (wanted: StartSession, named?: (uri: string) => void | Promise<void>): Promise<string> => {
+     const provider = wanted.provider ?? ctx.first?.provider;
+     if (provider === undefined) throw new Error(noProvider(provider));
+     // Named the way a client's `createSession` names a session.
+@@ -748,16 +748,11 @@ export function createAutomations(ctx: HostContext): Automations {
+      * while the session is being set up, so a reader that learns the URI after
+      * the start answers has already missed it.
+      *
+-     * A door that throws has heard as much as it could and is not this
+-     * session's failure: it is logged against the host and the start goes on,
+-     * which is the same answer a plugin that asks too early gets.
++     * The caller can commit its mapping before any backend is made. A thrown
++     * or rejected callback refuses this start rather than creating work whose
++     * caller never durably learned its identity.
+      */
+-    if (named !== undefined) {
+-      try { named(uri); }
+-      catch (error) {
+-        log.warn(`${uri} is being started, but the plugin that asked was not told: ${error instanceof Error ? error.message : String(error)}`);
+-      }
+-    }
++    if (named !== undefined) await named(uri);
+     const config = wanted.config ?? {};
+     // The same steps a client's `createSession` takes: the folder the daemon's
+     // `workspacelessFolder` says where none is named, the host's own keys are
+@@ -1013,7 +1008,7 @@ export function createAutomations(ctx: HostContext): Automations {
+    * to add. A folder the plugin registered as its own, or one under it, needs
+    * no grant: the manifest announced it before the install.
+    */
+-  const beginPluginSession = async (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void): Promise<string> => {
++  const beginPluginSession = async (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void | Promise<void>): Promise<string> => {
+     if (wanted.trusted === true && (wanted.workingDirectory === undefined ? who?.can?.('session:trust') !== true : !mayTrust(who, wanted.workingDirectory))) {
+       throw new RpcError(-32009, refusalReason(`plugin:${who?.by ?? 'unknown'}`, 'session:trust'), {});
+     }
+@@ -1042,7 +1037,7 @@ export function createAutomations(ctx: HostContext): Automations {
+ 
+   const startForAutomation = (wanted: StartSession): Promise<string> => startHeld(() => beginAutomation(wanted));
+ 
+-  const startForPlugin = (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void): Promise<string> =>
++  const startForPlugin = (wanted: StartSession, who?: PluginStarts, named?: (uri: string) => void | Promise<void>): Promise<string> =>
+     startHeld(() => beginPluginSession(wanted, who, named));
+ 
+   /**
+diff --git a/packages/sdk/src/types/plugin.ts b/packages/sdk/src/types/plugin.ts
+index 0b3a30289..0d312e81a 100644
+--- a/packages/sdk/src/types/plugin.ts
++++ b/packages/sdk/src/types/plugin.ts
+@@ -254,7 +254,7 @@ export interface PluginStarts {
+    * plugin that answers for that URI - a bot's connector reader - names it at
+    * the first tool list the backend is spawned with.
+    */
+-  start?: (wanted: StartSession, named?: (uri: string) => void) => Promise<string>;
++  start?: (wanted: StartSession, named?: (uri: string) => void | Promise<void>) => Promise<string>;
+   /**
+    * Where a chat inside a running session is asked for, set by the host once
+    * it exists.
+@@ -1256,10 +1256,11 @@ export interface PluginHost extends PluginContext {
+    * `named` is called once, with the URI the session will have, before the tree
+    * is isolated or the backend spawns. A plugin that answers for that URI can
+    * therefore answer from the start - a bot's connectors are in the first tool
+-   * list rather than only the one built after the start answers. A `named`
+-   * that throws is logged against the host and the start goes on.
++   * list rather than only the one built after the start answers. Its returned
++   * promise is awaited; a throw or rejection refuses creation before a backend
++   * is started.
+    */
+-  startSession(wanted: SessionRequest, named?: (uri: string) => void): Promise<string>;
++  startSession(wanted: SessionRequest, named?: (uri: string) => void | Promise<void>): Promise<string>;
+   /**
+    * Start a chat inside a running session, on the backend it names.
+    *
+diff --git a/packages/sdk/test/plugin-start-session.test.ts b/packages/sdk/test/plugin-start-session.test.ts
+index 73d94d638..3e8d6f316 100644
+--- a/packages/sdk/test/plugin-start-session.test.ts
++++ b/packages/sdk/test/plugin-start-session.test.ts
+@@ -168,20 +168,32 @@ it('names the session once, with the URI it answers, before the backend spawns',
+   expect(order).toEqual(['named', 'spawn']);
+ });
+ 
+-it('starts the session when the plugin\'s door throws, and says so in the log', async () => {
+-  const lines: string[] = [];
+-  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', {
+-    onEvent: (line) => { lines.push(line); },
+-  });
++it.each(['sync', 'async'] as const)('refuses creation before backend spawn when the %s mapping callback fails', async (mode) => {
++  const order: string[] = [];
++  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
++  const failure = new Error('mapping was not committed');
++  // The rejected promise is observed here as well so the old implementation's
++  // ignored callback is a failed assertion, not an unrelated unhandled rejection.
++  const rejected = Promise.reject(failure);
++  void rejected.catch(() => {});
++  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, () => {
++    order.push('named');
++    if (mode === 'sync') throw failure;
++    return rejected;
++  })).rejects.toBe(failure);
++  expect(order).toEqual(['named']);
++});
+ 
+-  const uri = await plugin.startSession({ owner: 'user:soft', prompt: 'Say hello' }, () => {
+-    throw new Error('nobody is listening');
++it('awaits the mapping callback before the backend spawns', async () => {
++  const order: string[] = [];
++  const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
++  const uri = await plugin.startSession({ owner: 'user:soft', provider: 'watched' }, async () => {
++    order.push('named');
++    await new Promise<void>((resolve) => { setImmediate(resolve); });
++    order.push('mapped');
+   });
+-
+-  // The plugin heard as much as it could, and what it does with that is not a
+-  // reason to refuse the work the person asked for.
+   expect(uri).toMatch(/^ahp-session:\//);
+-  expect(lines.some((line) => line.includes(uri) && line.includes('nobody is listening'))).toBe(true);
++  expect(order).toEqual(['named', 'mapped', 'spawn']);
+ });
+ 
+ it('refuses a door that is not a function, at the boundary', () => {
+-- 
+2.56.0
+
+From 8356a8b47bb9175e6b6bb6c346037446f2f7207b Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 15:48:18 -0800
+Subject: [PATCH] fix(sdk): strictly commit pending session store changes
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/sdk/AHP.md                       |  2 ++
+ packages/sdk/src/sessions/sessions.ts | 24 +++++++++++++++++++-----
+ packages/sdk/src/types/sessions.ts    |  7 +++++++
+ packages/sdk/test/sessions.test.ts    | 12 +++++++++++-
+ 4 files changed, 39 insertions(+), 6 deletions(-)
+
+diff --git a/docs/sdk/AHP.md b/docs/sdk/AHP.md
+index f1a889881..115183a2c 100644
+--- a/docs/sdk/AHP.md
++++ b/docs/sdk/AHP.md
+@@ -465,6 +465,8 @@ What these things are, rather than how they behave on the wire: a session is [SE
+ | so do the settings chosen for a session | the configuration values in force are kept the same way, in the same store, and come back with it |
+ | the sessions themselves come back either way | they are read from the backend's own transcripts, so what a store decides is only whether what this host added on top of them comes back too |
+ 
++`SessionStore.commit()` synchronously commits pending changes before an external effect. A persistent adapter throws on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter completes immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
++
+ ### A client that stops reading
+ 
+ A client that reads slower than the host writes leaves every frame it has not
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 2a8de5229..17a171a8c 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -99,6 +99,7 @@ export function memorySessions(): SessionStore & Held {
+   };
+ 
+   return {
++    commit: () => {},
+     flags: (id) => rows.get(id)?.flags ?? 0,
+     setFlags: (id, value) => { patch(id, { flags: value === 0 ? undefined : value }); },
+     config: (id) => rows.get(id)?.config,
+@@ -776,10 +777,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     };
+   };
+ 
+-  const save = (): void => {
+-    if (closed) return;
++  const save = (strict = false): void => {
++    if (closed) {
++      if (strict) throw new Error(`Cannot commit closed session store ${dir}`);
++      return;
++    }
+     const waiting = [...dirty];
+-    dirty.clear();
+     for (const id of waiting) {
+       const row = rowOf(id);
+       const file = join(dir, fileNameOf(id));
+@@ -788,15 +791,19 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         // flag read and cleared: its file goes with it.
+         if (row === undefined) {
+           rmSync(file, { force: true });
++          dirty.delete(id);
+           continue;
+         }
+         // The folder is made at 0700: every file under it holds a person's
+         // session, which is nobody else's business on a host with more than one
+         // person on it.
+         writeJsonAtomic(file, row, { dirMode: 0o700 });
++        dirty.delete(id);
+       }
+       catch (error) {
+-        told(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
++        const message = `Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`;
++        told(message);
++        if (strict) throw new Error(message, { cause: error });
+       }
+     }
+   };
+@@ -1015,6 +1022,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+   load();
+ 
+   return {
++    commit: () => {
++      if (writing !== undefined) {
++        clearTimeout(writing);
++        writing = undefined;
++      }
++      save(true);
++    },
+     flags: (id) => inner.flags(id),
+     config: (id) => inner.config(id),
+     setFlags: (id, value) => { touched(id, () => { inner.setFlags(id, value); }); },
+@@ -1125,8 +1139,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+       if (writing !== undefined) {
+         clearTimeout(writing);
+         writing = undefined;
+-        save();
+       }
++      save();
+       closed = true;
+     },
+   };
+diff --git a/packages/sdk/src/types/sessions.ts b/packages/sdk/src/types/sessions.ts
+index 28106fb3e..ed06ec582 100644
+--- a/packages/sdk/src/types/sessions.ts
++++ b/packages/sdk/src/types/sessions.ts
+@@ -233,6 +233,13 @@ export interface StoredChat {
+  * scheme is only whose it is.
+  */
+ export interface SessionStore {
++  /**
++   * Commit pending row changes before an external effect. A failed commit
++   * throws and retains uncommitted changes for an explicit retry. An in-memory
++   * store completes immediately; a persistent store must not merely schedule
++   * its write or report failure only through a diagnostic callback.
++   */
++  commit(): void;
+   /** The client flags in force, or `0` where none were ever set. */
+   flags(id: string): number;
+   /** Replace them. The whole bitset, because that is what the protocol sends. */
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index ca489b762..3c6c91054 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -1612,7 +1612,7 @@ it('forgets nothing when a backend refused to list', async () => {
+   expect(store.flags('gone')).toBe(ARCHIVED);
+ });
+ 
+-it('says a write failed rather than throwing out of a flag being set', async () => {
++it('reports background write failure and strictly commits the same pending row after repair', async () => {
+   /*
+    * A file underneath where the directory has to be, so `mkdir` answers
+    * ENOTDIR and nothing can be written there.
+@@ -1630,6 +1630,16 @@ it('says a write failed rather than throwing out of a flag being set', async ()
+   expect(said.join(' ')).toContain('Could not write');
+   // And it is still usable: the bit is in memory even though the file is not.
+   expect(store.flags('a')).toBe(ARCHIVED);
++  // Admission must observe a failed write even after the background attempt
++  // logged it. Repairing the resource permits the SAME pending row to commit.
++  expect(() => store.commit()).toThrow(/blocked/);
++  rmSync(join(root, 'blocked'));
++  mkdirSync(join(root, 'blocked'));
++  store.commit();
++  expect(row(join(root, 'blocked', 'sessions'), 'a')).toEqual({ version: 1, id: 'a', flags: ARCHIVED });
++  expect(fileSessions({ dir: join(root, 'blocked', 'sessions') }).flags('a')).toBe(ARCHIVED);
++  store.close?.();
++  expect(() => store.commit()).toThrow(/closed session store/);
+ });
+ 
+ /**
+-- 
+2.56.0
+
+From 1abc6c1822b27707f40862cccb5536eedfe98ad2 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 15:52:32 -0800
+Subject: [PATCH] fix(sdk): preserve unreadable session rows as errors
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/sdk/AHP.md                       |   2 +
+ packages/sdk/src/sessions/sessions.ts | 137 +++++++++++++-------------
+ packages/sdk/test/sessions.test.ts    |  65 +++++++-----
+ 3 files changed, 112 insertions(+), 92 deletions(-)
+
+diff --git a/docs/sdk/AHP.md b/docs/sdk/AHP.md
+index 115183a2c..c5a7f4eff 100644
+--- a/docs/sdk/AHP.md
++++ b/docs/sdk/AHP.md
+@@ -467,6 +467,8 @@ What these things are, rather than how they behave on the wire: a session is [SE
+ 
+ `SessionStore.commit()` synchronously commits pending changes before an external effect. A persistent adapter throws on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter completes immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
+ 
++An unreadable, malformed, unsupported-version or filename-mismatched session row remains listed by its filename identity. Reads and writes for that identity throw a named error and preserve its bytes; valid sibling rows remain readable. The store does not rename bad rows away. Repair the file explicitly and reopen the store to read it again. An unreadable store directory is an error; only an absent directory opens empty.
++
+ ### A client that stops reading
+ 
+ A client that reads slower than the host writes leaves every frame it has not
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 17a171a8c..66f7a9656 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -684,14 +684,24 @@ const idIn = (name: string): string | undefined => {
+  * A changed backend chat id is written before its setter returns: a handshake
+  * may be the last host callback before the backend starts its first prompt.
+  *
+- * A file that cannot be read is a warning and an empty row, never a refusal.
+- * Losing which sessions were archived is worth saying out loud; refusing to
+- * start a daemon over it is not.
++ * An unreadable row remains addressable as an error. Other rows still load,
++ * and neither a read nor a write may mistake those retained bytes for absence.
+  */
+ export function fileSessions(options: FileSessionOptions): SessionStore {
+   const inner = memorySessions();
+   const dir = options.dir;
+   const told = (message: string): void => { options.onProblem?.(message); };
++  const faults = new Map<string, Error>();
++  const readable = (id: string): typeof inner => {
++    const failure = faults.get(id);
++    if (failure !== undefined) throw failure;
++    return inner;
++  };
++  const readableAll = (): typeof inner => {
++    const failure = faults.values().next().value;
++    if (failure !== undefined) throw failure;
++    return inner;
++  };
+   /**
+    * One session's attachments: a folder of its own, named beside its file.
+    *
+@@ -824,58 +834,47 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+    * none of them can forget to mark what it moved.
+    */
+   const touched = (id: string, run: () => void): void => {
++    readable(id);
+     heard.add(id);
+     run();
+     dirty.add(id);
+     later();
+   };
+ 
+-  /**
+-   * Move a file this version cannot read to `<file>.unreadable-<time>`.
+-   *
+-   * The name does not end in `.json`, so a later load does not read it again,
+-   * and the UTC time keeps two moves of one id apart. A move that fails leaves
+-   * the file where it is, and says so.
+-   */
+-  const setAside = (file: string): void => {
+-    const aside = `${file}.unreadable-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')}`;
+-    try {
+-      renameSync(file, aside);
+-      told(`Moved ${file} to ${aside}.`);
+-    }
+-    catch (error) {
+-      told(`Could not move ${file} aside, so the next write for it replaces it: ${(error as NodeJS.ErrnoException).code ?? 'failed'}`);
+-    }
+-  };
+-
+   const load = (): void => {
+     let names: string[];
+     try { names = readdirSync(dir); }
+     // Not there yet, which is what a first run looks like.
+-    catch { return; }
++    catch (error) {
++      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
++      throw new Error(`Could not read session store ${dir}: ${(error as NodeJS.ErrnoException).code ?? 'unreadable'}`);
++    }
+     for (const name of names) {
+       if (!name.endsWith('.json')) continue;
+       // A name that is not an id this version could have written is not one of
+       // its files.
+-      if (idIn(name.slice(0, -'.json'.length)) === undefined) continue;
++      const id = idIn(name.slice(0, -'.json'.length));
++      if (id === undefined) continue;
+       const file = join(dir, name);
+       const read = readJson(file);
+       let row: Saved | undefined;
++      let problem: string | undefined;
+       if (!read.ok) {
+         // The parser's error quotes what it choked on, so a file that is not
+         // JSON is said to be that and no more.
+         if (read.kind === 'missing') continue;
+-        told(`Could not read ${file}: ${read.kind === 'unreadable' ? read.code ?? 'unreadable' : 'it is not JSON'}`);
++        problem = `Could not read ${file}: ${read.kind === 'unreadable' ? read.code ?? 'unreadable' : 'it is not JSON'}`;
+       }
+-      else if ((read.value as Partial<Saved>).version === 1 && typeof (read.value as Partial<Saved>).id === 'string') {
++      else if (typeof read.value === 'object' && read.value !== null && !Array.isArray(read.value)
++        && (read.value as Partial<Saved>).version === 1 && (read.value as Partial<Saved>).id === id) {
+         row = read.value as Saved;
+       }
+-      else told(`Ignoring ${file}: it is not a session store this version can read.`);
+-      // One file this version cannot read is one session it does not know, and
+-      // the rest of the folder still does. It is moved aside, because the next
+-      // write for its id would put what memory holds in its place.
++      else problem = `Could not read ${file}: it is not a session store this version can read or its id differs from its filename`;
+       if (row === undefined) {
+-        setAside(file);
++        const failure = new Error(problem ?? `Could not read ${file}: invalid session row`);
++        faults.set(id, failure);
++        heard.add(id);
++        told(failure.message);
+         continue;
+       }
+       heard.add(row.id);
+@@ -1029,71 +1028,71 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+       }
+       save(true);
+     },
+-    flags: (id) => inner.flags(id),
+-    config: (id) => inner.config(id),
++    flags: (id) => readable(id).flags(id),
++    config: (id) => readable(id).config(id),
+     setFlags: (id, value) => { touched(id, () => { inner.setFlags(id, value); }); },
+     setConfig: (id, values) => { touched(id, () => { inner.setConfig(id, values); }); },
+-    scope: (id) => inner.scope(id),
++    scope: (id) => readable(id).scope(id),
+     setScope: (id, value) => { touched(id, () => { inner.setScope(id, value); }); },
+-    owner: (id) => inner.owner(id),
++    owner: (id) => readable(id).owner(id),
+     setOwner: (id, value) => { touched(id, () => { inner.setOwner(id, value); }); },
+-    sender: (id, turnId) => inner.sender(id, turnId),
++    sender: (id, turnId) => readable(id).sender(id, turnId),
+     setSender: (id, turnId, value) => { touched(id, () => { inner.setSender(id, turnId, value); }); },
+-    provider: (id) => inner.provider(id),
++    provider: (id) => readable(id).provider(id),
+     setProvider: (id, value) => { touched(id, () => { inner.setProvider(id, value); }); },
+-    uri: (id) => inner.uri?.(id),
++    uri: (id) => readable(id).uri?.(id),
+     setUri: (id, value) => { touched(id, () => { inner.setUri?.(id, value); }); },
+-    tools: (id) => inner.tools?.(id),
++    tools: (id) => readable(id).tools?.(id),
+     setTools: (id, value) => { touched(id, () => { inner.setTools?.(id, value); }); },
+-    trustedFolder: (id) => inner.trustedFolder?.(id),
++    trustedFolder: (id) => readable(id).trustedFolder?.(id),
+     setTrustedFolder: (id, value) => { touched(id, () => { inner.setTrustedFolder?.(id, value); }); },
+-    userSettings: (id) => inner.userSettings?.(id),
++    userSettings: (id) => readable(id).userSettings?.(id),
+     setUserSettings: (id, value) => { touched(id, () => { inner.setUserSettings?.(id, value); }); },
+-    external: (id) => inner.external?.(id),
++    external: (id) => readable(id).external?.(id),
+     setExternal: (id, value) => { touched(id, () => { inner.setExternal?.(id, value); }); },
+-    parent: (id) => inner.parent(id),
++    parent: (id) => readable(id).parent(id),
+     setParent: (id, value) => { touched(id, () => { inner.setParent(id, value); }); },
+-    rootOf: (id) => inner.rootOf(id),
+-    depthOf: (id) => inner.depthOf(id),
+-    nested: (id) => inner.nested(id),
++    rootOf: (id) => readable(id).rootOf(id),
++    depthOf: (id) => readable(id).depthOf(id),
++    nested: (id) => readable(id).nested(id),
+     setNested: (id, value) => { touched(id, () => { inner.setNested(id, value); }); },
+-    nestedSessions: () => inner.nestedSessions(),
+-    recordedFolders: () => inner.recordedFolders(),
+-    remoteOrigin: (id) => inner.remoteOrigin?.(id),
++    nestedSessions: () => readableAll().nestedSessions(),
++    recordedFolders: () => readableAll().recordedFolders(),
++    remoteOrigin: (id) => readable(id).remoteOrigin?.(id),
+     setRemoteOrigin: (id, value) => { touched(id, () => { inner.setRemoteOrigin?.(id, value); }); },
+-    createdBy: (id) => inner.createdBy?.(id),
++    createdBy: (id) => readable(id).createdBy?.(id),
+     setCreatedBy: (id, value) => { touched(id, () => { inner.setCreatedBy?.(id, value); }); },
+-    automationOrigin: (id) => inner.automationOrigin?.(id),
++    automationOrigin: (id) => readable(id).automationOrigin?.(id),
+     setAutomationOrigin: (id, value) => { touched(id, () => { inner.setAutomationOrigin?.(id, value); }); },
+-    multiRoot: (id) => inner.multiRoot?.(id),
++    multiRoot: (id) => readable(id).multiRoot?.(id),
+     setMultiRoot: (id, value) => { touched(id, () => { inner.setMultiRoot?.(id, value); }); },
+-    worktree: (id) => inner.worktree(id),
++    worktree: (id) => readable(id).worktree(id),
+     setWorktree: (id, value) => { touched(id, () => { inner.setWorktree(id, value); }); },
+-    additionalWorktrees: (id) => inner.additionalWorktrees(id),
++    additionalWorktrees: (id) => readable(id).additionalWorktrees(id),
+     setAdditionalWorktrees: (id, value) => { touched(id, () => { inner.setAdditionalWorktrees(id, value); }); },
+-    autoArchivedAt: (id) => inner.autoArchivedAt(id),
++    autoArchivedAt: (id) => readable(id).autoArchivedAt(id),
+     setAutoArchivedAt: (id, value) => { touched(id, () => { inner.setAutoArchivedAt(id, value); }); },
+-    workingDirectory: (id) => inner.workingDirectory(id),
++    workingDirectory: (id) => readable(id).workingDirectory(id),
+     setWorkingDirectory: (id, value) => { touched(id, () => { inner.setWorkingDirectory(id, value); }); },
+-    changes: (id) => inner.changes(id),
++    changes: (id) => readable(id).changes(id),
+     setChanges: (id, value) => { touched(id, () => { inner.setChanges(id, value); }); },
+-    artifacts: (id) => inner.artifacts(id),
++    artifacts: (id) => readable(id).artifacts(id),
+     setArtifacts: (id, values) => { touched(id, () => { inner.setArtifacts(id, values); }); },
+-    pullRequests: (id) => inner.pullRequests(id),
++    pullRequests: (id) => readable(id).pullRequests(id),
+     setPullRequests: (id, value) => { touched(id, () => { inner.setPullRequests(id, value); }); },
+-    customTitle: (id) => inner.customTitle?.(id),
++    customTitle: (id) => readable(id).customTitle?.(id),
+     setCustomTitle: (id, value) => { touched(id, () => { inner.setCustomTitle?.(id, value); }); },
+-    chatTitle: (id, chatUri) => inner.chatTitle(id, chatUri),
++    chatTitle: (id, chatUri) => readable(id).chatTitle(id, chatUri),
+     setChatTitle: (id, chatUri, title) => { touched(id, () => { inner.setChatTitle(id, chatUri, title); }); },
+-    chatFlags: (id, chatUri) => inner.chatFlags(id, chatUri),
++    chatFlags: (id, chatUri) => readable(id).chatFlags(id, chatUri),
+     setChatFlags: (id, chatUri, value) => { touched(id, () => { inner.setChatFlags(id, chatUri, value); }); },
+-    chatChanges: (id, chatUri) => inner.chatChanges?.(id, chatUri),
++    chatChanges: (id, chatUri) => readable(id).chatChanges?.(id, chatUri),
+     setChatChanges: (id, chatUri, value) => { touched(id, () => { inner.setChatChanges?.(id, chatUri, value); }); },
+-    chatDraft: (id, chatUri) => inner.chatDraft?.(id, chatUri),
++    chatDraft: (id, chatUri) => readable(id).chatDraft?.(id, chatUri),
+     setChatDraft: (id, chatUri, draft) => { touched(id, () => { inner.setChatDraft?.(id, chatUri, draft); }); },
+-    annotations: (id) => inner.annotations?.(id),
++    annotations: (id) => readable(id).annotations?.(id),
+     setAnnotations: (id, value) => { touched(id, () => { inner.setAnnotations?.(id, value); }); },
+-    chats: (id) => inner.chats(id),
++    chats: (id) => readable(id).chats(id),
+     setChats: (id, list) => {
+       const before = new Map(inner.chats(id).map((chat) => [chat.uri, chat.backendId]));
+       const bindingChanged = list.some((chat) => before.get(chat.uri) !== chat.backendId);
+@@ -1105,6 +1104,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     // Two rows move, so two files have to be written - which is why this is
+     // written out rather than handed to `touched`, which names one.
+     moveChat: (from, to, uri, turns) => {
++      readable(from);
++      readable(to);
+       heard.add(from);
+       heard.add(to);
+       inner.moveChat(from, to, uri, turns);
+@@ -1114,9 +1115,10 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     },
+     // What this store holds is what it read at construction, which is the whole
+     // folder, and what it was told since: the composition answers both.
+-    sessions: () => inner.sessions(),
+-    attachmentsDir: attachmentsOf,
++    sessions: () => [...new Set([...inner.sessions(), ...faults.keys()])],
++    attachmentsDir: (id) => { readable(id); return attachmentsOf(id); },
+     forget: (id) => {
++      readable(id);
+       heard.delete(id);
+       inner.forget(id);
+       attachmentsGone(id);
+@@ -1126,6 +1128,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     prune: (gone) => {
+       for (const id of [...heard]) {
+         if (!gone(id)) continue;
++        readable(id);
+         heard.delete(id);
+         inner.forget(id);
+         attachmentsGone(id);
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index 3c6c91054..5ab73091f 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -1487,69 +1487,81 @@ it('keeps the time the host archived a session across a restart, and ignores one
+   expect(memorySessions().autoArchivedAt?.('a')).toBeUndefined();
+ });
+ 
+-it('starts empty and says so when a file cannot be read', () => {
++it.each(['this is not json', 'null', '[]', '{"version":1,"id":"different"}'])('keeps an unreadable session addressable without replacing its bytes: %s', (bytes) => {
+   const dir = join(root, 'sessions');
+   mkdirSync(dir, { recursive: true });
+-  writeFileSync(join(dir, 'a.json'), 'this is not json');
++  writeFileSync(join(dir, 'a.json'), bytes);
+   const said: string[] = [];
+   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
+-  // A warning and an empty store, never a refusal: losing which rows were
+-  // archived is worth saying out loud, and is not worth refusing to start over.
+   expect(store.flags('anything')).toBe(0);
+-  expect(said.join(' ')).toContain('Could not read');
++  expect(() => store.flags('a')).toThrow(/a.json/);
++  expect(() => store.owner('a')).toThrow(/a.json/);
++  expect(store.sessions()).toContain('a');
++  expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe(bytes);
++  expect(readdirSync(dir)).toEqual(['a.json']);
++  expect(said.join(' ')).not.toContain(bytes);
+ });
+ 
+-it('skips a file it cannot read and reads the others', () => {
++it('refuses the unreadable row while still reading its valid sibling', () => {
+   const dir = join(root, 'sessions');
+   mkdirSync(dir, { recursive: true });
+   writeFileSync(join(dir, 'a.json'), 'this is not json');
+   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', flags: READ }));
+   const said: string[] = [];
+   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
+-  expect(store.flags('a')).toBe(0);
++  expect(() => store.flags('a')).toThrow(/a.json/);
+   expect(store.flags('b')).toBe(READ);
+   expect(said.join(' ')).toContain('Could not read');
+ });
+ 
+-it('ignores a file written by a version that shaped it differently', () => {
++it('preserves an OS-unreadable row as an error rather than an absent session', () => {
++  const dir = join(root, 'sessions');
++  mkdirSync(join(dir, 'a.json'), { recursive: true });
++  writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', flags: READ }));
++  const store = fileSessions({ dir });
++  expect(() => store.config('a')).toThrow(/a.json.*EISDIR/);
++  expect(() => store.setConfig('a', {})).toThrow(/a.json.*EISDIR/);
++  expect(() => store.nestedSessions?.()).toThrow(/a.json.*EISDIR/);
++  expect(() => store.recordedFolders?.()).toThrow(/a.json.*EISDIR/);
++  expect(store.flags('b')).toBe(READ);
++  expect(store.sessions()).toEqual(expect.arrayContaining(['a', 'b']));
++  expect(statSync(join(dir, 'a.json')).isDirectory()).toBe(true);
++});
++
++it('refuses a row written by an unsupported version', () => {
+   const dir = join(root, 'sessions');
+   mkdirSync(dir, { recursive: true });
+   writeFileSync(join(dir, 'a.json'), JSON.stringify({ version: 2, id: 'a', flags: 64 }));
+   const said: string[] = [];
+   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
+-  expect(store.flags('a')).toBe(0);
++  expect(() => store.flags('a')).toThrow(/a.json/);
+   expect(said.join(' ')).toContain('not a session store this version can read');
+ });
+ 
+-it('moves a file it cannot read aside, so a write for its id keeps it', async () => {
++it('refuses a write over an unreadable row and preserves its only bytes', () => {
+   const dir = join(root, 'sessions');
+   mkdirSync(dir, { recursive: true });
+   writeFileSync(join(dir, 'a.json'), 'this is not json');
+   const said: string[] = [];
+   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
+-  store.setFlags('a', READ);
+-  await new Promise((tick) => { setTimeout(tick, 5); });
++  expect(() => store.setFlags('a', READ)).toThrow(/a.json/);
+   const aside = readdirSync(dir).filter((name) => name.startsWith('a.json.unreadable-'));
+-  expect(aside).toHaveLength(1);
+-  expect(aside[0]).toMatch(/^a\.json\.unreadable-\d{8}T\d{6}Z$/);
+-  expect(readFileSync(join(dir, aside[0] as string), 'utf8')).toBe('this is not json');
+-  expect(row(dir, 'a')).toEqual({ version: 1, id: 'a', flags: READ });
+-  expect(said.join(' ')).toContain('Moved');
++  expect(aside).toHaveLength(0);
++  expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe('this is not json');
+   expect(said.join(' ')).not.toContain('this is not json');
+ });
+ 
+-it('moves a file of a version it does not know aside', async () => {
++it('reads an explicitly repaired row on restart without discarding an unsupported version', () => {
+   const dir = join(root, 'sessions');
+   mkdirSync(dir, { recursive: true });
+   const newer = JSON.stringify({ version: 2, id: 'a', flags: 64 });
+   writeFileSync(join(dir, 'a.json'), newer);
+   const store = fileSessions({ dir });
+-  store.setFlags('a', READ);
+-  await new Promise((tick) => { setTimeout(tick, 5); });
++  expect(() => store.setFlags('a', READ)).toThrow(/a.json/);
+   const aside = readdirSync(dir).filter((name) => name.startsWith('a.json.unreadable-'));
+-  expect(aside).toHaveLength(1);
+-  expect(readFileSync(join(dir, aside[0] as string), 'utf8')).toBe(newer);
+-  // A later load reads the new file and leaves the moved one alone.
++  expect(aside).toHaveLength(0);
++  expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe(newer);
++  writeFileSync(join(dir, 'a.json'), JSON.stringify({ version: 1, id: 'a', flags: READ }));
+   expect(fileSessions({ dir }).flags('a')).toBe(READ);
+ });
+ 
+@@ -1622,9 +1634,12 @@ it('reports background write failure and strictly commits the same pending row a
+    * somebody archiving a row into a refused action - which is a worse answer
+    * than a bit that was not written down.
+    */
+-  writeFileSync(join(root, 'blocked'), 'not a directory');
++  const dir = join(root, 'blocked', 'sessions');
++  mkdirSync(dir, { recursive: true });
+   const said: string[] = [];
+-  const store = fileSessions({ dir: join(root, 'blocked', 'sessions'), onProblem: (m) => said.push(m) });
++  const store = fileSessions({ dir, onProblem: (m) => said.push(m) });
++  rmSync(join(root, 'blocked'), { recursive: true });
++  writeFileSync(join(root, 'blocked'), 'not a directory');
+   expect(() => store.setFlags('a', ARCHIVED)).not.toThrow();
+   await new Promise((tick) => { setTimeout(tick, 5); });
+   expect(said.join(' ')).toContain('Could not write');
+-- 
+2.56.0
+
+From 4f4b15d3d914a4c1ec64aef9791ad1ba748a398d Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 15:56:41 -0800
+Subject: [PATCH] fix(sdk): acknowledge commits for the requested session row
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ docs/sdk/AHP.md                       |  2 +-
+ packages/sdk/src/sessions/sessions.ts | 11 ++++++-----
+ packages/sdk/src/types/sessions.ts    |  6 +++---
+ packages/sdk/test/sessions.test.ts    |  6 +++---
+ 4 files changed, 13 insertions(+), 12 deletions(-)
+
+diff --git a/docs/sdk/AHP.md b/docs/sdk/AHP.md
+index c5a7f4eff..cb6b5bb4e 100644
+--- a/docs/sdk/AHP.md
++++ b/docs/sdk/AHP.md
+@@ -465,7 +465,7 @@ What these things are, rather than how they behave on the wire: a session is [SE
+ | so do the settings chosen for a session | the configuration values in force are kept the same way, in the same store, and come back with it |
+ | the sessions themselves come back either way | they are read from the backend's own transcripts, so what a store decides is only whether what this host added on top of them comes back too |
+ 
+-`SessionStore.commit()` synchronously commits pending changes before an external effect. A persistent adapter throws on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter completes immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
++Await `SessionStore.commit(id)` before an external effect to acknowledge that row's pending changes. A persistent adapter rejects on failure and retains unwritten changes for an explicit retry; logging or scheduling a write is insufficient. The memory adapter resolves immediately. `fileSessions()` preserves atomic whole-file publication, but this contract alone does not promise survival of a power loss or machine failure.
+ 
+ An unreadable, malformed, unsupported-version or filename-mismatched session row remains listed by its filename identity. Reads and writes for that identity throw a named error and preserve its bytes; valid sibling rows remain readable. The store does not rename bad rows away. Repair the file explicitly and reopen the store to read it again. An unreadable store directory is an error; only an absent directory opens empty.
+ 
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index 66f7a9656..4b858104b 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -99,7 +99,7 @@ export function memorySessions(): SessionStore & Held {
+   };
+ 
+   return {
+-    commit: () => {},
++    commit: async () => {},
+     flags: (id) => rows.get(id)?.flags ?? 0,
+     setFlags: (id, value) => { patch(id, { flags: value === 0 ? undefined : value }); },
+     config: (id) => rows.get(id)?.config,
+@@ -787,12 +787,12 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+     };
+   };
+ 
+-  const save = (strict = false): void => {
++  const save = (strict = false, ids?: readonly string[]): void => {
+     if (closed) {
+       if (strict) throw new Error(`Cannot commit closed session store ${dir}`);
+       return;
+     }
+-    const waiting = [...dirty];
++    const waiting = ids === undefined ? [...dirty] : ids.filter((id) => dirty.has(id));
+     for (const id of waiting) {
+       const row = rowOf(id);
+       const file = join(dir, fileNameOf(id));
+@@ -1021,12 +1021,13 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+   load();
+ 
+   return {
+-    commit: () => {
++    commit: async (id) => {
+       if (writing !== undefined) {
+         clearTimeout(writing);
+         writing = undefined;
+       }
+-      save(true);
++      save(true, [id]);
++      if (dirty.size > 0) later();
+     },
+     flags: (id) => readable(id).flags(id),
+     config: (id) => readable(id).config(id),
+diff --git a/packages/sdk/src/types/sessions.ts b/packages/sdk/src/types/sessions.ts
+index ed06ec582..6c55f102f 100644
+--- a/packages/sdk/src/types/sessions.ts
++++ b/packages/sdk/src/types/sessions.ts
+@@ -234,12 +234,12 @@ export interface StoredChat {
+  */
+ export interface SessionStore {
+   /**
+-   * Commit pending row changes before an external effect. A failed commit
+-   * throws and retains uncommitted changes for an explicit retry. An in-memory
++   * Commit this row's pending changes before an external effect. A failed commit
++   * rejects and retains uncommitted changes for an explicit retry. An in-memory
+    * store completes immediately; a persistent store must not merely schedule
+    * its write or report failure only through a diagnostic callback.
+    */
+-  commit(): void;
++  commit(id: string): Promise<void>;
+   /** The client flags in force, or `0` where none were ever set. */
+   flags(id: string): number;
+   /** Replace them. The whole bitset, because that is what the protocol sends. */
+diff --git a/packages/sdk/test/sessions.test.ts b/packages/sdk/test/sessions.test.ts
+index 5ab73091f..8f43a7a70 100644
+--- a/packages/sdk/test/sessions.test.ts
++++ b/packages/sdk/test/sessions.test.ts
+@@ -1647,14 +1647,14 @@ it('reports background write failure and strictly commits the same pending row a
+   expect(store.flags('a')).toBe(ARCHIVED);
+   // Admission must observe a failed write even after the background attempt
+   // logged it. Repairing the resource permits the SAME pending row to commit.
+-  expect(() => store.commit()).toThrow(/blocked/);
++  await expect(store.commit('a')).rejects.toThrow(/blocked/);
+   rmSync(join(root, 'blocked'));
+   mkdirSync(join(root, 'blocked'));
+-  store.commit();
++  await store.commit('a');
+   expect(row(join(root, 'blocked', 'sessions'), 'a')).toEqual({ version: 1, id: 'a', flags: ARCHIVED });
+   expect(fileSessions({ dir: join(root, 'blocked', 'sessions') }).flags('a')).toBe(ARCHIVED);
+   store.close?.();
+-  expect(() => store.commit()).toThrow(/closed session store/);
++  await expect(store.commit('a')).rejects.toThrow(/closed session store/);
+ });
+ 
+ /**
+-- 
+2.56.0
+

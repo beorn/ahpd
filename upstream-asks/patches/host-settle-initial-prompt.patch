@@ -1,0 +1,267 @@
+From eb5b5e402ca5b5537b8eb44496518b8cc0bcae10 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 19:57:16 -0800
+Subject: [PATCH] test(sessions): expose missing initial prompt settlement
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ .../sdk/test/plugin-start-session.test.ts     | 24 +++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/packages/sdk/test/plugin-start-session.test.ts b/packages/sdk/test/plugin-start-session.test.ts
+index 241d88241..b536a50e7 100644
+--- a/packages/sdk/test/plugin-start-session.test.ts
++++ b/packages/sdk/test/plugin-start-session.test.ts
+@@ -312,6 +312,30 @@ it('keeps its store open beyond close grace until an accepted callback settles',
+   } finally { gate.resolve(); vi.useRealTimers(); }
+ });
+ 
++// @failure A completed initial prompt remains an uncertain admission on disk; @level l2; @consumer SessionCreation.initialPrompt.
++it('durably settles the initial prompt after its actual terminal event', async () => {
++  const dir = join(DIR, `prompt-settled-${crypto.randomUUID()}`);
++  const store = fileSessions({ dir });
++  const base = echo({ path: DIR, pace: 0 });
++  let completed = false;
++  const agent: Agent = { ...base, create: (start) => base.create({
++    ...start,
++    emit: (channel, action) => {
++      start.emit(channel, action);
++      if (channel === 'chat' && action.type === 'chat/turnComplete') completed = true;
++    },
++  }) };
++  const { plugin, host } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
++  try {
++    const uri = await plugin.startSession({ owner: 'user:soft', provider: 'echo', prompt: 'Finish this turn' });
++    await until(() => completed, 'initial prompt terminal event');
++    await vi.waitFor(() => {
++      const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(uri))}.json`), 'utf8'));
++      expect(saved.creation.initialPrompt).toBe('settled');
++    }, { timeout: WAIT_MS });
++  } finally { await host.close(); }
++});
++
+ it('refuses a door that is not a function, at the boundary', () => {
+   const { plugin } = starting({ soft: ['session:create'] });
+ 
+-- 
+2.56.0
+
+From af158c8b1f4267c85cc95a217590808a28469f95 Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Thu, 19 Nov 2026 20:06:53 -0800
+Subject: [PATCH] fix(sessions): durably settle the exact initial prompt
+
+Refs: @i/30-layers/32350-new-architecture-ahp-ade/34955-hightea-umbrella/35090-r2-host-plugin/35139-session-create-durable-mapping
+---
+ packages/sdk/src/host.ts                      |  2 +-
+ packages/sdk/src/host/automations.ts          | 47 +++++++++++++++++--
+ packages/sdk/src/host/context.ts              |  4 +-
+ packages/sdk/src/host/spawn.ts                |  1 +
+ .../sdk/test/plugin-start-session.test.ts     | 33 ++++++++++---
+ 5 files changed, 73 insertions(+), 14 deletions(-)
+
+diff --git a/packages/sdk/src/host.ts b/packages/sdk/src/host.ts
+index c9d2535b7..11e1d44c1 100644
+--- a/packages/sdk/src/host.ts
++++ b/packages/sdk/src/host.ts
+@@ -392,7 +392,7 @@ export function createHost(options: HostOptions): Host {
+   const terminals = new Claiming<Terminal>(claims, 'terminal');
+   /** The one close, shared by every caller of `close`. */
+   let closing: Promise<void> | undefined;
+-  /** The automation runs starting a session now, which a close waits for. */
++  /** Accepted session starts and creation writes that a close must join. */
+   const starting = new Set<Promise<string>>();
+   /**
+    * What started a session, for the ones nothing did.
+diff --git a/packages/sdk/src/host/automations.ts b/packages/sdk/src/host/automations.ts
+index 224f9f92a..27db9ea4e 100644
+--- a/packages/sdk/src/host/automations.ts
++++ b/packages/sdk/src/host/automations.ts
+@@ -10,7 +10,7 @@ import { createRuleEngine } from '../automations/triggers.js';
+ import { wakeMessage } from '../automations/wakemessage.js';
+ import { bag } from '../utils/values.js';
+ import { AUTOMATIONS, isAutomationResource } from './channels.js';
+-import { CLOSING, need, noProvider } from './common.js';
++import { CLOSING, need, noProvider, reason } from './common.js';
+ import { refusalReason } from './gate.js';
+ import type { Bag } from '../types/common.js';
+ import type { AutomationEntry, AutomationRun, AutomationRunState, RunEnding, StartSession } from '../types/automations.js';
+@@ -21,6 +21,7 @@ import type { WakeFacts } from '../automations/wakemessage.js';
+ import type { AutomationWake, SessionEventKind, SessionRule } from '../types/triggers.js';
+ import type { Owner } from '../types/usage.js';
+ import type { SessionCreation } from '../types/sessions.js';
++import type { TurnEndEvent } from '../types/events.js';
+ import type { HostContext } from './context.js';
+ import { mayTrust } from './trust.js';
+ 
+@@ -183,6 +184,8 @@ export interface Automations {
+   manualRunRequests: Map<string, { automation: string; run: string }>;
+   /** Move the run a session belongs to, when that session stops working. */
+   settleRun(uri: string, ending: RunEnding): void;
++  /** Durably settle only the initial prompt whose exact turn this host admitted. */
++  settleInitialPrompt(end: Pick<TurnEndEvent, 'session' | 'channel' | 'turnId'>): void;
+   /** Stop the run a client named: nothing where it stopped, or why it did not. */
+   cancelRun(run: string): string | undefined;
+   /** A session this host was running is gone: nothing about it is measured any more. */
+@@ -698,12 +701,45 @@ export function createAutomations(ctx: HostContext): Automations {
+    * session that opens silent, which is what a bot with no instructions gets,
+    * and a turn with no text in it is an empty bubble rather than no turn.
+    */
+-  const beginIn = (session: string, wanted: StartSession): void => {
++  // A successor cannot infer the outcome of an unobserved admission. Only
++  // the exact initial turn admitted by this host can settle its saved marker.
++  const initialPromptTurns = new Map<string, { channel: string; turnId: string }>();
++  const settleInitialPrompt = (end: Pick<TurnEndEvent, 'session' | 'channel' | 'turnId'>): void => {
++    const initial = initialPromptTurns.get(end.session);
++    if (initial?.channel !== end.channel || initial.turnId !== end.turnId) return;
++    initialPromptTurns.delete(end.session);
++    const writing = (async () => {
++      const id = idOf(end.session);
++      const creation = kept.creation(id);
++      if (creation === undefined) throw new Error(`Cannot settle initial prompt for ${end.session}: creation reservation is missing`);
++      if (creation.initialPrompt !== 'admitted' && creation.initialPrompt !== 'settled') {
++        throw new Error(`Cannot settle initial prompt for ${end.session}: its saved admission is ${creation.initialPrompt}`);
++      }
++      if (creation?.initialPrompt === 'admitted') {
++        kept.setCreation(id, { ...creation, initialPrompt: 'settled' });
++        await kept.commit(id);
++      }
++      return end.session;
++    })();
++    // A terminal event may arrive during close. Its already-accepted write
++    // joins the same tracker as creation, without admitting another start.
++    ctx.starting.add(writing);
++    const done = (): void => { ctx.starting.delete(writing); };
++    writing.then(done, (error) => {
++      done();
++      ctx.log(`Cannot durably settle initial prompt for ${end.session}: ${reason(error)}`, 'error');
++    });
++  };
++
++  const beginIn = (session: string, wanted: StartSession, initialPrompt = false): void => {
+     if (wanted.text.trim() === '') return;
+     const turnId = crypto.randomUUID();
+     if (wanted.owner !== undefined) senders.set(turnId, wanted.owner);
+     const chat = byChat.get(ctx.defaultChatFor(session))?.chat;
+-    if (chat !== undefined) void ctx.startTurn(chat, turnId, wanted.text, modelIn(wanted.model), { origin: { kind: 'automation' } });
++    if (chat !== undefined) {
++      if (initialPrompt) initialPromptTurns.set(session, { channel: chat.chatUri, turnId });
++      void ctx.startTurn(chat, turnId, wanted.text, modelIn(wanted.model), { origin: { kind: 'automation' } });
++    }
+   };
+ 
+   /**
+@@ -915,7 +951,7 @@ export function createAutomations(ctx: HostContext): Automations {
+     }
+     ctx.oweTree(uri, {}, () => ({}));
+     fireRun(wanted);
+-    beginIn(uri, wanted);
++    beginIn(uri, wanted, true);
+     return uri;
+     });
+   };
+@@ -1480,6 +1516,7 @@ export function createAutomations(ctx: HostContext): Automations {
+    * that starts makes itself another chat.
+    */
+   const gone = (session: string): void => {
++    initialPromptTurns.delete(session);
+     engine.end(session);
+     for (const [automation, one] of watched) {
+       if (one.wake.session !== 'pinned' || one.wake.pinnedSession !== session) continue;
+@@ -1583,7 +1620,7 @@ export function createAutomations(ctx: HostContext): Automations {
+   };
+ 
+   return {
+-    manualRunRequests, settleRun, cancelRun, gone, stop, changed, beginAutomation, startForAutomation, startForPlugin, startForPluginChat, due,
++    manualRunRequests, settleRun, settleInitialPrompt, cancelRun, gone, stop, changed, beginAutomation, startForAutomation, startForPlugin, startForPluginChat, due,
+     wireTriggerTypes, wirePluginStarts,
+   };
+ }
+diff --git a/packages/sdk/src/host/context.ts b/packages/sdk/src/host/context.ts
+index 20f26af77..9587341ac 100644
+--- a/packages/sdk/src/host/context.ts
++++ b/packages/sdk/src/host/context.ts
+@@ -286,7 +286,7 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
+   chatTools: Map<string, string[]>;
+   /** What started each session, for the ones nothing did. */
+   origins: Map<string, { kind: 'automation'; automation: string; run: string }>;
+-  /** The automation runs starting a session now, which a close waits for. */
++  /** Accepted session starts and creation writes that a close must join. */
+   starting: Set<Promise<string>>;
+   /** When each session was created, by its own uri. */
+   births: Map<string, string>;
+@@ -688,4 +688,4 @@ export interface ConnectionContext {
+    * dies can say why in this log.
+    */
+   containers: Map<string, { name: string; folder: string; tail: string[] }>;
+-}
+\ No newline at end of file
++}
+diff --git a/packages/sdk/src/host/spawn.ts b/packages/sdk/src/host/spawn.ts
+index e0eed8509..ae1ac113d 100644
+--- a/packages/sdk/src/host/spawn.ts
++++ b/packages/sdk/src/host/spawn.ts
+@@ -226,6 +226,7 @@ export function createSpawn(ctx: HostContext): Spawn {
+    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L1127-L1152
+    */
+   const raiseTurnEnd = (end: Omit<TurnEndEvent, 'type'>): void => {
++    ctx.settleInitialPrompt(end);
+     const sender = end.sender ?? senderOf(end.turnId) ?? kept.sender(idOf(end.session), end.turnId);
+     void fire({ ...end, type: 'turn_end', ...(sender === undefined ? {} : { sender }) });
+     if (end.channel === sessions.get(end.session)?.defaultChat) ctx.settleRun(end.session, runEndingOf(end.reason));
+diff --git a/packages/sdk/test/plugin-start-session.test.ts b/packages/sdk/test/plugin-start-session.test.ts
+index b536a50e7..33561cfc9 100644
+--- a/packages/sdk/test/plugin-start-session.test.ts
++++ b/packages/sdk/test/plugin-start-session.test.ts
+@@ -316,6 +316,16 @@ it('keeps its store open beyond close grace until an accepted callback settles',
+ it('durably settles the initial prompt after its actual terminal event', async () => {
+   const dir = join(DIR, `prompt-settled-${crypto.randomUUID()}`);
+   const store = fileSessions({ dir });
++  const acknowledgment = Promise.withResolvers<void>();
++  const commit = store.commit.bind(store);
++  let settling = false;
++  store.commit = async (id) => {
++    if (store.creation(id)?.initialPrompt === 'settled') {
++      settling = true;
++      await acknowledgment.promise;
++    }
++    await commit(id);
++  };
+   const base = echo({ path: DIR, pace: 0 });
+   let completed = false;
+   const agent: Agent = { ...base, create: (start) => base.create({
+@@ -326,14 +336,25 @@ it('durably settles the initial prompt after its actual terminal event', async (
+     },
+   }) };
+   const { plugin, host } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [agent], sessions: store });
++  let closing: Promise<void> | undefined;
+   try {
+     const uri = await plugin.startSession({ owner: 'user:soft', provider: 'echo', prompt: 'Finish this turn' });
+-    await until(() => completed, 'initial prompt terminal event');
+-    await vi.waitFor(() => {
+-      const saved = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(idOf(uri))}.json`), 'utf8'));
+-      expect(saved.creation.initialPrompt).toBe('settled');
+-    }, { timeout: WAIT_MS });
+-  } finally { await host.close(); }
++    await until(() => completed && settling, 'initial prompt terminal event and durable acknowledgment');
++    vi.useFakeTimers();
++    closing = host.close();
++    await vi.advanceTimersByTimeAsync(6000);
++    expect(() => fileSessions({ dir })).toThrow(/already has a writer/);
++    acknowledgment.resolve();
++    await closing;
++    vi.useRealTimers();
++    const successor = fileSessions({ dir });
++    try { expect(successor.creation(idOf(uri))?.initialPrompt).toBe('settled'); }
++    finally { successor.close?.(); }
++  } finally {
++    acknowledgment.resolve();
++    vi.useRealTimers();
++    await (closing ?? host.close());
++  }
+ });
+ 
+ it('refuses a door that is not a function, at the boundary', () => {
+-- 
+2.56.0
+

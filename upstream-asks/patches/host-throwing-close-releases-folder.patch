@@ -1,0 +1,350 @@
+From 26303059d1053878a0cb4095cd2a5bf64242091e Mon Sep 17 00:00:00 2001
+From: "@dev/12" <dev-12@main.hh.invalid>
+Date: Sat, 21 Nov 2026 20:57:27 -0800
+Subject: [PATCH] fix(sdk): a throwing close still lets go of the session
+ folder, and restart cases release the old store (#37472)
+
+The file-store fence (9bc824b7) holds one writer per folder per process. close() released that lock only
+after save(true) and the scope removal succeeded, so a throwing close leaked it and the next store in the
+process was refused as a second writer. Release in a finally; the error still reaches the caller.
+
+Cases that restart a host on the same folder kept the old store open, which the fence refuses. They now
+open through test/support/restart-stores.ts, which closes the previous store on that folder first (as a
+stopped process would), and read persisted chats without taking a writer. A setter after close is refused
+by name (sessions.test.ts), so host-close expects that instead of a silent drop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/sdk/src/sessions/sessions.ts         | 20 +++++++---
+ packages/sdk/test/host-attachments.test.ts    | 12 +++---
+ packages/sdk/test/host-catalogue.test.ts      |  3 +-
+ packages/sdk/test/host-chats.test.ts          | 30 ++++++++++-----
+ packages/sdk/test/host-close.test.ts          | 26 ++++++++++++-
+ packages/sdk/test/host-remote-session.test.ts |  2 +-
+ packages/sdk/test/host-sessionconfig.test.ts  |  3 +-
+ packages/sdk/test/host-snapshots.test.ts      |  3 +-
+ packages/sdk/test/support/restart-stores.ts   | 38 +++++++++++++++++++
+ 9 files changed, 111 insertions(+), 26 deletions(-)
+ create mode 100644 packages/sdk/test/support/restart-stores.ts
+
+diff --git a/packages/sdk/src/sessions/sessions.ts b/packages/sdk/src/sessions/sessions.ts
+index ff60ed19a..751e812eb 100644
+--- a/packages/sdk/src/sessions/sessions.ts
++++ b/packages/sdk/src/sessions/sessions.ts
+@@ -1315,13 +1315,21 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
+         clearTimeout(writing);
+         writing = undefined;
+       }
+-      save(true);
+-      // The exact scope includes the session's backend and chat records.
+-      if (removeOnClose && joined !== undefined && inner.rowOf(joined.innerId) === undefined && faults.size === 0) {
+-        rmSync(dir, { recursive: true });
++      // A close that throws still ends this store and lets go of its folder
++      // (#37472): otherwise the lock outlives the store, and the next open in
++      // this process is refused as a second writer. The error still reaches
++      // the caller.
++      try {
++        save(true);
++        // The exact scope includes the session's backend and chat records.
++        if (removeOnClose && joined !== undefined && inner.rowOf(joined.innerId) === undefined && faults.size === 0) {
++          rmSync(dir, { recursive: true });
++        }
++      }
++      finally {
++        closed = true;
++        writer.release();
+       }
+-      closed = true;
+-      writer.release();
+     },
+   };
+   if (joined !== undefined) joinedSessionIds.set(store, joined.innerId);
+diff --git a/packages/sdk/test/host-attachments.test.ts b/packages/sdk/test/host-attachments.test.ts
+index 1f508afae..3cff170d8 100644
+--- a/packages/sdk/test/host-attachments.test.ts
++++ b/packages/sdk/test/host-attachments.test.ts
+@@ -24,7 +24,8 @@ import { posix } from '../../../tools/posix.ts';
+ import { WAIT_MS } from '../../../tools/wait.ts';
+ import { createHost } from '../src/host.js';
+ import { uriOf } from '../src/resources/fileuri.js';
+-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
++import { memorySessions } from '../src/sessions/sessions.js';
++import { fileSessions } from './support/restart-stores.js';
+ import { echo } from '../../../examples/echo/agent.js';
+ import type { Agent, Start } from '../src/types/agent.js';
+ import type { Bag } from '../src/types/common.js';
+@@ -191,7 +192,7 @@ async function serving(said: Said, dir = temp(), store = true, pace = 0, held =
+     client.handle({ method: 'dispatchAction', params: { channel: chatUri, clientSeq, action } });
+   const state = async (): Promise<Bag> =>
+     ((await client.handle({ method: 'subscribe', params: { channel: chatUri } })) as { snapshot: { state: Bag } }).snapshot.state;
+-  return { host, client, peer: p, chatUri, dir, turn, state };
++  return { host, client, peer: p, chatUri, dir, turn, state, sessions };
+ }
+ 
+ /** A folder a snapshot is written in, which a UUID names. */
+@@ -346,10 +347,11 @@ it('reads a file only the client has, and leaves one this host has as it came',
+ 
+ it('tags a copy from the session\'s own folder where it stands, and leaves a tagged one as it came', async () => {
+   const said = saidNothing();
+-  const { dir, turn, peer: p } = await serving(said);
++  const { dir, turn, peer: p, sessions } = await serving(said);
+   // Two files this host wrote for an earlier message, which a client opened
+-  // and attached again.
+-  const folder = fileSessions({ dir }).attachmentsDir?.('one') as string;
++  // and attached again. Asked of the host's own store: a second store on the
++  // folder would end this one (#37472).
++  const folder = sessions.attachmentsDir?.('one') as string;
+   const copy = join(folder, '00000000-0000-4000-8000-000000000001', 'copy.png');
+   const kept = join(folder, '00000000-0000-4000-8000-000000000002', 'kept.png');
+   mkdirSync(dirname(copy), { recursive: true });
+diff --git a/packages/sdk/test/host-catalogue.test.ts b/packages/sdk/test/host-catalogue.test.ts
+index 781963c87..9c7b5ebd0 100644
+--- a/packages/sdk/test/host-catalogue.test.ts
++++ b/packages/sdk/test/host-catalogue.test.ts
+@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+ import { chatUriFor } from '../src/host/channels.js';
+ import { Status } from '../src/sessions/catalog.js';
+ import { uriOf } from '../src/resources/resources.js';
+-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
++import { memorySessions } from '../src/sessions/sessions.js';
++import { fileSessions } from './support/restart-stores.js';
+ import type { Request } from '../src/types/rpc.js';
+ import type { HostOptions } from '../src/types/host.js';
+ import type { Users } from '../src/types/users.js';
+diff --git a/packages/sdk/test/host-chats.test.ts b/packages/sdk/test/host-chats.test.ts
+index 8dc59852c..15479defb 100644
+--- a/packages/sdk/test/host-chats.test.ts
++++ b/packages/sdk/test/host-chats.test.ts
+@@ -1,5 +1,5 @@
+ import { WAIT_MS } from '../../../tools/wait.ts';
+-import { mkdtempSync, rmSync } from 'node:fs';
++import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import { beforeEach, describe, expect, it, vi } from 'vitest';
+@@ -9,7 +9,9 @@ import {
+   resetSdk, actions, claude, createHost, defaultChatOf, echo, emit, flushed, hello, machine, open, peer, sdk, sendAnswered, serving, startedBySend,
+   sessionQueries, settle, running, wrote,
+ } from './support/host.js';
+-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
++import { memorySessions } from '../src/sessions/sessions.js';
++import { fileSessions } from './support/restart-stores.js';
++import type { StoredChat } from '../src/types/sessions.js';
+ import { idOf, Status } from '../src/sessions/catalog.js';
+ import { chatUriFor } from '../src/host/channels.js';
+ import { undeclaredIn } from './support/wire.js';
+@@ -18,6 +20,16 @@ import type { Agent, Bag, HostOptions, Session, Start } from '@ahpd/sdk';
+ import { WORK } from './support/work.js';
+ import { uriOf } from '../src/resources/fileuri.js';
+ 
++/*
++ * #37472: reads of what the folder says take no writer, so they never end a
++ * live host's store; restarts go through the shared fileSessions.
++ */
++const savedChats = (dir: string, id: string): StoredChat[] => {
++  const file = join(dir, `${encodeURIComponent(id)}.json`);
++  if (!existsSync(file)) return [];
++  return (JSON.parse(readFileSync(file, 'utf8')) as { chats?: StoredChat[] }).chats ?? [];
++};
++
+ vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/claude-sdk.js')).fake);
+ 
+ beforeEach(resetSdk);
+@@ -1345,7 +1357,7 @@ describe('more than one chat in a session', () => {
+       expect(said(await opened(second.client, PEER))).toEqual(['second', 'third']);
+       expect(said(await opened(second.client, session.state.defaultChat as string))).toEqual(['first']);
+       expect(starts.slice(before).map((start) => start.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
+-      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
++      expect(savedChats(dir, 'live').map((chat) => chat.sessionConversation)).toEqual(legacy ? [undefined, undefined] : [true, false]);
+     }
+     finally {
+       rmSync(root, { recursive: true, force: true });
+@@ -1366,7 +1378,7 @@ describe('more than one chat in a session', () => {
+       const base = backend(starts);
+       const agent: Agent = { ...base, create: (start) => {
+         if (starts.length === 0) {
+-          expect(fileSessions({ dir }).chats(idOf(start.uri)).find((chat) => chat.uri === start.chatUri)?.sessionConversation).toBe(true);
++          expect(savedChats(dir, idOf(start.uri)).find((chat) => chat.uri === start.chatUri)?.sessionConversation).toBe(true);
+         }
+         return base.create(start);
+       } };
+@@ -1382,7 +1394,7 @@ describe('more than one chat in a session', () => {
+         [uri, original, true], [uri, PEER, false], [uri, chatUriFor(uri), false],
+         [TWO, String((await opened(client, TWO)).state.defaultChat), true],
+       ]);
+-      expect(new Map(fileSessions({ dir }).chats(UUID).map((chat) => [chat.uri, chat.sessionConversation]))).toEqual(new Map([
++      expect(new Map(savedChats(dir, UUID).map((chat) => [chat.uri, chat.sessionConversation]))).toEqual(new Map([
+         [original, true], [PEER, false], [chatUriFor(uri), false],
+       ]));
+     }
+@@ -1448,7 +1460,7 @@ describe('more than one chat in a session', () => {
+       await settle();
+       await new Promise((tick) => { setTimeout(tick, 5); });
+       // A hidden close retains provenance on the retained occurrence.
+-      expect(fileSessions({ dir }).chats('live').find((chat) => chat.uri === PEER)).toMatchObject({ closed: true, sessionConversation: false });
++      expect(savedChats(dir, 'live').find((chat) => chat.uri === PEER)).toMatchObject({ closed: true, sessionConversation: false });
+       const before = starts.length;
+ 
+       const second = await hostAt(dir, agent);
+@@ -1475,7 +1487,7 @@ describe('more than one chat in a session', () => {
+       await send(first.client, LIVE, 't0', 'first');
+       await send(first.client, PEER, 't1', 'made here');
+       await new Promise((tick) => { setTimeout(tick, 5); });
+-      expect(fileSessions({ dir }).chats('live').map((chat) => chat.sessionConversation)).toEqual([true, false]);
++      expect(savedChats(dir, 'live').map((chat) => chat.sessionConversation)).toEqual([true, false]);
+ 
+       const second = await hostAt(dir, agent);
+       /*
+@@ -1527,7 +1539,7 @@ describe('more than one chat in a session', () => {
+                 known = true;
+                 start.onHandshake?.();
+               }
+-              bindingsAtPrompt.push(fileSessions({ dir }).chats(idOf(start.uri))
++              bindingsAtPrompt.push(savedChats(dir, idOf(start.uri))
+                 .find((chat) => chat.uri === start.chatUri)?.backendId);
+               return session.sendMessage(turnId, text, from, attachments, options);
+             },
+@@ -2609,7 +2621,7 @@ describe('more than one chat in a session', () => {
+       expect((there.state as { lifecycle?: string }).lifecycle ?? 'ready').toBe('ready');
+       expect(listed(there)).toEqual([PEER]);
+       expect(there.state.defaultChat).toBe(PEER);
+-      expect(fileSessions({ dir: join(root, 'sessions') }).chats(idOf(answer.session)).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
++      expect(savedChats(join(root, 'sessions'), idOf(answer.session)).find((chat) => chat.uri === PEER)?.sessionConversation).toBe(false);
+     }
+     finally {
+       rmSync(root, { recursive: true, force: true });
+diff --git a/packages/sdk/test/host-close.test.ts b/packages/sdk/test/host-close.test.ts
+index 2ca1a9a5d..4bf27a89f 100644
+--- a/packages/sdk/test/host-close.test.ts
++++ b/packages/sdk/test/host-close.test.ts
+@@ -7,7 +7,7 @@
+  * files.
+  */
+ 
+-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
++import { chmodSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+@@ -40,10 +40,32 @@ describe('the stores, closed', () => {
+     const file = join(sessions, 'a.json');
+     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ version: 1, id: 'a', flags: 1 });
+     const before = readFileSync(file, 'utf8');
+-    store.setFlags('b', 2);
++    // #37472: a setter after close is refused by name, never dropped silently
++    // (sessions.test.ts 'rejects a closed file-store setter'), and writes nothing.
++    expect(() => store.setFlags('b', 2)).toThrow('Cannot mutate closed session store');
+     await new Promise((done) => { setTimeout(done, 10); });
+     expect(readFileSync(file, 'utf8')).toBe(before);
+   });
++
++  // #37472: a close whose last write fails still ends the store and lets go
++  // of the folder, so the next store in this process opens rather than being
++  // refused as a second writer. The failure still reaches the caller.
++  it('lets go of its folder when the last write at close fails', () => {
++    const sessions = join(dir, 'sessions');
++    const store = fileSessions({ dir: sessions });
++    store.setFlags('a', 1);
++    store.flush?.();
++    store.setFlags('b', 2);
++    chmodSync(sessions, 0o500);
++    try {
++      expect(() => store.close?.()).toThrow();
++    } finally {
++      chmodSync(sessions, 0o700);
++    }
++    const next = fileSessions({ dir: sessions });
++    expect(next.flags('a')).toBe(1);
++    next.close?.();
++  });
+ });
+ 
+ describe('Host.close', () => {
+diff --git a/packages/sdk/test/host-remote-session.test.ts b/packages/sdk/test/host-remote-session.test.ts
+index e82681ff9..e84556962 100644
+--- a/packages/sdk/test/host-remote-session.test.ts
++++ b/packages/sdk/test/host-remote-session.test.ts
+@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import { asCreatedBy, asOrigin, depthOf, readOrigin } from '../src/sessions/remotesession.js';
+-import { fileSessions } from '../src/sessions/sessions.js';
++import { fileSessions } from './support/restart-stores.js';
+ import type { HostOptions } from '../src/types/host.js';
+ import {
+   claude, createHost, emit, firstMessage, hello, machine, peer, resetSdk, sdk, sessionQueries, settle,
+diff --git a/packages/sdk/test/host-sessionconfig.test.ts b/packages/sdk/test/host-sessionconfig.test.ts
+index dc7e9c3d5..5e3ef1f80 100644
+--- a/packages/sdk/test/host-sessionconfig.test.ts
++++ b/packages/sdk/test/host-sessionconfig.test.ts
+@@ -1,7 +1,8 @@
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+ import type { Agent, McpServer, Start } from '../src/types/agent.js';
+ import type { ConnectorRef } from '../src/types/connectors.js';
+-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
++import { memorySessions } from '../src/sessions/sessions.js';
++import { fileSessions } from './support/restart-stores.js';
+ import { chatUriFor, ROOT } from '../src/host/channels.js';
+ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+diff --git a/packages/sdk/test/host-snapshots.test.ts b/packages/sdk/test/host-snapshots.test.ts
+index 89ba766c0..ec5320238 100644
+--- a/packages/sdk/test/host-snapshots.test.ts
++++ b/packages/sdk/test/host-snapshots.test.ts
+@@ -4,7 +4,8 @@ import { chatReducer } from '@microsoft/agent-host-protocol';
+ import type { ChatState } from '@microsoft/agent-host-protocol';
+ import { Status } from '../src/sessions/catalog.js';
+ import { chatUriFor } from '../src/host/channels.js';
+-import { fileSessions, memorySessions } from '../src/sessions/sessions.js';
++import { memorySessions } from '../src/sessions/sessions.js';
++import { fileSessions } from './support/restart-stores.js';
+ import { mkdtempSync, rmSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+diff --git a/packages/sdk/test/support/restart-stores.ts b/packages/sdk/test/support/restart-stores.ts
+new file mode 100644
+index 000000000..ed2ffa1ac
+--- /dev/null
++++ b/packages/sdk/test/support/restart-stores.ts
+@@ -0,0 +1,38 @@
++/*
++ * A restart on the same folder, in one test process (#37472).
++ *
++ * A session folder has one writer per process: a second store on it is refused
++ * until the first lets go. A case that restarts a host on the same folder is a
++ * new process in production, where the old one's lock went with it; here the
++ * old store is still open. So opening a store on a folder first closes the one
++ * this file opened on it before, as a stopped process would.
++ *
++ * Teardown closes what is left. A case that removed its folder in its own
++ * finally leaves a store whose last write is refused by name; close() still
++ * lets go of the folder (#37472), so only that refusal, for a removed folder,
++ * is let pass.
++ */
++
++import { existsSync } from 'node:fs';
++import { afterEach } from 'vitest';
++import { fileSessions as openFileSessions } from '../../src/sessions/sessions.js';
++import type { SessionStore } from '../../src/types/sessions.js';
++
++const open = new Map<string, SessionStore>();
++
++export const fileSessions: typeof openFileSessions = (options) => {
++  open.get(options.dir)?.close?.();
++  const store = openFileSessions(options);
++  open.set(options.dir, store);
++  return store;
++};
++
++afterEach(() => {
++  for (const [dir, store] of open) {
++    try { store.close?.(); }
++    catch (error) {
++      if (existsSync(dir)) throw error;
++    }
++  }
++  open.clear();
++});
+-- 
+2.56.0
+
