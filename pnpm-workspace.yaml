@@ -24,6 +24,7 @@ allowBuilds:
   utf-8-validate: false
 
 minimumReleaseAgeExclude:
+  - '@bearly/durable-file@0.2.0'
   - '@microsoft/agent-host-protocol@1.0.0'
   - '@cofold/agents@0.4.0'
   - '@cofold/commands@0.2.2 || 0.3.0'
