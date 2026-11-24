@@ -1066,8 +1066,11 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
         clearTimeout(writing);
         writing = undefined;
       }
-      save(true, [id]);
-      if (dirty.size > 0) later();
+      // A refused commit throws for this row, and the rows still waiting are
+      // not part of that answer: they keep their scheduled write, and this row
+      // is retried by it, which is what a disk that said no for a moment needs.
+      try { save(true, [id]); }
+      finally { if (dirty.size > 0) later(); }
     },
     flags: (id) => readable(id).flags(id),
     config: (id) => readable(id).config(id),
