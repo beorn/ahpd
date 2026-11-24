@@ -728,11 +728,15 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     if (failure !== undefined) throw failure;
     return inner;
   };
-  const readableAll = (): typeof inner => {
-    const failure = faults.values().next().value;
-    if (failure !== undefined) throw failure;
-    return inner;
-  };
+  /*
+   * What the store holds, corrupt rows included.
+   *
+   * An unreadable row is an error to whoever reads that row, never to whoever
+   * asks what the store holds: one bad file must not hide its siblings, and a
+   * caller that meets the corrupt id still gets its own named error from
+   * `readable`. A whole-store enumeration that refused would make one corrupt
+   * file fail every catalogue and every listing (#33944 review).
+   */
   /**
    * One session's attachments: a folder of its own, named beside its file.
    *
@@ -1093,8 +1097,8 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     depthOf: (id) => readable(id).depthOf(id),
     nested: (id) => readable(id).nested(id),
     setNested: (id, value) => { touched(id, () => { inner.setNested(id, value); }); },
-    nestedSessions: () => readableAll().nestedSessions(),
-    recordedFolders: () => readableAll().recordedFolders(),
+    nestedSessions: () => inner.nestedSessions(),
+    recordedFolders: () => inner.recordedFolders(),
     remoteOrigin: (id) => readable(id).remoteOrigin?.(id),
     setRemoteOrigin: (id, value) => { touched(id, () => { inner.setRemoteOrigin?.(id, value); }); },
     createdBy: (id) => readable(id).createdBy?.(id),

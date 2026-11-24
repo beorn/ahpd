@@ -1532,8 +1532,11 @@ it('preserves an OS-unreadable row as an error rather than an absent session', (
   const store = fileSessions({ dir });
   expect(() => store.config('a')).toThrow(/a.json.*EISDIR/);
   expect(() => store.setConfig('a', {})).toThrow(/a.json.*EISDIR/);
-  expect(() => store.nestedSessions?.()).toThrow(/a.json.*EISDIR/);
-  expect(() => store.recordedFolders?.()).toThrow(/a.json.*EISDIR/);
+  // The corrupt row is an error to its own readers, not to the store's census: a listing that refused would let one
+  // bad file hide every sibling (#33944 review).
+  expect(store.sessions()).toEqual(expect.arrayContaining(['a', 'b']));
+  expect(() => store.nestedSessions?.()).not.toThrow();
+  expect(() => store.recordedFolders?.()).not.toThrow();
   expect(store.flags('b')).toBe(READ);
   expect(store.sessions()).toEqual(expect.arrayContaining(['a', 'b']));
   expect(statSync(join(dir, 'a.json')).isDirectory()).toBe(true);
