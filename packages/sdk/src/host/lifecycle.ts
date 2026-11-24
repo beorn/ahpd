@@ -2940,7 +2940,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       kept.setProvider(idOf(uri), provider);
       kept.setConfig(idOf(uri), { ...config });
       if (where !== undefined) kept.setWorkingDirectory?.(idOf(uri), localPath(where));
-      ctx.keepChat(uri, defaultChat, idOf(uri), true, undefined, undefined, true);
+      ctx.keepChat(uri, defaultChat, idOf(uri), true);
       await asked.beforeCreate();
     }
     // Its row goes out whole once it is added, and moves from then on.
