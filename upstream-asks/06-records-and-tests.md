@@ -14,7 +14,7 @@
 
 **Evidence.** `packages/sdk/test/plugin-records.test.ts` `create-only records retain one winner through plugin=%s` (also proving the plugin path does not drop the option); `packages/server/test/records.test.ts` `create-only file records refresh the actual winner after a stale-cache conflict` and `create-only file records elect one independent process and refresh the losing process`, which forks two writers and requires one `created` and one `conflict` on the same record.
 
-**For review.** Touches `packages/sdk/src/{types/records,resources/records,plugins/plugins}.ts`, `packages/server/src/records.ts`, both record tests and four manifests. The dependency is a GitHub tarball pinned to a commit in a `bearly` fork, plus an `overrides` pin of `@bearly/flock`; upstream has no `tryAcquireFlock` equivalent, so it needs a decision. `tsdown` in the root `package.json` looks unrelated.
+**For review.** Touches `packages/sdk/src/{types/records,resources/records,plugins/plugins}.ts`, `packages/server/src/records.ts`, both record tests and four manifests. The dependency is `@bearly/durable-file` 0.2.0 for `atomicPublishFileSync`, plus `@bearly/flock` for the lock — 0.2.0 is published and is npm `latest` (checked 2026-11-24), so the issue names it rather than asking for a dependency decision. Upstream still has no `tryAcquireFlock` equivalent. `tsdown` in the root `package.json` looks unrelated.
 
 ## A test run can mutate the checkout's Git state and cannot detect it
 

@@ -44,9 +44,10 @@ schema is accepted (@cto, 2026-11-24).
 4. **One issue per change**, with the series attached or linked — not one PR mixing packages.
 5. **Re-check the "absent upstream" claim** for the file you are about to post: the census measured
    absence by patch id and by distinctive identifier, not by reading every file.
-6. **Name the dependency decision where an ask has one.** `records-exclusive-create-only` publishes
-   through `atomicPublishFileSync` from `@bearly/durable-file`; upstream needs that package as a
-   dependency or an equivalent, and the issue must ask for the decision instead of assuming it.
+6. **Re-check a dependency before it posts.** `records-exclusive-create-only` publishes through
+   `atomicPublishFileSync` from `@bearly/durable-file`; 0.2.0 is published and npm `latest` as of
+   2026-11-24, so the issue names it. If it is ever unpublished or unreachable at posting time, hold
+   that one issue, not the batch — and check `npm view @bearly/durable-file dist-tags` first.
 
 ## What is not here
 
