@@ -93,6 +93,18 @@ Upstream status is one of:
 ### Superseded
 - `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0)
 
+## PR prepared (not carried)
+
+Upstream fixes written straight against `upstream/main` and never carried on `hh/integration`. They
+are not in the patch count; each waits for the operator's upstream card.
+
+- `92afb94db` on `fix/acp-backend-start-fails-creation` (base `upstream/main` `7d927326c`) · a
+  backend that cannot start fails session creation: opt-in `Session.sendBringsUp`, agent-acp's send
+  resolves once its server holds the session and rejects naming the command, its PATH and a capped
+  stderr tail · #38139 (@cto b1d6a0cf, amendment OK 491ba7d9) · PR pending card (text:
+  /hh/var/@dev12/38139-upstream/PR.md); carried on `hh/integration` only if a live seat needs it
+  before upstream answers
+
 ## What is left on the zero-patch target
 
 Measured over the 70 patches:
