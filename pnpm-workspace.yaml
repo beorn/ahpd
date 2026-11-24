@@ -58,3 +58,4 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-telemetry@1.5.2'
   - '@earendil-works/pi-tui@1.5.2'
   - '@ahpio/sandbox-runtime@0.0.83'
+  - '@bearly/durable-file@0.2.0'

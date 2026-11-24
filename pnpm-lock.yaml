@@ -242,8 +242,8 @@ importers:
         specifier: workspace:*
         version: link:../sdk
       '@bearly/durable-file':
-        specifier: github:beorn/bearly#00a4322732bcb079ee76200493d9f8fca9868024&path:/packages/durable-file
-        version: https://codeload.github.com/beorn/bearly/tar.gz/00a4322732bcb079ee76200493d9f8fca9868024#path:/packages/durable-file
+        specifier: ^0.2.0
+        version: 0.2.0
       '@cofold/commands':
         specifier: ^0.3.0
         version: 0.3.0
@@ -621,9 +621,8 @@ packages:
     resolution: {integrity: sha512-mHCRg+rzye+/1OxHbZREcqUjtnABJRvChOjDNBiiC8uvcfstTywxGNsLgH3i48iVoey/ofT3pe9oNyJDTJfzAA==}
     engines: {bun: '>=1.3.13'}
 
-  '@bearly/durable-file@https://codeload.github.com/beorn/bearly/tar.gz/00a4322732bcb079ee76200493d9f8fca9868024#path:/packages/durable-file':
-    resolution: {gitHosted: true, path: /packages/durable-file, tarball: https://codeload.github.com/beorn/bearly/tar.gz/00a4322732bcb079ee76200493d9f8fca9868024}
-    version: 0.1.0
+  '@bearly/durable-file@0.2.0':
+    resolution: {integrity: sha512-3zXN2TNWUjvo+YMstGoU3GqnxtLdA6fqbTJ91WUSR++O9K6V4xU8rP2pN+6niZhM/S5zhrAxg9mz5OLK0uqS+A==}
     engines: {bun: '>=1.3.13'}
 
   '@bearly/flock@0.2.3':
@@ -3512,7 +3511,7 @@ snapshots:
 
   '@bearly/durable-file@0.1.0': {}
 
-  '@bearly/durable-file@https://codeload.github.com/beorn/bearly/tar.gz/00a4322732bcb079ee76200493d9f8fca9868024#path:/packages/durable-file':
+  '@bearly/durable-file@0.2.0':
     dependencies:
       '@bearly/flock': 0.2.3
 
