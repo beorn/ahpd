@@ -1582,6 +1582,8 @@ holds both names.
 | `categories` | The groups a client files the plugin under, such as `agent` or `connector` |
 | `links` | Where a person reads more, each a `{ "title", "url" }` |
 | `contracts` | The names each kind of registration may use. See [the contracts](#the-contracts) |
+| `grants` | What the plugin's own connection needs, as `<subject>:<operation>`. `ahpd plugin install` prints them and writes them into the entry only with `--grant` or a yes at a terminal. See [Declaring the grants](#declaring-the-grants) |
+| `callerGrants` | What the plugin's channels, methods and tunnel kinds require of a caller, as `<subject>:<operation>`. Advertised in `ahpd.grants` at load, which is the list a role editor draws. See [Declaring the grants](#declaring-the-grants) |
 | `icons` | What a client draws beside the plugin's name and each adapter's title. See [icons](#icons) |
 | `optionsSchema` | A JSON Schema for the options `apply` receives: its `properties` are the option keys, and its `required` list is what the configuration must set before the plugin is `ready`. The daemon reads it with no import, so a plugin switched off is still listed with the form a client draws and its values are still checked. See [Declaring the options](#declaring-the-options) |
 | `peerDependencies["@ahpd/sdk"]` | The compatibility range, checked against the `@ahpd/sdk` the daemon ships **before** the module is imported. It states the oldest sdk the plugin needs. A first-party plugin names the sdk of its release up to the next minor, such as `>=0.15.0-rc.4 <0.16.0-0` |
@@ -1599,6 +1601,41 @@ no `peerDependencies` loads, because absent is not incompatible.
 The module is still the contract: `entry` says what to import, `apply` says what
 it is. The manifest is kept on the contribution, so the plugin channel lists it
 without importing the module again.
+
+### Declaring the grants
+
+A host keeps two different lists, and a manifest declares both.
+
+- **`grants`** is what the plugin's **own connection** needs: what it may do when it acts on the host, such as writing a session's state or reading its own service environment. The same list is `plugins.<name>.grants` in the configuration, and `ahpd plugin install` writes it there with a person's consent.
+- **`callerGrants`** is what the plugin's **surface** requires of a caller: a channel, a method and a tunnel kind's operation each name one, and a role must hold it to use what the plugin serves. At load the host advertises each one in `ahpd.grants`, the catalogue a role editor draws, so the operations exist before any caller is refused.
+
+The two are separate on purpose: a manifest that carried callers' grants where the entry means the plugin's own would hand the plugin's connection rights it never asked for.
+
+```json
+"ahpd": {
+  "entry": "./dist/index.js",
+  "grants": ["session:state", "x-notes:put"],
+  "callerGrants": ["x-notes:read", "x-notes:put"]
+}
+```
+
+Both lists name one subject and one operation each. A wildcard - `x-notes:*`, `*:read` or `*:*` - is refused, because it names nothing the loader can compare and a person reading it cannot tell which subject or operation the plugin means.
+
+A manifest that carries `callerGrants` is held to it: a registration needing a grant the list does not name is a refusal at load, and the plugin does not load. A list that under-declares is worse than none, because a person reads what the plugin asks of roles and it then asks for more.
+
+What a role editor draws is what the plugin's registrations ask a caller for, never what the list alone says: declaring a grant no channel, method or tunnel kind here asks for - on its own subject or another plugin's - is reported and left out of `ahpd.grants`, because a role would be offered an operation no gate asks for. A group covers what it groups, so `push:read` covers a channel at `push:list`.
+
+```
+PLUGIN_GRANTS_UNDECLARED: plugin notes serves something that needs x-notes:put, which its manifest's callerGrants do not declare; add "x-notes:put" to the list
+```
+
+A manifest with no `callerGrants` at all still loads - every plugin written before this field existed does - and one line names every grant its registrations need, with the whole list to paste, so its author can add the field:
+
+```
+plugin notes needs x-notes:read, x-notes:put when it is used, and its manifest declares no callerGrants; add "callerGrants": ["x-notes:read", "x-notes:put"] so a role editor lists them before a caller is refused
+```
+
+`ahpd plugin install` reads the manifest without applying the plugin and prints both lists: what the entry will gain, and `Roles that use <name> must hold ...` for the surface. It writes the first into the entry only when a person consents: `--grant`, or a yes at a terminal. The list is printed before the question is asked, an entry that already answers a grant is not asked about it again (a group or a wildcard the entry holds counts), and `--no-enable` writes nothing (`--grant --no-enable` is refused by name). The second list is the manifest's declaration, printed for a person to read; what load draws into the role catalogue is what the plugin registers for it, so a declared word nothing registers is reported there and is never written to the entry. On a pipe, with `--json`, and over HTTP nobody can answer, so the install writes nothing and prints the command that would; a served request may consent by naming `grant`, and the payload answers what each manifest asked, what it declares its callers need, whether anyone consented, and whether anything was written. A manifest never grants itself. To grant later, re-run the install with `--grant`; the entry keeps the grants it already has and gains the new ones.
 
 ### Icons
 

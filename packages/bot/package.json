@@ -68,6 +68,7 @@
   },
   "ahpd": {
     "entry": "./dist/index.js",
+    "callerGrants": ["bot:read", "bot:put", "bot:delete"],
     "i18n": "i18n",
     "title": "Bot",
     "description": "Create bots with their own identity, workspace and persistent sessions.",

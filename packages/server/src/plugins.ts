@@ -30,7 +30,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node
 import { pathToFileURL } from 'node:url';
 import { check, type JsonSchema } from '@cofold/commands';
 import { parseYaml, stringifyYaml } from '@cofold/yaml';
-import { alertList, checkIcons, loggerOf, foldHostOptions, frozenCopy, gapLine, grantProblem, isRecord, isRecordSlug, pluginHost, readSecret, reason, RECORD_SLUG, runtime, schemaGaps, sdkVersion, secretRef, viewDataAt, withViewData } from '@ahpd/sdk';
+import { alertList, checkIcons, holds, loggerOf, foldHostOptions, frozenCopy, gapLine, grantProblem, grantsRequiredBy, isRecord, isRecordSlug, pluginHost, readSecret, reason, RECORD_SLUG, runtime, schemaGaps, sdkVersion, secretRef, viewDataAt, withViewData } from '@ahpd/sdk';
 import type { Agent, AgentOwner, Alert, AlertList, Catalogs, InstallAnswer, Contribution, FoldedOptions, Grant, HostOptions, Icon, Loaded, LogLevel, NodeRegistry, Plugin, PluginContext, PluginContracts, PluginHost, PluginLink, PluginManifest, PluginSpec, PluginView, RecordStore, Route, SessionStore, Usage, Vault, ViewSurface } from '@ahpd/sdk';
 import { fetchIcons, ICON_LIMIT, resolveIcons } from './icons.js';
 import type { IconBounds } from './icons.js';
@@ -552,6 +552,10 @@ export interface Manifest {
   links?: PluginLink[];
   /** `ahpd.contracts`, the names each kind of registration may use. */
   contracts?: PluginContracts;
+  /** `ahpd.grants`, what the plugin's own connection needs before anything grants it. */
+  grants?: Grant[];
+  /** `ahpd.callerGrants`, what the plugin's registrations ask of a caller. */
+  callerGrants?: Grant[];
   /** `ahpd.icons`, read and encoded as a client draws them. */
   icons?: Icon[];
   /**
@@ -618,6 +622,8 @@ export const readManifest = (packageDir: string, iconLimit: number = ICON_LIMIT)
   }
   if (isLinks(inside?.links)) manifest.links = inside.links.map((one) => ({ title: one.title, url: one.url }));
   if (areContracts(inside?.contracts)) manifest.contracts = inside.contracts;
+  if (areGrants(inside?.grants)) manifest.grants = [...inside.grants];
+  if (areGrants(inside?.callerGrants)) manifest.callerGrants = [...inside.callerGrants];
   if (isRecord(inside?.optionsSchema)) manifest.optionsSchema = inside.optionsSchema;
   /*
    * An icon is read here rather than at each subscription, and a file that is
@@ -677,6 +683,8 @@ const standaloneOf = (inside: Record<string, unknown>, path: string, base: strin
   }
   if (isLinks(inside.links)) manifest.links = inside.links.map((one) => ({ title: one.title, url: one.url }));
   if (areContracts(inside.contracts)) manifest.contracts = inside.contracts;
+  if (areGrants(inside.grants)) manifest.grants = [...inside.grants];
+  if (areGrants(inside.callerGrants)) manifest.callerGrants = [...inside.callerGrants];
   if (isRecord(inside.optionsSchema)) manifest.optionsSchema = inside.optionsSchema;
   if (Array.isArray(inside.icons) && base !== undefined) {
     const iconProblems: string[] = [];
@@ -746,6 +754,10 @@ const isLinks = (value: unknown): value is PluginLink[] =>
 const areContracts = (value: unknown): value is PluginContracts =>
   isRecord(value) && Object.values(value).every((one) => Array.isArray(one) && one.every((name) => typeof name === 'string'));
 
+/** Whether a value is a list of grants, the shape a manifest's `grants` is. */
+const areGrants = (value: unknown): value is Grant[] =>
+  Array.isArray(value) && value.every((one) => typeof one === 'string' && grantProblem(one) === undefined);
+
 /**
  * Why one manifest field is not the shape a client draws, or `undefined`.
  *
@@ -762,6 +774,27 @@ const checkField = (field: string, value: unknown, named: string): string | unde
   }
   if (field === 'links' && !isLinks(value)) return `${named} is not a list of links, each with a title and a url.`;
   if (field === 'contracts' && !areContracts(value)) return `${named} is not an object of lists of names.`;
+  if ((field === 'grants' || field === 'callerGrants') && !Array.isArray(value)) {
+    return `${named} is not a list of grants, each written <subject>:<operation>.`;
+  }
+  if ((field === 'grants' || field === 'callerGrants') && Array.isArray(value)) {
+    const wrong = value.find((one) => typeof one !== 'string' || grantProblem(one) !== undefined);
+    if (wrong !== undefined) {
+      // The reader's own reason, so a word the table lacks is refused by
+      // naming the operations the subject does have rather than a shape rule.
+      const why = typeof wrong === 'string' ? grantProblem(wrong) : undefined;
+      return why === undefined
+        ? `${named} is not a list of grants, each written <subject>:<operation>.`
+        : `${named} ${why}.`;
+    }
+    // A wildcard is a role's shorthand, and a manifest is read as the exact
+    // set: `push:*` covers nothing the loader compares it against, and a person
+    // reading `*:put` cannot tell which subject the plugin introduces.
+    const loose = value.find((one) => typeof one === 'string' && (one.endsWith(':*') || one.startsWith('*:')));
+    if (loose !== undefined) {
+      return `${named} holds ${JSON.stringify(loose)}, which is a wildcard; name the operation and its subject one by one, like "push:put".`;
+    }
+  }
   if (field === 'i18n' && typeof value !== 'string') return `${named} is not a string naming a folder in the package.`;
   if (field === 'icons') {
     // The shape is the SDK's to say, so the two sources a manifest comes from
@@ -786,11 +819,36 @@ const checkField = (field: string, value: unknown, named: string): string | unde
  * form from them and a value of the wrong kind would be drawn as nothing.
  */
 const checkFields = (inside: Record<string, unknown>, named: (field: string) => string): string | undefined => {
-  for (const field of ['description', 'categories', 'links', 'contracts', 'icons', 'i18n']) {
+  for (const field of ['description', 'categories', 'links', 'contracts', 'grants', 'callerGrants', 'icons', 'i18n']) {
     const wrong = checkField(field, inside[field], named(field));
     if (wrong !== undefined) return wrong;
   }
   return undefined;
+};
+
+/**
+ * Both grant lists a package's `ahpd` field declares, or why one is not a list.
+ *
+ * Each is absent when its field is absent, which is every plugin written
+ * before the fields existed. Shared with `plugin install`, which reads the same
+ * file before the loader ever sees it: one reader means the lists install
+ * prints and writes are the lists the loader holds the plugin to, and a list
+ * the loader would refuse is refused before npm's install is kept.
+ */
+export const manifestGrants = (
+  manifest: Record<string, unknown>,
+  path: string,
+): { grants?: string[]; callerGrants?: string[] } | { problem: string } => {
+  const ahpd = manifest.ahpd;
+  const inside = typeof ahpd === 'object' && ahpd !== null && !Array.isArray(ahpd) ? ahpd as Record<string, unknown> : undefined;
+  const lists: { grants?: string[]; callerGrants?: string[] } = {};
+  for (const key of ['grants', 'callerGrants'] as const) {
+    if (inside === undefined || !Object.hasOwn(inside, key)) continue;
+    const wrong = checkField(key, inside[key], `${path} has an ahpd.${key} that`);
+    if (wrong !== undefined) return { problem: wrong };
+    lists[key] = [...(inside[key] as string[])];
+  }
+  return lists;
 };
 
 /**
@@ -813,6 +871,8 @@ const manifestFields = (manifest: Manifest): PluginManifest | undefined => {
     ...(manifest.categories === undefined ? {} : { categories: manifest.categories }),
     ...(manifest.links === undefined ? {} : { links: manifest.links }),
     ...(manifest.contracts === undefined ? {} : { contracts: manifest.contracts }),
+    ...(manifest.grants === undefined ? {} : { grants: manifest.grants }),
+    ...(manifest.callerGrants === undefined ? {} : { callerGrants: manifest.callerGrants }),
     ...(manifest.icons === undefined ? {} : { icons: manifest.icons }),
     ...(manifest.optionsSchema === undefined ? {} : { optionsSchema: manifest.optionsSchema }),
   };
@@ -1413,6 +1473,27 @@ export async function pluginIdsOf(specs: readonly PluginSpec[], where: Where): P
 }
 
 /**
+ * Stop what a plugin started, on a load that will not be kept.
+ *
+ * `apply` has run by then, so the plugin may hold connections, watchers and
+ * ports. Nothing else closes them: the set runs a plugin's closers when it
+ * unloads a plugin it holds, and a refused one is never held.
+ */
+const abandon = async (contribution: Contribution): Promise<string[]> => {
+  const problems: string[] = [];
+  contribution.connects.close();
+  for (const close of contribution.closers) {
+    try {
+      await close();
+    }
+    catch (error) {
+      problems.push(`a closer failed: ${reason(error)}`);
+    }
+  }
+  return problems;
+};
+
+/**
  * Resolve, validate, import and apply one plugin.
  *
  * The order is the point: the manifest is read and the range checked before
@@ -1599,6 +1680,7 @@ export async function loadOne(resolved: Resolved, options: LoadOneOptions, impor
     ...(options.setViewData === undefined ? {} : { setViewData: options.setViewData }),
     ...(grants.length === 0 ? {} : { grants }),
     ...(declared?.contracts === undefined ? {} : { contracts: declared.contracts }),
+    ...(manifest?.callerGrants === undefined ? {} : { callerGrants: manifest.callerGrants }),
     ...(manifest?.i18n === undefined ? {} : { i18n: manifest.i18n }),
     ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
     ...(options.records === undefined ? {} : { records: options.records }),
@@ -1643,8 +1725,11 @@ export async function loadOne(resolved: Resolved, options: LoadOneOptions, impor
   catch (error) {
     // One failure path: whatever the registration check or the plugin itself
     // threw, the whole contribution is discarded and the plugin costs a line.
+    // A plugin that opened a connection before it threw is closed here, as one
+    // refused after it returned is: nothing else closes a plugin the set never
+    // holds.
     answered = true;
-    return { problems: [...problems, ...told, `plugin ${name} failed${took()}: ${reason(error)}`] };
+    return { problems: [...problems, ...told, ...await abandon(contribution), `plugin ${name} failed${took()}: ${reason(error)}`] };
   }
   /*
    * Registration is over: the fold takes the host's own copies of what this
@@ -1653,6 +1738,67 @@ export async function loadOne(resolved: Resolved, options: LoadOneOptions, impor
    * in the plugin's own name.
    */
   seal();
+  /*
+   * What the manifest declared its callers are asked for, held against what the
+   * plugin registered.
+   *
+   * A manifest that carries `callerGrants` is held to it: a channel, method or
+   * tunnel-kind operation needing a grant the list does not name is a refusal,
+   * because a list that under-declares is worse than none - a person reads what
+   * the plugin asks of roles, and the plugin then asks for more. A manifest
+   * with no field at all is every plugin written before this field existed, so
+   * it loads, and one line names every grant its registrations need, with the
+   * whole list to paste.
+   *
+   * Asked here, right after `seal()`, so a plugin refused for its declaration
+   * has not had icons fetched or a vault checked on its behalf.
+   */
+  const declaredCallers = manifest?.callerGrants;
+  // A channel and a method name a `Grant`; a tunnel operation's is written as a
+  // string, and the gate reads it as one.
+  const needed = [...new Set(grantsRequiredBy(contribution).map((one) => one.grant))] as Grant[];
+  /*
+   * A registration may name a wildcard, which a manifest cannot: the manifest
+   * is read as the exact set, so a `*` in either half is said as what it is
+   * rather than folded into advice that cannot be followed.
+   *
+   * A manifest that carries the field and serves one is refused, as an empty
+   * list is: the declaration cannot name the wildcard, so the list would be
+   * read as covering nothing while the registration asks for everything, and
+   * leaving that to one advisory line would let a plugin load that no
+   * declaration can ever describe.
+   */
+  const declaredCallable = needed.filter((one) => !one.includes('*'));
+  const loose = needed.filter((one) => one.includes('*'));
+  if (loose.length > 0 && declaredCallers === undefined) {
+    problems.push(`plugin ${name} serves something that needs ${loose.join(', ')}, which a manifest cannot declare: a registration names the operation it requires, never a wildcard`);
+  }
+  if (declaredCallers === undefined) {
+    if (declaredCallable.length > 0) {
+      problems.push(`plugin ${name} needs ${declaredCallable.join(', ')} when it is used, and its manifest declares no callerGrants; add "callerGrants": [${declaredCallable.map((one) => JSON.stringify(one)).join(', ')}] so a role editor lists them before a caller is refused`);
+    }
+  }
+  else {
+    if (loose.length > 0) {
+      answered = true;
+      return {
+        problems: [...problems, ...told, ...await abandon(contribution),
+          `PLUGIN_GRANTS_UNDECLARED: plugin ${name} serves something that needs ${loose.join(', ')}, which no manifest can declare: a registration names the operation it requires, never a wildcard; name the operations it serves`],
+      };
+    }
+    // What a role would hold is what `holds` answers for, so a declared group
+    // (`push:read`) covers the operation it groups (`push:list`) here, as it
+    // does at the gate.
+    const held = new Set(declaredCallers as Grant[]);
+    const missing = declaredCallable.filter((one) => !holds(held, one));
+    if (missing.length > 0) {
+      answered = true;
+      return {
+        problems: [...problems, ...told, ...await abandon(contribution),
+          `PLUGIN_GRANTS_UNDECLARED: plugin ${name} serves something that needs ${missing.join(', ')}, which its manifest's callerGrants do not declare; add ${missing.map((one) => JSON.stringify(one)).join(', ')} to the list`],
+      };
+    }
+  }
   /*
    * An icon that names an `https:` URL is fetched here, at load, and sent on as
    * a `data:` URI: a client draws an icon and never contacts the server a
@@ -1694,7 +1840,7 @@ export async function loadOne(resolved: Resolved, options: LoadOneOptions, impor
    */
   if (unwrapped.named && contribution.ports.vault !== undefined) {
     answered = true;
-    return { problems: [...problems, ...told, `plugin ${name} skipped: a vault plugin's own options cannot name a secret`] };
+    return { problems: [...problems, ...told, ...await abandon(contribution), `plugin ${name} skipped: a vault plugin's own options cannot name a secret`] };
   }
 
   // The absolute path is logged, so what ran is in the log even when a spec

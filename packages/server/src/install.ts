@@ -21,10 +21,10 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import { launch, readJsonObject, writeJsonAtomic } from '@ahpd/sdk';
-import type { PluginSpec } from '@ahpd/sdk';
+import { holds, launch, readJsonObject, writeJsonAtomic } from '@ahpd/sdk';
+import type { Grant, PluginSpec } from '@ahpd/sdk';
 import { asSpec } from './config.js';
-import { hasScheme, isNamed, sourceOf, pluginIdOf } from './plugins.js';
+import { hasScheme, isNamed, manifestGrants, sourceOf, pluginIdOf } from './plugins.js';
 import { isOffered, newestFitting, type Offered } from './compat.js';
 import { fittingListed, forgetInstalled, installedListing, listedVersions, recordInstalled } from './pluginlist.js';
 import type { Listing, ListedVersion } from './pluginlist.js';
@@ -366,7 +366,7 @@ export const pluginEntry = (path: string, name: string): PluginSpec | undefined 
  * dropped and the module it held moves to `source`. Every other key stays as
  * the entry holds it.
  */
-export const editableEntry = (spec: PluginSpec, raw: unknown): { source: string; name?: string; options?: Record<string, unknown>; enabled?: boolean } => {
+export const editableEntry = (spec: PluginSpec, raw: unknown): { source: string; name?: string; options?: Record<string, unknown>; enabled?: boolean; grants?: string[] } => {
   if (typeof spec === 'string') return { source: spec };
   const held = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   const { name: _old, ...rest } = held;
@@ -386,7 +386,7 @@ export const editableEntry = (spec: PluginSpec, raw: unknown): { source: string;
 const editEntry = (
   path: string,
   name: string,
-  change: (entry: { source: string; name?: string; options?: Record<string, unknown>; enabled?: boolean }) => void,
+  change: (entry: { source: string; name?: string; options?: Record<string, unknown>; enabled?: boolean; grants?: string[] }) => void,
 ): void => {
   const held = readEntry(path);
   const list = Array.isArray(held.plugins) ? [...held.plugins] : [];
@@ -534,6 +534,24 @@ export interface InstallOptions {
   marketplaces?: readonly string[] | undefined;
   /** The marketplace the sources install from, which `marketplaces` must name; absent takes the first that lists each. */
   marketplace?: string | undefined;
+  /** Whether a person said `--grant`, which writes every grant the manifests ask the entry for. */
+  grant?: boolean | undefined;
+  /** A terminal to ask for consent on; absent on a pipe and served, where nobody is there to answer. */
+  confirm?: ((question: string) => Promise<boolean>) | undefined;
+  /**
+   * What each manifest asked for, what a role must hold to use it, and whether
+   * it was granted, for a caller that answers in JSON.
+   *
+   * `asked` is every grant the manifests asked their entries for, not only the
+   * ones an entry lacked, so a caller reading the answer can tell a package
+   * that asked for nothing from one whose entry already held everything.
+   * `consented` says a person said `--grant` or yes, which an entry that
+   * already held everything has no other way to show. `declaredCallerGrants`
+   * is the manifest's own list: what load draws into the role catalogue is
+   * what the plugin registers for it, so a word nothing registers is reported
+   * there and is not a promise this command keeps.
+   */
+  report?: ((facts: { asked: ReadonlyMap<string, string[]>; declaredCallerGrants: ReadonlyMap<string, string[]>; consented: boolean; granted: boolean }) => void) | undefined;
 }
 
 /** One source as npm is given it, with the listed version it was chosen as, when a list chose it. */
@@ -739,6 +757,13 @@ export async function installPlugins(names: readonly string[], options: InstallO
     }
     if (packageOf(name) === SDK) throw new Error(SDK_IS_NOT_A_PLUGIN);
   }
+  /*
+   * Grants are written into the entry, so an install that writes none has
+   * nothing to grant and would drop `--grant` without a word.
+   */
+  if (options.grant === true && !options.enable) {
+    throw new Error('--grant writes the grants into the plugin\'s entry, and --no-enable writes no entry: drop --no-enable to grant them, or add the grants to the entry yourself.');
+  }
   const asked = await refuseNonPlugins(names, options);
   const wanted = asked.map((one) => one.target);
   const root = pluginRoot(options.configDir);
@@ -756,6 +781,10 @@ export async function installPlugins(names: readonly string[], options: InstallO
   }
   const installed = namesInstalled(names, root, before, dependenciesIn(root));
   const packages: string[] = [];
+  /** The grants each installed package's manifest asks for, in the order they were read. */
+  const requests = new Map<string, string[]>();
+  /** The grants each manifest says a caller must hold, in the order they were read. */
+  const callersAsked = new Map<string, string[]>();
   for (const [at, name] of installed.entries()) {
     if (name === undefined) {
       // npm succeeded and wrote no dependency to name the source by, so there
@@ -783,20 +812,116 @@ export async function installPlugins(names: readonly string[], options: InstallO
       if (undone.code !== 0) throw npmFailed(`npm could not uninstall ${name}, which is not the version its list names`, undone);
       throw new Error(differs);
     }
+    /*
+     * What this manifest asks the entry for, read the way the loader reads it:
+     * a list the loader would refuse is a package the loader would refuse, so
+     * it is uninstalled here rather than left for the next start to report.
+     */
+    const asks = manifestGrants(manifest, join(root, 'node_modules', name, 'package.json'));
+    if (asks !== undefined && 'problem' in asks) {
+      const undone = await options.run('npm', ['uninstall', '--prefix', root, '--legacy-peer-deps', '--', name]);
+      if (undone.code !== 0) throw npmFailed(`npm could not uninstall ${name}, whose grants are not a list of them`, undone);
+      // The record too: an uninstalled package that the marketplace still
+      // believes it installed is a state nothing would correct.
+      forgetInstalled(options.configDir, [name]);
+      throw new Error(`${name} was uninstalled: ${asks.problem}`);
+    }
     if (listed !== undefined) recordInstalled(options.configDir, name, { marketplace: listed.listing.marketplace, source: listed.listing.plugin.source });
+    const grants = asks === undefined ? undefined : asks.grants;
+    if (grants !== undefined && grants.length > 0) requests.set(name, grants);
+    const callers = asks === undefined ? undefined : asks.callerGrants;
+    if (callers !== undefined && callers.length > 0) callersAsked.set(name, callers);
     packages.push(name);
   }
   options.say(`Installed ${wanted.join(', ')} into ${root}.`);
+  /*
+   * What each manifest asks its entry for, said before anything is asked or
+   * written.
+   *
+   * A manifest never grants itself: the list is shown first, and only
+   * `--grant` or a yes at a terminal writes it into the entry. An install on a
+   * pipe or over HTTP has nobody to ask, so it says the command that would,
+   * rather than reading an end or a daemon's keyboard as an answer nobody gave.
+   */
+  for (const [name, grants] of requests) options.say(`${name} asks for ${grants.join(', ')}.`);
+  for (const [name, grants] of callersAsked) options.say(`Roles that use ${name} must hold ${grants.join(', ')}.`);
   if (!options.enable) {
-    options.say('--no-enable, so the configuration was not changed.');
+    options.say(requests.size === 0
+      ? '--no-enable, so the configuration was not changed.'
+      : '--no-enable, so the configuration was not changed and nothing was granted.');
+    options.report?.({ asked: requests, declaredCallerGrants: callersAsked, consented: options.grant === true, granted: false });
     return packages;
   }
+  /*
+   * What is left to grant, per entry: an entry that already holds a grant is
+   * not asked about it again, and an install that adds nothing asks nothing.
+   */
+  const missing = new Map<string, string[]>();
+  for (const [name, grants] of requests) {
+    const spec = pluginEntry(options.configFile, name);
+    const held = typeof spec === 'object' && spec !== undefined ? spec.grants ?? [] : [];
+    // An entry may hold more than the same word: `probe:*` and a group answer
+    // the operation too, and asking again for one of those would append a
+    // grant the entry already gives.
+    // The manifest's own reader refused anything that is not
+    // `<subject>:<operation>`, which is what `Grant` says.
+    const wanted = grants.filter((one) => !holds(new Set(held), one as Grant));
+    if (wanted.length > 0) missing.set(name, wanted);
+  }
+  const consent = options.grant === true
+    || (missing.size > 0 && options.confirm !== undefined && await options.confirm(asksOf(missing)));
   const added = enableNames(options.configFile, packages);
   options.say(added.length === 0
     ? `${options.configFile} already names ${packages.join(', ')}.`
     : `plugins += ${added.join(', ')} in ${options.configFile}.`);
+  const granted = consent && missing.size > 0;
+  if (granted) addPluginGrants(options.configFile, missing);
+  /*
+   * Said per package, because a batch can hold one that asks for nothing, one
+   * that already has it all and one that was just amended.
+   */
+  for (const [name, grants] of requests) {
+    const left = missing.get(name);
+    if (left === undefined) options.say(`${name} already holds every grant its manifest asks for.`);
+    else if (granted) options.say(`Granted ${name} ${left.join(', ')} in ${options.configFile}.`);
+    else {
+      options.say(`${name}: nothing was granted (${left.join(', ')}): re-run with --grant, or add ${left.join(', ')} to its entry's grants in ${options.configFile}, to let it act on the host.`);
+    }
+  }
+  if (requests.size === 0 && options.grant === true) options.say('No manifest asks its entry for a grant, so --grant wrote nothing.');
+  options.report?.({ asked: requests, declaredCallerGrants: callersAsked, consented: consent, granted });
   return packages;
 }
+
+/** The one question an install asks, naming every package and what it wants. */
+const asksOf = (requests: ReadonlyMap<string, string[]>): string =>
+  `Grant ${[...requests].map(([name, grants]) => `${name}: ${grants.join(', ')}`).join('; ')}?`;
+
+/**
+ * Add grants to the entries named, keeping the others, in one write.
+ *
+ * A string entry becomes the object form that carries the list; an entry that
+ * already carries grants keeps them and gains the new ones, once each. Every
+ * package a call installed is written together, so one install reads and
+ * writes the configuration once rather than once per package.
+ */
+const addPluginGrants = (path: string, requests: ReadonlyMap<string, string[]>): void => {
+  const held = readEntry(path);
+  const list = Array.isArray(held.plugins) ? [...held.plugins] : [];
+  for (const [name, grants] of requests) {
+    const at = list.findIndex((one) => {
+      const spec = asSpec(one);
+      return spec !== undefined && isNamed(spec, name);
+    });
+    if (at === -1) throw new Error(`${name} is not in plugins in ${path}.`);
+    const spec = asSpec(list[at]) as PluginSpec;
+    const entry = editableEntry(spec, list[at]);
+    entry.grants = [...new Set([...(entry.grants ?? []), ...grants])];
+    list[at] = entry;
+  }
+  held.plugins = list;
+  writeEntry(path, held);
+};
 
 /** What `plugin update` was given and where it looks. */
 export interface UpdateOptions {
