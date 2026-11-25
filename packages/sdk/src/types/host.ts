@@ -2450,6 +2450,15 @@ export interface Host {
    */
   endSessionsOf(agent: Agent | string): Promise<void>;
   /**
+   * Stop every session running on one agent, without removing it.
+   *
+   * What turning an agent off owes its sessions: a quiet one sleeps now, and
+   * one with a turn in flight sleeps when that turn ends. The row, its chats
+   * and the backend id stay, so the next turn resumes the conversation. A stop
+   * that fails is logged rather than stopping the rest.
+   */
+  stopSessionsOf(agent: Agent | string): Promise<void>;
+  /**
    * Say that a restart is what puts the configuration in force.
    *
    * The root's config carries the read-only value `ahpd.restartNeeded: true`
