@@ -17,13 +17,17 @@
  * - A write is a temp file in the same directory, fsync, and an atomic rename;
  *   process-compose then reloads the files from disk.
  * - Every change and every refusal is one JSON line in the change log.
+ * - `backup` reads the listing and the change log after a cursor and writes
+ *   nothing; a put with `ifVersion: "absent"` only creates, so a restore from
+ *   that backup never overwrites what a machine already has.
  * - Every function here answers `{ ok: false, code, message }` rather than
  *   throwing into its caller, because it runs inside ahpd and a throw there
  *   is ahpd's crash (@cto's condition for running in-process).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  appendFileSync, closeSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeSync,
+  appendFileSync, closeSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync,
+  writeSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { isAlias, isMap, isPair, isScalar, parseDocument, visit, type Document, type Node } from 'yaml';
@@ -57,7 +61,7 @@ export interface Caller {
 export type RefusalCode =
   | 'INVALID' | 'PLAIN_ENV_VALUE' | 'NOT_FOUND' | 'READ_ONLY' | 'STALE_VERSION' | 'REMOTE_COMMANDS_OFF'
   | 'SWITCHES_UNREADABLE' | 'UNSUPPORTED_LAYOUT' | 'FILE_UNREADABLE' | 'RELOAD_FAILED' | 'PC_REFUSED'
-  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED';
+  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED' | 'EXISTS' | 'CURSOR_RESET';
 
 export interface Refusal {
   readonly ok: false;
@@ -125,6 +129,8 @@ interface State {
   readonly ifVersion: string;
   readonly services: Map<string, ServiceRecord>;
   readonly readOnly: Map<string, string>;
+  /** Per read-only service, the file that defines it: what a create-only put's EXISTS names. */
+  readonly readOnlyIn: Map<string, string>;
   /** Per editable service, the keys its `environment:` sets with plain values. */
   readonly plainEnv: Map<string, string[]>;
 }
@@ -201,6 +207,7 @@ function readState(machine: Machine): State {
   const where = (other: string): string => `edit it in ${other} on ${machine.name}`;
   const services = new Map<string, ServiceRecord>();
   const readOnly = new Map<string, string>();
+  const readOnlyIn = new Map<string, string>();
   const plainEnv = new Map<string, string[]>();
   let processes;
   try {
@@ -212,6 +219,7 @@ function readState(machine: Machine): State {
   for (const pair of processes?.items ?? []) {
     if (!isScalar(pair.key)) continue;
     const name = String(pair.key.value);
+    readOnlyIn.set(name, file);
     const elsewhere = shared.get(name);
     if (elsewhere !== undefined) { readOnly.set(name, `it is also defined in ${elsewhere}; ${where(elsewhere)}`); continue; }
     if (usesAnchors(pair.value)) { readOnly.set(name, `it uses YAML anchors, aliases or merge keys; ${where(file)}`); continue; }
@@ -219,13 +227,14 @@ function readState(machine: Machine): State {
     const record = fromNative(name, native);
     if (typeof record === 'string') { readOnly.set(name, `${record}; ${where(file)}`); continue; }
     services.set(name, record);
+    readOnlyIn.delete(name);
     const keys = plainEnvKeys(native);
     if (keys.length > 0) plainEnv.set(name, keys);
   }
   for (const [name, other] of shared) {
-    if (!services.has(name) && !readOnly.has(name)) readOnly.set(name, `it is defined in ${other}; ${where(other)}`);
+    if (!services.has(name) && !readOnly.has(name)) { readOnly.set(name, `it is defined in ${other}; ${where(other)}`); readOnlyIn.set(name, other); }
   }
-  return { file, text, doc, ifVersion: hash, services, readOnly, plainEnv };
+  return { file, text, doc, ifVersion: hash, services, readOnly, readOnlyIn, plainEnv };
 }
 
 /** Make sure the change log can be appended to before anything is changed, so no change goes unlogged. */
@@ -429,10 +438,17 @@ export function acknowledgeFiles(
 /** A put's arguments: the record's changed fields, the version it was made against, and optionally that version's text. */
 export interface PutParams {
   readonly service: ServicePatch;
+  /**
+   * The file's sha256 as read, or `"absent"` to create only: a restore sends that, so a name the file
+   * already has (editable or read-only) is refused EXISTS rather than overwritten, whatever version it is now.
+   */
   readonly ifVersion: string;
   /** The file text the caller read, so a stale put can be shown the difference even after a restart. */
   readonly seen?: string;
 }
+
+/** The `ifVersion` that makes a put create-only. */
+export const ABSENT = 'absent';
 
 /** A command this put would have the machine run that it did not run before. */
 const newCommand = (before: ServiceRecord | undefined, after: ServiceRecord): boolean => {
@@ -447,6 +463,11 @@ const newCommand = (before: ServiceRecord | undefined, after: ServiceRecord): bo
  * A remote caller that adds an entry, changes its command, or sets a new
  * readiness command is refused while `allowRemoteCommands` is off; a switch
  * file that cannot be read refuses the request with its own message.
+ *
+ * `ifVersion: "absent"` (#38277 slice 3b, @cto c89ade9c) creates only. It is
+ * checked against the file as it is now, so no stale check applies; the write
+ * is still pinned to that version, so an edit landing during it is refused as
+ * any put's is. A new entry is a new command, so the switch still decides.
  */
 export async function putService(machine: Machine, caller: Caller, params: PutParams): Promise<Answer<{ ifVersion: string; file: string; service: ServiceRecord; changed: boolean }>> {
   const name = typeof params?.service?.name === 'string' ? params.service.name : '';
@@ -477,11 +498,15 @@ export async function putService(machine: Machine, caller: Caller, params: PutPa
     const invalid = checkPatch(params?.service);
     if (invalid) return done(refuse(invalid.code, invalid.message));
     const reason = state.readOnly.get(name);
+    const createOnly = params.ifVersion === ABSENT;
+    if (createOnly && (before !== undefined || reason !== undefined)) {
+      return done(refuse('EXISTS', `${name} already exists in ${state.readOnlyIn.get(name) ?? state.file}; a restore never overwrites`));
+    }
     if (reason !== undefined) return done(refuse('READ_ONLY', `${name} is read-only here: ${reason}`));
     if (before === undefined && params.service.command === undefined) return done(refuse('INVALID', `${name} is a new service, so it needs a command`));
     const after = applyPatch(before, params.service);
     intended = after;
-    if (params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen, caller.remote), hashBefore, stale(state, params.ifVersion, params.seen, true));
+    if (!createOnly && params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen, caller.remote), hashBefore, stale(state, params.ifVersion, params.seen, true));
     if (caller.remote && newCommand(before, after)) {
       let allowed: boolean;
       try {
@@ -682,5 +707,192 @@ export async function serviceLogs(machine: Machine, caller: Caller, params: { re
   }
   catch (error) {
     return refused(failed(error));
+  }
+}
+
+/** The most change-log lines one backup answer carries, and the most bytes of them: one bounded read per round trip. */
+export const BACKUP_LINES_MAX = 200;
+export const BACKUP_BYTES_MAX = 256 * 1024;
+
+/** A backup's arguments: the cursor the last answer gave, or nothing to start at the change log's first line. */
+export interface BackupParams {
+  readonly after?: string;
+}
+
+/** What `backup` answers. */
+export interface Backup {
+  /** Exactly `list`'s answer: records with secret references only, read-only names, plain env KEY names, hashes. */
+  readonly listing: { readonly ok: true } & Listing;
+  /** The change-log lines after the cursor, each parsed; diffs in them are already blanked at the source. */
+  readonly lines: ReadonlyArray<Record<string, unknown>>;
+  /** Where the next backup starts: give it back as `after`. */
+  readonly cursor: string;
+  /** Whether whole lines remain after `cursor`. */
+  readonly more: boolean;
+}
+
+/**
+ * Where a backup stopped: the change log's identity (device and inode, as
+ * decimal text, so a large inode keeps every digit) and the byte after the last
+ * line answered. Empty identity is the cursor for a log that did not exist yet,
+ * which can only be at byte 0 and so reads any log from its start.
+ */
+interface Cursor {
+  readonly dev: string;
+  readonly ino: string;
+  readonly offset: number;
+}
+
+const CURSOR_FORMAT = /^services-log\.v1:(\d*):(\d*):(\d+)$/u;
+
+const encodeCursor = (cursor: Cursor): string =>
+  Buffer.from(`services-log.v1:${cursor.dev}:${cursor.ino}:${cursor.offset}`, 'utf8').toString('base64url');
+
+const decodeCursor = (value: unknown): Cursor | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const match = CURSOR_FORMAT.exec(Buffer.from(value, 'base64url').toString('utf8'));
+  if (!match) return undefined;
+  const [, dev = '', ino = '', digits = ''] = match;
+  const offset = Number(digits);
+  if (!Number.isSafeInteger(offset) || (dev === '') !== (ino === '') || (dev === '' && offset !== 0)) return undefined;
+  return { dev, ino, offset };
+};
+
+/** Fill `buffer` from `position`; answers how many bytes there were (fewer when the file is shorter than asked). */
+const readAt = (fd: number, buffer: Buffer, position: number): number => {
+  let filled = 0;
+  while (filled < buffer.length) {
+    const got = readSync(fd, buffer, filled, buffer.length - filled, position + filled);
+    if (got === 0) break;
+    filled += got;
+  }
+  return filled;
+};
+
+/** The byte offset of the first newline at or after `from`, or -1 when the rest of the file has none. */
+const nextNewline = (fd: number, from: number, size: number): number => {
+  const chunk = Buffer.alloc(64 * 1024);
+  for (let at = from; at < size;) {
+    const got = readAt(fd, chunk.subarray(0, Math.min(chunk.length, size - at)), at);
+    if (got === 0) return -1;
+    const found = chunk.subarray(0, got).indexOf(0x0a);
+    if (found >= 0) return at + found;
+    at += got;
+  }
+  return -1;
+};
+
+/**
+ * The change log's whole lines after `from`, at most BACKUP_LINES_MAX lines and
+ * BACKUP_BYTES_MAX bytes of them. A trailing line with no newline yet is a write
+ * in progress and waits for the next backup. One line longer than the byte bound
+ * is answered alone, so a backup always moves past it rather than stopping there
+ * for good.
+ */
+function readChanges(file: string, from: Cursor): Refusal | Omit<Backup, 'listing'> {
+  const again = 'ask again without "after" to start from its first line';
+  let fd: number;
+  try {
+    fd = openSync(file, 'r');
+  }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return refuse('FILE_UNREADABLE', `cannot read the change log ${file}: ${(error as Error).message}`);
+    // No change has been made on this machine yet: nothing to answer, and no error (@cto c89ade9c).
+    if (from.ino !== '') return refuse('CURSOR_RESET', `the change log ${file} is gone since that cursor was given; ${again}`);
+    return { lines: [], cursor: encodeCursor({ dev: '', ino: '', offset: 0 }), more: false };
+  }
+  try {
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile()) return refuse('FILE_UNREADABLE', `the change log ${file} is not a regular file`);
+    const dev = String(stat.dev);
+    const ino = String(stat.ino);
+    const size = Number(stat.size);
+    if (from.ino !== '' && (from.dev !== dev || from.ino !== ino)) {
+      return refuse('CURSOR_RESET', `the change log ${file} was replaced since that cursor was given (it is another file now); ${again}`);
+    }
+    if (from.offset > size) {
+      return refuse('CURSOR_RESET', `that cursor is at byte ${from.offset} of the change log ${file}, past its end (${size} bytes); ${again}`);
+    }
+    const start = from.offset;
+    const window = Buffer.alloc(Math.min(size - start, BACKUP_BYTES_MAX));
+    const held = window.subarray(0, readAt(fd, window, start));
+    const parse = (bytes: Buffer, at: number): Record<string, unknown> => {
+      let value: unknown;
+      try {
+        value = JSON.parse(bytes.toString('utf8'));
+      }
+      catch {
+        value = undefined;
+      }
+      // The line's text is left out of the message: a refusal is answered off the machine.
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new FileError(`the change log ${file} has a line at byte ${at} that is not a JSON object`);
+      return value as Record<string, unknown>;
+    };
+    const lines: Array<Record<string, unknown>> = [];
+    let next = 0;
+    while (lines.length < BACKUP_LINES_MAX) {
+      const newline = held.indexOf(0x0a, next);
+      if (newline < 0) break;
+      lines.push(parse(held.subarray(next, newline), start + next));
+      next = newline + 1;
+    }
+    let end = start + next;
+    if (lines.length === 0 && held.length === BACKUP_BYTES_MAX) {
+      const newline = nextNewline(fd, start + held.length, size);
+      if (newline >= 0) {
+        const long = Buffer.alloc(newline - start);
+        lines.push(parse(long.subarray(0, readAt(fd, long, start)), start));
+        end = newline + 1;
+      }
+    }
+    const inHeld = end - start;
+    const more = end < size && ((inHeld < held.length && held.indexOf(0x0a, inHeld) >= 0) || nextNewline(fd, Math.max(end, start + held.length), size) >= 0);
+    return { lines, cursor: encodeCursor({ dev, ino, offset: end }), more };
+  }
+  catch (error) {
+    if (error instanceof FileError) return refuse('FILE_UNREADABLE', error.message);
+    const code = (error as NodeJS.ErrnoException).code;
+    if (typeof code === 'string') return refuse('FILE_UNREADABLE', `cannot read the change log ${file}: ${(error as Error).message}`);
+    throw error;
+  }
+  finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * `backup` (#38277 slice 3b, @cto c89ade9c): what a machine runs and how it got
+ * there, for an owner to see and restore elsewhere if the machine dies. Hightea
+ * pulls it; ahpd opens no connection and keeps no queue for it.
+ *
+ * It answers `list`'s answer and the change-log lines after `after`. It reads
+ * only: it writes no file and adds no change-log line, refusals included. It
+ * never carries program output, vault values, plain environment values or the
+ * file's text - the listing names plain keys only, and the change log's records
+ * hold secret references and its diffs are blanked when written.
+ *
+ * A cursor names the log by device and inode as well as offset, so a log that
+ * was replaced, or cut shorter than the cursor, answers CURSOR_RESET rather than
+ * lines from some other file.
+ */
+export function backupServices(machine: Machine, params: BackupParams): Answer<Backup> {
+  try {
+    const after = params?.after;
+    let from: Cursor = { dev: '', ino: '', offset: 0 };
+    if (after !== undefined) {
+      const decoded = decodeCursor(after);
+      if (decoded === undefined) {
+        return refuse('INVALID', `"after" is not a cursor a backup of the change log ${machine.changeLog} answered; leave it out to start from its first line`);
+      }
+      from = decoded;
+    }
+    const listing = listServices(machine);
+    if (!listing.ok) return listing;
+    const changes = readChanges(machine.changeLog, from);
+    if ('code' in changes) return changes;
+    return { ok: true, listing, ...changes };
+  }
+  catch (error) {
+    return failed(error);
   }
 }

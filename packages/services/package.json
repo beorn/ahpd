@@ -30,7 +30,7 @@
   "ahpd": {
     "entry": "./dist/index.js",
     "title": "Services",
-    "description": "This machine's programs under process-compose: list, change the machine's own file, start, stop, restart and read logs, with drift alerts.",
+    "description": "This machine's programs under process-compose: list, change the machine's own file, start, stop, restart, read logs and back up, with drift alerts.",
     "categories": [],
     "contracts": {
       "methods": [
@@ -41,7 +41,8 @@
         "x-ahpd/services/stop",
         "x-ahpd/services/restart",
         "x-ahpd/services/logs",
-        "x-ahpd/services/acknowledge"
+        "x-ahpd/services/acknowledge",
+        "x-ahpd/services/backup"
       ],
       "closers": [
         "the five-minute drift check"
