@@ -68,7 +68,7 @@ export { managedRuleOf } from './host/permissions.js';
 export { hostTools } from './tools/index.js';
 export { answerTools, toolServers, TOOLS_PREFIX } from './tools/server.js';
 export type {
-  MayRunTool, RunClientTool, ToolsChanged, ToolsEndpoint, ToolsInfo, ToolsServing, ToolsServerOptions, ToolsServers,
+  MayRunTool, ProxyEndpoint, ProxyUpstream, RunClientTool, ToolsChanged, ToolsEndpoint, ToolsInfo, ToolsServing, ToolsServerOptions, ToolsServers, UpstreamRefusal,
 } from './tools/server.js';
 export { createClientCalls, DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from './tools/clientcalls.js';
 export type { ClientCall, ClientCallAnswer, ClientCalls, ClientCallsOptions } from './tools/clientcalls.js';

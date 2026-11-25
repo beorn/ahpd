@@ -12,7 +12,7 @@ import type { Principal } from './users.js';
 import type { Owner } from './usage.js';
 import type { CommandTerminal, StartTerminals, OutputTerminals, TerminalOutputs } from './terminals.js';
 import type { BackgroundTasks, MovableCalls } from './background.js';
-import type { MayRunTool, RunClientTool, ToolsChanged, ToolsEndpoint } from '../tools/server.js';
+import type { MayRunTool, ProxyEndpoint, ProxyUpstream, RunClientTool, ToolsChanged, ToolsEndpoint } from '../tools/server.js';
 import type { ComputerPort } from './computers.js';
 import type { MachineNeed } from './machine.js';
 import type { ShellEnv } from '../machines/shellenv.js';
@@ -532,6 +532,14 @@ export interface Start {
     toolsChanged?: ToolsChanged;
     mayRun?: MayRunTool;
   }): ToolsEndpoint | undefined;
+  /**
+   * Open a pass-through on the host's listener to one upstream MCP server,
+   * for a backend that is handed a server's URL and headers only once, when
+   * its session opens. The agent gets the endpoint's URL and token; the
+   * upstream's token stays with the host and is read per request. Closed with
+   * the session. Undefined where the host serves nothing, as `toolsServer`.
+   */
+  proxyServer?(upstream: ProxyUpstream): ProxyEndpoint | undefined;
   /**
    * How long this host lets one of a session's client calls wait.
    *
