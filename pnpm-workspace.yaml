@@ -27,6 +27,7 @@ overrides:
   '@bearly/durable-file>@bearly/flock': '0.2.3'
 
 minimumReleaseAgeExclude:
+  - '@bearly/durable-file@0.2.0'
   - '@microsoft/agent-host-protocol@1.0.0 || 1.1.0'
   - '@cofold/agents@0.4.0 || 0.4.1'
   - '@cofold/commands@0.2.2 || 0.3.0'
