@@ -29,7 +29,7 @@
   },
   "scripts": {
     "build:bin": "bun build src/bin.ts --target=node --outfile dist/bin.js",
-    "prepack": "tsc -p .",
+    "prepack": "tsc -p . && bun run build:bin",
     "test": "cd ../.. && vitest run packages/deploy/test"
   },
   "files": [
