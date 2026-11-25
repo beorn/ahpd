@@ -315,6 +315,12 @@ async function served(options: { register?: boolean; fold?: (agents: Agent[]) =>
   return { host, users, collection, lists, engines, opened, ended, problems, handles, vault, close: async () => { await host?.close(); } };
 }
 
+/**
+ * What the host answered: the result, or the refusal it named. Both keys are
+ * optional so a case reads whichever it asked for without narrowing first.
+ */
+type Answer = { result?: Bag; code?: number; message?: string; data?: Bag };
+
 /** A client signed in as `id`, whose channel actions are kept. */
 const as = async (host: Host, users: Users, id: string, locale?: string) => {
   const token = await users.mint(id);
@@ -327,9 +333,13 @@ const as = async (host: Host, users: Users, id: string, locale?: string) => {
     method: 'initialize', params: { clientId: id, protocolVersions: ['0.9.0'], initialSubscriptions: [ROOT], ...(locale === undefined ? {} : { locale }) },
   }) as Bag;
   await client.handle({ method: 'authenticate', params: { channel: ROOT, resource: users.resource.resource, token } });
-  const call = async (method: string, params: Bag) => client.handle({ method, params }).then(
+  const call = async (method: string, params: Bag): Promise<Answer> => client.handle({ method, params }).then(
     (result) => ({ result: result as Bag }),
-    (error: { code: number; message: string; data?: Bag }) => ({ code: error.code, message: error.message, data: error.data }),
+    (error: { code: number; message: string; data?: Bag }): Answer => ({
+      code: error.code,
+      message: error.message,
+      ...(error.data === undefined ? {} : { data: error.data }),
+    }),
   );
   /** Every row a subscribe to `channel` answered, by id. */
   const rows = async (channel = URI): Promise<Record<string, Bag>> => {
@@ -1681,7 +1691,7 @@ it('refuses an ifRevision that is not a whole number of writes, in words naming 
  * Nothing here goes through the host's gate: a plugin's connection is its own
  * principal, and the rule being tested is the record's owner rule beside it.
  */
-const pluginOf = (name: string, grants: string[] = ['agent:list', 'agent:put', 'agent:remove']): Principal => ({
+const pluginOf = (name: string, grants: Principal['grants'] = ['agent:list', 'agent:put', 'agent:remove']): Principal => ({
   id: `plugin:${name}`,
   plugin: name,
   roles: [],
