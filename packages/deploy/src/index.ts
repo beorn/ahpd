@@ -602,6 +602,16 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
     return { state: 'failed, new release live', sha, from, step, reason };
   };
 
+  /**
+   * Keep the declaration's count, and name what went: a folder that is gone with no journal line is a gap the next
+   * reader cannot see (the same reason a switch is journaled with the release it left, #38276).
+   */
+  const prune = (): void => {
+    const kept = options.declaration.keep ?? DEFAULT_KEEP;
+    const removed = pruneReleases(layout, kept);
+    if (removed.length > 0) journal(layout, { event: 'pruned', deployId, keep: kept, releases: removed });
+  };
+
   /** A step's command runs only when the machine's gate accepts it; nothing is read about that here. */
   const rejected = (step: DeployStep, command: DeployCommand | undefined): string | undefined =>
     command === undefined ? undefined : options.permit?.(step, command);
@@ -656,7 +666,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
 
     if (options.declaration.check === undefined) {
       // No check is not a pass: the deploy says exactly what it did and what it did not do.
-      pruneReleases(layout, options.declaration.keep);
+      prune();
       return finish({ state: 'switched, unchecked', sha, from });
     }
 
@@ -664,7 +674,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
     const checked = await runStep('check', options.declaration.check, release, options.secrets, machine);
     steps.push(checked);
     if (checked.ok) {
-      pruneReleases(layout, options.declaration.keep);
+      prune();
       return finish({ state: 'switched, checked', sha, from });
     }
 

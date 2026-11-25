@@ -83,6 +83,30 @@ describe('deploy driver (#38276)', () => {
     expect(result.outcome.state).toBe('switched, unchecked');
   });
 
+  // @level l3 @consumer a pruned release that leaves no journal line is a gap the next reader cannot see.
+  it('names the release a prune removed, so a vanished folder is never silent', async () => {
+    const { repo, stateDir } = fixture();
+    const layout = { stateDir, service: 'svc' };
+    const shas: string[] = [];
+    for (const name of ['two', 'three', 'four']) {
+      writeFileSync(join(repo, 'file.txt'), `${name}\n`);
+      git(repo, 'commit', '--quiet', '-am', name);
+      shas.push(git(repo, 'rev-parse', 'HEAD'));
+    }
+    for (const sha of shas) {
+      expect((await deploy({ stateDir, service: 'svc', version: sha, declaration: declaration(repo, { keep: 2 }) })).outcome.state)
+        .toBe('switched, checked');
+    }
+    // Current is the third release and the way back is the second, so keep 2 leaves the first one out.
+    const journal = readJournal(layout);
+    const pruned = journal.filter((one) => one.event === 'pruned');
+    expect(pruned).toHaveLength(1);
+    const [oldest = '', wayBack = ''] = shas;
+    expect(pruned[0]).toMatchObject({ keep: 2, releases: [oldest] });
+    expect(existsSync(join(stateDir, 'deploy', 'svc', 'releases', oldest))).toBe(false);
+    expect(existsSync(join(stateDir, 'deploy', 'svc', 'releases', wayBack))).toBe(true);
+  });
+
   it('keeps the new release live and fails loudly when a check fails without a declared migration', async () => {
     const { repo, stateDir } = fixture();
     const first = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
