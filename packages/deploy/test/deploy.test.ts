@@ -303,4 +303,18 @@ describe('deploy driver (#38276)', () => {
     writeJournalEntry(layout, { event: 'switched', to: 'cccc', from: null, reason: 'deploy' });
     expect(lastSwitchFrom(layout)).toBe(null);
   });
+
+  // @level l3 @consumer a switch back is not a way back: after a failed upgrade the good release stays the target.
+  it('ignores a switch-back line, so the bad release never becomes the way back', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'ahpd-way-back-'));
+    const layout = { stateDir, service: 'svc' };
+    // A is running; the upgrade to B fails and the host switches back to A; then a later good upgrade lands on C.
+    writeJournalEntry(layout, { event: 'switched', to: 'aaaa', from: null, reason: 'deploy' });
+    writeJournalEntry(layout, { event: 'switched', to: 'bbbb', from: 'aaaa', reason: 'deploy' });
+    writeJournalEntry(layout, { event: 'switched', to: 'aaaa', from: 'bbbb', reason: 'switching back after a failed start' });
+    // The host is on A now, and the way back is the release the forward switch left - the original one, not B.
+    expect(lastSwitchFrom(layout)).toBe('aaaa');
+    writeJournalEntry(layout, { event: 'switched', to: 'cccc', from: 'aaaa', reason: 'deploy' });
+    expect(lastSwitchFrom(layout)).toBe('aaaa');
+  });
 });

@@ -380,12 +380,20 @@ export const activateRelease = (
   journal(layout, { ...detail, event: 'switched', to: version, from, reason });
 };
 
-/** The release the last switch left, which is the one a rollback returns to; null when nothing switched yet. */
+/** A line that undid a switch, so the release it left is not a way back: the forward switch that followed it is. */
+const isSwitchBack = (reason: unknown): boolean => typeof reason === 'string' && reason.startsWith('switching back');
+
+/**
+ * The release the last forward switch left, which is the one a rollback returns to; null when nothing switched yet.
+ *
+ * Switch-back lines are skipped on purpose (@cto 2026-11-25): after a failed upgrade the newest `switched` row leaves
+ * the *bad* release, and treating that as the way back would prune the good one and keep the one that failed.
+ */
 export const lastSwitchFrom = (layout: DeployLayout): string | null => {
   const entries = readJournal(layout);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry === undefined || entry['event'] !== 'switched') continue;
+    if (entry === undefined || entry['event'] !== 'switched' || isSwitchBack(entry['reason'])) continue;
     const from = entry['from'];
     return typeof from === 'string' && from !== '' ? from : null;
   }
