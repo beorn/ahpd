@@ -353,17 +353,29 @@ const runStep = async (
   });
 };
 
-/**
- * Exactly one atomic rename: the temporary link is built beside `current` and renamed over it.
- *
- * Exported because a customer host install (#38280) places prebuilt artifacts into the same layout and must switch
- * them the same way; two implementations of this rename is the second copy #38276 ruled out.
- */
-export const switchCurrent = (layout: DeployLayout, sha: string): void => {
+/** Exactly one atomic rename: the temporary link is built beside `current` and renamed over it. Internal: a switch
+ * that is not in the journal is a silent gap, so callers go through `activateRelease`. */
+const switchCurrent = (layout: DeployLayout, sha: string): void => {
   const link = paths(layout).current;
   const temporary = `${link}.${randomUUID()}.new`;
   symlinkSync(join('releases', sha), temporary, 'dir');
   renameSync(temporary, link);
+};
+
+/**
+ * Switch `current` to a release and journal it, as one call (@cto 2026-11-25, #38280).
+ *
+ * The journal is how versions and switch-back know what happened, so the switch and its line leave together: a deploy
+ * and a customer host install both come through here, and neither can move `current` without saying so.
+ */
+export const activateRelease = (
+  layout: DeployLayout,
+  version: string,
+  reason: string,
+  detail: Readonly<Record<string, unknown>> = {},
+): void => {
+  switchCurrent(layout, version);
+  journal(layout, { event: 'switched', to: version, reason, ...detail });
 };
 
 /** Keep `current` plus the newest `keep - 1` releases; every other release folder is removed by name. */
@@ -596,9 +608,8 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
     if (!hooked.ok) return finish(fail('before_switch', hooked.timedOut === true ? `before_switch ${hooked.output ?? 'timed out'}` : `before_switch exited ${String(hooked.code)}${hooked.code === EXIT_NO_VALUE ? `: ${hooked.output ?? ''}` : ''}`));
 
     lock = setLockStep(layout, lock, 'switch');
-    switchCurrent(layout, sha);
+    activateRelease(layout, sha, 'deploy', { deployId, sha, from });
     steps.push({ step: 'switch', ok: true, ms: 0 });
-    journal(layout, { event: 'switched', deployId, sha, from });
 
     if (options.declaration.check === undefined) {
       // No check is not a pass: the deploy says exactly what it did and what it did not do.
@@ -619,7 +630,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
       : `check exited ${String(checked.code)}${checked.code === EXIT_NO_VALUE ? `: ${checked.output ?? ''}` : ''}`;
     if (options.declaration.migrations === 'expand-only' && from !== null) {
       // The migration is already applied, so the folder goes back and the report says the migration stays.
-      switchCurrent(layout, from);
+      activateRelease(layout, from, 'switching back after a failed check', { deployId, sha });
       journal(layout, { event: 'switched back', deployId, sha, to: from });
       return finish({ state: 'switched back, migration stays applied', sha, from, reason });
     }

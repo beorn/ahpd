@@ -21,12 +21,13 @@ export type InstallPlatform = 'darwin' | 'linux'
 export interface InstallPin {
   /** `1.3.13`, `0.15.0-rc.4`, `v1.34.1`: an exact version, never a range, a tag or `latest`. */
   readonly version: string
-  /** An https URL or an npm specifier; the plan prints it so a customer can read what is fetched. */
+  /** An `https://` URL; the plan prints it so a customer can read what is fetched. `http:` and `file:` are refused. */
   readonly source: string
   /**
-   * `sha512-<base64>` for an npm package (its `dist.integrity`), `sha256:<hex>` for a release binary.
+   * `sha256:<64 hex>` of the artifact's bytes, for every artifact including the npm tarballs (@cto 2026-11-25).
    * `null` means the publisher has not published it yet: the plan says so and the install refuses by name, because a
-   * download used without its checksum is the silent error this row exists to prevent.
+   * download used without its checksum is the silent error this row exists to prevent. A malformed checksum is
+   * refused too, never trusted.
    */
   readonly checksum: string | null
 }
@@ -88,7 +89,9 @@ export interface InstallOptions {
 
 export type InstallRefusal =
   | { readonly kind: 'missing-checksum'; readonly download: keyof InstallPins }
+  | { readonly kind: 'malformed-checksum'; readonly download: keyof InstallPins; readonly checksum: string }
   | { readonly kind: 'unpinned-version'; readonly download: keyof InstallPins; readonly version: string }
+  | { readonly kind: 'insecure-source'; readonly download: keyof InstallPins; readonly source: string }
 
 export const INSTALL_ROOT_NAME = '.ahpd';
 export const BOOT_LABEL = 'dev.hallohuman.ahpd';
@@ -96,6 +99,7 @@ export const BOOT_LABEL = 'dev.hallohuman.ahpd';
 export const INSTALL_SERVICE = 'ahpd';
 
 const isPinned = (version: string): boolean => /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version);
+const isSha256 = (checksum: string): boolean => /^sha256:[0-9a-f]{64}$/u.test(checksum);
 
 /** Every refusal this manifest would have to answer for, named by the download it is about. */
 export const installRefusals = (pins: InstallPins): readonly InstallRefusal[] => {
@@ -103,7 +107,9 @@ export const installRefusals = (pins: InstallPins): readonly InstallRefusal[] =>
   for (const download of Object.keys(pins) as (keyof InstallPins)[]) {
     const pin = pins[download]
     if (!isPinned(pin.version)) refusals.push({ kind: 'unpinned-version', download, version: pin.version })
+    if (!pin.source.startsWith('https://')) refusals.push({ kind: 'insecure-source', download, source: pin.source })
     if (pin.checksum === null) refusals.push({ kind: 'missing-checksum', download })
+    else if (!isSha256(pin.checksum)) refusals.push({ kind: 'malformed-checksum', download, checksum: pin.checksum })
   }
   return refusals
 }
@@ -192,4 +198,8 @@ export const renderInstallPlan = (manifest: InstallManifest): readonly string[] 
 export const describeRefusal = (refusal: InstallRefusal): string =>
   refusal.kind === 'missing-checksum'
     ? `refused: ${refusal.download} has no published checksum yet; the install will not fetch it unchecked`
-    : `refused: ${refusal.download} version ${refusal.version} is not an exact version`
+    : refusal.kind === 'unpinned-version'
+      ? `refused: ${refusal.download} version ${refusal.version} is not an exact version`
+      : refusal.kind === 'malformed-checksum'
+        ? `refused: ${refusal.download} checksum ${refusal.checksum} is not sha256:<64 hex>`
+        : `refused: ${refusal.download} source ${refusal.source} is not https`
