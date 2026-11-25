@@ -1,19 +1,26 @@
 /**
- * The deploy driver as an ahpd plugin (#38276 slice 2, @cto d9b6519a): a machine's services, at a version, told from
- * elsewhere.
+ * The deploy driver as an ahpd plugin (#38276 slice 2, @cto d9b6519a and 2026-11-25): a machine's services, at a
+ * version, told from elsewhere.
  *
- * Two methods, and the split is forced by time rather than taste: a deploy runs minutes (a fetch, a build, a check)
- * while an AHP host request is capped at HOST_LOCAL_TIMEOUT_MS (9 s). So `run` takes the service's lock, starts the
- * steps and answers `started <deployId>` at once — taking the lock first is what makes that answer true, because a
- * second call in the same second is refused by the running deploy's id exactly as the whole-call path refuses it.
- * `report` reads the journal, so the outcome comes back to the person who asked without a second deploy.
+ * Two methods, and the split is a fact about time rather than taste: a deploy runs minutes (a fetch, a build, a
+ * check) while an AHP host request is capped at HOST_LOCAL_TIMEOUT_MS (9 s). So `run` checks, starts and answers
+ * `started <deployId>` at once; `report` reads the journal, so the outcome comes back to the person who asked.
  *
- * The machine's gate over a build, hook or check command is injected, never read here: `allowRemoteCommands` has one
- * reader (#38277, `@ahpd/services`' `machineSwitches`) and a second copy in this package would be the one that drifts.
- * Without a gate the plugin registers methods that refuse by name, so an unwired plugin cannot run a command.
+ * The deploy never runs in ahpd's event loop (@cto 2026-11-25): `run` spawns `ahpd deploy` as a detached child in
+ * its own process group, because a step of minutes inside the daemon would block every other host request. What is
+ * decided before answering is what can be decided cheaply and truthfully - another deploy running, an unknown
+ * service, a version the declared ref cannot reach, and the machine's own gate over build and hook commands.
+ *
+ * The gate is `@ahpd/services`' `machineSwitches`, read fresh on every call: one reader for `allowRemoteCommands`,
+ * never a copy here, and a throw is a refusal with its own sentence rather than a quiet "off".
  */
-import { claim, deploy, readJournal, status } from './index.js';
-import type { DeployCommand, DeployDeclaration, DeployLayout, DeployLock, DeployOptions, DeployStep } from './index.js';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@ahpd/services';
+import { readJournal, resolveVersion, status } from './index.js';
+import type { DeployCommand, DeployDeclaration, DeployLayout } from './index.js';
 
 /** The plugin's id. */
 export const name = 'deploy';
@@ -25,7 +32,14 @@ export const title = 'Deploy';
 export const METHODS = ['x-ahpd/deploy/run', 'x-ahpd/deploy/report'];
 
 /** Why a call was refused, so a person reads a sentence rather than an empty answer. */
-export type DeployRefusalCode = 'INVALID' | 'RUNNING' | 'OUTCOME_UNKNOWN' | 'NOT_DEPLOYED' | 'NOT_CONFIGURED' | 'DRIVER_FAILED';
+export type DeployRefusalCode =
+  | 'INVALID'
+  | 'RUNNING'
+  | 'UNKNOWN_SERVICE'
+  | 'UNREACHABLE'
+  | 'NOT_ALLOWED'
+  | 'NOT_CONFIGURED'
+  | 'DRIVER_FAILED';
 
 export interface DeployRefusal {
   readonly ok: false;
@@ -48,16 +62,23 @@ export interface DeployHost {
   alert(alert: { level: 'error' | 'warning' | 'info'; text: string; ref: string }): void;
 }
 
-/** What the machine answers a command with: why it may not run, or `undefined` when it may. */
-export type Permit = (step: DeployStep, command: DeployCommand) => string | undefined;
+/** One deploy as the method accepted it, and as the child is given it. */
+export interface DeployRequest {
+  readonly service: string;
+  readonly version: string;
+  readonly declaration: DeployDeclaration;
+  readonly deployId: string;
+}
 
 export interface DeployMethodsOptions {
-  /** The gate over every command a deploy would run. Required: a plugin that runs an ungated command is not built. */
-  readonly permit: Permit;
   /** Where a service's deploy state sits: the host's configuration directory. */
   readonly stateDir: string;
-  /** Starts the steps once the lock is taken; injected so a test sees what the method handed it without running git. */
-  readonly start?: (options: DeployOptions) => void;
+  /** The machine's own switches, read on every call. */
+  readonly switches: () => MachineSwitches;
+  /** Every service this machine runs, by name, for the "unknown service" check. */
+  readonly services: () => readonly string[] | Promise<readonly string[]>;
+  /** How the steps start once the checks pass; `ahpd deploy` as a detached child by default. */
+  readonly start: (request: DeployRequest) => void;
 }
 
 const refused = (code: DeployRefusalCode, message: string): DeployRefusal => ({ ok: false, code, message });
@@ -66,16 +87,37 @@ const refused = (code: DeployRefusalCode, message: string): DeployRefusal => ({ 
 const RUN_KEYS = ['service', 'version', 'repo', 'ref', 'migrations', 'build', 'before_switch', 'check', 'keep'] as const;
 
 const commandOf = (value: unknown, key: string): DeployCommand | DeployRefusal => {
-  if (value === undefined) return refused('INVALID', `${key} is absent`);
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return refused('INVALID', `${key} is an object { command, args? }, not ${Array.isArray(value) ? 'a list' : typeof value}`);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return refused('INVALID', `${key} is an object { command, args?, env?, timeoutMs? }, not ${Array.isArray(value) ? 'a list' : typeof value}`);
+  }
   const fields = value as Record<string, unknown>;
-  const extra = Object.keys(fields).filter((one) => one !== 'command' && one !== 'args');
+  const extra = Object.keys(fields).filter((one) => !['command', 'args', 'env', 'timeoutMs'].includes(one));
   if (extra.length > 0) return refused('INVALID', `${key} has unknown ${extra.join(', ')}`);
   const command = fields['command'];
   if (typeof command !== 'string' || command.trim() === '') return refused('INVALID', `${key}.command is a non-empty string`);
   const args = fields['args'];
   if (args !== undefined && (!Array.isArray(args) || args.some((one) => typeof one !== 'string'))) return refused('INVALID', `${key}.args is a list of strings`);
-  return { command, ...(args === undefined ? {} : { args: args as string[] }) };
+  const timeoutMs = fields['timeoutMs'];
+  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1)) return refused('INVALID', `${key}.timeoutMs is a whole number of milliseconds`);
+  // A value is only ever a reference; a plain value here would put a secret in the protocol and then in a journal.
+  const env = fields['env'];
+  const read: Record<string, { $secret: string }> = {};
+  if (env !== undefined) {
+    if (typeof env !== 'object' || env === null || Array.isArray(env)) return refused('INVALID', `${key}.env is an object of NAME: { $secret: "<scope>:<name>" }`);
+    for (const [variable, held] of Object.entries(env as Record<string, unknown>)) {
+      const reference = typeof held === 'object' && held !== null && !Array.isArray(held) ? (held as Record<string, unknown>)['$secret'] : undefined;
+      if (typeof reference !== 'string' || reference === '' || Object.keys(held as object).length !== 1) {
+        return refused('INVALID', `${key}.env ${variable} must be a secret reference {"$secret":"<scope>:<name>"}; a plain value never crosses this method`);
+      }
+      read[variable] = { $secret: reference };
+    }
+  }
+  return {
+    command,
+    ...(args === undefined ? {} : { args: args as string[] }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(env === undefined ? {} : { env: read }),
+  };
 };
 
 /** The declaration a run's params carry, or the refusal that names the first bad field. */
@@ -87,7 +129,7 @@ const declarationOf = (params: Record<string, unknown>): DeployDeclaration | Dep
   const migrations = params['migrations'];
   if (migrations !== undefined && migrations !== 'expand-only') return refused('INVALID', `deploy knows one migration value, expand-only; it was given ${String(migrations)}`);
   const keep = params['keep'];
-  if (keep !== undefined && (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 1 || keep > 60)) return refused('INVALID', 'keep is a whole number of release folders from 1 to 60');
+  if (keep !== undefined && (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 2 || keep > 60)) return refused('INVALID', 'keep is a whole number of release folders from 2 to 60: one kept release is a folder with no way back');
   const declaration: DeployDeclaration = { repo, ref, ...(migrations === undefined ? {} : { migrations: 'expand-only' as const }), ...(keep === undefined ? {} : { keep }) };
   const commands = { build: 'build', before_switch: 'beforeSwitch', check: 'check' } as const;
   for (const [key, field] of Object.entries(commands)) {
@@ -100,19 +142,18 @@ const declarationOf = (params: Record<string, unknown>): DeployDeclaration | Dep
   return declaration;
 };
 
+/**
+ * Whether this machine takes a deploy from outside it at all.
+ *
+ * The switch is `allowRemoteCommands`, the same one the services driver reads: a deploy is a command from Hightea
+ * even when the declaration names no build or hook, because it puts another version live.
+ */
+const gateRefusal = (switches: MachineSwitches): string | undefined =>
+  switches.allowRemoteCommands ? undefined : REMOTE_COMMANDS_OFF;
+
 /** The two methods over one machine's deploy state. */
 export function deployMethods(options: DeployMethodsOptions): Record<string, DeployMethod> {
   const stateOf = (service: string): DeployLayout => ({ stateDir: options.stateDir, service });
-  const start = options.start ?? ((going: DeployOptions): void => {
-    setImmediate(() => {
-      try {
-        // The result is already in the journal, which is what `report` reads; nothing here can throw into ahpd.
-        deploy(going);
-      } catch {
-        // A resolve that throws journals `failed` under its own step before rethrowing; the journal is the record.
-      }
-    });
-  });
   return {
     'x-ahpd/deploy/run': {
       grant: 'deploy:run',
@@ -126,30 +167,54 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
         if (typeof version !== 'string' || version.trim() === '') return refused('INVALID', 'version is a branch, a tag or a commit sha');
         const declaration = declarationOf(params);
         if ('ok' in declaration) return declaration;
-        const layout = stateOf(service);
-        const taken = claim(layout);
-        if (!taken.ok) {
-          const outcome = taken.result.outcome;
-          if (outcome.state === 'refused, deploy running') {
-            return refused('RUNNING', `a deploy of ${service} is already running (${outcome.deployId})`);
-          }
-          if (outcome.state === 'outcome unknown') {
-            return refused('OUTCOME_UNKNOWN', `an earlier deploy of ${service} left ${outcome.step} unfinished (${outcome.deployId}); its outcome is unknown and it is never resumed`);
-          }
-          return refused('DRIVER_FAILED', `the deploy of ${service} could not start: ${outcome.state}`);
-        }
-        const going: DeployOptions = { ...layout, version, declaration, claimed: taken.lock, permit: options.permit };
+
+        // The machine's own switches first: a throw here is a refusal with its sentence, never read as "off".
+        let switches: MachineSwitches;
         try {
-          start(going);
+          switches = options.switches();
+        } catch (error) {
+          return refused('NOT_CONFIGURED', error instanceof Error ? error.message : String(error));
+        }
+
+        let services: readonly string[];
+        try {
+          services = await options.services();
+        } catch (error) {
+          return refused('NOT_CONFIGURED', `cannot read this machine's services: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (!services.includes(service)) {
+          return refused('UNKNOWN_SERVICE', `this machine runs no service called ${service}; it has ${services.length === 0 ? 'none' : services.join(', ')}`);
+        }
+
+        const why = gateRefusal(switches);
+        if (why !== undefined) return refused('NOT_ALLOWED', why);
+
+        const layout = stateOf(service);
+        const running = status(layout).lock;
+        if (running !== undefined) {
+          // A lock whose process is gone is not "running": the child will answer `outcome unknown` by name instead.
+          return refused('RUNNING', `a deploy of ${service} is already running (${running.deployId})`);
+        }
+
+        let sha: string;
+        try {
+          sha = resolveVersion(layout, declaration, version);
+        } catch (error) {
+          return refused('UNREACHABLE', error instanceof Error ? error.message : String(error));
+        }
+
+        const request: DeployRequest = { service, version: sha, declaration, deployId: randomUUID() };
+        try {
+          options.start(request);
         } catch (error) {
           return refused('DRIVER_FAILED', `the deploy of ${service} could not start: ${error instanceof Error ? error.message : String(error)}`);
         }
-        return { ok: true, service, deployId: taken.lock.deployId, state: 'started' };
+        return { ok: true, service, sha, deployId: request.deployId, state: 'started' };
       },
     },
     'x-ahpd/deploy/report': {
-      grant: 'deploy:list',
-      describe: () => ({ title: 'Read a deploy report', description: 'The release current points at, the deploy still running if one is, and the last line the journal wrote - which is the outcome of the last deploy.' }),
+      grant: 'deploy:read',
+      describe: () => ({ title: 'Read a deploy report', description: 'The release current points at, the deploy still running if one is, and the last journal line - which is the outcome of the last deploy, with its steps, exit codes and timings.' }),
       handle: async (params) => {
         const unknown = Object.keys(params).filter((key) => key !== 'service');
         if (unknown.length > 0) return refused('INVALID', `report has no ${unknown.join(', ')}; it takes service`);
@@ -158,12 +223,11 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
         const layout = stateOf(service);
         const read = status(layout);
         const last = readJournal(layout).at(-1);
-        const running: DeployLock | undefined = read.lock;
         return {
           ok: true,
           service,
           current: read.current,
-          running: running === undefined ? null : { deployId: running.deployId, step: running.step },
+          running: read.lock === undefined ? null : { deployId: read.lock.deployId, step: read.lock.step },
           last: last ?? null,
           // Never deployed on this machine is a fact to say, not an empty answer to interpret.
           deployed: read.current !== null || last !== undefined,
@@ -173,26 +237,66 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
   };
 }
 
+/** The file a started deploy's request is handed to the child through: one place, one shape, never argv. */
+export const REQUEST_FILE = 'request.json';
+
+/** A request as the child reads it back. */
+export interface HandedRequest {
+  readonly deployId: string;
+  readonly declaration: DeployDeclaration;
+}
+
 export const apply = (host: DeployHost, options: Record<string, unknown>): void => {
   host.registerGrants('deploy', {
     title: 'Deploy',
     description: 'Placing this machine\'s services at a version, and reading what the last deploy did.',
     operations: ['run', 'read'],
   });
-  const permit = options['permit'];
-  if (typeof permit !== 'function') {
-    const message = 'the deploy plugin needs this machine\'s command gate (allowRemoteCommands); it is wired from @ahpd/services\' machineSwitches (#38277), and until then it runs nothing';
-    host.alert({ level: 'error', text: message, ref: 'deploy-gate' });
+  const read = machineOf(host.configDir, options);
+  if (typeof read === 'string') {
+    // Loud and in place, as the services plugin does: the plugin's page says what is wrong.
+    host.alert({ level: 'error', text: read, ref: 'deploy-options' });
     for (const method of METHODS) {
-      host.registerMethod(method, { grant: 'deploy:list', describe: () => ({ title: method }), handle: async () => refused('NOT_CONFIGURED', message) });
+      host.registerMethod(method, { grant: 'deploy:read', describe: () => ({ title: method }), handle: async () => refused('NOT_CONFIGURED', read) });
     }
     return;
   }
+  const { machine } = read;
   const stateDir = typeof options['stateDir'] === 'string' ? options['stateDir'] : host.configDir;
-  const methods = deployMethods({ permit: permit as Permit, stateDir });
+  const methods = deployMethods({
+    stateDir,
+    switches: () => machineSwitches(host.configDir),
+    services: () => {
+      const listing = listServices(machine);
+      // A listing that cannot be read is a refusal with its own sentence, never an empty list that reads as "none".
+      if (!listing.ok) throw new Error(listing.message);
+      return listing.services.map((one) => one.name);
+    },
+    start: (request) => startChild(machine, stateDir, request),
+  });
   for (const method of METHODS) {
     const found = methods[method];
     if (found === undefined) continue;
     host.registerMethod(method, found);
   }
 };
+
+/**
+ * Starts `ahpd deploy` in its own process group, with the request written beside the service's state.
+ *
+ * The child is given one file rather than a line of flags: a build command arrives as a program and its arguments,
+ * and rebuilding a shell line from that to re-split in the child is where a quoting bug would live.
+ */
+export function startChild(machine: Machine, stateDir: string, request: DeployRequest): void {
+  const root = join(stateDir, 'deploy', request.service);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const file = join(root, REQUEST_FILE);
+  const handed: HandedRequest = { deployId: request.deployId, declaration: request.declaration };
+  writeFileSync(file, `${JSON.stringify(handed, null, 2)}\n`, { mode: 0o600 });
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1] ?? '', 'deploy', request.service, request.version, '--request', file], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, ...(machine.name === '' ? {} : { AHPD_MACHINE: machine.name }) },
+  });
+  child.unref();
+}

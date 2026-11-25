@@ -11,6 +11,7 @@
     "paths": {
       "@ahpd/sdk": ["packages/sdk/src/index.ts"],
       "@ahpd/deploy": ["packages/deploy/src/index.ts"],
+      "@ahpd/services": ["packages/services/src/index.ts"],
       "@ahpd/agent-claude": ["packages/agent-claude/src/index.ts"],
       "@ahpd/agent-cofold": ["packages/agent-cofold/src/index.ts"],
       "@ahpd/agent-acp": ["packages/agent-acp/src/index.ts"],

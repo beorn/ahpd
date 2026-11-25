@@ -5,7 +5,7 @@
  * terminal adds to it: the words, the declaration read from them, and the line
  * printed. Nothing here decides whether a deploy switches, switches back or
  * stops - the handler answers that from the service's declaration, so the AHP
- * method this verb is paired with later answers with the same values.
+ * methods (x-ahpd/deploy/run and /report) answer with the same values.
  *
  * A build, hook or check command is split here and run without a shell, so a
  * flag is a program and its arguments rather than a line anything re-reads.
@@ -14,11 +14,13 @@
  * because a person at this terminal is the machine's owner.
  */
 
+import { readFileSync } from 'node:fs';
 import { output } from '@cofold/commands';
 import type { Command, Registry } from '@cofold/commands';
 import { DEFAULT_KEEP, deploy } from '@ahpd/deploy';
 import type { DeployCommand, DeployDeclaration, DeployResult } from '@ahpd/deploy';
-import { configDir } from '../config.js';
+import { configDir, vaultPath } from '../config.js';
+import { fileVault } from '../vault.js';
 import { conflict, stop } from './options.js';
 
 /**
@@ -49,6 +51,21 @@ const line = (result: DeployResult): string => {
 const settled = (result: DeployResult): boolean =>
   result.outcome.state === 'switched, checked' || result.outcome.state === 'switched, unchecked';
 
+/** The request an AHP method wrote, or a stop naming what is wrong with the file. */
+const readHanded = (file: string): { deployId: string; declaration: DeployDeclaration } => {
+  let held: unknown;
+  try {
+    held = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    stop(`deploy cannot read the request file ${file}: ${(error as Error).message}`);
+  }
+  const body = held as { deployId?: unknown; declaration?: unknown };
+  if (typeof body.deployId !== 'string' || body.deployId === '' || typeof body.declaration !== 'object' || body.declaration === null) {
+    stop(`deploy: ${file} is not a request { deployId, declaration }`);
+  }
+  return { deployId: body.deployId, declaration: body.declaration as DeployDeclaration };
+};
+
 export const declareDeploy = (registry: Registry<object>): Command => registry.action({
   id: 'service.deploy',
   summary: 'Place a service at a version, by switching one current symlink',
@@ -69,10 +86,27 @@ export const declareDeploy = (registry: Registry<object>): Command => registry.a
     check: { type: 'string', description: 'A command run after the switch. Without one the deploy answers switched, unchecked rather than healthy.' },
     keep: { type: 'integer', description: `Release folders to keep, current included. Defaults to ${String(DEFAULT_KEEP)}.` },
     'state-dir': { type: 'string', description: 'The directory the service state sits under. Defaults to the host configuration directory.' },
+    request: { type: 'string', description: 'A file an AHP method handed the deploy through: its declaration and deploy id, so the words are never rebuilt from a line.' },
   },
-  run: (context) => {
+  run: async (context) => {
     const service = context.value<string>('service');
     const version = context.value<string>('version');
+    // The method's hand-off: a declaration and the id it already answered with, read rather than rebuilt from flags.
+    const handedFile = context.optional<string>('request');
+    const handed = handedFile === undefined ? undefined : readHanded(handedFile);
+    if (handed !== undefined) {
+      const result = await deploy({
+        stateDir: context.optional<string>('state-dir') ?? configDir(),
+        service,
+        version,
+        declaration: handed.declaration,
+        deployId: handed.deployId,
+        secrets: async (ref) => await fileVault({ file: vaultPath() }).get(ref),
+      });
+      const text = line(result);
+      if (!settled(result)) conflict(text.trimEnd());
+      return output(result, text);
+    }
     const repo = context.optional<string>('repo');
     if (repo === undefined) {
       stop(`deploy takes the repository the version is fetched from: ahpd deploy ${service} ${version} --repo <path-or-url>`);
@@ -94,11 +128,14 @@ export const declareDeploy = (registry: Registry<object>): Command => registry.a
       ...(check === undefined ? {} : { check }),
       ...(keep === undefined ? {} : { keep }),
     };
-    const result = deploy({
+    const result = await deploy({
       stateDir: context.optional<string>('state-dir') ?? configDir(),
       service,
       version,
       declaration,
+      // A person at this terminal is the machine's owner, so no gate; the vault still is where a secret comes from,
+      // read the same way `ahpd secrets exec` reads it so a build never carries a value in its line.
+      secrets: async (ref) => await fileVault({ file: vaultPath() }).get(ref),
     });
     const text = line(result);
     if (!settled(result)) {
