@@ -92,7 +92,7 @@ Upstream status is one of:
 
 ### Services: machine-local switches
 - `67799d139` · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
-- `1a7e8f52b` · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · upstream ask not written (new package)
+- `1a7e8f52b`, `6e6f65762` · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · upstream ask not written (new package)
 
 ### Superseded
 - `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0)
