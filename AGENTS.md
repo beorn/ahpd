@@ -29,3 +29,14 @@ Record both verdicts, with the head sha each one read, on the bead the post serv
 A seat harness on this host exports `AHPD_PLUGIN_ROOT` pointing at a trial install. Every install and update case that expects to write into its own temporary root then writes somewhere else, and
 `packages/server/test/server-http.test.ts` and its neighbours fail with `400 where 200 was expected` — a red that looks like a product bug and is not. Run the suites as
 `env -u AHPD_PLUGIN_ROOT npx vitest run <paths>`; two review passes were lost to this before it was found (2026-11-25).
+
+## In a fresh worktree: build `packages/sdk` and write the schema first
+
+Two reds in a new worktree look like product bugs and are not:
+
+- `Cannot find module '@ahpd/sdk'`, from a custody fixture's child process, because that process resolves the package
+  rather than its `src`. Build it once: `pnpm exec tsc -p packages/sdk`.
+- Five failures in `packages/agent-acp/test/agent-acp-ports.test.ts` reading the strict schema, because `tools/schema.mjs`
+  has not written it. Run `node tools/schema.mjs`; the repo's own `test` script does this first for that reason.
+
+Found on 2026-11-25 while reviewing #56; `node tools/schema.mjs && npx vitest run packages/agent-acp` is green after both.
