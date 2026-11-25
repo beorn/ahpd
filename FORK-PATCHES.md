@@ -62,7 +62,7 @@ Upstream status is one of:
 - `d0e6bf9b5`, `2453628ee`, `e107907ed` · scope nested child sessions by hub and inner id, dispose joined sessions from their durable scope, with the two-host test · #37250 · upstream ask not written (`joinedSessionIds` absent upstream)
 - `780688f0f` · avoid duplicate provider assignments and track fork identity honestly · #34955 · upstream ask not written
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
-- `27f6093df` · a listed row two harnesses read that no record names is nobody's, and the agent its opening caller names adopts it · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
+- `27f6093df` + its adoption undo · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses takes the claim back so the row is nobody's for the harness that can open it · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
 - `c6f74e9d0` · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
 
 ### acp: openings, native identity and custody

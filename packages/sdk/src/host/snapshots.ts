@@ -815,7 +815,7 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     return {
       kind: 'session',
       state: {
-        provider: holder?.provider ?? NO_PROVIDER,
+        provider: holder?.provider ?? kept.provider(id) ?? NO_PROVIDER,
         title,
         status: Status.Idle | kept.flags(id),
         lifecycle: 'ready',

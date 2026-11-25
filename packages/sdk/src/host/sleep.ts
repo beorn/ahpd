@@ -393,13 +393,14 @@ export function createSleep(ctx: HostContext): Sleep {
      * that names no such agent leaves the row nobody's, and is refused below.
      */
     const unowned = owners.get(nameOf(id));
-    let adopted = false;
+    /** #38259 (@dev/review2): puts the row back nobody's when the open that claimed it refuses. */
+    let unadopt: (() => void) | undefined;
     if (unowned === undefined && kept.provider(id) === undefined) {
       const plugin = sender?.principal?.plugin;
       const mine = plugin === undefined
         ? []
         : [...ctx.agents.values()].filter((agent) => options.agentStarts?.[agent.provider]?.by === plugin);
-      if (mine.length === 1 && mine[0] !== undefined) adopted = adoptListed(id, mine[0]);
+      if (mine.length === 1 && mine[0] !== undefined) unadopt = adoptListed(id, mine[0]);
     }
     /*
      * Named again, because `restoreSession` is what learned whose session this is - and
@@ -413,7 +414,7 @@ export function createSleep(ctx: HostContext): Sleep {
     // The caller asked by the name the catalogue published before this call
     // adopted the row; the name it answers by from here is the adopting
     // agent's, and the conversation is the same one.
-    if (named !== asked && !adopted) throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${asked}`);
+    if (named !== asked && unadopt === undefined) throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${asked}`);
     const live = sessions.get(named);
     if (live !== undefined) return { uri: named, chat: picked(named, chat) as Session };
     const owner = owners.get(named);
@@ -498,29 +499,42 @@ export function createSleep(ctx: HostContext): Sleep {
      * values it set for itself laid over it, as it ran before it slept; a
      * chat of another backend on its own.
      */
-    const session = await spawn(
-      other?.agent ?? owner,
-      named,
-      lead?.one.uri ?? chatUriFor(named),
-      other?.one.backendId ?? chatIdFor(named, chatUriFor(named)),
-      other?.one.config ?? { ...restored, ...lead?.one.configValues },
-      other === undefined
-        ? { resume: lead?.one.backendId ?? id, seed }
-        : { resume: other.one.backendId, seed: (back ?? []) as unknown as Bag[] },
-      ran,
-      undefined,
-      undefined,
-      sender,
-      undefined,
-      { agent: owner, config: restored },
-    );
-    /*
-     * Which harness the session is, recorded under the session's own name and
-     * the id of the chat it started as. A lead chat on another backend says
-     * nothing about the session: its transcript is that backend's, and the
-     * session's provider is not written under it.
-     */
-    if (other === undefined || other.agent === owner) recordSessionProvider(named, owner, session);
+    let session: Session;
+    try {
+      session = await spawn(
+        other?.agent ?? owner,
+        named,
+        lead?.one.uri ?? chatUriFor(named),
+        other?.one.backendId ?? chatIdFor(named, chatUriFor(named)),
+        other?.one.config ?? { ...restored, ...lead?.one.configValues },
+        other === undefined
+          ? { resume: lead?.one.backendId ?? id, seed }
+          : { resume: other.one.backendId, seed: (back ?? []) as unknown as Bag[] },
+        ran,
+        undefined,
+        undefined,
+        sender,
+        undefined,
+        { agent: owner, config: restored },
+      );
+      /*
+       * Which harness the session is, recorded under the session's own name and
+       * the id of the chat it started as. A lead chat on another backend says
+       * nothing about the session: its transcript is that backend's, and the
+       * session's provider is not written under it.
+       */
+      if (other === undefined || other.agent === owner) recordSessionProvider(named, owner, session);
+    } catch (error) {
+      /*
+       * #38259 (@dev/review2): the open is what proves this record holds the
+       * row, and a start that refuses - agent-acp's "no matching configured ACP
+       * process authority" - leaves the row nobody's again, under the neutral
+       * name its listing gave it, so the harness that can open it adopts it
+       * next instead of finding this record written and no listing to claim it.
+       */
+      unadopt?.();
+      throw error;
+    }
     // And every other chat the store recorded for it, each a conversation of
     // its own, resumed the way a chat restarted on its own is.
     for (const { one, agent } of served) {

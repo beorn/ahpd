@@ -147,11 +147,16 @@ export interface Catalogue {
    */
   registerListedSession(agent: Agent, row: Listed, waiting?: string, stored?: boolean): Summary;
   /**
-   * A listed row nobody's, made one agent's by the open that names it: its
+   * A listed row nobody's, claimed by the agent the opening caller names: its
    * owner, its provider in the store, and the name a client holds it by, all
    * written as a session this host ran has them (#38259).
+   *
+   * The claim is not final until the open that proves it has started: a start
+   * that refuses (agent-acp's "no matching configured ACP process authority")
+   * calls `undo`, and the row is nobody's again, under the neutral name its
+   * listing gave it, so the harness that can open it adopts it next.
    */
-  adoptListedSession(id: string, agent: Agent, row: Summary): Summary | undefined;
+  adoptListedSession(id: string, agent: Agent, row: Summary): { summary: Summary; undo: () => void } | undefined;
   /** Announce to every client a listed session this host did not have. */
   announceSurfacedSession(summary: Summary): void;
   /**
@@ -1959,7 +1964,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    * adopted, and only under the neutral name it was listed by: a row a record
    * already names is opened as that record's, and one already adopted is.
    */
-  const adoptListedSession = (id: string, agent: Agent, row: Summary): Summary | undefined => {
+  const adoptListedSession = (id: string, agent: Agent, row: Summary): { summary: Summary; undo: () => void } | undefined => {
     const neutral = names.get(id);
     if (neutral === undefined || neutral !== row.resource || neutral !== uriFor(id)) return undefined;
     if (owners.has(neutral) || kept.provider(id) !== undefined || kept.uri?.(id) !== undefined) return undefined;
@@ -1980,12 +1985,41 @@ export function createCatalogue(ctx: HostContext): Catalogue {
     kept.setExternal?.(id, false);
     kept.setUri?.(id, held);
     const found = registerListedSession(agent, listed, undefined, true);
+    /** What the neutral name carried, kept for the undo before the keys are dropped. */
+    const neutralMeta = listedMeta.get(neutral);
     // One name per row: the keys the neutral spelling left behind are dropped,
     // so nothing answers for a session by the name it had before an agent
     // named it.
     for (const map of [wheres, births, moves, listedMeta, externalSessions]) map.delete(neutral);
-    if (found.resource !== held) return undefined;
-    return found;
+    /*
+     * #38259 (@dev/review2): the claim is durable before the open has proved
+     * it. A start that refuses - the shared-account case this fix is about,
+     * where the row was another seat's - must not leave this record holding
+     * it, because `kept.provider(id)` is then set and no later listing adopts
+     * the row again: the seat that can open it would be refused for good.
+     * Undoing restores the record's absence, the neutral name, and the row's
+     * place in the maps the listing answers from, so the row is nobody's and
+     * the next open claims it.
+     */
+    const undo = (): void => {
+      kept.setProvider(id, undefined);
+      kept.setExternal?.(id, false);
+      kept.setUri?.(id, undefined);
+      names.set(id, neutral);
+      owners.delete(held);
+      for (const map of [wheres, births, moves, listedMeta, externalSessions]) map.delete(held);
+      wheres.set(neutral, row.workingDirectories);
+      births.set(neutral, row.createdAt);
+      moves.set(neutral, row.modifiedAt);
+      if (neutralMeta !== undefined) listedMeta.set(neutral, neutralMeta);
+      // A row nobody's is external: no record says this host ran it.
+      externalSessions.add(neutral);
+    };
+    if (found.resource !== held) {
+      undo();
+      return undefined;
+    }
+    return { summary: found, undo };
   };
   /**
    * A held listed session's summary with what this host knows about it read

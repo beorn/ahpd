@@ -43,11 +43,15 @@ export interface History {
   /** A session deleted here, removed from the listed sessions this host holds, by id. */
   removeListedSession(resource: string): void;
   /**
-   * A listed row nobody's, adopted by the agent the opening caller names
+   * A listed row nobody's, claimed by the agent the opening caller names
    * (#38259), and held under the name that agent's sessions are named by.
-   * False where there is no such row to adopt.
+   *
+   * The returned `undo` puts the row back as it was - nobody's, under the
+   * neutral name its listing gave it, and listed where it was - for a caller
+   * whose open then refuses the row; nothing is returned where there is no
+   * such row to adopt.
    */
-  adoptListed(id: string, agent: Agent): boolean;
+  adoptListed(id: string, agent: Agent): (() => void) | undefined;
   /**
    * A session this host stopped running, its state evicted and its summary
    * listed from here.
@@ -544,14 +548,22 @@ export function createHistory(ctx: HostContext): History {
    * replaced by the one the catalogue registers for the adopting agent, so the
    * listing, the session's state and every later open answer with one name,
    * one owner and one provider.
+   *
+   * #38259 (@dev/review2): the held listing is put back with the catalogue's
+   * record when the caller's open refuses, so a listing taken between the
+   * claim and its undo answers with the row nobody's.
    */
-  const adoptListed = (id: string, agent: Agent): boolean => {
+  const adoptListed = (id: string, agent: Agent): (() => void) | undefined => {
     const row = listedSummaries.find((one) => idFor(one.resource) === id);
-    const found = row === undefined ? undefined : ctx.adoptListedSession(id, agent, row);
-    if (found === undefined) return false;
-    listedSummaries = [...listedSummaries.filter((one) => idFor(one.resource) !== id), found];
-    ctx.announceSurfacedSession(found);
-    return true;
+    const adopted = row === undefined ? undefined : ctx.adoptListedSession(id, agent, row);
+    if (adopted === undefined) return undefined;
+    const before = listedSummaries;
+    listedSummaries = [...listedSummaries.filter((one) => idFor(one.resource) !== id), adopted.summary];
+    ctx.announceSurfacedSession(adopted.summary);
+    return () => {
+      adopted.undo();
+      listedSummaries = before;
+    };
   };
 
   return {

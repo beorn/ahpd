@@ -525,6 +525,62 @@ describe('a row two harnesses both list', () => {
   });
 
   /*
+   * #38259 (@dev/review2): the claim is written before the open proves it, so
+   * an open that refuses must take it back. The shared-account case is one
+   * seat's turn opening a row the host bound to another seat's record, which
+   * agent-acp refuses with "no matching configured ACP process authority". If
+   * the wrong record kept the row, `kept.provider` would be set, no listing
+   * would adopt it again, and the seat that can open it would be refused from
+   * then on - the misassignment this fix removes, written down for good.
+   */
+  it('is nobody\'s again when the open that claims it refuses, and the right plugin opens it next', async () => {
+    const one: string[] = [];
+    const two: string[] = [];
+    const store = counting();
+    const refusing: Agent = {
+      ...harness('one', ['unrecorded'], one),
+      // What agent-acp answers when the record's ACP process is configured for
+      // another conversation: the open this fix must not adopt around.
+      create: (): never => {
+        throw new Error('one: this conversation has no matching configured ACP process authority');
+      },
+    };
+    const { host, client } = serving(store, [refusing, harness('two', ['unrecorded'], two)], peer(), {
+      starts: { one: { by: 'wrong-plugin' }, two: { by: 'hab-plugin-ag' } },
+      who: { id: 'plugin:wrong', roles: [] as string[], plugin: 'wrong-plugin' } as unknown as Principal,
+    });
+    await settle();
+    await showExternal(client);
+    expect(await catalogue(client)).toEqual(['ahp-session:/unrecorded']);
+
+    await talk(client, chatUriFor('ahp-session:/unrecorded'), 't1');
+
+    // Written and taken back: no provider, no owner, still the neutral name,
+    // and still listed, so the harness that can open it adopts it next.
+    expect(store.provider('unrecorded')).toBeUndefined();
+    expect(one).toEqual([]);
+    expect(two).toEqual([]);
+    expect(await catalogue(client)).toEqual(['ahp-session:/unrecorded']);
+    // Browsable as nobody's: the empty provider, not the agent that reads it.
+    const seen = await client.handle({ method: 'subscribe', params: { channel: 'ahp-session:/unrecorded' } }) as {
+      snapshot: { state: { provider: string } };
+    };
+    expect(seen.snapshot.state.provider).toBe('');
+
+    const right = host.accept(peer(), { id: 'plugin:hab', roles: [] as string[], plugin: 'hab-plugin-ag' } as unknown as Principal);
+    void right.handle({
+      method: 'initialize',
+      params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: [ROOT] },
+    });
+    await settle();
+    await talk(right, chatUriFor('ahp-session:/unrecorded'), 't2');
+
+    expect(store.provider('unrecorded')).toBe('two');
+    expect(one).toEqual([]);
+    expect(two).toEqual(['unrecorded']);
+  });
+
+  /*
    * A row whose agent is not loaded is refused as VS Code's restore refuses a
    * session it finds no agent for: -32001, the code its client takes as final.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L14103-L14108
