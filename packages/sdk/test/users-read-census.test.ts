@@ -1,6 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { gitSync } from '../../../tools/git.ts';
 
 /*
  * Every place the SDK reads whether the host has a users directory (#38446,
@@ -68,7 +68,7 @@ const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: 
 const SRC = join(import.meta.dirname, '..', 'src');
 
 /** Every line under packages/sdk/src that reads `options.users`, as [file relative to src, trimmed text]. */
-const reads = (): [string, string][] => execFileSync('git', ['grep', '-n', '-E', String.raw`options\.users\b`, '--', '.'], { cwd: SRC, encoding: 'utf8' })
+const reads = (): [string, string][] => gitSync(['grep', '-n', '-E', String.raw`options\.users\b`, '--', '.'], { cwd: SRC, encoding: 'utf8' })
   .split('\n')
   .filter((one) => one !== '')
   .map((one) => {
