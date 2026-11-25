@@ -140,7 +140,28 @@ describe('customer host install manifest (#38280)', () => {
     expect(built.ok).toBe(false);
     if (built.ok) throw new Error('unreachable');
     expect(built.refusals).toEqual([{ kind: 'malformed-checksum', download: 'hostPlugin', checksum: 'sha512-cccc' }]);
-    expect(describeRefusal(built.refusals[0])).toContain('is not sha256:<64 hex>');
+    expect(describeRefusal(built.refusals[0])).toContain('is not sha256:<64 hex> or sha512-');
+  });
+
+  // @level l3 @consumer npm's own integrity form is accepted whole, and a truncated one is not.
+  it('accepts a full sha512 integrity and refuses a truncated one', () => {
+    const full = 'sha512-' + 'A'.repeat(86) + '==';
+    const passing = customerInstallManifest({
+      platform: 'darwin',
+      home: '/home/customer',
+      version: '0.15.0-rc.4',
+      pins: { ...PINS, ahpd: { ...PINS.ahpd, checksum: full } },
+    });
+    expect(passing.ok).toBe(true);
+    const truncated = customerInstallManifest({
+      platform: 'darwin',
+      home: '/home/customer',
+      version: '0.15.0-rc.4',
+      pins: { ...PINS, ahpd: { ...PINS.ahpd, checksum: full.slice(0, 40) } },
+    });
+    expect(truncated.ok).toBe(false);
+    if (truncated.ok) throw new Error('unreachable');
+    expect(truncated.refusals[0].kind).toBe('malformed-checksum');
   });
 
   // @level l3 @consumer an http or file source is refused: a checksum only protects what it came from.

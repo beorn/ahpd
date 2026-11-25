@@ -38,8 +38,8 @@ Four separate supply chains, each pinned by exact version and checked before use
 A pin carries `version`, `source` and `checksum`, and three checks refuse by name before any plan exists (@cto
 2026-11-25):
 
-- `checksum` is `sha256:<64 hex>` of the artifact's bytes, for every artifact including the npm tarballs. A malformed
-  checksum is refused, not trusted; a checksum not yet published is refused as
+- `checksum` is `sha256:<64 hex>` of the artifact's bytes, or npm's own `sha512-<86 base64>==` integrity for a
+  published package; each is checked against its exact shape, so a truncated or prefixed one is refused, not trusted. a checksum not yet published is refused as
   `runtime has no published checksum yet; the install will not fetch it unchecked`.
 - `source` is an `https://` URL — `http:` and `file:` are refused, because a checksum only protects what it came from.
 - `version` is exact (`1.3.13`, `0.15.0-rc.4`); a range, a git tag or `latest` is refused.

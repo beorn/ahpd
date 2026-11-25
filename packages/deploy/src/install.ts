@@ -24,7 +24,8 @@ export interface InstallPin {
   /** An `https://` URL; the plan prints it so a customer can read what is fetched. `http:` and `file:` are refused. */
   readonly source: string
   /**
-   * `sha256:<64 hex>` of the artifact's bytes, for every artifact including the npm tarballs (@cto 2026-11-25).
+   * `sha256:<64 hex>` of the artifact's bytes, or npm's own `sha512-<86 base64>==` integrity for a package
+   * (@cto 2026-11-25).
    * `null` means the publisher has not published it yet: the plan says so and the install refuses by name, because a
    * download used without its checksum is the silent error this row exists to prevent. A malformed checksum is
    * refused too, never trusted.
@@ -99,7 +100,10 @@ export const BOOT_LABEL = 'dev.hallohuman.ahpd';
 export const INSTALL_SERVICE = 'ahpd';
 
 const isPinned = (version: string): boolean => /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version);
-const isSha256 = (checksum: string): boolean => /^sha256:[0-9a-f]{64}$/u.test(checksum);
+/** `sha256:<64 hex>` for an artifact we publish, or npm's own `sha512-<86 base64>==` integrity; each exact, never a
+ * prefix or a truncation (@cto 2026-11-25: the sha256-only rule would force a second checksum for npm tarballs). */
+const isChecksum = (checksum: string): boolean =>
+  /^sha256:[0-9a-f]{64}$/u.test(checksum) || /^sha512-[A-Za-z0-9+/]{86}==$/u.test(checksum);
 
 /** Every refusal this manifest would have to answer for, named by the download it is about. */
 export const installRefusals = (pins: InstallPins): readonly InstallRefusal[] => {
@@ -109,7 +113,7 @@ export const installRefusals = (pins: InstallPins): readonly InstallRefusal[] =>
     if (!isPinned(pin.version)) refusals.push({ kind: 'unpinned-version', download, version: pin.version })
     if (!pin.source.startsWith('https://')) refusals.push({ kind: 'insecure-source', download, source: pin.source })
     if (pin.checksum === null) refusals.push({ kind: 'missing-checksum', download })
-    else if (!isSha256(pin.checksum)) refusals.push({ kind: 'malformed-checksum', download, checksum: pin.checksum })
+    else if (!isChecksum(pin.checksum)) refusals.push({ kind: 'malformed-checksum', download, checksum: pin.checksum })
   }
   return refusals
 }
@@ -201,5 +205,5 @@ export const describeRefusal = (refusal: InstallRefusal): string =>
     : refusal.kind === 'unpinned-version'
       ? `refused: ${refusal.download} version ${refusal.version} is not an exact version`
       : refusal.kind === 'malformed-checksum'
-        ? `refused: ${refusal.download} checksum ${refusal.checksum} is not sha256:<64 hex>`
+        ? `refused: ${refusal.download} checksum ${refusal.checksum} is not sha256:<64 hex> or sha512-<86 base64>==`
         : `refused: ${refusal.download} source ${refusal.source} is not https`
