@@ -116,3 +116,32 @@ it('with no user directory a plugin peer without terminal:write cannot type into
   const rejected = quiet.seen.filter((one) => one.method === 'action' && typeof one.params.rejectionReason === 'string');
   expect(String(rejected[0]?.params.rejectionReason)).toMatch(/plugin:pipe may not terminal:/);
 });
+
+/*
+ * The whole rule keys on `principal.plugin` (@cto 806f0ee5). The one path that
+ * opens a plugin's connection is `host.connect()` (plugins.ts), which serves it
+ * as the entry's frozen `plugin:<name>` principal; this drives that path and
+ * reads back what a handler is given.
+ */
+it("a plugin's host.connect() connection always carries principal.plugin as the entry's name, with and without a user directory", async () => {
+  for (const users of [false, true]) {
+    let seen: { id?: string; plugin?: string; frozen: boolean } | undefined;
+    const probe = pluginHost('probe', context(), { grants: [] });
+    probe.host.registerMethod('x-probe/who', {
+      grant: 'probe:read', describe: () => ({ title: 'who' }),
+      handle: async (_params, reader) => { seen = { id: reader?.id, plugin: reader?.plugin, frozen: Object.isFrozen(reader) }; return { ok: true }; },
+    });
+    const caller = pluginHost('hightea-pipe', context(), { grants: ['probe:read'] });
+    const { options } = foldHostOptions({
+      path: DIR, agents: [{ ...echo({ path: DIR, pace: 0 }), provider: 'base', displayName: 'Base' }], sessions: memorySessions(),
+      ...(users ? { users: directory({}) } : {}),
+    }, [probe.contribution, caller.contribution]);
+    const host = createHost(options);
+    for (const one of options.pluginConnects ?? []) one.host = host;
+    const connection = caller.host.connect();
+    await connection.request('initialize', { clientId: 'hightea-pipe', protocolVersions: ['0.9.0'] });
+    await connection.request('x-probe/who', {});
+    expect(seen).toEqual({ id: 'plugin:hightea-pipe', plugin: 'hightea-pipe', frozen: true });
+    await host.close();
+  }
+});
