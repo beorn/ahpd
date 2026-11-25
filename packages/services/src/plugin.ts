@@ -23,8 +23,8 @@ import { mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
-  controlService, listServices, putService, removeService, serviceLogs,
-  type Answer, type Caller, type Machine, type PutParams, type Refusal,
+  acknowledgeFiles, controlService, listServices, putService, removeService, serviceLogs,
+  type AcknowledgeParams, type Answer, type Caller, type Machine, type PutParams, type Refusal,
 } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert } from './drift.js';
 
@@ -61,12 +61,13 @@ export interface Driver {
   readonly remove: typeof removeService;
   readonly control: typeof controlService;
   readonly logs: typeof serviceLogs;
+  readonly acknowledge: typeof acknowledgeFiles;
 }
 
-export const DRIVER: Driver = { list: listServices, put: putService, remove: removeService, control: controlService, logs: serviceLogs };
+export const DRIVER: Driver = { list: listServices, put: putService, remove: removeService, control: controlService, logs: serviceLogs, acknowledge: acknowledgeFiles };
 
 /** The method names, as the manifest's `contracts.methods` lists them. */
-export const METHODS = ['list', 'put', 'remove', 'start', 'stop', 'restart', 'logs'].map((verb) => `x-ahpd/services/${verb}`);
+export const METHODS = ['list', 'put', 'remove', 'start', 'stop', 'restart', 'logs', 'acknowledge'].map((verb) => `x-ahpd/services/${verb}`);
 
 /**
  * Who a call is from, for the change log and the `allowRemoteCommands` check.
@@ -89,11 +90,15 @@ const guarded = async (run: () => Promise<unknown> | unknown): Promise<unknown> 
 };
 
 /**
- * The seven methods over one machine. `wrote` is told the file and its new
- * hash after each put or remove that wrote, so drift takes it as the driver's.
- * Each method answers the driver's answer, refusals included, unchanged.
+ * The eight methods over one machine. `wrote` is told the file and its new
+ * hash after each put or remove that wrote, and each file an acknowledge
+ * accepted, so drift takes it as known; `acknowledged` runs after an accepted
+ * acknowledge, so the plugin can check drift again at once rather than in five
+ * minutes. Each method answers the driver's answer, refusals included, unchanged.
  */
-export function servicesMethods(machine: Machine, driver: Driver = DRIVER, wrote: (file: string, hash: string) => void = () => {}): Record<string, ServicesMethod> {
+export function servicesMethods(
+  machine: Machine, driver: Driver = DRIVER, wrote: (file: string, hash: string) => void = () => {}, acknowledged: () => void = () => {},
+): Record<string, ServicesMethod> {
   const written = <T extends Answer<{ ifVersion: string; file: string }>>(answer: T): T => {
     if (answer.ok && (!('changed' in answer) || answer.changed === true)) wrote(answer.file, answer.ifVersion);
     return answer;
@@ -130,6 +135,15 @@ export function servicesMethods(machine: Machine, driver: Driver = DRIVER, wrote
       describe: () => ({ title: 'Read a service\'s log', description: 'One bounded read of a process\'s log lines.' }),
       handle: async (params, reader, client, owner) => guarded(() =>
         driver.logs(machine, callerOf(reader, client, owner), params as { name: string; endOffset?: number; limit?: number })),
+    },
+    'x-ahpd/services/acknowledge': {
+      grant: 'services:put',
+      describe: () => ({ title: 'Acknowledge the files', description: 'Accepts the -f files as they are now, pinned to the hashes list answered, so drift stops alerting on an edit made outside the driver. Writes no file and changes nothing running.' }),
+      handle: async (params, reader, client, owner) => guarded(() => {
+        const answer = driver.acknowledge(machine, callerOf(reader, client, owner), params as unknown as AcknowledgeParams, wrote);
+        if (answer.ok) acknowledged();
+        return answer;
+      }),
     },
   };
 }
@@ -210,7 +224,7 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>): voi
   catch (error) {
     host.alert({ level: 'error', text: `cannot make the services directory: ${(error as Error).message}`, ref: 'services-options' });
   }
-  for (const [method, served] of Object.entries(servicesMethods(machine, DRIVER, wrote))) host.registerMethod(method, served);
+  for (const [method, served] of Object.entries(servicesMethods(machine, DRIVER, wrote, () => { void check(); }))) host.registerMethod(method, served);
   void check();
   const timer = setInterval(() => { void check(); }, DRIFT_EVERY_MS);
   timer.unref();

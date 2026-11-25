@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { controlService, listServices, putService, removeService, serviceLogs, type Machine } from '../src/compose.js';
+import { acknowledgeFiles, controlService, listServices, putService, removeService, serviceLogs, type Machine } from '../src/compose.js';
 import { REMOTE_COMMANDS_OFF } from '../src/switches.js';
 
 /*
@@ -410,5 +410,48 @@ describe('refusals, never throws (@cto: the condition for running inside ahpd)',
     const missing = { ...machine, files: [join(dir, 'absent.yaml')] };
     expect(listServices(missing)).toMatchObject({ ok: false, code: 'FILE_UNREADABLE' });
     expect(await putService(missing, LOCAL_ONLY, { service: { name: 'web', command: 'two' }, ifVersion: 'x' })).toMatchObject({ ok: false, code: 'FILE_UNREADABLE' });
+  });
+});
+
+describe('acknowledge (@cto 876bcedd: pinned to the hashes shown, logged, changes nothing running)', () => {
+  it('records every -f file as list showed it, logs who and which hashes, and touches neither the files nor process-compose', async () => {
+    writeFileSync(local, 'processes:\n  web:\n    command: edited-by-hand\n');
+    const listing = listServices(machine);
+    if (!listing.ok) throw new Error(listing.message);
+    expect(Object.keys(listing.hashes)).toEqual([base, local]);
+    const recorded: Array<[string, string]> = [];
+    const before = readFileSync(local, 'utf8');
+    seen = [];
+    const answer = acknowledgeFiles(machine, REMOTE, { hashes: listing.hashes }, (file, hash) => recorded.push([file, hash]));
+    expect(answer).toEqual({ ok: true, files: listing.hashes });
+    expect(recorded).toEqual(Object.entries(listing.hashes));
+    expect(readFileSync(local, 'utf8')).toBe(before);
+    expect(seen).toEqual([]);
+    const line = JSON.parse(readFileSync(machine.changeLog, 'utf8').trim().split('\n').at(-1)!) as Record<string, unknown>;
+    expect(line).toMatchObject({ principal: 'plugin:hightea-pipe', op: 'acknowledge', files: listing.hashes });
+    expect(line['refused']).toBeUndefined();
+  });
+
+  it('refuses a file changed since it was shown, with the difference blanked for a remote caller, and records nothing', () => {
+    writeFileSync(local, 'processes:\n  web:\n    command: one\n    environment:\n      - DB_PASSWORD=hunter2\n');
+    const shown = listServices(machine);
+    if (!shown.ok) throw new Error(shown.message);
+    writeFileSync(local, 'processes:\n  web:\n    command: two\n    environment:\n      - DB_PASSWORD=hunter3\n');
+    const recorded: string[] = [];
+    const remote = acknowledgeFiles(machine, REMOTE, { hashes: shown.hashes }, (file) => recorded.push(file));
+    expect(remote).toMatchObject({ ok: false, code: 'STALE_VERSION' });
+    if (remote.ok) return;
+    expect(remote.diff).toContain('+    command: two');
+    expect(remote.message).not.toMatch(/hunter/);
+    const person = acknowledgeFiles(machine, LOCAL_ONLY, { hashes: shown.hashes }, (file) => recorded.push(file));
+    if (person.ok) throw new Error('expected a refusal');
+    expect(person.diff).toContain('DB_PASSWORD=hunter3');
+    expect(recorded).toEqual([]);
+    expect(readFileSync(machine.changeLog, 'utf8')).not.toMatch(/hunter/);
+  });
+
+  it('refuses no hashes, or a file that is not one of the -f files, by name', () => {
+    expect(acknowledgeFiles(machine, LOCAL_ONLY, { hashes: {} }, () => {})).toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining('acknowledge needs "hashes"') });
+    expect(acknowledgeFiles(machine, LOCAL_ONLY, { hashes: { '/etc/passwd': 'x' } }, () => {})).toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining('/etc/passwd is not one of this machine\'s -f files') });
   });
 });

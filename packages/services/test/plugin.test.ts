@@ -35,12 +35,13 @@ const recording = () => {
     remove: async (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'remove', caller, params }); return answer; },
     control: async (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'control', caller, params }); return answer; },
     logs: async (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'logs', caller, params }); return answer; },
+    acknowledge: (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'acknowledge', caller, params }); return answer; },
   } as unknown as Driver;
   return { driver, calls, answer: (next: unknown) => { answer = next; } };
 };
 
 describe('servicesMethods', () => {
-  it('serves the seven x-ahpd/services methods the manifest lists', () => {
+  it('serves the eight x-ahpd/services methods the manifest lists', () => {
     const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { ahpd: { contracts: { methods: string[] } } };
     expect(Object.keys(servicesMethods(machine))).toEqual(METHODS);
     expect(manifest.ahpd.contracts.methods).toEqual(METHODS);
@@ -58,6 +59,7 @@ describe('servicesMethods', () => {
     await methods['x-ahpd/services/stop']!.handle({ name: 'web' }, undefined, 'c1', owner);
     await methods['x-ahpd/services/restart']!.handle({ name: 'web' }, undefined, 'c1', owner);
     await methods['x-ahpd/services/logs']!.handle({ name: 'web', limit: 5 }, undefined, 'c1', owner);
+    await methods['x-ahpd/services/acknowledge']!.handle({ hashes: { '/m/local.yaml': 'h' } }, undefined, 'c1', owner);
     expect(calls).toEqual([
       { verb: 'list' },
       { verb: 'put', caller: remote, params: { service: { name: 'web', command: 'x' }, ifVersion: 'v' } },
@@ -66,6 +68,7 @@ describe('servicesMethods', () => {
       { verb: 'control', caller: remote, params: { name: 'web', verb: 'stop' } },
       { verb: 'control', caller: remote, params: { name: 'web', verb: 'restart' } },
       { verb: 'logs', caller: remote, params: { name: 'web', limit: 5 } },
+      { verb: 'acknowledge', caller: remote, params: { hashes: { '/m/local.yaml': 'h' } } },
     ]);
   });
 
@@ -85,6 +88,18 @@ describe('servicesMethods', () => {
       expect(await methods[name]!.handle({ name: 'web' }, undefined, 'c1', 'plugin:hightea-pipe')).toBe(refusal);
     }
     expect(wrote).toEqual([]);
+  });
+
+  it('checks drift again at once after an accepted acknowledge, and not after a refused one', async () => {
+    const { driver, answer } = recording();
+    let checks = 0;
+    const methods = servicesMethods(machine, driver, () => {}, () => { checks += 1; });
+    answer({ ok: false, code: 'STALE_VERSION', message: 'changed' });
+    await methods['x-ahpd/services/acknowledge']!.handle({}, undefined, 'c1');
+    expect(checks).toBe(0);
+    answer({ ok: true, files: { '/m/local.yaml': 'h' } });
+    await methods['x-ahpd/services/acknowledge']!.handle({}, undefined, 'c1');
+    expect(checks).toBe(1);
   });
 
   it('records the file and hash a put or remove wrote, and not a put that changed nothing', async () => {
