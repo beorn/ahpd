@@ -1,5 +1,5 @@
 import type { CreateElicitationResponse, PromptCapabilities, SessionModeState, SessionUpdate } from '@agentclientprotocol/sdk';
-import type { Bag, BoundTool, Chosen, Emit, MessageAttachment, MessageFrom, OpenedTerminal, Start, TurnOptions } from '@ahpd/sdk';
+import type { Bag, BoundTool, Chosen, Emit, MessageAttachment, MessageFrom, OpenedTerminal, ProxyEndpoint, Start, TurnOptions } from '@ahpd/sdk';
 import type { TypedAnswer } from '../mapping.js';
 import type { AcpConnection, AcpOptions, AcpTurn, ConfirmationOption, PermissionAnswer, WatchedSession, WatchedTurn } from '../types.js';
 import type { ClientCalls } from './clientcalls.js';
@@ -128,6 +128,15 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   servers: Bag[];
   /** Everything this session publishes as its customizations: seeds, servers, then commands. */
   published: () => Bag[];
+  /**
+   * The pass-through each configured HTTP server is reached by, by name: opened
+   * once and kept across a server that died, so the agent's URL stays good.
+   */
+  proxies: Map<string, ProxyEndpoint>;
+  /** The token a client aimed at each server, by name, which its proxy sends upstream. */
+  serverTokens: Map<string, string>;
+  /** Each server's RFC 9728 metadata, found once on its first refusal, by name. */
+  resources: Map<string, Bag>;
   /**
    * The modes the server named, once it has.
    *
