@@ -128,9 +128,10 @@ as a fresh install, because it is the only statement of what that folder owns. A
 a version is never pruned and is named (`kept <name>: not a version`); a failure to list the release folders at all is
 reported, not a silent "nothing to prune".
 
-Pruning keeps `current` plus the newest `keep - 1` releases (`DEFAULT_KEEP` is 3), and the result names every folder it
-deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared with the git deploy driver; only the
-ordering differs — commit time there, version order here, with `0.10.0` above `0.9.0` and a release above its
+Pruning keeps `current`, then the release the last switch left — the one a rollback returns to — then the newest
+releases up to `keep` (`DEFAULT_KEEP` is 3, so a successful switch keeps exactly one way back). The result names every
+folder it deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared with the git deploy driver;
+only the ordering differs — commit time there, version order here, with `0.10.0` above `0.9.0` and a release above its
 release candidate.
 
 The record says `installed` before the prune runs, because a release that is running and recorded is installed whether

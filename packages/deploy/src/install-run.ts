@@ -213,8 +213,9 @@ export type PruneOutcome =
     };
 
 /**
- * Keep `current` and the newest `keep - 1` releases, by the same rule `pruneReleases` uses; only the ordering is
- * different here because a customer install names folders by version rather than by commit.
+ * Keep `current`, the release it switched from, and the newest releases up to `keep`, by the same rule
+ * `pruneReleases` uses; only the ordering is different here because a customer install names folders by version
+ * rather than by commit.
  *
  * No release folders at all is a fact, not an error. Any other failure to list them is a refusal: silently pruning
  * nothing would report a clean switch while the disk fills. A folder whose name is not a version is never pruned and
@@ -228,6 +229,7 @@ export const pruneReleaseFolders = (
   layout: DeployLayout,
   current: string | null,
   keep = DEFAULT_KEEP,
+  rollback: string | null = null,
 ): PruneOutcome => {
   const releases = `${layout.stateDir}/deploy/${layout.service}/releases`;
   let names: readonly string[];
@@ -241,7 +243,7 @@ export const pruneReleaseFolders = (
   const kept: PruneKept[] = names
     .filter((name) => !isVersion(name))
     .map((name) => ({ name, why: 'not a version' }));
-  const removed = releasesToPrune([...versions].sort(compareVersions), current, keep);
+  const removed = releasesToPrune([...versions].sort(compareVersions), current, keep, rollback);
   const done: string[] = [];
   for (const name of removed) {
     const folder = `${releases}/${name}`;
@@ -501,7 +503,7 @@ export const applyInstall = async (
   if (!closed.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: closed.refusal };
 
   // Only a started release is worth keeping the disk tidy for: a failed switch pruned nothing above.
-  const prunedNow = pruneReleaseFolders(io, layout, manifest.version);
+  const prunedNow = pruneReleaseFolders(io, layout, manifest.version, DEFAULT_KEEP, previous?.version ?? null);
   if (!prunedNow.ok)
     return {
       ok: true,
