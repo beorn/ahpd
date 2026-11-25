@@ -889,8 +889,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     catch (error) {
       if (strict) throw error;
       const message = `Could not write session store ${dir}: ${error instanceof Error ? error.message : String(error)}`;
-      if (options.onProblem === undefined) console.error(message);
-      else told(message);
+      told(message);
       return;
     }
     const waiting = ids === undefined ? [...dirty] : ids.filter((id) => dirty.has(id));

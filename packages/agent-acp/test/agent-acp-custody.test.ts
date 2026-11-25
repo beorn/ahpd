@@ -446,3 +446,28 @@ it('reads spawnedAt and spawningTurnId, and refuses a malformed pair (#38456)', 
   expect(read({ ...base, spawningTurnId: 't1' })).toBe('malformed');
   expect(read({ ...base, spawnedAt: '2026-11-25T11:00:00.000Z', spawningTurnId: '' })).toBe('malformed');
 });
+
+it('says a refused or degraded custody write in the opening log, and nowhere else (#38631)', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-38631-'));
+  folders.push(folder);
+  const prefix = join(folder, 'child');
+  const said: string[] = [];
+  const log = (line: string, level?: string): void => { said.push(`${String(level)} ${line}`); };
+  const previous = process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
+  process.env.HAB_ACP_HOST_SERVICE_IDENTITY = '{ not json';
+  let held: Awaited<ReturnType<typeof admitCustody>> | undefined;
+  try {
+    held = await admitCustody(prefix, 100, 'seat', false, log);
+    expect(held.write('running', { pid: process.pid, stat: `${process.pid} (node) S 1 ${'0 '.repeat(40)}` })).toBe(true);
+    const ours = readRecord(prefix);
+    if (typeof ours !== 'object') throw new Error(`the running write did not land: ${String(ours)}`);
+    writeFileSync(`${prefix}.custody`, `${JSON.stringify({ ...ours, opening: 'another-opening' })}\n`);
+    expect(held.write('ended', null)).toBe(false);
+  } finally {
+    held?.release();
+    if (previous === undefined) delete process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
+    else process.env.HAB_ACP_HOST_SERVICE_IDENTITY = previous;
+  }
+  expect(said.some((line) => line.startsWith('warn ') && line.includes('invalid HAB_ACP_HOST_SERVICE_IDENTITY'))).toBe(true);
+  expect(said.some((line) => line.startsWith('error ') && line.includes('is no longer opening'))).toBe(true);
+});

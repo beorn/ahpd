@@ -26,6 +26,13 @@ import type { FlockHandle } from '@bearly/flock';
 import { messageOf } from './common.js';
 
 export type CustodyState = 'spawning' | 'running' | 'ended';
+/**
+ * Where a custody diagnostic is said, when the opening that holds it has a log.
+ *
+ * The host builds every opening from the plugin context's `log`, so a daemon always has one; a library consumer that
+ * passes none gets the record it wrote and no line about it, which is the same contract `AcpOptions.log` already has.
+ */
+export type CustodyLog = (line: string, level?: 'warn' | 'error') => void;
 export interface CustodyIdentity { readonly pid: number; readonly stat: string }
 interface HostServiceSession { readonly sessionId: string; readonly generation: number }
 export interface CustodySpawnGuard {
@@ -78,14 +85,14 @@ const serviceSessionOf = (value: unknown): HostServiceSession | undefined => {
 };
 
 /** The adapter has already verified the signed identity. The daemon receives only this projection. */
-function hostServiceSession(provider: string): HostServiceSession | undefined {
+function hostServiceSession(provider: string, log?: CustodyLog): HostServiceSession | undefined {
   const text = process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
   if (text === undefined) return undefined;
   try {
     const identity = serviceSessionOf(JSON.parse(text) as unknown);
     if (identity !== undefined) return identity;
   } catch { /* The diagnostic below covers invalid JSON as well as an invalid shape. */ }
-  console.error(`${provider}: invalid HAB_ACP_HOST_SERVICE_IDENTITY; custody records will not prove service-restart continuity`);
+  log?.(`${provider}: invalid HAB_ACP_HOST_SERVICE_IDENTITY; custody records will not prove service-restart continuity`, 'warn');
   return undefined;
 }
 
@@ -200,7 +207,7 @@ export interface Custody {
  * Admit one opening: take the custody lock (retrying on a timer until `boundMs` passes), then decide from the record
  * read under it. Throws when custody is held past the bound or the record forbids a spawn; nothing is written then.
  */
-export async function admitCustody(prefix: string, boundMs: number, provider: string, guarded = false): Promise<Custody> {
+export async function admitCustody(prefix: string, boundMs: number, provider: string, guarded = false, log?: CustodyLog): Promise<Custody> {
   const lockPath = `${prefix}.lock`;
   const deadline = Date.now() + boundMs;
   let handle: FlockHandle | null = tryAcquireFlock(lockPath);
@@ -219,7 +226,7 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     const why = forbids(before, boot);
     if (why !== undefined) throw new Error(`${provider}: no new ACP child for this seat: ${why}; nothing was spawned`);
     const hostIdentity = { pid: process.pid, stat: statOf(process.pid) };
-    const serviceSession = hostServiceSession(provider);
+    const serviceSession = hostServiceSession(provider, log);
     const opening = randomUUID();
     let spawnGuard: CustodySpawnGuard | undefined;
     if (guarded) {
@@ -246,7 +253,7 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
         const now = readCustody(prefix);
         // A guard against a bug, not the exclusion: after this opening's first write, the record is its own.
         if (seq > (typeof before === 'object' ? before.seq : 0) && (typeof now !== 'object' || now.opening !== opening)) {
-          console.error(`${provider}: ACP custody record at ${prefix}.custody is no longer opening ${opening}'s; not writing ${state}`);
+          log?.(`${provider}: ACP custody record at ${prefix}.custody is no longer opening ${opening}'s; not writing ${state}`, 'error');
           return false;
         }
         const stamp = spawn ?? (state === 'spawning'
@@ -261,7 +268,7 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
         return true;
       }
       catch (error) {
-        console.error(`${provider}: could not record ACP custody ${state} at ${prefix}.custody: ${messageOf(error)}`);
+        log?.(`${provider}: could not record ACP custody ${state} at ${prefix}.custody: ${messageOf(error)}`, 'error');
         return false;
       }
     };
