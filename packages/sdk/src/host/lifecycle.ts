@@ -33,6 +33,7 @@ import type { StoredWorktree } from '../types/sessions.js';
 import type { Worktrees } from '../types/worktrees.js';
 import type { Held } from './state.js';
 import type { HostContext } from './context.js';
+import { heldToGrants } from './gate.js';
 
 /** A move a session's agent asked for, waiting for its turn to end. */
 export interface Move {
@@ -2576,8 +2577,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
    * is wrong quietly is the permissive one.
    */
   const mayRead = (sender: Connection | undefined): boolean => {
-    if (options.users === undefined) return true;
-    if (sender?.root === true) return true;
+    if (!heldToGrants(sender, options.users !== undefined)) return true;
     return sender?.principal?.can('session:read') === true;
   };
 

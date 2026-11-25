@@ -7,7 +7,7 @@ import { localPath } from '../resources/fileuri.js';
 import { bag, ownerFilter } from '../utils/values.js';
 import { configOf } from '../sessions/remotesession.js';
 import { agentRefusal, CLOSING, noProvider } from './common.js';
-import { refusalReason } from './gate.js';
+import { heldToGrants, refusalReason } from './gate.js';
 import { mayUseAgent, ownershipOf } from '../agents/usable.js';
 import { chatIdFor, named, ROOT, schemeOf, spaceOf } from './channels.js';
 import { getAgentHostChatId } from '../vscode/chatid.js';
@@ -1366,7 +1366,7 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
              * here, in the door's words.
              */
             const who = connection.principal;
-            if (options.users !== undefined && connection.root !== true && computerSource(placed.computer) !== undefined
+            if (heldToGrants(connection, options.users !== undefined) && computerSource(placed.computer) !== undefined
               && who !== undefined && !who.can('computer:write'))
               throw new RpcError(-32009, refusalReason(who.id, 'computer:write'), {});
             config.computer = placed.computer;
