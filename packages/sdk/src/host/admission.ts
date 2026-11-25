@@ -1,7 +1,7 @@
 import { INVALID_PARAMS, RpcError } from '../rpc.js';
 import { computerSource } from '../machines/computers.js';
 import { isRootChannel, methodIn, parseResourceWatchChannelUri, schemeOf, servedIn } from './channels.js';
-import { NEEDS, UNGATED, channelRead, ownAgentExcused, ownIn, refusalReason } from './gate.js';
+import { NEEDS, UNGATED, channelRead, heldToGrants, ownAgentExcused, ownIn, refusalReason } from './gate.js';
 import type { Grant, Principal } from '../types/users.js';
 import type { ConnectionContext, HostContext } from './context.js';
 
@@ -352,15 +352,22 @@ export function createAdmission(ctx: HostContext, conn: ConnectionContext): Admi
    * returns, so a caller that awaits a `void` has still had its answer.
    */
   const admit = (method: string, params: Record<string, unknown>): void | Promise<void> => {
-    if (ctx.options.users === undefined || connection.root === true) return;
+    if (connection.root === true) return;
+    /*
+     * A host with no user directory trusts whoever reaches it, as documented -
+     * except a plugin's own connection, which is held to the grants its entry
+     * names whether or not there is a directory (#38446, @cto 89be3ef1). A
+     * Hightea-joined host has no directory, and its Hightea pipe is a plugin.
+     */
+    if (!heldToGrants(connection, ctx.options.users !== undefined)) return;
+    // Where to sign in; a plugin peer on a host with no directory always has a principal, so never asks.
+    const signIn = (): Record<string, unknown> => (ctx.options.users === undefined ? {} : { resources: [ctx.options.users.resource] });
     spelled(params, 'channel');
     const needed = capabilityFor(method, params);
     if (needed === undefined || needed.length === 0) return;
     const who = connection.principal;
     if (who === undefined) {
-      throw new RpcError(-32007, `Sign in to use this host`, {
-        resources: [ctx.options.users.resource],
-      });
+      throw new RpcError(-32007, `Sign in to use this host`, signIn());
     }
     /*
      * Removed since they signed in, which is a sign-in again and not
@@ -369,9 +376,7 @@ export function createAdmission(ctx: HostContext, conn: ConnectionContext): Admi
      * command.
      */
     if (who.standing !== undefined && !who.standing()) {
-      throw new RpcError(-32007, `Sign in to use this host`, {
-        resources: [ctx.options.users.resource],
-      });
+      throw new RpcError(-32007, `Sign in to use this host`, signIn());
     }
     /*
      * A plugin's own connection is excused a session or chat grant on a

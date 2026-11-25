@@ -46,6 +46,9 @@
       ],
       "closers": [
         "the five-minute drift check"
+      ],
+      "grants": [
+        "services"
       ]
     },
     "optionsSchema": {

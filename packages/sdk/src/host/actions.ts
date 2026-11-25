@@ -6,7 +6,7 @@ import { idOf, Status } from '../sessions/catalog.js';
 import { disableConditionsProblem } from '../automations/automations.js';
 import { localPath } from '../resources/fileuri.js';
 import { reason } from '../utils/values.js';
-import { computerNeeds, dispatchNeeds, ownAgentExcused, pushedPermissionsNeed, ACTION_HOMES, ACTION_NEEDS, HOME_WORDS, ownIn } from './gate.js';
+import { computerNeeds, dispatchNeeds, heldToGrants, ownAgentExcused, pushedPermissionsNeed, ACTION_HOMES, ACTION_NEEDS, HOME_WORDS, ownIn } from './gate.js';
 import { ANNOTATIONS_PATH_SEGMENT, AUTOMATIONS, chatUriFor, isAutomationResource, isRootChannel, ROOT, schemeOf, spaceOf, toolCallOfSubagentChat, WORKER_ACTIONS } from './channels.js';
 import { chatAction, chatFlag, readAggregate, sessionFlag } from './chatactions.js';
 import { HOSTS_OWN } from './common.js';
@@ -20,6 +20,7 @@ import type { Bag } from '../types/common.js';
 import type { Grant } from '../types/users.js';
 import type { Origin } from './state.js';
 import type { ConnectionContext, HostContext } from './context.js';
+import { refusalsOf } from './refusals.js';
 
 /**
  * The protocol's own answer to "may a client send this?", by action type.
@@ -161,7 +162,8 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
       no(`${type} is a chat's action, and ${asked} is not a chat`);
       return;
     }
-    if (options.users !== undefined && connection.root !== true) {
+    // A plugin's own connection is gated with or without a user directory (#38446, @cto 89be3ef1).
+    if (heldToGrants(connection, options.users !== undefined)) {
       /*
        * What the action is, what the channel is spelt as and what it
        * resolves to, both because the handler below acts on the resolved
@@ -197,6 +199,7 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
         return;
       }
       if (needed !== undefined && !who.can(needed)) {
+        refusalsOf(ctx.log).refused({ principal: who.id, method: type, needs: needed, conn: connection.clientId || '-' });
         no(`${who.id} may not ${needed} here`);
         return;
       }
@@ -289,6 +292,7 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
         }
         const grant = ctx.resourceAnnotations.commentGrant(ctx.resourceAnnotations.channelOf(holder));
         if (connection.principal !== undefined && !connection.principal.can(grant)) {
+          refusalsOf(ctx.log).refused({ principal: connection.principal.id, method: type, needs: grant, conn: connection.clientId || '-' });
           no(`${connection.principal.id} may not ${grant} here`);
           return;
         }

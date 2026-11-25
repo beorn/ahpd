@@ -114,6 +114,7 @@ import { gitSettled, onSlowGit } from './repo/hardened.js';
 import type { ConnectionContext, DetachedWorktree, HostContext } from './host/context.js';
 import { HOST_CATALOGS } from './i18n.js';
 import type { Catalogs } from './i18n.js';
+import { refusalsOf, refusedGrant } from './host/refusals.js';
 export { GATE, refusalReason } from './host/gate.js';
 
 /**
@@ -2244,6 +2245,8 @@ export function createHost(options: HostOptions): Host {
         ctx.disposeSessionLifecycle();
         ctx.closed = true;
         ctx.stopLapses();
+        // Refusals still being counted are written now, and their minute ends with the host.
+        refusalsOf(ctx.log).close();
         unwatchProbes(true);
         /*
          * And no wait outlives the host it was begun in. What a client that
@@ -2639,6 +2642,20 @@ export function createHost(options: HostOptions): Host {
             return await handler(request.params);
           } catch (error) {
             connection.refused = (connection.refused ?? 0) + 1;
+            /*
+             * Every refusal a command answers is said in the host's log too, once,
+             * here: a refusal only the caller could see was a silent error on the
+             * host (@cto ab54193c, fbdf4e14). Actions are refused on their own
+             * path and say their own line.
+             */
+            if (error instanceof RpcError && error.code === -32009) {
+              refusalsOf(ctx.log).refused({
+                principal: connection.principal?.id ?? (connection.root === true ? 'root' : '-'),
+                method: request.method,
+                needs: refusedGrant(error.message),
+                conn: connection.clientId || '-',
+              });
+            }
             throw error;
           }
         },
