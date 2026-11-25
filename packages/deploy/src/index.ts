@@ -698,3 +698,6 @@ export const status = (layout: DeployLayout): { readonly current: string | null;
 
 /* A customer host install (#38280): the manifest, the plan a customer reads, and the removal list. */
 export * from './install.js';
+
+/* Doing what the plan said, and undoing it (#38280): apply, uninstall, and the refusals in front of both. */
+export * from './install-run.js';

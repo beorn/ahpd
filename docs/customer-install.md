@@ -18,6 +18,7 @@ so versions, switch-back and pruning are that package's code and not a second co
 | `~/.ahpd/state/` | the daemon's state: sessions, records, the deploy journal |
 | `~/.ahpd/state/deploy/ahpd/releases/<version>/` | one folder per release: `runtime`, `ahpd`, `host-plugin`, `supervisor` |
 | `~/.ahpd/state/deploy/ahpd/current` | symlink to the live release; switched by one atomic rename |
+| `~/.ahpd/state/deploy/ahpd/deploy.log` | the deploy journal: which release went live, and when |
 | `~/.ahpd/install.json` | the manifest this install wrote: what was created, so `uninstall` removes exactly that |
 | `~/Library/LaunchAgents/dev.hallohuman.ahpd.plist` (Mac) | a launchd *agent* in `gui/$UID`, never a system daemon |
 | `$XDG_CONFIG_HOME/systemd/user/ahpd.service` (Linux) | a systemd *user* unit, enabled with `systemctl --user` |
@@ -89,12 +90,30 @@ asset (@cto 2026-11-25). It must run before any runtime exists, so it lives nowh
 - The host guide shows both forms: the download-then-inspect one, and the one-liner.
 - Everything after the runtime exists is this package's `plan`/`apply`, so there is one manifest and one switch.
 
-## The apply slice (not this one)
+## Applying, and undoing it
 
-- `apply` refuses an existing `~/.ahpd` that carries no `install.json` and names it: it never adopts a developer's
-  ahpd state.
-- A version switch reuses the same layout and `activateRelease`; pruning keeps N (`DEFAULT_KEEP`) and says what it
-  removed.
+`apply` walks the manifest in order and refuses rather than half-installs:
+
+- A root that already exists with no `install.json` is refused by name and nothing is changed — a developer's
+  `~/.ahpd` is never adopted, and an explicit `$AHPD_HOME` gets no exemption.
+- The record goes down first as `{"state": "installing"}` and is closed as `"installed"` at the end, so an interrupted
+  install resumes instead of refusing its own folder.
+- Each download is fetched to a staging name, hashed, and compared to its pin **before** it is placed; a mismatch
+  stops the install with the expected and actual digests and removes the staged bytes. A null checksum at apply time is
+  a refusal, never a default.
+- Verified bytes are made executable (`0755`) before they are moved into place: a download arrives `0644` and could
+  not run.
+- `current` moves through the deploy driver's `activateRelease`, so the switch is journaled; only then is the boot
+  item written and loaded, and a failing enable command is reported with its own words.
+- Every effect that throws becomes a refusal naming the step and the path — no crash, and no staged file left behind.
+
+`uninstall` runs the boot item's disable command first, then removes the recorded files last-created-first and lists
+them. A directory is removed only when it is empty; one the daemon has filled (sessions, records, logs) is **kept** and
+named — `kept <path>: N entries not written by this install; remove by hand or run uninstall --purge` — so customer
+data never goes without `--purge`, which prints exactly what it deletes first.
+
+A version switch (later slice) reuses the same layout and `activateRelease`, and pruning keeps `DEFAULT_KEEP` releases
+and says what it removed.
 
 ## Still open
 
