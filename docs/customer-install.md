@@ -95,16 +95,24 @@ asset (@cto 2026-11-25). It must run before any runtime exists, so it lives nowh
 
 - A root that already exists with no `install.json` is refused by name and nothing is changed — a developer's
   `~/.ahpd` is never adopted, and an explicit `$AHPD_HOME` gets no exemption.
-- Each download is fetched to a staging name, hashed, and compared to its pin **before** it is moved into place; a
-  mismatch stops the install with the expected and actual digests and removes the staged bytes.
+- The record goes down first as `{"state": "installing"}` and is closed as `"installed"` at the end, so an interrupted
+  install resumes instead of refusing its own folder.
+- Each download is fetched to a staging name, hashed, and compared to its pin **before** it is placed; a mismatch
+  stops the install with the expected and actual digests and removes the staged bytes. A null checksum at apply time is
+  a refusal, never a default.
+- Verified bytes are made executable (`0755`) before they are moved into place: a download arrives `0644` and could
+  not run.
 - `current` moves through the deploy driver's `activateRelease`, so the switch is journaled; only then is the boot
-  item loaded, and a failing enable command is reported with its own words.
-- The loaded boot item's file is also kept under `~/.ahpd/boot/`, so `uninstall` disables and removes exactly what
-  this install wrote.
+  item written and loaded, and a failing enable command is reported with its own words.
+- Every effect that throws becomes a refusal naming the step and the path — no crash, and no staged file left behind.
 
-`uninstall` runs the boot item's disable command first, then removes the recorded entries last-created-first and lists
-them. A version switch (later slice) reuses the same layout and `activateRelease`, and pruning keeps `DEFAULT_KEEP`
-releases and says what it removed.
+`uninstall` runs the boot item's disable command first, then removes the recorded files last-created-first and lists
+them. A directory is removed only when it is empty; one the daemon has filled (sessions, records, logs) is **kept** and
+named — `kept <path>: N entries not written by this install; remove by hand or run uninstall --purge` — so customer
+data never goes without `--purge`, which prints exactly what it deletes first.
+
+A version switch (later slice) reuses the same layout and `activateRelease`, and pruning keeps `DEFAULT_KEEP` releases
+and says what it removed.
 
 ## Still open
 
