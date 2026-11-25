@@ -10,6 +10,20 @@ import type { ChannelKind } from './channels.js';
 
 export const GREETINGS = new Set(['initialize', 'reconnect', 'ping']);
 
+/**
+ * Whether a connection is held to the grants its principal holds.
+ *
+ * The host's root connection never is. A host with a users directory holds
+ * every other connection to them. A host with none trusts whoever reaches it,
+ * as documented - except a plugin's own connection, which is held to the
+ * grants its entry names whether or not there is a directory (#38446, @cto
+ * 89be3ef1): a Hightea-joined host has no directory, and its Hightea pipe is a
+ * plugin. Every grant check that a host with no directory skips asks this, so
+ * the exception is written once.
+ */
+export const heldToGrants = (connection: Connection | undefined, directory: boolean): boolean =>
+  connection?.root !== true && (directory || connection?.principal?.plugin !== undefined);
+
 /** One entry of a table by method name, reading only the table's own keys, so `constructor` names no method. */
 export const ownIn = <T>(table: Readonly<Record<string, T>>, name: string): T | undefined =>
   (Object.hasOwn(table, name) ? table[name] : undefined);
@@ -389,7 +403,7 @@ export const computerNeeds = (action: Record<string, unknown>): Grant | undefine
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/protocolServerHandler.ts#L4307-L4317
  */
 export const seesConfig = (connection: Connection | undefined, directory: boolean): boolean =>
-  !directory || connection?.root === true || connection?.principal?.can('config:settings') === true;
+  !heldToGrants(connection, directory) || connection?.principal?.can('config:settings') === true;
 
 /**
  * Whether this connection is somebody who may read the account an agent bills to.
@@ -408,7 +422,7 @@ export const seesConfig = (connection: Connection | undefined, directory: boolea
  * settings this host asks for by their own operation.
  */
 export const seesAccount = (connection: Connection | undefined, directory: boolean): boolean =>
-  !directory || connection?.root === true || connection?.principal?.can('account:status') === true;
+  !heldToGrants(connection, directory) || connection?.principal?.can('account:status') === true;
 
 /** The kinds of channel a family of client action can belong on. */
 export type Home = 'session' | 'terminal' | 'automations' | 'root' | 'watch' | 'shared';

@@ -1051,7 +1051,8 @@ host.registerMethod('x-notes/put', {
   description?, grant }`. The title is the name when there is no `describe`.
 
 A command is answered only after `initialize`, as every other command is. A
-host with no users directory lets every caller in. The daemon passes its own
+host with no users directory lets every caller in except a plugin's own
+connection, which is held to its entry's grants (#38446). The daemon passes its own
 commands in `HostOptions.methods`, and a plugin cannot take a name the daemon
 or another plugin serves: the later one is dropped with a problem line.
 
@@ -1178,7 +1179,9 @@ host.on('listening', async () => {
 ```
 
 The connection is served as the principal `plugin:<name>`, and it may do what its configuration entry's `grants` say and nothing else.
-On a host with no user directory nothing is gated, as for any other connection.
+This holds on a host with no user directory too: such a host trusts its other connections with everything, but a plugin's own connection is still held to its entry's `grants` (#38446).
+Grants bound what a plugin's connection can do on behalf of the callers it relays; they are not a sandbox for the plugin's own code, which runs in the daemon's process with the daemon's reach.
+Every command the host answers with -32009, and every action it refuses for a grant, is also said in the host's log as one warn line, `grant refused: principal=<id> method=<method or action> needs=<grant, or the refusal's message> conn=<client id>`. Values are escaped (`\xNN` for control characters, space, `=` and backslash) and cut at 200 characters. Per principal and method, the first refusal is written at once and the rest of that minute as one line ending `(N more suppressed)`; a principal past 20 methods, or a host past 1,000 windows, counts under `method=*`. AHP and ACP define no audit event; the host's log reaches clients through `otlp/exportLogs`.
 A session of an agent your plugin registered is your plugin's own, so its `session:` and `chat:` grants are not asked there: the bot plugin reads and writes its talks with no grant. A session of any other agent needs the grant, and so does a machine, a file or a terminal.
 What the host says reaches the plugin through `onMessage`, and what the plugin asks for settles a promise, so the connection is used exactly as a client's socket is.
 
@@ -1675,6 +1678,7 @@ that method may be called with:
 | `resourceProviders` | `registerResourceProvider(scheme, provider)`, by scheme |
 | `channels` | `registerChannel(scheme, channel)`, by scheme |
 | `methods` | `registerMethod(name, method)`, by name |
+| `grants` | `registerGrants(subject, entry)`, by subject |
 | `adapters` | `registerAdapter(adapter)`, by adapter name |
 | `triggerTypes` | `registerTriggerType(definition)`, by type |
 | `sessionMeta` | `registerSessionMeta(key, read)`, by key |

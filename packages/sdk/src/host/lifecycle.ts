@@ -33,6 +33,8 @@ import type { StoredWorktree } from '../types/sessions.js';
 import type { Worktrees } from '../types/worktrees.js';
 import type { Held } from './state.js';
 import type { HostContext } from './context.js';
+import { heldToGrants } from './gate.js';
+import { refusalsOf } from './refusals.js';
 
 /** A move a session's agent asked for, waiting for its turn to end. */
 export interface Move {
@@ -2576,8 +2578,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
    * is wrong quietly is the permissive one.
    */
   const mayRead = (sender: Connection | undefined): boolean => {
-    if (options.users === undefined) return true;
-    if (sender?.root === true) return true;
+    if (!heldToGrants(sender, options.users !== undefined)) return true;
     return sender?.principal?.can('session:read') === true;
   };
 
@@ -2631,7 +2632,10 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
         ? undefined
         : openLink(live.uri, owning.agent.provider, ctx.ownChat(live.uri, named) ? undefined : chatIdFor(live.uri, named));
 
-      if (live === undefined || owning === undefined || !mayRead(sender)) {
+      const refused = live !== undefined && owning !== undefined && !mayRead(sender);
+      // Left off for a grant is a refusal, said in the host's log as a command's is (@cto fbdf4e14).
+      if (refused) refusalsOf(ctx.log).refused({ principal: sender?.principal?.id ?? '-', method: 'chat-attachment', needs: 'session:read', conn: sender?.clientId || '-' });
+      if (live === undefined || owning === undefined || refused) {
         /*
          * Nothing to hand over, and the turn still runs.
          *
