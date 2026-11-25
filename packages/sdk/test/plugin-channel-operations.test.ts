@@ -67,18 +67,81 @@ it('serves a plugin channel\'s operations at its scheme, and leaves out a channe
   expect(pluginOperationChannels({ 'x-plain': { channel: { grant: 'x:read', snapshot: () => ({}) } as PluginChannel } })).toEqual({});
 });
 
-it('leaves out a plugin channel at a URI the daemon serves, and says so naming both', () => {
-  const problems: string[] = [];
-  const side = { operations: () => [], begin: () => {}, settle: () => {}, run: async () => ({}) };
-  const kept = pluginOperationChannels(
-    { 'x-ahpd-tunnels': { by: 'rogue', channel: { grant: 'x:read', snapshot: () => ({}), operations: side } } },
-    ['x-ahpd-tunnels://'],
-    (line) => { problems.push(line); },
-  );
-  expect(kept).toEqual({});
-  expect(problems).toEqual([
-    'plugin rogue offers operations at x-ahpd-tunnels://, which the daemon\'s own channel serves; the daemon\'s is kept and the plugin\'s operations are not served',
+it('cannot offer operations on a scheme a plugin folded earlier registered, the daemon\'s included', () => {
+  const { host: first, contribution: daemon } = pluginHost('ahpd', context());
+  first.registerChannel('x-ahpd-tunnels', { grant: 'tunnel:read', snapshot: () => ({}) });
+  const { host: rogue, contribution } = pluginHost('rogue', context());
+  rogue.registerGrants('rogue', { operations: ['go'] });
+  rogue.registerChannel('x-ahpd-tunnels', {
+    grant: 'rogue:go',
+    snapshot: () => ({}),
+    operations: { operations: () => [{ ...RESTART, grant: 'rogue:go' }], run: async () => ({}) },
+  });
+  const folded = foldHostOptions({ path: root, agents: [{ ...echo({ path: root, pace: 0 }), provider: 'base', displayName: 'Base' }], resources: fileResources() }, [daemon, contribution]);
+  expect(folded.problems).toContain('plugin rogue registers channel x-ahpd-tunnels, which plugin ahpd already registered');
+  expect(pluginOperationChannels(folded.options.channels)).toEqual({});
+});
+
+it('runs an operation of a channel that leaves out offers, begin and settle', async () => {
+  const { host: plugin, contribution } = pluginHost('svc', context());
+  plugin.registerGrants('svc', { operations: ['restart'] });
+  plugin.registerChannel('x-svc', {
+    grant: 'svc:read',
+    snapshot: () => ({}),
+    operations: { operations: () => [RESTART], run: async (_operation, target) => ({ restarted: target }) },
+  });
+  const folded = foldHostOptions({ path: root, agents: [{ ...echo({ path: root, pace: 0 }), provider: 'base', displayName: 'Base' }], resources: fileResources() }, [contribution]);
+  expect(folded.problems).toEqual([]);
+  const method = invokeOperation({ channels: () => pluginOperationChannels(folded.options.channels), check: () => {} });
+  expect(await method.handle({ channel: 'x-svc://', operationId: 'svc/restart', target: { id: 'anything' } }, holding(['svc:restart']), 'c1'))
+    .toEqual({ restarted: 'anything' });
+});
+
+it('runs a list-scoped operation with no target, and checks its input against its schema', async () => {
+  const ADD: Operation = { id: 'svc/add', kind: 'svc', label: 'Add', scopes: ['list'], grant: 'svc:restart', status: 'idle', input: { type: 'object', required: ['name'] } };
+  const checked: unknown[] = [];
+  const one = served({ operations: () => [RESTART, ADD], run: async (operation, target, input) => ({ id: operation.id, target: target ?? null, input }) });
+  const method = invokeOperation({
+    channels: () => one.channels,
+    check: (value) => { checked.push(value); if (typeof value !== 'object' || value === null || !('name' in value)) throw new Error('input needs a name'); },
+  });
+  expect(await method.handle({ channel: 'x-svc://', operationId: 'svc/add', input: { name: 'web' } }, holding(['svc:restart']), 'c1'))
+    .toEqual({ id: 'svc/add', target: null, input: { name: 'web' } });
+  await expect(method.handle({ channel: 'x-svc://', operationId: 'svc/add', input: {} }, holding(['svc:restart']), 'c1')).rejects.toThrow('input needs a name');
+  expect(checked).toEqual([{ name: 'web' }, {}]);
+});
+
+it('leaves out a listed operation it cannot serve, says it once, and reports it and an undeclared grant at the load', async () => {
+  const listed = (): unknown => [RESTART, { id: 'svc/broken', scopes: 'service', grant: 'svc:restart' }, { ...RESTART }, { ...RESTART, id: 'svc/stop', grant: 'svc:stop' }];
+  const { host: plugin, contribution } = pluginHost('svc', context());
+  plugin.registerGrants('svc', { operations: ['restart'] });
+  plugin.registerChannel('x-svc', { grant: 'svc:read', snapshot: () => ({}), operations: { operations: listed as () => Operation[], run: async () => ({}) } });
+  const folded = foldHostOptions({ path: root, agents: [{ ...echo({ path: root, pace: 0 }), provider: 'base', displayName: 'Base' }], resources: fileResources() }, [contribution]);
+  expect(folded.problems).toEqual([
+    'plugin svc lists operation svc/broken at x-svc://, which is not served: its scopes are not a list of names',
+    'plugin svc lists operation svc/restart at x-svc://, which is not served: an earlier entry has its id',
+    'plugin svc requires svc:stop, which no entry of ahpd.grants lists',
   ]);
+  const said: string[] = [];
+  const channels = pluginOperationChannels(folded.options.channels, (line) => { said.push(line); });
+  expect(channels['x-svc://']!.operations().map((one) => one.id)).toEqual(['svc/restart', 'svc/stop']);
+  channels['x-svc://']!.operations();
+  expect(said).toEqual(folded.problems.slice(0, 2));
+});
+
+it('refuses a call naming the plugin when its list throws, and reports it at the load', async () => {
+  const { host: plugin, contribution } = pluginHost('svc', context());
+  plugin.registerChannel('x-svc', { grant: 'svc:read', snapshot: () => ({}), operations: { operations: () => { throw new Error('config unreadable'); }, run: async () => ({}) } });
+  const folded = foldHostOptions({ path: root, agents: [{ ...echo({ path: root, pace: 0 }), provider: 'base', displayName: 'Base' }], resources: fileResources() }, [contribution]);
+  expect(folded.problems).toContain('plugin svc could not list its operations at x-svc://: config unreadable');
+  const method = invokeOperation({ channels: () => pluginOperationChannels(folded.options.channels), check: () => {} });
+  await expect(method.handle({ channel: 'x-svc://', operationId: 'svc/restart', target: { id: 'web' } }, undefined, 'c1'))
+    .rejects.toThrow('plugin svc could not list its operations at x-svc://: config unreadable');
+});
+
+it('admits at the gate a caller holding the operation\'s grant', async () => {
+  const one = served();
+  expect(await one.method.authorize!({ channel: 'x-svc://', operationId: 'svc/restart', target: { id: 'web' } }, holding(['svc:restart']))).toBe(true);
 });
 
 it('runs a plugin channel\'s operation through invokeOperation for a reader holding its grant', async () => {
@@ -113,7 +176,7 @@ it('settles a failed run with its error', async () => {
   expect(one.settled).toEqual([{ id: 'svc/restart', target: 'web', error: 'unit not found' }]);
 });
 
-it('refuses a registration whose operations side is missing a function', () => {
+it('refuses a registration whose operations side is not an object, or is missing a function', () => {
   const { host: plugin } = pluginHost('svc', context());
   plugin.registerGrants('svc', { operations: ['restart'] });
   expect(() => plugin.registerChannel('x-svc', {
@@ -121,6 +184,16 @@ it('refuses a registration whose operations side is missing a function', () => {
     snapshot: () => ({}),
     operations: { operations: () => [], begin: () => {}, settle: () => {} } as unknown as NonNullable<PluginChannel['operations']>,
   })).toThrow('operations.run');
+  expect(() => plugin.registerChannel('x-svc2', {
+    grant: 'svc:read',
+    snapshot: () => ({}),
+    operations: 'restart' as unknown as NonNullable<PluginChannel['operations']>,
+  })).toThrow('operations');
+  expect(() => plugin.registerChannel('x-svc3', {
+    grant: 'svc:read',
+    snapshot: () => ({}),
+    operations: { operations: () => [], run: async () => ({}), begin: 'yes' } as unknown as NonNullable<PluginChannel['operations']>,
+  })).toThrow('operations.begin');
 });
 
 it('tells run who sent the command, from the host and never from the input', async () => {

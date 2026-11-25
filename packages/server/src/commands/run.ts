@@ -1112,9 +1112,9 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
    * The one command over every channel that offers operations: the daemon's
    * tunnels, clients, agents and connectors channels, and every plugin channel
    * registered with an operations side, at `<scheme>://`. The plugins' are read
-   * each time the load folds them in. A plugin channel at a URI the daemon's own
-   * serves is left out and said as a problem naming both, so a plugin can never
-   * stand in for one of the daemon's.
+   * each time the load folds them in. The fold refuses a plugin channel on a
+   * scheme the daemon's own serves, and the daemon's are spread last, so a
+   * plugin can never stand in for one of the daemon's.
    *
    * The daemon's are read through a closure, as before: the agents channel is
    * built below this point.
@@ -1127,7 +1127,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
   });
   let pluginOperations: Record<string, OperationChannel> = {};
   const servePluginOperations = (channels: HostOptions['channels']): void => {
-    pluginOperations = pluginOperationChannels(channels, Object.keys(daemonOperations()), listProblem);
+    pluginOperations = pluginOperationChannels(channels, listProblem);
   };
   const channelOperations = invokeOperation({
     channels: () => ({ ...pluginOperations, ...daemonOperations() }),

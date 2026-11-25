@@ -27,6 +27,7 @@
 
 import { secretFields } from '../channels/owners.js';
 import { refusalReason } from '../host/gate.js';
+import { listedOperations } from '../plugins/validate.js';
 import { HOST_CATALOGS, translated, type Catalogs } from '../i18n.js';
 import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
 import type { Operation } from '../types/kinds.js';
@@ -319,28 +320,36 @@ export const invokeOperation = (options: InvokeOperationOptions): PluginMethod =
  * plugin's own operations side; a channel without one is not listed, so the
  * command refuses it as a channel with no operations.
  *
- * A URI in `taken` is one the daemon serves itself. Its channel keeps it, and
- * the plugin's is left out and said through `onProblem`, naming both.
+ * A plugin cannot take one of the daemon's own URIs: the fold already refuses a
+ * channel on a scheme the daemon registered. The list is read at each call;
+ * an entry that cannot be served is left out and said once through
+ * `onProblem`, and a list that throws refuses the call naming the plugin.
  */
 export const pluginOperationChannels = (
   channels: Record<string, { by?: string; channel: PluginChannel }> | undefined,
-  taken: readonly string[] = [],
   onProblem?: (message: string) => void,
 ): Record<string, OperationChannel> => {
   const served: Record<string, OperationChannel> = {};
+  const said = new Set<string>();
   for (const [scheme, one] of Object.entries(channels ?? {})) {
     const side = one.channel.operations;
     if (side === undefined) continue;
     const uri = `${scheme}://`;
-    if (taken.includes(uri)) {
-      onProblem?.(`plugin ${one.by ?? 'unknown'} offers operations at ${uri}, which the daemon's own channel serves; the daemon's is kept and the plugin's operations are not served`);
-      continue;
-    }
+    const by = one.by ?? 'unknown';
     served[uri] = {
       uri,
-      operations: () => side.operations(),
-      begin: (operationId, target) => { side.begin(operationId, target); },
-      settle: (operationId, target, error) => { side.settle(operationId, target, error); },
+      operations: () => {
+        const { operations, problems, failed } = listedOperations(by, uri, () => side.operations());
+        if (failed !== undefined) throw new RpcError(INTERNAL_ERROR, failed);
+        for (const problem of problems) {
+          if (said.has(problem)) continue;
+          said.add(problem);
+          onProblem?.(problem);
+        }
+        return operations;
+      },
+      begin: (operationId, target) => { side.begin?.(operationId, target); },
+      settle: (operationId, target, error) => { side.settle?.(operationId, target, error); },
       ...(side.offers === undefined ? {} : { offers: (target: string, operationId: string) => side.offers!(target, operationId) }),
       run: (operation, target, input, reader, caller) => side.run(operation, target, input, reader, caller),
     };
