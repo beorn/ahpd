@@ -572,7 +572,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
       }
       if (prefix !== undefined) {
         // Admission waits, on a timer, for a predecessor still inside its kill grace to record its end (#34599).
-        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider, options.spawnGuard === 'inherited-fd-v1');
+        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider, options.spawnGuard === 'inherited-fd-v1', options.log);
         if (ctx.disposed || ctx.opening !== pending || spawnOf(options) !== startingWith) {
           held.release();
           throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
@@ -601,8 +601,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
           child.on('error', (error) => {
             if (!setupFailed) return; // The ordinary transport owns errors after setup succeeds.
             const line = `${provider}: retained transport child reported ${messageOf(error)}`;
-            if (options.log !== undefined) options.log(line, 'error');
-            else console.error(line);
+            options.log?.(line, 'error');
           });
           child.once('close', () => { if (setupFailed) custody?.end(escapedIdentity); });
         },
@@ -677,8 +676,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
             custody.write('running', escapedIdentity);
           } catch (identityError) {
             const line = `${provider}: failed transport child remains unstamped: ${messageOf(identityError)}`;
-            if (options.log !== undefined) options.log(line, 'error');
-            else console.error(line);
+            options.log?.(line, 'error');
           }
           custody.releaseInherited();
         }
