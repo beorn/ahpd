@@ -16,6 +16,7 @@ import { JOINED_SESSION_ENV, joinedSession, joinedSessions } from '../joined-ses
 import { canonicalFromCli, check, createRegistry, optionTable, optionsOf, tokenize } from '@cofold/commands';
 import type { Command, JsonSchema, Registry } from '@cofold/commands';
 import type { Agent, Alert, LogLevel, AutomationStore, AutomationsOptions, ClientCounts, ClientRegistry, CommandSplitter, Connected, Contribution, DoorOptions, HostEventOf, HostHandlers, HostOptions, Loaded, Opened, Peer, PluginContext, Principal, Raw, RequestHandler, Route, ServedAdapter, ServedEngine, ServedTunnelKind, SessionStore, Tap, TunnelsChannel, Usage, Users, Vault } from '@ahpd/sdk';
+import { sweep } from '@ahpd/deploy';
 import { parseYaml, stringifyYaml } from '@cofold/yaml';
 import {
   adaptersChannel,
@@ -468,6 +469,18 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
    * daemon's own record is swept where it is written, in `claim`.
    */
   sweepTemps(wholeFiles(options.users));
+
+  /*
+   * Deploys an earlier process left unfinished, said once at the start.
+   *
+   * The lock is what a second deploy of a service is refused by, so a lock
+   * whose process is gone is dropped here - and the step it died in is said out
+   * loud, because the one thing this must never do is quietly resume a deploy
+   * whose result nobody knows.
+   */
+  for (const left of sweep(configDir())) {
+    stamp(`deploy ${left.service}: outcome unknown: ${left.step} (deploy ${left.deployId})`, 'warn');
+  }
 
   /*
    * The HTTP API, when the configuration asked for one.

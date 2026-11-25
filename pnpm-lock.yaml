@@ -213,6 +213,8 @@ importers:
         specifier: workspace:*
         version: link:../sdk
 
+  packages/deploy: {}
+
   packages/push:
     devDependencies:
       '@ahpd/sdk':
@@ -237,6 +239,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@ahpd/deploy':
+        specifier: workspace:*
+        version: link:../deploy
       '@ahpd/sdk':
         specifier: workspace:*
         version: link:../sdk
