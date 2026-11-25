@@ -1459,6 +1459,30 @@ it('refuses --grant with --no-enable by name', async () => {
   })).rejects.toThrow('--grant writes the grants into the plugin\'s entry, and --no-enable writes no entry');
 });
 
+/*
+ * A served install is the caller's, and so are the grants: `plugin:install`
+ * buys code, not the right to give that code powers the caller lacks. The
+ * refusal names the grant, and nothing is written, so the next call is a
+ * person's decision rather than a retry.
+ */
+it('refuses a served grant the caller does not hold, by name, and writes nothing', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  await expect(installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say, grant: true,
+    mayGrant: (one) => one === 'probe:read',
+  })).rejects.toThrow('@ahpd/probe-grants asks for probe:write, which this caller does not hold');
+  expect(existsSync(configFile) ? read().plugins : []).toEqual([]);
+});
+
+it('installs and grants for a caller that holds every grant the manifest asks for', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say, grant: true,
+    mayGrant: () => true,
+  });
+  expect(read().plugins).toEqual([{ source: '@ahpd/probe-grants', grants: ['probe:read', 'probe:write'] }]);
+});
+
 it('prints every grant before it asks for consent', async () => {
   const { runner } = fake({}, {}, asksGrants);
   const lines: string[] = [];

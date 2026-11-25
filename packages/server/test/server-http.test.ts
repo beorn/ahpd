@@ -661,6 +661,32 @@ describe('a request signs in', () => {
   }, 30000);
 
   // The stand-in npm is a shell script, which Windows does not run.
+  it.skipIf(!posix)('refuses a served install that would grant more than its caller holds', async () => {
+    writeFileSync(usersFile, JSON.stringify({ roles: { installer: ['plugin:install'] }, users: [] }));
+    const directory = fileUsers({ path: usersFile });
+    await directory.add('ivy', ['installer']);
+    const ivy = await directory.mint('ivy');
+    const one = await daemon(
+      { httpApi: true,plugins: [BACKEND] },
+      ['--connection-token', 'root-secret', '--users', usersFile],
+      fakeNpm({ FAKE_NPM_GRANTS: '["probe:write"]' }),
+    );
+    const url = `http://127.0.0.1:${String(one.port)}/api/plugin/install`;
+    // `plugin:install` is permission to install code, not to give it a grant
+    // the caller does not hold: the grant is named and the file is not written.
+    const refused = await post(url, ivy, { name: ['left-pad'], grant: true });
+    expect(refused.status).toBe(400);
+    expect((await refused.json() as { message: string }).message).toContain('asks for probe:write, which this caller does not hold');
+    const named = (existsSync(config) ? (JSON.parse(readFileSync(config, 'utf8')) as { plugins?: unknown[] }).plugins : undefined) ?? [];
+    expect(named).not.toContain('left-pad');
+    // The deployment token holds every grant, so the same install is its to grant.
+    const asRoot = await post(url, 'root-secret', { name: ['left-pad'], grant: true });
+    expect(asRoot.status).toBe(200);
+    expect((JSON.parse(readFileSync(config, 'utf8')) as { plugins: unknown[] }).plugins)
+      .toContainEqual({ source: 'left-pad', grants: ['probe:write'] });
+  }, 30000);
+
+  // The stand-in npm is a shell script, which Windows does not run.
   it.skipIf(!posix)('runs npm for an install an admin asks for, and names the package', async () => {
     const directory = fileUsers({ path: usersFile });
     await directory.add('root', ['admin']);
