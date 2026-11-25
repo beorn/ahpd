@@ -1677,6 +1677,7 @@ that method may be called with:
 | `resourceProviders` | `registerResourceProvider(scheme, provider)`, by scheme |
 | `channels` | `registerChannel(scheme, channel)`, by scheme |
 | `methods` | `registerMethod(name, method)`, by name |
+| `grants` | `registerGrants(subject, entry)`, by subject |
 | `adapters` | `registerAdapter(adapter)`, by adapter name |
 | `triggerTypes` | `registerTriggerType(definition)`, by type |
 | `sessionMeta` | `registerSessionMeta(key, read)`, by key |
