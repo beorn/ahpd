@@ -32,7 +32,7 @@ beforeEach(async () => {
     port: 9187,
     plugins: [
       { source: '/opt/ahpd/node_modules/@ahpd/agent-acp' },
-      { source: '/opt/ahpd/node_modules/@ahpd/services', options: { files: [local], socket } },
+      { source: '/opt/ahpd/node_modules/@hallohuman/hightea-services', options: { files: [local], socket } },
     ],
   }));
 });

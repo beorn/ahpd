@@ -219,7 +219,7 @@ importers:
 
   packages/deploy:
     dependencies:
-      '@ahpd/services':
+      '@hallohuman/hightea-services':
         specifier: workspace:*
         version: link:../services
       tar:

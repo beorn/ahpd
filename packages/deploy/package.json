@@ -54,7 +54,7 @@
     }
   },
   "dependencies": {
-    "@ahpd/services": "workspace:*",
+    "@hallohuman/hightea-services": "workspace:*",
     "tar": "^7.5.23"
   },
   "bin": {

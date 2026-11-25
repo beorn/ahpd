@@ -1,5 +1,5 @@
 {
-  "name": "@ahpd/services",
+  "name": "@hallohuman/hightea-services",
   "version": "0.16.0",
   "type": "module",
   "os": ["linux", "darwin"],
