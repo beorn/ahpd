@@ -12,7 +12,7 @@
  * have a value replaced in place, but adding or removing a key in one is
  * refused rather than reformatted.
  */
-import { isMap, isScalar, parse, type Document, type Pair, type Scalar, type YAMLMap } from 'yaml';
+import { isMap, isScalar, isSeq, parse, parseDocument, visit, type Document, type Pair, type Scalar, type YAMLMap } from 'yaml';
 import { REMOVE, type NativeChange, type NativeValue } from './record.js';
 
 /** One splice: replace `[start, end)` of the original text with `text`. */
@@ -293,4 +293,51 @@ export function lineDiff(before: string, after: string, from: string, to: string
     lines.push(`${ops[at]!.mark}${ops[at]!.line}`);
   }
   return lines.join('\n');
+}
+
+/** What a redacted plain value reads as. */
+export const PLAIN_VALUE = '<plain value>';
+
+/**
+ * The text with every value under an `environment:` or `env_cmds:` key, at any
+ * depth, replaced by `<plain value>` (@cto 7af7ed84).
+ *
+ * Hand-written entries keep secrets in plain environment values, so a diff of
+ * the file sent off the machine must never carry them. A `KEY=value` list item
+ * keeps its key; a mapping keeps its keys. Answers `undefined` when the file
+ * does not parse, so the caller sends no diff rather than an unredacted one.
+ */
+export function redactEnv(text: string): string | undefined {
+  const doc = parseDocument(text);
+  if (doc.errors.length > 0) return undefined;
+  const edits: Edit[] = [];
+  const blank = (node: unknown, keepKey: boolean): void => {
+    const range = rangeOf(node);
+    if (!range) return;
+    if (keepKey && isScalar(node) && typeof node.value === 'string') {
+      const source = text.slice(range[0], range[1]);
+      const at = source.indexOf('=');
+      if (at >= 0) { edits.push({ start: range[0] + at + 1, end: range[1], text: PLAIN_VALUE }); return; }
+    }
+    edits.push({ start: range[0], end: range[1], text: PLAIN_VALUE });
+  };
+  let unsafe = false;
+  visit(doc, {
+    Pair(_, pair) {
+      if (!isScalar(pair.key) || (pair.key.value !== 'environment' && pair.key.value !== 'env_cmds')) return undefined;
+      const value = pair.value;
+      if (isMap(value)) for (const item of value.items) blank(item.value, false);
+      else if (isSeq(value)) for (const item of value.items) blank(item, true);
+      else if (value !== null && value !== undefined) blank(value, false);
+      if (!isMap(value) && !isSeq(value) && value !== null && value !== undefined && !rangeOf(value)) unsafe = true;
+      return visit.SKIP;
+    },
+  });
+  if (unsafe) return undefined;
+  try {
+    return splice(text, edits);
+  }
+  catch {
+    return undefined;
+  }
 }
