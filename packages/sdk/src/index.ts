@@ -155,7 +155,7 @@ export type { TunnelsChannel, TunnelsChannelOptions } from './tunnels/channel.js
 export { clientsChannel, countFrame } from './clients/channel.js';
 export type { ClientCounts, ClientsChannel, ClientsChannelOptions } from './clients/channel.js';
 export { invokeOperation, OPERATION_COMMAND, OPERATION_GRANT, pluginOperationChannels } from './kinds/operations.js';
-export type { InvokeOperationOptions, OperationChannel } from './kinds/operations.js';
+export type { InvokeOperationOptions, OperationCaller, OperationChannel } from './kinds/operations.js';
 export { BINDINGS_KEY, BINDINGS_SCHEME, bindingTarget, bindingsOf, checkBindings } from './connectors/bindings.js';
 export type { Binding } from './connectors/bindings.js';
 export { actionTools, actionToolName } from './connectors/actions.js';

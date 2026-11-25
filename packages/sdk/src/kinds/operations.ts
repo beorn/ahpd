@@ -32,6 +32,7 @@ import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
 import type { Operation } from '../types/kinds.js';
 import type { RecordsChannel } from '../resources/recordschannel.js';
 import type { ChannelHandle, PluginChannel, PluginMethod } from '../types/plugin.js';
+import type { Owner } from '../types/usage.js';
 import type { Grant, Principal } from '../types/users.js';
 
 /**
@@ -132,13 +133,30 @@ export interface OperationChannel {
    * begins. Absent, a channel takes every operation it lists on any target.
    */
   offers?(target: string, operationId: string): boolean | Promise<boolean>;
-  /** Do what the operation says, and answer the caller with the record or `{}`. */
+  /**
+   * Do what the operation says, and answer the caller with the record or `{}`.
+   *
+   * `caller` is who sent the command, exactly as a `PluginMethod` is told:
+   * `client` is the id the connection gave at `initialize` or `reconnect`, and
+   * `owner` is whose work it is, which the host resolved for that connection -
+   * the person a relaying plugin acts for, else the caller's own principal, and
+   * nobody on a host with no users directory. Neither is ever read from the
+   * request, so nothing in `input` can name another owner. A channel that
+   * records who changed something records `owner`.
+   */
   run(
     operation: Operation,
     target: string | undefined,
     input: Record<string, unknown> | undefined,
     reader: Principal | undefined,
+    caller?: OperationCaller,
   ): Promise<unknown>;
+}
+
+/** Who sent an `invokeOperation`, as the host gives a `PluginMethod` the same two. */
+export interface OperationCaller {
+  client: string;
+  owner?: Owner;
 }
 
 /** How the command finds a channel and checks what it was sent. */
@@ -258,7 +276,7 @@ export const invokeOperation = (options: InvokeOperationOptions): PluginMethod =
     title: 'Invoke an operation',
     description: 'Runs one operation a channel offers now, with the input it asks for.',
   }),
-  handle: async (params, reader) => {
+  handle: async (params, reader, client, owner) => {
     const uri = typeof params.channel === 'string' ? params.channel : '';
     const channel = options.channels()[uri];
     if (channel === undefined) throw new RpcError(-32001, `No channel with operations at ${uri}`);
@@ -278,7 +296,7 @@ export const invokeOperation = (options: InvokeOperationOptions): PluginMethod =
     const input = inputOf(operation, params.input, options.check);
     channel.begin(operationId, target);
     try {
-      const answer = await channel.run(operation, target, input, reader);
+      const answer = await channel.run(operation, target, input, reader, { client, ...(owner === undefined ? {} : { owner }) });
       channel.settle(operationId, target);
       return answer;
     } catch (error) {
@@ -324,7 +342,7 @@ export const pluginOperationChannels = (
       begin: (operationId, target) => { side.begin(operationId, target); },
       settle: (operationId, target, error) => { side.settle(operationId, target, error); },
       ...(side.offers === undefined ? {} : { offers: (target: string, operationId: string) => side.offers!(target, operationId) }),
-      run: (operation, target, input, reader) => side.run(operation, target, input, reader),
+      run: (operation, target, input, reader, caller) => side.run(operation, target, input, reader, caller),
     };
   }
   return served;
