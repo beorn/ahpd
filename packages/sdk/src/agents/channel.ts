@@ -49,6 +49,13 @@
  * sessions and alerts are kept, and the host starts nothing new on it. All
  * three answer the row.
  *
+ * A record a person owns may name `delegates`, the plugins allowed to write it.
+ * Only the owner writes that list, as itself — a plugin's put never changes it —
+ * and every write a plugin makes under it keeps the owner and is said on the
+ * host's problem log with both identities. Taking a name out is the whole of
+ * revoking it, and the next request is the one refused. A plugin writing a
+ * person's record without being listed is refused by name.
+ *
  * An edit keeps the agent and its sessions: the view `open` was handed is
  * updated in place, so a running session reads the new record at its next
  * turn. A record's id is unique across every owner, and it is also the agent's
@@ -74,6 +81,8 @@
 
 import { INVALID_PARAMS, INTERNAL_ERROR, RpcError } from '../rpc.js';
 import { connectorRefusal } from '../connectors/fields.js';
+import type { ConnectorOwner } from '../types/connectors.js';
+import type { OwnerVerb } from '../channels/owners.js';
 import {
   AGENT_SECRETS,
   asOwner,
@@ -809,6 +818,68 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     return onTeam(reader, owner.slice('team:'.length));
   };
 
+  /**
+   * The plugins this record's owner has listed, in the order they were named.
+   *
+   * Written by the owner alone, so a plugin can never add itself: the list is a
+   * local act by the person the record belongs to, and taking a name out is the
+   * whole of revoking it.
+   */
+  const delegatesOf = (record: StoredRecord | undefined): string[] => {
+    const held = record === undefined ? undefined : record.delegates;
+    return Array.isArray(held) ? held.filter((one): one is string => typeof one === 'string') : [];
+  };
+
+  /**
+   * Whether this write is one the record's owner delegated, and it is allowed.
+   *
+   * A plugin principal may write a `user:`-owned record only while that owner
+   * listed it there, and the write keeps the owner. Every delegated write names
+   * both identities on the host's problem log: a plugin writing somebody else's
+   * agent is the one event a person has to be able to find later.
+   *
+   * Answers true when the delegation carried the write, false when the caller
+   * has to be judged by the ordinary owner rule instead.
+   */
+  const tookDelegation = (
+    doing: string,
+    owner: ConnectorOwner | undefined,
+    reader: Principal | undefined,
+    verb: OwnerVerb,
+    id: string,
+    before: StoredRecord | undefined,
+  ): boolean => {
+    if (owner === undefined || !owner.startsWith('user:') || reader?.plugin === undefined) return false;
+    if (!delegatesOf(before).includes(reader.plugin)) {
+      throw new RpcError(DENIED, `${owner} is not ${reader.id}'s to ${doing}: its owner has not delegated ${id} to plugin:${reader.plugin}`);
+    }
+    if (!reader.can(`agent:${verb}` as Grant)) throw new RpcError(DENIED, `${owner} is not ${reader.id}'s to ${doing}`);
+    problem(`delegated write: plugin:${reader.plugin} ${doing} ${id}, owned by ${owner}`);
+    return true;
+  };
+
+  /**
+   * The `delegates` a put names, or nothing when it says nothing.
+   *
+   * Refused for a record that is not a person's: only a person delegates, and a
+   * host record belongs to everyone.
+   */
+  /** The list a record keeps when the put that rewrites it does not name one. */
+  const keptDelegates = (before: StoredRecord | undefined, was: ConnectorOwner | undefined): Record<string, unknown> => {
+    const held = before !== undefined && was !== undefined ? delegatesOf(before) : [];
+    return held.length === 0 ? {} : { delegates: held };
+  };
+
+  const delegatesParam = (params: Record<string, unknown>, command: string, owner: ConnectorOwner): string[] | undefined => {
+    const held = params.delegates;
+    if (held === undefined) return undefined;
+    if (owner === 'host') throw new RpcError(INVALID_PARAMS, `${command} takes delegates only for a person's record; ${owner} is not one`);
+    if (!Array.isArray(held) || held.some((one) => typeof one !== 'string' || one === '')) {
+      throw new RpcError(INVALID_PARAMS, `${command} takes delegates as a list of plugin names`);
+    }
+    return [...new Set(held)];
+  };
+
   const channel = recordsChannel(SCHEME, source, {
     grant: 'agent:list' as Grant,
     alsoGrant: 'agent:all' as Grant,
@@ -986,7 +1057,15 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     if (owner === undefined) {
       throw new RpcError(INVALID_PARAMS, `${PUT} needs owner, one of host, team:<team> or user:<id>`);
     }
-    refuseOwner('agent', 'make', owner, reader, 'put');
+    const before = await options.collection.get(id);
+    // A person's record may be written by a plugin they listed, and the write
+    // keeps the owner: the delegation is a widening of the owner rule, not a
+    // way to move a record. Anything else is the owner's own rule.
+    if (!tookDelegation('make', owner, reader, 'put', id, before)) refuseOwner('agent', 'make', owner, reader, 'put');
+    if (reader?.plugin !== undefined && params.delegates !== undefined) {
+      throw new RpcError(INVALID_PARAMS, `${PUT} does not take delegates; only ${owner}'s owner lists the plugins that may write it`);
+    }
+    const delegates = delegatesParam(params, PUT, owner);
     const config = params.config ?? {};
     if (!isRecord(config)) {
       throw new RpcError(INVALID_PARAMS, "An agent's config is a JSON object, and that is not one");
@@ -995,7 +1074,6 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     const description = optionalString(params, 'description', PUT);
     const model = optionalString(params, 'model', PUT);
     const icon = iconParam(params, PUT);
-    const before = await options.collection.get(id);
     // Before anything of this write is prepared: a stale put has no business
     // moving secrets or opening a backend.
     if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
@@ -1051,6 +1129,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       ...(description === undefined ? {} : { description }),
       ...(icon === undefined ? {} : { icon }),
       ...(model === undefined ? {} : { model }),
+      ...(delegates === undefined ? keptDelegates(before, was) : delegates.length === 0 ? {} : { delegates }),
       ...keptMode(before),
       config: moved,
       // Every write counts, and the caller's number is never what is written:
@@ -1109,7 +1188,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
      * owns it, which is what an operator's role is given.
      */
     if (owner !== undefined && reader?.can('agent:all' as Grant) !== true) {
-      refuseOwner('agent', 'remove', owner, reader, 'remove');
+      if (!tookDelegation('remove', owner, reader, 'remove', id, before)) refuseOwner('agent', 'remove', owner, reader, 'remove');
     }
     /*
      * The id is refused to everyone from here on, its owner included: it is
@@ -1261,7 +1340,10 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     if (before === undefined) throw new RpcError(INVALID_PARAMS, `${SCHEME} holds no ${id}`);
     if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
     const owner = asOwner(before.owner);
-    if (owner !== undefined) refuseOwner('agent', mode === 'enabled' ? 'enable' : mode === 'paused' ? 'pause' : 'disable', owner, reader, 'put');
+    const doing = mode === 'enabled' ? 'enable' : mode === 'paused' ? 'pause' : 'disable';
+    if (owner !== undefined && !tookDelegation(doing, owner, reader, 'put', id, before)) {
+      refuseOwner('agent', doing, owner, reader, 'put');
+    }
     if (owner === undefined) {
       throw new RpcError(INVALID_PARAMS, `${id} names no owner, so it cannot be served`);
     }
