@@ -22,8 +22,8 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { userInfo } from 'node:os';
 import {
-  controlService, listServices, putService, removeService, serviceLogs,
-  type Answer, type Caller, type Listing, type Machine, type PutParams,
+  acknowledgeFiles, controlService, listServices, putService, removeService, serviceLogs,
+  type AcknowledgeParams, type Answer, type Caller, type Listing, type Machine, type PutParams,
 } from './compose.js';
 import { acknowledge } from './drift.js';
 import { machineOf } from './plugin.js';
@@ -40,6 +40,7 @@ export interface LocalServices {
   remove(params: { readonly name: string; readonly ifVersion: string; readonly seen?: string }): ReturnType<typeof removeService>;
   control(name: string, verb: 'start' | 'stop' | 'restart'): ReturnType<typeof controlService>;
   logs(params: { readonly name: string; readonly endOffset?: number; readonly limit?: number }): ReturnType<typeof serviceLogs>;
+  acknowledge(params: AcknowledgeParams): ReturnType<typeof acknowledgeFiles>;
 }
 
 /**
@@ -87,5 +88,6 @@ export function localServices(configDir: string, user: string = userInfo().usern
     remove: async (params) => wrote(await removeService(machine, caller, params)),
     control: (name, verb) => controlService(machine, caller, { name, verb }),
     logs: (params) => serviceLogs(machine, caller, params),
+    acknowledge: (params) => acknowledgeFiles(machine, caller, params, (file, hash) => acknowledge(stateFile, file, hash)),
   };
 }

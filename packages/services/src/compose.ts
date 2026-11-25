@@ -81,6 +81,8 @@ export interface Listing {
   readonly capabilities: typeof CAPABILITIES;
   readonly ifVersion: string;
   readonly file: string;
+  /** The sha256 of every `-f` file, in order: what `acknowledge` is given back to accept a change made outside the driver. */
+  readonly hashes: Readonly<Record<string, string>>;
 }
 
 /** What this driver can carry. process-compose's scheduler keeps no last-run time, so a run missed while it is down is not caught up. */
@@ -246,6 +248,8 @@ interface LogLine {
   readonly after: ServiceRecord | null;
   readonly fileHashBefore: string | null;
   readonly fileHashAfter: string | null;
+  /** An acknowledge's files and the hashes it named. */
+  readonly files?: Readonly<Record<string, string>>;
   readonly refused?: { readonly code: RefusalCode; readonly message: string };
 }
 
@@ -299,7 +303,7 @@ function plainEnvKeys(entry: unknown): string[] {
  * caller is answered with the redacted diff, and the change log, which is sent off the machine as a backup, always
  * keeps the redacted one. A side that cannot be redacted gives no diff at all.
  */
-function stale(state: State, ifVersion: unknown, seen: unknown, redact: boolean): Refusal {
+function stale(state: Pick<State, 'file' | 'ifVersion' | 'text'>, ifVersion: unknown, seen: unknown, redact: boolean): Refusal {
   const old = typeof seen === 'string' && sha256(seen) === ifVersion ? seen : versions.get(String(ifVersion));
   const head = `${state.file} has changed since version ${String(ifVersion)}; it is now ${state.ifVersion}. Nothing was written; read it again`;
   if (old === undefined) return refuse('STALE_VERSION', `${head} (this driver no longer holds the version you read, so it cannot show what changed)`);
@@ -337,10 +341,87 @@ export function listServices(machine: Machine): Answer<Listing> {
       capabilities: CAPABILITIES,
       ifVersion: state.ifVersion,
       file: state.file,
+      hashes: fileHashes(machine),
     };
   }
   catch (error) {
     if (error instanceof FileError) return refuse('FILE_UNREADABLE', error.message);
+    return failed(error);
+  }
+}
+
+/** Every `-f` file's hash, remembering each text so a later stale acknowledge can show what changed. */
+const fileHashes = (machine: Machine): Record<string, string> => Object.fromEntries(machine.files.map((one) => {
+  const file = resolve(one);
+  const { text, hash } = readText(file);
+  remember(hash, text);
+  return [file, hash];
+}));
+
+/** An acknowledge's arguments: the hash of each file as the caller was shown it, and optionally the text it read. */
+export interface AcknowledgeParams {
+  readonly hashes: Readonly<Record<string, string>>;
+  readonly seen?: Readonly<Record<string, string>>;
+}
+
+/**
+ * `acknowledge` (@cto 876bcedd): accept the files as they are now, so drift stops
+ * alerting on a change made outside the driver. It is pinned to the hashes the
+ * caller was shown: a file that has changed since is refused with the difference
+ * (blanked for a remote caller, and always blanked in the log, as a stale put is),
+ * and then nothing is recorded. It writes no file and touches nothing running;
+ * `record` keeps each accepted hash where drift reads it. A remote caller may
+ * acknowledge: it records that someone saw the edit, it does not apply it.
+ */
+export function acknowledgeFiles(
+  machine: Machine, caller: Caller, params: AcknowledgeParams, record: (file: string, hash: string) => void,
+): Answer<{ files: Record<string, string> }> {
+  const given = params?.hashes;
+  const asked = given !== null && typeof given === 'object' ? Object.entries(given).map(([file, hash]) => [resolve(file), hash] as const) : [];
+  const log = (refused?: Refusal): void => writeLog(machine.changeLog, {
+    principal: caller.principal, op: 'acknowledge', name: '', before: null, after: null, fileHashBefore: null, fileHashAfter: null,
+    files: Object.fromEntries(asked.map(([file, hash]) => [file, String(hash)])),
+    ...(refused ? { refused: { code: refused.code, message: refused.message } } : {}),
+  });
+  try {
+    const unwritable = openLog(machine.changeLog);
+    if (unwritable) return unwritable;
+    const files = new Set(machine.files.map((one) => resolve(one)));
+    if (asked.length === 0) {
+      const refusal = refuse('INVALID', `acknowledge needs "hashes": each -f file's hash as list answered it (${[...files].join(', ')})`);
+      log(refusal);
+      return refusal;
+    }
+    for (const [file, hash] of asked) {
+      if (!files.has(file) || typeof hash !== 'string') {
+        const refusal = refuse('INVALID', `${file} is not one of this machine's -f files (${[...files].join(', ')}), or its hash is not a string`);
+        log(refusal);
+        return refusal;
+      }
+    }
+    for (const [file, hash] of asked) {
+      let now: { text: string; hash: string };
+      try {
+        now = readText(file);
+      }
+      catch (error) {
+        const refusal = refuse('FILE_UNREADABLE', (error as Error).message);
+        log(refusal);
+        return refusal;
+      }
+      remember(now.hash, now.text);
+      if (now.hash !== hash) {
+        const current = { file, ifVersion: now.hash, text: now.text };
+        const seen = params.seen?.[file];
+        log(stale(current, hash, seen, true));
+        return stale(current, hash, seen, caller.remote);
+      }
+    }
+    for (const [file, hash] of asked) record(file, hash as string);
+    log();
+    return { ok: true, files: Object.fromEntries(asked) as Record<string, string> };
+  }
+  catch (error) {
     return failed(error);
   }
 }

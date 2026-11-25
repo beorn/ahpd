@@ -40,7 +40,8 @@
         "x-ahpd/services/start",
         "x-ahpd/services/stop",
         "x-ahpd/services/restart",
-        "x-ahpd/services/logs"
+        "x-ahpd/services/logs",
+        "x-ahpd/services/acknowledge"
       ],
       "closers": [
         "the five-minute drift check"
