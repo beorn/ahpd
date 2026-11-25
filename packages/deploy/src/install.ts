@@ -158,9 +158,11 @@ export const customerInstallManifest = (
     { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}`, why: `ahpd ${options.version} and the runtime it runs on` },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/runtime`, from: 'download:runtime', why: 'the pinned runtime: the customer Node is not used' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/ahpd`, from: 'download:ahpd', why: 'the daemon' },
-    { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/host-plugin`, from: 'download:host-plugin', why: 'our host plug-in' },
+    { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/host-plugin`, from: 'download:hostPlugin', why: 'our host plug-in' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/supervisor`, from: 'download:supervisor', why: 'the supervisor the boot item starts' },
     { kind: 'symlink', path: `${stateDir}/deploy/${INSTALL_SERVICE}/current`, from: `releases/${options.version}`, why: 'switched by one atomic rename; versions and switch-back read it' },
+    { kind: 'dir', path: `${root}/boot`, why: 'the generated boot item, kept as a record next to the loaded copy' },
+    { kind: 'file', path: `${root}/boot/${bootItem.kind}`, from: 'generated:boot-item', why: 'the boot item uninstall disables and removes' },
     { kind: 'file', path: `${root}/install.json`, why: 'this manifest, so uninstall removes exactly what was created' },
     { kind: 'boot-item', path: bootItem.path, from: 'boot-item', why: `starts ahpd in the user session on ${options.platform}` },
   ]

@@ -89,12 +89,22 @@ asset (@cto 2026-11-25). It must run before any runtime exists, so it lives nowh
 - The host guide shows both forms: the download-then-inspect one, and the one-liner.
 - Everything after the runtime exists is this package's `plan`/`apply`, so there is one manifest and one switch.
 
-## The apply slice (not this one)
+## Applying, and undoing it
 
-- `apply` refuses an existing `~/.ahpd` that carries no `install.json` and names it: it never adopts a developer's
-  ahpd state.
-- A version switch reuses the same layout and `activateRelease`; pruning keeps N (`DEFAULT_KEEP`) and says what it
-  removed.
+`apply` walks the manifest in order and refuses rather than half-installs:
+
+- A root that already exists with no `install.json` is refused by name and nothing is changed — a developer's
+  `~/.ahpd` is never adopted, and an explicit `$AHPD_HOME` gets no exemption.
+- Each download is fetched to a staging name, hashed, and compared to its pin **before** it is moved into place; a
+  mismatch stops the install with the expected and actual digests and removes the staged bytes.
+- `current` moves through the deploy driver's `activateRelease`, so the switch is journaled; only then is the boot
+  item loaded, and a failing enable command is reported with its own words.
+- The loaded boot item's file is also kept under `~/.ahpd/boot/`, so `uninstall` disables and removes exactly what
+  this install wrote.
+
+`uninstall` runs the boot item's disable command first, then removes the recorded entries last-created-first and lists
+them. A version switch (later slice) reuses the same layout and `activateRelease`, and pruning keeps `DEFAULT_KEEP`
+releases and says what it removed.
 
 ## Still open
 
