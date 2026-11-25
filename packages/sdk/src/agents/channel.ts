@@ -845,8 +845,11 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
    * both identities on the host's problem log: a plugin writing somebody else's
    * agent is the one event a person has to be able to find later.
    *
-   * Answers true when the delegation carried the write, false when the caller
-   * has to be judged by the ordinary owner rule instead.
+   * Answers the line the log carries once the write lands, or nothing when the
+   * caller has to be judged by the ordinary owner rule instead. It is answered
+   * here and written by the caller after the write commits, never before: a put
+   * that is refused for being stale, for moving the owner or for a bad secret
+   * must not leave a line saying a write happened.
    */
   const tookDelegation = (
     doing: string,
@@ -855,14 +858,18 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     verb: OwnerVerb,
     id: string,
     before: StoredRecord | undefined,
-  ): boolean => {
-    if (owner === undefined || !owner.startsWith('user:') || reader?.plugin === undefined) return false;
+  ): string | undefined => {
+    if (owner === undefined || !owner.startsWith('user:') || reader?.plugin === undefined) return undefined;
     if (!delegatesOf(before).includes(reader.plugin)) {
       throw new RpcError(DENIED, `${owner} is not ${reader.id}'s to ${doing}: its owner has not delegated ${id} to plugin:${reader.plugin}`);
     }
     if (!reader.can(`agent:${verb}` as Grant)) throw new RpcError(DENIED, `${owner} is not ${reader.id}'s to ${doing}`);
-    problem(`delegated write: plugin:${reader.plugin} ${doing} ${id}, owned by ${owner}`);
-    return true;
+    return `delegated write: plugin:${reader.plugin} ${doing} ${id}, owned by ${owner}`;
+  };
+
+  /** The line a committed delegated write leaves; nothing for any other write. */
+  const noteDelegated = (line: string | undefined): void => {
+    if (line !== undefined) problem(line);
   };
 
   /**
@@ -1077,7 +1084,8 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     // A person's record may be written by a plugin they listed, and the write
     // keeps the owner: the delegation is a widening of the owner rule, not a
     // way to move a record. Anything else is the owner's own rule.
-    if (!tookDelegation('make', owner, reader, 'put', id, before)) refuseOwner('agent', 'make', owner, reader, 'put');
+    const delegated = tookDelegation('make', owner, reader, 'put', id, before);
+    if (delegated === undefined) refuseOwner('agent', 'make', owner, reader, 'put');
     if (reader?.plugin !== undefined && params.delegates !== undefined) {
       throw new RpcError(INVALID_PARAMS, `${PUT} does not take delegates; only ${owner}'s owner lists the plugins that may write it`);
     }
@@ -1168,6 +1176,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       }
     }
     await options.collection.put(record);
+    noteDelegated(delegated);
     owners.set(id, owner);
     if (built !== undefined) open.set(id, built);
     try {
@@ -1205,8 +1214,10 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
      * is the one grant that does: it reads and removes any agent, whoever
      * owns it, which is what an operator's role is given.
      */
+    let delegated: string | undefined;
     if (owner !== undefined && reader?.can('agent:all' as Grant) !== true) {
-      if (!tookDelegation('remove', owner, reader, 'remove', id, before)) refuseOwner('agent', 'remove', owner, reader, 'remove');
+      delegated = tookDelegation('remove', owner, reader, 'remove', id, before);
+      if (delegated === undefined) refuseOwner('agent', 'remove', owner, reader, 'remove');
     }
     /*
      * The id is refused to everyone from here on, its owner included: it is
@@ -1225,6 +1236,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       await options.endSessionsOf(id);
       await forgetRecordSecrets(configOf(before), owner, id, AGENT_SECRETS, options.vault(), problem);
       await options.collection.remove(id);
+      noteDelegated(delegated);
     } catch (error) {
       removing.delete(id);
       throw error;
@@ -1359,7 +1371,8 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
     const owner = asOwner(before.owner);
     const doing = mode === 'enabled' ? 'enable' : mode === 'paused' ? 'pause' : 'disable';
-    if (owner !== undefined && !tookDelegation(doing, owner, reader, 'put', id, before)) {
+    const delegated = owner === undefined ? undefined : tookDelegation(doing, owner, reader, 'put', id, before);
+    if (owner !== undefined && delegated === undefined) {
       refuseOwner('agent', doing, owner, reader, 'put');
     }
     if (owner === undefined) {
@@ -1369,6 +1382,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     // row it read is exactly as able to be stale as one that edits it.
     const record: StoredRecord = { ...before, mode, revision: revisionOf(before) + 1 };
     await options.collection.put(record);
+    noteDelegated(delegated);
     try {
       await take(await sync());
     } catch (error) {
