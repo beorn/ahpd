@@ -353,8 +353,13 @@ const runStep = async (
   });
 };
 
-/** Exactly one atomic rename: the temporary link is built beside `current` and renamed over it. */
-const switchTo = (layout: DeployLayout, sha: string): void => {
+/**
+ * Exactly one atomic rename: the temporary link is built beside `current` and renamed over it.
+ *
+ * Exported because a customer host install (#38280) places prebuilt artifacts into the same layout and must switch
+ * them the same way; two implementations of this rename is the second copy #38276 ruled out.
+ */
+export const switchCurrent = (layout: DeployLayout, sha: string): void => {
   const link = paths(layout).current;
   const temporary = `${link}.${randomUUID()}.new`;
   symlinkSync(join('releases', sha), temporary, 'dir');
@@ -591,7 +596,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
     if (!hooked.ok) return finish(fail('before_switch', hooked.timedOut === true ? `before_switch ${hooked.output ?? 'timed out'}` : `before_switch exited ${String(hooked.code)}${hooked.code === EXIT_NO_VALUE ? `: ${hooked.output ?? ''}` : ''}`));
 
     lock = setLockStep(layout, lock, 'switch');
-    switchTo(layout, sha);
+    switchCurrent(layout, sha);
     steps.push({ step: 'switch', ok: true, ms: 0 });
     journal(layout, { event: 'switched', deployId, sha, from });
 
@@ -614,7 +619,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
       : `check exited ${String(checked.code)}${checked.code === EXIT_NO_VALUE ? `: ${checked.output ?? ''}` : ''}`;
     if (options.declaration.migrations === 'expand-only' && from !== null) {
       // The migration is already applied, so the folder goes back and the report says the migration stays.
-      switchTo(layout, from);
+      switchCurrent(layout, from);
       journal(layout, { event: 'switched back', deployId, sha, to: from });
       return finish({ state: 'switched back, migration stays applied', sha, from, reason });
     }
@@ -679,3 +684,6 @@ export const sweep = (stateDir: string): readonly SweptDeploy[] => {
 export const status = (layout: DeployLayout): { readonly current: string | null; readonly lock: DeployLock | undefined } => {
   return { current: currentRelease(layout), lock: readLock(layout) };
 };
+
+/* A customer host install (#38280): the manifest, the plan a customer reads, and the removal list. */
+export * from './install.js';
