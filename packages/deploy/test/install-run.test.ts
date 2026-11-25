@@ -334,11 +334,76 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     const text = describeApplyRefusal(result.refusal!);
     expect(text).toContain('launchctl: no such service');
     expect(text).toContain('switched back to 0.15.0');
+    // The old release's own start failed too, so the refusal says so in its own clause: "down" never reads as "back".
+    expect(text).toContain('switch-back to 0.15.0 also failed: launchctl: no such service');
     // The last two switches are: onto 0.16.0, then back to the release that was running.
     expect(switched.slice(-2)).toEqual(['0.16.0', '0.15.0']);
     expect(result.pruned).toEqual([]);
     expect(recordOf(io, failing.manifest).manifest?.version).toBe('0.15.0');
     expect(existsOf(io, '/home/customer/.ahpd/state/deploy/ahpd/releases/0.13.0')).toBe(true);
+  });
+
+  // @level l3 @consumer a switch back that works says nothing about failing, and the record follows the old release.
+  it('switches back cleanly when only the new release fails to start', async () => {
+    const io = fakeIo();
+    const switched: string[] = [];
+    const switchTo = (_layout: unknown, version: string) => {
+      switched.push(version);
+    };
+    const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.15.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, switchTo)).ok).toBe(true);
+    // Exactly one enable fails - the new release's - and the switch back's own start succeeds.
+    let enables = 0;
+    const oneBadStart = {
+      ...io,
+      run: (command: string) => {
+        if (command.includes('enable')) {
+          enables += 1;
+          if (enables === 1) return { code: 1, output: 'launchctl: bootstrap failed' };
+        }
+        return io.run(command);
+      },
+    };
+    const failing = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    if (!failing.ok) throw new Error('expected a manifest');
+    const result = await applyInstall(failing.manifest, oneBadStart, switchTo);
+    expect(result.ok).toBe(false);
+    const text = describeApplyRefusal(result.refusal!);
+    expect(text).toContain('switched back to 0.15.0');
+    expect(text).not.toContain('also failed');
+    expect(recordOf(io, failing.manifest).manifest?.version).toBe('0.15.0');
+    expect(switched.slice(-2)).toEqual(['0.16.0', '0.15.0']);
+  });
+
+  // @level l3 @consumer a prune that fails after a started release is a warning on a good install, not a failure.
+  it('records the release as installed before pruning, and reports a prune failure without failing the install', async () => {
+    const io = fakeIo();
+    const switched: string[] = [];
+    const switchTo = (_layout: unknown, version: string) => {
+      switched.push(version);
+    };
+    const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, switchTo)).ok).toBe(true);
+    const releases = '/home/customer/.ahpd/state/deploy/ahpd/releases';
+    const cannotList = {
+      ...io,
+      list: (path: string) => {
+        if (path === releases) throw new Error('EACCES: permission denied');
+        return io.list(path);
+      },
+    };
+    const next = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.14.0', pins: HONEST });
+    if (!next.ok) throw new Error('expected a manifest');
+    const result = await applyInstall(next.manifest, cannotList, switchTo);
+    expect(result.ok).toBe(true);
+    expect(result.refusal).toBeUndefined();
+    expect(result.pruneFailed).toEqual({ path: releases, output: 'EACCES: permission denied' });
+    // The record says installed, not installing: the release that is running is recorded before the tidy-up.
+    expect(recordOf(io, next.manifest).state).toBe('installed');
+    expect(recordOf(io, next.manifest).manifest?.version).toBe('0.14.0');
+    expect(existsOf(io, `${releases}/0.13.0`)).toBe(true);
   });
 
   // @level l3 @consumer a record that will not parse is refused, never read as a fresh install.

@@ -99,6 +99,12 @@ export interface ApplyResult {
   readonly pruned: readonly string[];
   /** Directories in `releases/` that were not pruned and why, so a stray folder is named rather than guessed at. */
   readonly keptReleases: readonly { readonly name: string; readonly why: string }[];
+  /**
+   * A tidy-up that failed after a release was running and recorded. The install is still good, so this never sets
+   * `ok` false or `refusal`: printing it and exiting 0 is what keeps the disk filling visible without calling a live
+   * host a failed install (@cto 2026-11-25).
+   */
+  readonly pruneFailed?: { readonly path: string; readonly output: string };
   readonly refusal?: ApplyRefusal;
 }
 
@@ -382,13 +388,32 @@ export const applyInstall = async (
     // a release nobody has started (@cto 2026-11-25).
     if (upgrading && previous !== null) {
       switchTo(layout, previous.version, 'switching back after a failed start');
-      const restarted = io.run(manifest.bootItem.enable);
-      await attempt('restore install record', installedManifest, () =>
+      // Wrapped like every other step: a runner that throws is a named failure, never an escape out of applyInstall.
+      const restarted = await attempt('start the previous release', manifest.bootItem.path, () =>
+        io.run(manifest.bootItem.enable),
+      );
+      const restored = await attempt('restore install record', installedManifest, () =>
         io.writeFile(
           installedManifest,
           JSON.stringify({ state: 'installed', manifest: previous } satisfies InstallRecord, null, 2),
         ),
       );
+      const restartedOutput = restarted.ok
+        ? restarted.value.output
+        : restarted.refusal.kind === 'step-failed'
+          ? restarted.refusal.output
+          : '';
+      // Anything short of "the old release is running again and recorded" is said in its own clause, so "the host is
+      // down" can never be read as "the host is back on the old version" (@cto 2026-11-25).
+      const backFailed: string[] = [];
+      if (!restarted.ok || restarted.value.code !== 0)
+        backFailed.push(`switch-back to ${previous.version} also failed: ${restartedOutput}`.trim());
+      if (!restored.ok)
+        backFailed.push(
+          `switch-back to ${previous.version} also failed: could not restore the install record: ${
+            restored.refusal.kind === 'step-failed' ? restored.refusal.output : ''
+          }`.trim(),
+        );
       return {
         ok: false,
         wrote,
@@ -399,7 +424,10 @@ export const applyInstall = async (
           step: 'enable boot item',
           path: manifest.bootItem.path,
           // Both halves of the attempt, then the switch back and its own start: nothing is left to guess.
-          output: `${stopped.output} then ${failure}; switched back to ${previous.version}: ${restarted.output}`.trim(),
+          output: [stopped.output, `then ${failure}`, `switched back to ${previous.version}: ${restartedOutput}`, ...backFailed]
+            .map((line) => line.trim())
+            .filter((line) => line !== '')
+            .join('; '),
         },
       };
     }
@@ -417,24 +445,18 @@ export const applyInstall = async (
     };
   }
 
-  // Only a started release is worth keeping the disk tidy for: a failed switch pruned nothing above.
-  const prunedNow = pruneReleaseFolders(io, layout, manifest.version);
-  if (!prunedNow.ok)
-    return {
-      ok: false,
-      wrote,
-      pruned: [],
-      keptReleases: [],
-      refusal: { kind: 'step-failed', step: 'prune releases', path: prunedNow.path, output: prunedNow.output },
-    };
-  const pruned = prunedNow.removed;
-  const keptReleases = prunedNow.kept;
-
+  // The release is running and is about to be recorded, so it is installed: the record goes down before the tidy-up.
+  // A prune that fails after this point is reported and still means a good install - never "installing" over a live
+  // release (@cto 2026-11-25).
   const closed = await attempt('finish install record', installedManifest, () =>
     io.writeFile(installedManifest, JSON.stringify({ state: 'installed', manifest } satisfies InstallRecord, null, 2)),
   );
-  if (!closed.ok) return { ok: false, wrote, pruned, keptReleases, refusal: closed.refusal };
-  return { ok: true, wrote, pruned, keptReleases };
+  if (!closed.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: closed.refusal };
+
+  // Only a started release is worth keeping the disk tidy for: a failed switch pruned nothing above.
+  const prunedNow = pruneReleaseFolders(io, layout, manifest.version);
+  if (!prunedNow.ok) return { ok: true, wrote, pruned: [], keptReleases: [], pruneFailed: { path: prunedNow.path, output: prunedNow.output } };
+  return { ok: true, wrote, pruned: prunedNow.removed, keptReleases: prunedNow.kept };
 };
 
 export interface UninstallOptions {
