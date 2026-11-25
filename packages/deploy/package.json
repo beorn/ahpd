@@ -56,6 +56,6 @@
     "@ahpd/services": "workspace:*"
   },
   "bin": {
-    "ahpd-host-install": "./dist/cli.js"
+    "ahpd-host-install": "./dist/bin.js"
   }
 }
