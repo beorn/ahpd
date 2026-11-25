@@ -18,7 +18,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { activateRelease, DEFAULT_KEEP, releasesToPrune, type DeployLayout, type InstallManifest, type InstallPin } from './index.js';
 import { unpackArchive } from './untar.js';
@@ -76,9 +76,10 @@ export const nodeInstallIo = (): InstallIo => ({
     unpackArchive(archive, into, topDir);
   },
   // A directory needs its own call: rmSync without `recursive` refuses one, and saying "removed" after a refusal is
-  // the silent error this row exists to prevent.
+  // the silent error this row exists to prevent. `lstat`, never `stat`: `current` is a symlink to a release folder, and
+  // following it makes a directory out of a link that has to be unlinked — rmdir on a link is ENOTDIR.
   remove: (path) => {
-    if (statSync(path).isDirectory()) rmdirSync(path);
+    if (lstatSync(path).isDirectory()) rmdirSync(path);
     else unlinkSync(path);
   },
   listTree: (path) => readdirSync(path, { recursive: true, encoding: 'utf8' }),

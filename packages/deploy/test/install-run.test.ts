@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -562,6 +562,11 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     // The daemon writes into its state dir, as it will on a real host.
     mkdirSync(`${manifest.root}/state`, { recursive: true });
     writeFileSync(`${manifest.root}/state/sessions.json`, '[]');
+    // apply's symlink step does not write `current` on its own; place the switch's link here, for real, so uninstall
+    // meets the one entry that is a link to a directory and not a file or a folder.
+    const current = manifest.entries.find((entry) => entry.kind === 'symlink');
+    if (current === undefined) throw new Error('expected a current symlink entry');
+    symlinkSync('releases/0.15.0-rc.4', current.path);
 
     const keptRun = uninstallInstall(manifest, io);
     expect(keptRun.ok).toBe(true);
@@ -569,6 +574,8 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     expect(existsSync(`${manifest.root}/state/sessions.json`)).toBe(true);
     expect(existsSync(`${manifest.root}/install.json`)).toBe(false);
     expect(existsSync(`${manifest.root}/boot`)).toBe(false);
+    // The link goes as a link: following it would call rmdir on it and fail with ENOTDIR.
+    expect(() => lstatSync(current.path)).toThrow(/ENOENT/u);
 
     let printed: readonly string[] = [];
     const purged = uninstallInstall(manifest, io, {
