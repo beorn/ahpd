@@ -18,6 +18,7 @@ so versions, switch-back and pruning are that package's code and not a second co
 | `~/.ahpd/state/` | the daemon's state: sessions, records, the deploy journal |
 | `~/.ahpd/state/deploy/ahpd/releases/<version>/` | one folder per release: `runtime`, `ahpd`, `host-plugin`, `supervisor` |
 | `~/.ahpd/state/deploy/ahpd/current` | symlink to the live release; switched by one atomic rename |
+| `~/.ahpd/state/deploy/ahpd/deploy.log` | the deploy journal: which release went live, and when |
 | `~/.ahpd/install.json` | the manifest this install wrote: what was created, so `uninstall` removes exactly that |
 | `~/Library/LaunchAgents/dev.hallohuman.ahpd.plist` (Mac) | a launchd *agent* in `gui/$UID`, never a system daemon |
 | `$XDG_CONFIG_HOME/systemd/user/ahpd.service` (Linux) | a systemd *user* unit, enabled with `systemctl --user` |

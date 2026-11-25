@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   applyInstall,
   customerInstallManifest,
   describeApplyRefusal,
   installDeployLayout,
+  nodeInstallIo,
   renderInstallPlan,
   uninstallInstall,
   type InstallIo,
@@ -90,6 +94,7 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
       dirs.delete(path);
       content.delete(path);
     },
+    listTree: (path) => [...paths].filter((one) => one.startsWith(`${path}/`)),
     removeTree: (path) => {
       for (const one of [...paths]) if (one === path || one.startsWith(`${path}/`)) {
         paths.delete(one);
@@ -259,10 +264,61 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
 
     const purgeIo = fakeIo([...manifest.entries.map((entry) => entry.path), `${state}/sessions.json`]);
     for (const entry of manifest.entries) if (entry.kind === 'dir') purgeIo.dirs.add(entry.path);
-    const purged = uninstallInstall(manifest, purgeIo, { purge: true });
+    const confirmed: (readonly string[])[] = [];
+    const purged = uninstallInstall(manifest, purgeIo, {
+      purge: true,
+      confirmPurge: (inside) => {
+        confirmed.push(inside);
+        return true;
+      },
+    });
     expect(purged.ok).toBe(true);
     expect(purged.removed).toContain(state);
+    // The list reaches the caller before anything goes, so --purge can print exactly what it deletes.
+    expect(confirmed.flat()).toContain(`${state}/sessions.json`);
     expect([...purgeIo.paths]).toEqual([]);
+  });
+
+  // @level l3 @consumer the real filesystem: the fake io cannot show that a directory needs its own removal call.
+  it('runs on a real tmpdir: keeps the daemon state, removes the rest, and purges only on request', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'ahpd-uninstall-')));
+    const built = customerInstallManifest({ platform: 'linux', home, version: '0.15.0-rc.4', pins: HONEST });
+    if (!built.ok) throw new Error('expected a manifest');
+    const manifest = built.manifest;
+    const real = nodeInstallIo();
+    const io: InstallIo = {
+      ...real,
+      fetchTo: async (source, path) => writeFileSync(path, bytesOf(source)),
+      run: (command) => {
+        void command;
+        return { code: 0, output: '' };
+      },
+    };
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    // The daemon writes into its state dir, as it will on a real host.
+    mkdirSync(`${manifest.root}/state`, { recursive: true });
+    writeFileSync(`${manifest.root}/state/sessions.json`, '[]');
+
+    const keptRun = uninstallInstall(manifest, io);
+    expect(keptRun.ok).toBe(true);
+    expect(keptRun.kept.join('\n')).toContain(`kept ${manifest.root}/state: 1 entry`);
+    expect(existsSync(`${manifest.root}/state/sessions.json`)).toBe(true);
+    expect(existsSync(`${manifest.root}/install.json`)).toBe(false);
+    expect(existsSync(`${manifest.root}/boot`)).toBe(false);
+
+    let printed: readonly string[] = [];
+    const purged = uninstallInstall(manifest, io, {
+      purge: true,
+      confirmPurge: (inside) => {
+        printed = inside;
+        return true;
+      },
+    });
+    expect(purged.ok).toBe(true);
+    expect(printed).toContain('sessions.json');
+    expect(existsSync(`${manifest.root}/state`)).toBe(false);
+    // Already-gone paths read as already gone, never as a failure.
+    expect(keptRun.removed.every((path) => path.includes('already gone') || existsSync(path) === false)).toBe(true);
   });
 
   // @level l3 @consumer a boot item that will not stop is reported with its own words and nothing is removed after it.

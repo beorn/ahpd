@@ -153,6 +153,7 @@ export const customerInstallManifest = (
   const entries: InstallEntry[] = [
     { kind: 'dir', path: root, why: 'the one folder this install owns' },
     { kind: 'dir', path: stateDir, why: "the daemon's state: sessions, records, the deploy journal" },
+    { kind: 'dir', path: `${stateDir}/deploy`, why: "the deploy driver's root, which holds one folder per service" },
     { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}`, why: "@ahpd/deploy's own layout: release folders, current, the journal" },
     { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases`, why: 'every release folder, so switching back keeps the old one' },
     { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}`, why: `ahpd ${options.version} and the runtime it runs on` },
@@ -160,6 +161,7 @@ export const customerInstallManifest = (
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/ahpd`, from: 'download:ahpd', why: 'the daemon' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/host-plugin`, from: 'download:hostPlugin', why: 'our host plug-in' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/supervisor`, from: 'download:supervisor', why: 'the supervisor the boot item starts' },
+    { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/deploy.log`, from: 'generated:journal', why: 'the deploy journal: what moved current, and when' },
     { kind: 'symlink', path: `${stateDir}/deploy/${INSTALL_SERVICE}/current`, from: `releases/${options.version}`, why: 'switched by one atomic rename; versions and switch-back read it' },
     { kind: 'dir', path: `${root}/boot`, why: 'the generated boot item, kept as a record next to the loaded copy' },
     { kind: 'file', path: `${root}/boot/${bootItem.kind}`, from: 'generated:boot-item', why: 'the boot item uninstall disables and removes' },

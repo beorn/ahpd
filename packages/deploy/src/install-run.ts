@@ -18,7 +18,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { activateRelease, type InstallManifest, type InstallPin } from './index.js';
 
@@ -41,7 +41,10 @@ export interface InstallIo {
   readonly fetchTo: (source: string, path: string) => Promise<void>;
   /** Moves verified bytes into place: a binary never travels through a decoded string. */
   readonly move: (from: string, to: string) => void;
+  /** Removes a file, or an empty directory; a path that is already gone is not an error. */
   readonly remove: (path: string) => void;
+  /** Every path under a directory, for the list `--purge` prints before it deletes. */
+  readonly listTree: (path: string) => readonly string[];
   /** Removes a directory and everything under it: only `uninstall --purge` reaches for this. */
   readonly removeTree: (path: string) => void;
   readonly run: (command: string) => RunResult;
@@ -63,7 +66,13 @@ export const nodeInstallIo = (): InstallIo => ({
     writeFileSync(path, Buffer.from(await answered.arrayBuffer()));
   },
   move: (from, to) => renameSync(from, to),
-  remove: (path) => rmSync(path, { force: false }),
+  // A directory needs its own call: rmSync without `recursive` refuses one, and saying "removed" after a refusal is
+  // the silent error this row exists to prevent.
+  remove: (path) => {
+    if (statSync(path).isDirectory()) rmdirSync(path);
+    else unlinkSync(path);
+  },
+  listTree: (path) => readdirSync(path, { recursive: true, encoding: 'utf8' }),
   removeTree: (path) => rmSync(path, { recursive: true, force: false }),
   run: (command) => {
     const done = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
@@ -188,8 +197,9 @@ export const applyInstall = async (
       wrote.push(entry.path);
       continue;
     }
-    // The switch writes the symlink; the boot item's own file is written below, before its enable command runs.
-    if (entry.kind === 'symlink') continue;
+    // The switch writes the symlink and the journal line; the boot item's own file is written below, before its
+    // enable command runs.
+    if (entry.kind === 'symlink' || entry.from === 'generated:journal') continue;
     if (entry.from === 'generated:boot-item') {
       const written = await attempt('write boot item record', entry.path, () => io.writeFile(entry.path, bootContent(manifest)));
       if (!written.ok) return { ok: false, wrote, refusal: written.refusal };
@@ -263,6 +273,8 @@ export const applyInstall = async (
 export interface UninstallOptions {
   /** Also delete what the install did not write - the daemon's sessions, records and logs. Never the default. */
   readonly purge?: boolean;
+  /** Called with everything under a kept directory before `--purge` deletes it; returning false keeps it. */
+  readonly confirmPurge?: (paths: readonly string[]) => boolean;
 }
 
 export interface UninstallResult {
@@ -296,6 +308,11 @@ export const uninstallInstall = (
     };
 
   for (const entry of [...manifest.entries].reverse()) {
+    // A file that is already gone is a fact to say, not a failure: uninstall can be run twice.
+    if (!io.exists(entry.path)) {
+      removed.push(`${entry.path} (already gone)`);
+      continue;
+    }
     if (entry.kind === 'dir') {
       let entries: readonly string[];
       try {
@@ -312,16 +329,31 @@ export const uninstallInstall = (
         io.remove(entry.path);
         removed.push(entry.path);
       } else if (options.purge === true) {
+        // The list goes to the caller before anything is deleted, so `--purge` can print exactly what it deletes.
+        const inside = io.listTree(entry.path);
+        if (options.confirmPurge !== undefined && !options.confirmPurge(inside)) {
+          kept.push(`kept ${entry.path}: purge not confirmed`);
+          continue;
+        }
         io.removeTree(entry.path);
-        removed.push(entry.path);
+        removed.push(entry.path, ...inside);
       } else {
         const count = `${String(entries.length)} ${entries.length === 1 ? 'entry' : 'entries'}`;
         kept.push(`kept ${entry.path}: ${count} not written by this install; remove by hand or run uninstall --purge`);
       }
       continue;
     }
-    io.remove(entry.path);
-    removed.push(entry.path);
+    try {
+      io.remove(entry.path);
+      removed.push(entry.path);
+    } catch (error) {
+      return {
+        ok: false,
+        removed,
+        kept,
+        refusal: { kind: 'step-failed', step: 'remove file', path: entry.path, output: message(error) },
+      };
+    }
   }
   return { ok: true, removed, kept };
 };
