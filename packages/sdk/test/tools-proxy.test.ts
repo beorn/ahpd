@@ -188,3 +188,21 @@ it('answers 404 once closed, and ends a stream that was open', async () => {
   await expect((async () => { for (let part = await reader.read(); !part.done; part = await reader.read()); })()).rejects.toBeDefined();
   expect((await asked(endpoint.url, endpoint.token))?.status).toBe(404);
 });
+
+it('ends the upstream request when the agent drops a stream before it ends', async () => {
+  let gone: Promise<void> = Promise.resolve();
+  answer = (request, response) => {
+    gone = new Promise<void>((resolve) => { request.socket.on('close', () => { resolve(); }); });
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('event: message\ndata: {}\n\n');
+  };
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
+  if (endpoint === undefined) throw new Error('no endpoint');
+  const open = await asked(endpoint.url, endpoint.token, { method: 'GET', headers: { accept: 'text/event-stream' } });
+  const reader = open!.body!.getReader();
+  await reader.read();
+
+  await reader.cancel();
+  // The upstream sees the disconnect, long before the session would close it.
+  await expect(Promise.race([gone.then(() => 'closed'), new Promise((resolve) => { setTimeout(() => { resolve('still open'); }, 2_000); })])).resolves.toBe('closed');
+});
