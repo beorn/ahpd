@@ -5,7 +5,9 @@
 //
 //   node scripts/pack-host-archive.mjs --commit <full sha> --tag <release tag> --source-base <https url> --out <empty dir>
 //
-// Writes <out>/ahpd-<version>-<platform>-<arch>.tar.gz and <out>/pins-<platform>-<arch>.json. Refuses, by name:
+// Writes <out>/ahpd-<version>-<platform>-<arch>.tar.gz and <out>/ahpd-pin-<platform>-<arch>.json: the ahpd pin only.
+// The served pins-<platform>-<arch>.json carries four pins (runtime, ahpd, hostPlugin, supervisor) and is assembled
+// by the release from this file, so the one-pin file is named so it can never be served as the whole set. Refuses, by name:
 // a dirty tree, a HEAD that is not the commit, an @ahpd/* package that did not come from this workspace, a
 // non-empty output folder, a source base that is not https, any type error, and a missing build output. Prints the node, pnpm, bun and tar versions it used, so
 // two builds can be compared.
@@ -124,5 +126,5 @@ const pins = {
     ahpd: { version, platform, arch, source: `${sourceBase}/${tag}/${name}`, checksum: `sha256:${sha256}` },
   },
 };
-writeFileSync(join(out, `pins-${platform}-${arch}.json`), `${JSON.stringify(pins, null, 2)}\n`);
+writeFileSync(join(out, `ahpd-pin-${platform}-${arch}.json`), `${JSON.stringify(pins, null, 2)}\n`);
 process.stdout.write(`pack-host-archive: ${name} sha256:${sha256}\n`);
