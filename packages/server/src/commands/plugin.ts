@@ -11,6 +11,7 @@ import { check, output } from '@cofold/commands';
 import type { Command, CommandContext, JsonSchema, Output, Registry } from '@cofold/commands';
 import { scopeOf, sdkVersion, secretRef } from '@ahpd/sdk';
 import { configDir, configPath } from '../config.js';
+import { answering, confirm, here } from '../ask.js';
 import { running } from '../daemon.js';
 import { API_PREFIX } from '../http.js';
 import {
@@ -281,6 +282,8 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
         if (payload) context.error(line);
         else context.write(`${line}\n`);
       };
+      /** What an install asked for and whether it was granted, for the payload. */
+      let reported: { asked: ReadonlyMap<string, string[]>; declaredCallerGrants: ReadonlyMap<string, string[]>; consented: boolean; granted: boolean } | undefined;
       try {
         if (sub === 'install') {
           await installPlugins(names, {
@@ -288,6 +291,15 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
             sdk: sdkVersion(), enable: !context.flag('noEnable'), run: runProgram, fetch, say,
             marketplaces: served === undefined ? configuredMarketplaces(namedFile) : served.options.pluginMarketplaces,
             marketplace: context.optional<string>('marketplace'),
+            grant: context.flag('grant'),
+            report: (facts) => { reported = facts; },
+            /*
+             * A pipe, a payload and a daemon serving a request have nobody to
+             * ask: the install prints the list and the command that would write
+             * it, rather than reading an end, a JSON stream or the daemon's own
+             * keyboard as an answer.
+             */
+            ...(!payload && served === undefined && answering(here) ? { confirm: (question: string) => confirm(question, false) } : {}),
           });
         }
         else {
@@ -306,7 +318,18 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
        * that did not answer at all.
        */
       const restart = await saidSo(say, namedFile);
-      return output({ plugins: names, ...(restart ? { restart: true } : {}) }, '');
+      return output({
+        plugins: names,
+        ...(restart ? { restart: true } : {}),
+        ...(reported === undefined ? {} : {
+          grants: {
+            asked: Object.fromEntries(reported.asked),
+            declaredCallerGrants: Object.fromEntries(reported.declaredCallerGrants),
+            consented: reported.consented,
+            granted: reported.granted,
+          },
+        }),
+      }, '');
     }),
   });
 

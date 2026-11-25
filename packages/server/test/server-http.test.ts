@@ -672,9 +672,13 @@ describe('a request signs in', () => {
     );
     const answered = await post(`http://127.0.0.1:${String(one.port)}/api/plugin/install`, admin, { name: ['left-pad'] });
     expect(answered.status).toBe(200);
-    // The row the file now names, and what the command answered about it.
+    // The row the file now names, and what the command answered about it: the
+    // package, and the grants its manifest asked for and nobody consented to.
     expect((JSON.parse(readFileSync(config, 'utf8')) as { plugins: unknown[] }).plugins).toContain('left-pad');
-    expect(await answered.json()).toEqual({ plugins: ['left-pad'] });
+    expect(await answered.json()).toEqual({
+      plugins: ['left-pad'],
+      grants: { asked: {}, declaredCallerGrants: {}, consented: false, granted: false },
+    });
   }, 30000);
 
   // The stand-in npm is a shell script, which Windows does not run.

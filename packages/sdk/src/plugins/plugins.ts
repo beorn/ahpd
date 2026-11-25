@@ -20,6 +20,7 @@ import type { EventHandler, EventListener, EventName, HostEvent, HostEventOf, Ho
 import type { HostOptions, HostTool, NodeRegistry } from '../types/host.js';
 import type { ChannelHandle, Contribution, GrantEntry, LoaderContext, Alert, InstallAnswer, PluginConnects, PluginContext, PluginContracts, PluginHost, PluginStarts, PluginView, SessionMetaKey, ServedBindings, ServedCanvases, ServedChannel, ServedMethod, ServedPlan, ServedSessionMeta, PluginTriggers, PortContribution, PortKey, PortOf, Route, TriggerTypeDefinition, ViewSurface } from '../types/plugin.js';
 import type { CollectionOptions, RecordCollection, RecordStore } from '../types/records.js';
+import type { ResourceProvider } from '../types/resources.js';
 import type { SessionStore } from '../types/sessions.js';
 import type { ServedTunnelKind } from '../types/tunnels.js';
 import type { Usage } from '../types/usage.js';
@@ -30,7 +31,7 @@ import { idOf, schemeOf } from '../sessions/catalog.js';
 import { frozenCopy } from '../utils/frozen.js';
 import { grantProblem, holds, OPERATIONS } from '../access/users.js';
 import { SESSION_TOOL_NAMES } from '../tools/session.js';
-import { grantEntries } from '../host/root.js';
+import { grantEntries, schemeOperations } from '../host/root.js';
 import { createPair } from '../utils/pair.js';
 import { isRecordPath, isRecordSlug, RECORD_PATH, RECORD_SLUG } from '../resources/records.js';
 import type { Pair } from '../utils/pair.js';
@@ -311,6 +312,17 @@ const requiredGrants = (
 };
 
 /**
+ * The grants one plugin's registrations ask for, with the plugin's own name.
+ *
+ * The half of `requiredGrants` a loader needs when it holds one plugin and its
+ * manifest: a channel, a method and a tunnel kind's operation each name the
+ * grant a caller needs, and this is what the manifest's `callerGrants` must
+ * cover.
+ */
+export const grantsRequiredBy = (contribution: Contribution): { by: string; grant: string }[] =>
+  requiredGrants(contribution.channels, contribution.methods, contribution.tunnelKinds ?? {});
+
+/**
  * Whether the list `ahpd.grants` holds answers a grant a caller is asked for.
  *
  * The two wildcard forms are on every list, and so are the groups of a
@@ -560,6 +572,87 @@ export function foldHostOptions(base: HostOptions, contributions: Contribution[]
         ...(description === undefined ? {} : { description }),
         operations: joined,
       };
+    }
+
+    /*
+     * What the manifest declared its callers are asked for, advertised the way
+     * a `registerGrants` call is.
+     *
+     * A declaration names the operations the plugin introduces, so the
+     * catalogue a role editor draws has the subject before a caller is refused:
+     * the check after this loop is about the list, and a plugin whose manifest
+     * declared a grant says the list carries it. A word the table refuses on a
+     * subject it decides is left out, and that check names the requirement
+     * nothing lists.
+     *
+     * Only what this plugin's own registrations ask a caller for is drawn. A
+     * manifest can write any grant, and one nothing here requires would put an
+     * operation into the catalogue that no gate ever asks for: on another
+     * plugin's subject it widens that plugin's entry, and on its own it is a
+     * word a role could be given and never use. Required grants are drawn, and
+     * a subject this plugin serves through a provider or a `registerGrants`
+     * entry is already drawn from that; anything else is reported, one line
+     * per subject, and left out.
+     *
+     * A subject the built-in table decides is drawn from the table, and a word
+     * the table does not have on it is reported here rather than silently
+     * dropped.
+     */
+    const required = [...new Set(grantsRequiredBy(contribution).map((one) => one.grant))];
+    /*
+     * Drawn from the registrations, not from the declaration: what a caller is
+     * asked for is what the plugin actually registers, and a manifest cannot
+     * add a word to that. Only a subject the declaration named is drawn this
+     * way - a plugin with no field keeps the catalogue it had, and the line
+     * below names the subject nothing lists, which is what tells its author to
+     * declare it. A returned operation is joined to whatever the provider or
+     * `registerGrants` path already drew for the subject, which `grantEntries`
+     * unions, and the table's subjects are the table's.
+     */
+    const declaredSubjects = new Set<string>((contribution.callerGrants ?? []).map((grant) => grant.slice(0, Math.max(0, grant.indexOf(':')))));
+    for (const grant of required) {
+      const at = grant.indexOf(':');
+      if (at <= 0) continue;
+      const subject = grant.slice(0, at);
+      const one = grant.slice(at + 1);
+      if (!declaredSubjects.has(subject)) continue;
+      if (Object.hasOwn(OPERATIONS, subject) || one === '*') continue;
+      const before = grants[subject];
+      const joined = [...(before?.operations ?? [])];
+      if (!joined.includes(one)) joined.push(one);
+      grants[subject] = { ...(before ?? {}), operations: joined };
+    }
+    /*
+     * What the declaration says that nothing here asks a caller for. It is
+     * reported, one line per subject, because install prints the list as what
+     * roles must hold and the catalogue draws only what a gate asks for - on
+     * another plugin's subject a word would widen its entry.
+     *
+     * A subject this plugin serves through a provider or a `registerGrants`
+     * entry is its own to draw, so a declaration naming an operation there is
+     * checked against that entry rather than against a registration.
+     */
+    const extra = new Map<string, string[]>();
+    for (const grant of contribution.callerGrants ?? []) {
+      const at = grant.indexOf(':');
+      if (at <= 0) continue;
+      const subject = grant.slice(0, at);
+      const one = grant.slice(at + 1);
+      const provider = contribution.providers[subject] as ResourceProvider | undefined;
+      const registered = contribution.grants?.[subject]?.operations ?? [];
+      // A group is answered by the subject's own entry, so it is meaningful
+      // wherever the plugin has one; an operation has to be one the provider
+      // or the registration actually has.
+      const group = one === 'read' || one === 'write' || one === '*';
+      const served = provider !== undefined || contribution.grants?.[subject] !== undefined;
+      if (served && (group || registered.includes(one) || (provider !== undefined && schemeOperations(provider).includes(one)))) continue;
+      // A group covers the operations it groups, which is how the gate reads
+      // it: `probe:read` is what a role holds for `probe:list`.
+      if (required.some((one) => holds(new Set([grant as Grant]), one as Grant))) continue;
+      extra.set(subject, [...(extra.get(subject) ?? []), grant]);
+    }
+    for (const [subject, list] of extra) {
+      problems.push(`plugin ${contribution.by} declares callerGrants ${list.join(', ')}, but nothing it registers on ${subject} asks for ${list.length === 1 ? 'it' : 'them'}; it is not advertised, because a role would be offered an operation nothing asks for`);
     }
 
     for (const [scheme, served] of Object.entries(contribution.channels)) {
@@ -1189,6 +1282,15 @@ export interface HostRecordingOptions {
    */
   contracts?: PluginContracts;
   /**
+   * The grants the plugin's manifest declares its surface asks of a caller.
+   *
+   * Read from the manifest by the loader and advertised in `ahpd.grants` by the
+   * fold: a declaration names the operations the plugin introduces, so the
+   * catalogue lists them before any caller is refused. Absent for a plugin
+   * whose manifest declares none.
+   */
+  callerGrants?: readonly Grant[];
+  /**
    * Where a package a plugin installs is kept, handed to `host.installed`.
    *
    * The absolute path of `installed/` inside the plugin's own folder. Absent
@@ -1316,6 +1418,7 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
     ports: {},
     providers: {},
     grants: {},
+    ...(options.callerGrants === undefined ? {} : { callerGrants: [...options.callerGrants] }),
     channels: {},
     adapters: {},
     engines: {},

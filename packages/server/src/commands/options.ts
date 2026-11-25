@@ -1212,6 +1212,10 @@ export const pluginWriteFields = {
     type: 'boolean',
     description: 'Install it without naming it in the file.',
   },
+  grant: {
+    type: 'boolean',
+    description: 'Write the grants the manifests ask for into the entries, without asking. Without it, every grant is printed and a terminal is asked; on a pipe nothing is granted and the command to do it is printed.',
+  },
   keep: {
     type: 'boolean',
     description: 'Take it out of the configuration and leave the package installed.',
@@ -1266,6 +1270,9 @@ export const servedTeamFields = {
 /** The plugin-write fields a request may set; the configuration file is the daemon's. */
 export const servedPluginWriteFields = {
   noEnable: pluginWriteFields.noEnable,
+  // The same consent a person gives with the flag at a terminal: a request that
+  // names it wrote the grants deliberately, and the daemon has nobody to ask.
+  grant: pluginWriteFields.grant,
   keep: pluginWriteFields.keep,
   marketplace: pluginWriteFields.marketplace,
 } satisfies Record<string, Field>;

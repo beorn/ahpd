@@ -25,7 +25,7 @@
 
 export { createHost, HOST_CLOSE_WAIT_MS, ROOT, refusalReason } from './host.js';
 export { subagentChatUri } from './host/channels.js';
-export { eachPreset, foldHostOptions, pluginHost, raise, routeOf, routePrefix, AGENT_CLASH, ROUTE_ROOT } from './plugins/plugins.js';
+export { eachPreset, foldHostOptions, grantsRequiredBy, pluginHost, raise, routeOf, routePrefix, AGENT_CLASH, ROUTE_ROOT } from './plugins/plugins.js';
 export { frozenCopy, deepFreeze } from './utils/frozen.js';
 export { readJson, readJsonObject, writeJsonAtomic } from './utils/jsonfile.js';
 export type { JsonRead, JsonObjectRead, JsonWriteOptions } from './utils/jsonfile.js';
@@ -130,7 +130,7 @@ export { decide, keyRowOf } from './access/decide.js';
 export type { Asked, Decision } from './access/decide.js';
 export { chargeFor, countCall, COUNTED, keysOf, limitsOf } from './usage/charge.js';
 export type { Charge, ChargeOptions, ChargeRefusal, LimitFigure, LimitMember, PayOrder } from './usage/charge.js';
-export { fileUsers, grantProblem, signInRecord } from './access/users.js';
+export { fileUsers, grantProblem, holds, signInRecord } from './access/users.js';
 export type { FileUserOptions } from './access/users.js';
 export { fileNodes, JOIN_PATH, liveNodes, nodesFileOf } from './nodes.js';
 export type { FileNodeOptions, LiveNodes, LiveOptions, NodeFile, NodeRecord, Nodes } from './nodes.js';

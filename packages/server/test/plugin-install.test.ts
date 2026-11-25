@@ -1257,3 +1257,204 @@ it('uninstalls with --legacy-peer-deps, so a plugin in the root whose peer range
   await removePlugins(['@ahpd/web'], { configDir, configFile, uninstall: true, run: runner, say });
   expect(calls[0]?.argv).toContain('--legacy-peer-deps');
 });
+
+/*
+ * What a manifest asks for is shown before anything is written, and written
+ * only when a person consents: `--grant`, or a yes at a terminal. A manifest
+ * never grants itself, and an install on a pipe says the command that would.
+ */
+const asksGrants = { manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: ['probe:read', 'probe:write'] } } } };
+
+it('prints the grants a manifest asks for and writes none without consent', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  const lines: string[] = [];
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say: (line) => lines.push(line),
+  });
+  expect(lines.join('\n')).toContain('@ahpd/probe-grants asks for probe:read, probe:write.');
+  expect(lines.join('\n')).toContain('@ahpd/probe-grants: nothing was granted (probe:read, probe:write)');
+  expect(read().plugins).toEqual(['@ahpd/probe-grants']);
+});
+
+it('writes every grant the manifest asks for with --grant', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say, grant: true,
+  });
+  expect(read().plugins).toEqual([{ source: '@ahpd/probe-grants', grants: ['probe:read', 'probe:write'] }]);
+});
+
+it('writes the grants when a person answers yes at a terminal', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  const asked: string[] = [];
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+    confirm: async (question) => { asked.push(question); return true; },
+  });
+  expect(asked[0]).toContain('probe:read, probe:write');
+  expect(read().plugins).toEqual([{ source: '@ahpd/probe-grants', grants: ['probe:read', 'probe:write'] }]);
+});
+
+it('leaves an entry without the grants a person refused at a terminal', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+    confirm: async () => false,
+  });
+  expect(read().plugins).toEqual(['@ahpd/probe-grants']);
+});
+
+it('asks nothing and grants nothing when --no-enable writes no entry', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  const lines: string[] = [];
+  let asked = false;
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: false, run: runner, fetch: aPlugin, say: (line) => lines.push(line),
+    confirm: async () => { asked = true; return true; },
+  });
+  expect(asked).toBe(false);
+  expect(lines.join('\n')).toContain('nothing was granted');
+  expect(existsSync(configFile)).toBe(false);
+});
+
+it('answers a JSON caller what the manifest asked, not only what an entry lacked', async () => {
+  // `--no-enable` wrote no entry, so nothing was missing from one; a caller
+  // still has to be told what the manifest asked and what a role would need.
+  const { runner } = fake({}, {}, {
+    manifests: {
+      '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: ['probe:read'], callerGrants: ['probe:list'] } },
+    },
+  });
+  const reports: { asked: ReadonlyMap<string, string[]>; declaredCallerGrants: ReadonlyMap<string, string[]>; consented: boolean; granted: boolean }[] = [];
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: false, run: runner, fetch: aPlugin, say,
+    report: (facts) => reports.push(facts),
+  });
+  expect(reports).toHaveLength(1);
+  expect([...(reports[0]?.asked.get('@ahpd/probe-grants') ?? [])]).toEqual(['probe:read']);
+  expect([...(reports[0]?.declaredCallerGrants.get('@ahpd/probe-grants') ?? [])]).toEqual(['probe:list']);
+  expect(reports[0]?.consented).toBe(false);
+  expect(reports[0]?.granted).toBe(false);
+});
+
+it('refuses --grant with --no-enable by name', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  await expect(installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: false, run: runner, fetch: aPlugin, say, grant: true,
+  })).rejects.toThrow('--grant writes the grants into the plugin\'s entry, and --no-enable writes no entry');
+});
+
+it('prints every grant before it asks for consent', async () => {
+  const { runner } = fake({}, {}, asksGrants);
+  const lines: string[] = [];
+  let printedFirst = false;
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say: (line) => lines.push(line),
+    confirm: async (question) => {
+      printedFirst = lines.some((one) => one.includes('asks for probe:read, probe:write'));
+      expect(question).toContain('probe:read, probe:write');
+      return false;
+    },
+  });
+  expect(printedFirst).toBe(true);
+});
+
+it('asks only for the grants an existing entry does not already hold', async () => {
+  write({ plugins: [{ source: '@ahpd/probe-grants', grants: ['probe:read'] }] });
+  const { runner } = fake({}, {}, asksGrants);
+  const asked: string[] = [];
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+    confirm: async (question) => { asked.push(question); return true; },
+  });
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toContain('probe:write');
+  expect(asked[0]).not.toContain('probe:read');
+  expect(read().plugins).toEqual([{ source: '@ahpd/probe-grants', grants: ['probe:read', 'probe:write'] }]);
+});
+
+it('asks nothing when the entry already holds every grant the manifest asks for', async () => {
+  write({ plugins: [{ source: '@ahpd/probe-grants', grants: ['probe:read', 'probe:write'] }] });
+  const { runner } = fake({}, {}, asksGrants);
+  const lines: string[] = [];
+  let asked = false;
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say: (line) => lines.push(line),
+    confirm: async () => { asked = true; return true; },
+  });
+  expect(asked).toBe(false);
+  expect(lines.join('\n')).toContain('already holds every grant its manifest asks for');
+});
+
+it('asks nothing for a grant the entry already answers with a wildcard', async () => {
+  // `probe:*` is not the word the manifest asks for, and it is what the entry
+  // gives: appending `probe:read` beside it would say the entry gained
+  // something it already had.
+  write({ plugins: [{ source: '@ahpd/probe-grants', grants: ['probe:*'] }] });
+  const { runner } = fake({}, {}, asksGrants);
+  let asked = false;
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+    confirm: async () => { asked = true; return true; },
+  });
+  expect(asked).toBe(false);
+  expect(read().plugins).toEqual([{ source: '@ahpd/probe-grants', grants: ['probe:*'] }]);
+});
+
+it('names each package it grants when several are installed at once', async () => {
+  const { runner } = fake({}, {}, {
+    manifests: {
+      '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: ['probe:read'] } },
+      '@ahpd/probe-other': { ahpd: { entry: './index.js', grants: ['other:write'] } },
+    },
+  });
+  const lines: string[] = [];
+  await installPlugins(['@ahpd/probe-grants', '@ahpd/probe-other'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say: (line) => lines.push(line), grant: true,
+  });
+  expect(lines.join('\n')).toContain('@ahpd/probe-grants asks for probe:read.');
+  expect(lines.join('\n')).toContain('@ahpd/probe-other asks for other:write.');
+  expect(read().plugins).toEqual([
+    { source: '@ahpd/probe-grants', grants: ['probe:read'] },
+    { source: '@ahpd/probe-other', grants: ['other:write'] },
+  ]);
+});
+
+it('uninstalls a package whose grants are not a list of grants', async () => {
+  const { runner, calls } = fake({}, {}, { manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: 'probe:read' } } } });
+  await expect(installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+  })).rejects.toThrow('is not a list of grants');
+  expect(calls.some((one) => one.argv[0] === 'uninstall' && one.argv.includes('@ahpd/probe-grants'))).toBe(true);
+  expect(existsSync(configFile)).toBe(false);
+});
+
+it('says what a plugin asks of the roles that use it', async () => {
+  const { runner } = fake({}, {}, {
+    manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', callerGrants: ['probe:read', 'probe:write'] } } },
+  });
+  const lines: string[] = [];
+  await installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say: (line) => lines.push(line),
+  });
+  expect(lines.join('\n')).toContain('Roles that use @ahpd/probe-grants must hold probe:read, probe:write.');
+  // The caller list is the surface's, not the entry's: nothing is granted.
+  expect(read().plugins).toEqual(['@ahpd/probe-grants']);
+});
+
+it('uninstalls a package whose callerGrants are not a list of grants', async () => {
+  const { runner, calls } = fake({}, {}, {
+    manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', callerGrants: 'probe:read' } } },
+  });
+  await expect(installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+  })).rejects.toThrow('is not a list of grants');
+  expect(calls.some((one) => one.argv[0] === 'uninstall' && one.argv.includes('@ahpd/probe-grants'))).toBe(true);
+});
+
+it('uninstalls a package whose grants carry a wildcard', async () => {
+  const { runner } = fake({}, {}, { manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: ['probe:*'] } } } });
+  await expect(installPlugins(['@ahpd/probe-grants'], {
+    configDir, configFile, sdk: '9.9.9', enable: true, run: runner, fetch: aPlugin, say,
+  })).rejects.toThrow('which is a wildcard');
+});
