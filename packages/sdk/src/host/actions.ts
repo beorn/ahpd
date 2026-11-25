@@ -6,7 +6,7 @@ import { idOf, Status } from '../sessions/catalog.js';
 import { disableConditionsProblem } from '../automations/automations.js';
 import { localPath } from '../resources/fileuri.js';
 import { reason } from '../utils/values.js';
-import { computerNeeds, dispatchNeeds, ownAgentExcused, pushedPermissionsNeed, ACTION_HOMES, ACTION_NEEDS, HOME_WORDS, ownIn } from './gate.js';
+import { computerNeeds, dispatchNeeds, heldToGrants, ownAgentExcused, pushedPermissionsNeed, ACTION_HOMES, ACTION_NEEDS, HOME_WORDS, ownIn } from './gate.js';
 import { ANNOTATIONS_PATH_SEGMENT, AUTOMATIONS, chatUriFor, isAutomationResource, isRootChannel, ROOT, schemeOf, spaceOf, toolCallOfSubagentChat, WORKER_ACTIONS } from './channels.js';
 import { chatAction, chatFlag, readAggregate, sessionFlag } from './chatactions.js';
 import { HOSTS_OWN } from './common.js';
@@ -157,7 +157,7 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
       return;
     }
     // A plugin's own connection is gated with or without a user directory (#38446, @cto 89be3ef1).
-    if (connection.root !== true && (options.users !== undefined || connection.principal?.plugin !== undefined)) {
+    if (heldToGrants(connection, options.users !== undefined)) {
       /*
        * What the action is, what the channel is spelt as and what it
        * resolves to, both because the handler below acts on the resolved
