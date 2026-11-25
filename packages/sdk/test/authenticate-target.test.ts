@@ -226,3 +226,32 @@ it('says a targeted token ran out on the session of its server', async () => {
     vi.useRealTimers();
   }
 });
+
+/*
+ * A targeted renewal reaches its server while that server runs on the token it
+ * renews: nothing in the session waits for the resource then, and the target
+ * alone says where the token goes.
+ */
+it('applies a targeted renewal on arrival, to a server already signed in', async () => {
+  const { client, two } = await twoSessions();
+  // The server the first token reaches connects with it.
+  sdk.mcp = [
+    { name: 'desk', status: 'needs-auth' },
+    { name: 'tickets', status: 'needs-auth' },
+    { name: 'keys', status: 'connected' },
+  ];
+  await client.handle({
+    method: 'authenticate',
+    params: { channel: ROOT, resource: ANTHROPIC, token: 'keys-first', target: at(TWO, serverId('keys')) },
+  });
+  await settle(8);
+  expect(header(two, 'keys')).toBe('Bearer keys-first');
+
+  await expect(client.handle({
+    method: 'authenticate',
+    params: { channel: ROOT, resource: ANTHROPIC, token: 'keys-renewed', target: at(TWO, serverId('keys')) },
+  })).resolves.toEqual({});
+  await settle(8);
+  expect(header(two, 'keys')).toBe('Bearer keys-renewed');
+  expect(sdk.mcpReconnected).toEqual(['keys', 'keys']);
+});

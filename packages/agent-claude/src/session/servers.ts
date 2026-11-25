@@ -86,6 +86,12 @@ export function createServers(ctx: SessionContext): Servers {
 
   /** What each server that needs signing in published about itself, by name. */
   const wanted = new Map<string, Published>();
+  /**
+   * What each server a client signed in published, by name, kept after it
+   * leaves `wanted`: a renewal for the same resource is applied on arrival,
+   * not only once the old token has run out and the server asks again.
+   */
+  const signedIn = new Map<string, Published>();
 
   /**
    * The servers a client's stop switched off, by name.
@@ -790,11 +796,14 @@ export function createServers(ctx: SessionContext): Servers {
      * which is when the CLI tries the header.
      */
     authenticated: async (resource, token, server) => {
+      // A server waiting to sign in first, then one already signed in, whose
+      // token this renews.
       const named = server === undefined
-        ? [...wanted.entries()].find(([, published]) => published.resource === resource)?.[0]
+        ? [...wanted.entries(), ...signedIn.entries()].find(([, published]) => published.resource === resource)?.[0]
         : serverNamed(server);
       const to = ctx.query;
-      if (named === undefined || wanted.get(named)?.resource !== resource || to === undefined) return false;
+      const published = named === undefined ? undefined : wanted.get(named) ?? signedIn.get(named);
+      if (named === undefined || published?.resource !== resource || to === undefined) return false;
       // The set the session holds now, its in-process servers among it: the
       // client tools' declarations replace the set the session started with.
       const config = ctx.mcpServers[named];
@@ -806,8 +815,10 @@ export function createServers(ctx: SessionContext): Servers {
       try {
         await to.setMcpServers(ctx.mcpServers as never);
         // Discovered again next time: a server that connects is no longer one
-        // anybody needs to sign into.
+        // anybody needs to sign into. It is kept as signed in, so a renewal
+        // reaches it before the token it holds runs out.
         wanted.delete(named);
+        signedIn.set(named, published);
         await to.reconnectMcpServer(named);
       }
       catch { return false; }
