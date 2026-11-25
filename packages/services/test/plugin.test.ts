@@ -36,12 +36,13 @@ const recording = () => {
     control: async (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'control', caller, params }); return answer; },
     logs: async (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'logs', caller, params }); return answer; },
     acknowledge: (_machine: Machine, caller: Caller, params: unknown) => { calls.push({ verb: 'acknowledge', caller, params }); return answer; },
+    backup: (_machine: Machine, params: unknown) => { calls.push({ verb: 'backup', params }); return answer; },
   } as unknown as Driver;
   return { driver, calls, answer: (next: unknown) => { answer = next; } };
 };
 
 describe('servicesMethods', () => {
-  it('serves the eight x-ahpd/services methods the manifest lists', () => {
+  it('serves the nine x-ahpd/services methods the manifest lists', () => {
     const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { ahpd: { contracts: { methods: string[] } } };
     expect(Object.keys(servicesMethods(machine))).toEqual(METHODS);
     expect(manifest.ahpd.contracts.methods).toEqual(METHODS);
@@ -60,6 +61,7 @@ describe('servicesMethods', () => {
     await methods['x-ahpd/services/restart']!.handle({ name: 'web' }, undefined, 'c1', owner);
     await methods['x-ahpd/services/logs']!.handle({ name: 'web', limit: 5 }, undefined, 'c1', owner);
     await methods['x-ahpd/services/acknowledge']!.handle({ hashes: { '/m/local.yaml': 'h' } }, undefined, 'c1', owner);
+    await methods['x-ahpd/services/backup']!.handle({ after: 'c' }, undefined, 'c1', owner);
     expect(calls).toEqual([
       { verb: 'list' },
       { verb: 'put', caller: remote, params: { service: { name: 'web', command: 'x' }, ifVersion: 'v' } },
@@ -69,7 +71,10 @@ describe('servicesMethods', () => {
       { verb: 'control', caller: remote, params: { name: 'web', verb: 'restart' } },
       { verb: 'logs', caller: remote, params: { name: 'web', limit: 5 } },
       { verb: 'acknowledge', caller: remote, params: { hashes: { '/m/local.yaml': 'h' } } },
+      { verb: 'backup', params: { after: 'c' } },
     ]);
+    // Backup is a read under the grant list has, so `hightea service enable` covers it (@cto c89ade9c).
+    expect(methods['x-ahpd/services/backup']!.grant).toBe('services:list');
   });
 
   it('names the caller by owner, then person, then client id, and never as local', () => {

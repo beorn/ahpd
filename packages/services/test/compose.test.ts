@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { acknowledgeFiles, controlService, listServices, putService, removeService, serviceLogs, type Machine } from '../src/compose.js';
+import {
+  BACKUP_BYTES_MAX, BACKUP_LINES_MAX, acknowledgeFiles, backupServices, controlService, listServices, putService, removeService, serviceLogs,
+  type Machine,
+} from '../src/compose.js';
 import { REMOTE_COMMANDS_OFF } from '../src/switches.js';
 
 /*
@@ -453,5 +456,144 @@ describe('acknowledge (@cto 876bcedd: pinned to the hashes shown, logged, change
   it('refuses no hashes, or a file that is not one of the -f files, by name', () => {
     expect(acknowledgeFiles(machine, LOCAL_ONLY, { hashes: {} }, () => {})).toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining('acknowledge needs "hashes"') });
     expect(acknowledgeFiles(machine, LOCAL_ONLY, { hashes: { '/etc/passwd': 'x' } }, () => {})).toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining('/etc/passwd is not one of this machine\'s -f files') });
+  });
+});
+
+describe('ifVersion "absent" (#38277 slice 3b, @cto c89ade9c: create only, so a restore never overwrites)', () => {
+  const FILE = 'processes:\n  web:\n    command: one\n';
+  beforeEach(() => { writeFileSync(local, FILE); });
+
+  it('creates a name the file does not have, against the file as it is now', async () => {
+    const answer = await putService(machine, LOCAL_ONLY, { service: { name: 'api', command: 'serve' }, ifVersion: 'absent' });
+    expect(answer).toMatchObject({ ok: true, changed: true });
+    expect(read()).toBe(`${FILE}  api:\n    command: serve\n`);
+    expect(logLines().at(-1)).toMatchObject({ op: 'put', name: 'api', before: null, after: { name: 'api', command: 'serve' }, fileHashBefore: sha(FILE) });
+  });
+
+  it('refuses EXISTS for an editable name, writes nothing, and logs the refusal', async () => {
+    const answer = await putService(machine, LOCAL_ONLY, { service: { name: 'web', command: 'two' }, ifVersion: 'absent' });
+    expect(answer).toEqual({ ok: false, code: 'EXISTS', message: `web already exists in ${local}; a restore never overwrites` });
+    expect(read()).toBe(FILE);
+    expect(seen).toEqual([]);
+    expect(logLines().at(-1)).toMatchObject({ op: 'put', name: 'web', refused: { code: 'EXISTS' }, fileHashBefore: sha(FILE), fileHashAfter: sha(FILE) });
+  });
+
+  it('refuses EXISTS for a read-only name, naming the file that defines it', async () => {
+    writeFileSync(base, 'processes:\n  shared:\n    command: base-version\n');
+    const text = `${FILE}  anchored: &a\n    command: a\n`;
+    writeFileSync(local, text);
+    const shared = await putService(machine, LOCAL_ONLY, { service: { name: 'shared', command: 'x' }, ifVersion: 'absent' });
+    expect(shared).toEqual({ ok: false, code: 'EXISTS', message: `shared already exists in ${base}; a restore never overwrites` });
+    const anchored = await putService(machine, LOCAL_ONLY, { service: { name: 'anchored', command: 'x' }, ifVersion: 'absent' });
+    expect(anchored).toEqual({ ok: false, code: 'EXISTS', message: `anchored already exists in ${local}; a restore never overwrites` });
+    expect(read()).toBe(text);
+    expect(readFileSync(base, 'utf8')).toBe('processes:\n  shared:\n    command: base-version\n');
+  });
+
+  it('still answers REMOTE_COMMANDS_OFF to a remote caller while the switch is off: a new entry is a new command', async () => {
+    const answer = await putService(machine, REMOTE, { service: { name: 'api', command: 'serve' }, ifVersion: 'absent' });
+    expect(answer).toEqual({ ok: false, code: 'REMOTE_COMMANDS_OFF', message: REMOTE_COMMANDS_OFF });
+    expect(read()).toBe(FILE);
+  });
+});
+
+describe('backup (#38277 slice 3b, @cto c89ade9c: the listing and the change log after a cursor, reads only)', () => {
+  const FILE = 'processes:\n  web:\n    command: one\n';
+  beforeEach(() => { writeFileSync(local, FILE); });
+
+  /** Append `count` change-log lines of exactly `bytes` bytes each, newline included (0: as short as they come). */
+  const appendLines = (count: number, bytes = 0, from = 0): void => {
+    const lines = Array.from({ length: count }, (_, i) => {
+      const line = JSON.stringify({ op: 'test', n: from + i, pad: '' });
+      return bytes === 0 ? line : line.replace('"pad":""', `"pad":"${'x'.repeat(bytes - line.length - 1)}"`);
+    });
+    appendFileSync(machine.changeLog, `${lines.join('\n')}\n`);
+  };
+  const backup = (after?: string) => {
+    const answer = backupServices(machine, after === undefined ? {} : { after });
+    if (!answer.ok) throw new Error(`${answer.code}: ${answer.message}`);
+    return answer;
+  };
+
+  it('carries a plain env key but never its value, nor any log line holding it (@cto c89ade9c)', async () => {
+    const withValue = 'processes:\n  web:\n    command: one\n    environment:\n      - DB_PASSWORD=hunter2\n';
+    writeFileSync(local, withValue);
+    const read1 = version();
+    await putService(machine, LOCAL_ONLY, { service: { name: 'web', cwd: '/srv' }, ifVersion: read1 });
+    // A stale put logs its diff, blanked at the source; the backup carries that line.
+    await putService(machine, REMOTE, { service: { name: 'web', cwd: '/other' }, ifVersion: read1, seen: withValue });
+    const answer = backup();
+    expect(answer.lines.map((line) => line['op'])).toEqual(['put', 'put']);
+    expect(answer.lines[1]).toMatchObject({ refused: { code: 'STALE_VERSION' } });
+    expect(answer.listing).toEqual(listServices(machine));
+    const json = JSON.stringify(answer);
+    expect(json).toContain('DB_PASSWORD');
+    expect(json).not.toContain('hunter2');
+  });
+
+  it('pages by cursor with more, and answers a line appended later from where it stopped', () => {
+    appendLines(450);
+    const first = backup();
+    expect([first.lines.length, first.more]).toEqual([BACKUP_LINES_MAX, true]);
+    const second = backup(first.cursor);
+    expect([second.lines[0]?.['n'], second.lines.length, second.more]).toEqual([200, 200, true]);
+    const third = backup(second.cursor);
+    expect([third.lines[0]?.['n'], third.lines.length, third.more]).toEqual([400, 50, false]);
+    const caughtUp = backup(third.cursor);
+    expect([caughtUp.lines, caughtUp.cursor, caughtUp.more]).toEqual([[], third.cursor, false]);
+    appendLines(1, 0, 450);
+    appendFileSync(machine.changeLog, '{"op":"half-writ'); // a write in progress waits for the next backup
+    const later = backup(third.cursor);
+    expect([later.lines, later.more]).toEqual([[{ op: 'test', n: 450, pad: '' }], false]);
+  });
+
+  it('answers at most 256 KB of whole lines, and a single longer line alone so the backup moves on', () => {
+    appendLines(130, 2048);
+    const first = backup();
+    expect([first.lines.length, first.more]).toEqual([BACKUP_BYTES_MAX / 2048, true]);
+    const rest = backup(first.cursor);
+    expect([rest.lines.map((line) => line['n']), rest.more]).toEqual([[128, 129], false]);
+    appendLines(1, BACKUP_BYTES_MAX + 10, 130);
+    appendLines(1, 0, 131);
+    const long = backup(rest.cursor);
+    expect([long.lines.map((line) => line['n']), long.more]).toEqual([[130], true]);
+    expect(backup(long.cursor).lines.map((line) => line['n'])).toEqual([131]);
+  });
+
+  it('answers CURSOR_RESET, naming the log, after it is replaced or cut short; without a cursor it starts again', () => {
+    appendLines(3);
+    const { cursor } = backup();
+    writeFileSync(`${machine.changeLog}.new`, `${JSON.stringify({ op: 'fresh' })}\n`);
+    renameSync(`${machine.changeLog}.new`, machine.changeLog);
+    expect(backupServices(machine, { after: cursor }))
+      .toMatchObject({ ok: false, code: 'CURSOR_RESET', message: expect.stringContaining(`${machine.changeLog} was replaced`) as unknown });
+    expect(backup().lines).toEqual([{ op: 'fresh' }]);
+    const { cursor: atEnd } = backup();
+    writeFileSync(machine.changeLog, ''); // the same file, emptied in place
+    expect(backupServices(machine, { after: atEnd }))
+      .toMatchObject({ ok: false, code: 'CURSOR_RESET', message: expect.stringContaining('past its end') as unknown });
+    expect(backupServices(machine, { after: 'not-a-cursor' }))
+      .toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining(machine.changeLog) as unknown });
+  });
+
+  it('answers a missing log as no lines and writes nothing; its cursor reads the log from its start once there is one', () => {
+    const empty = backup();
+    expect([empty.lines, empty.more]).toEqual([[], false]);
+    expect(() => statSync(machine.changeLog)).toThrow(/ENOENT/);
+    appendLines(2);
+    expect(backup(empty.cursor).lines.map((line) => line['n'])).toEqual([0, 1]);
+    const before = readFileSync(machine.changeLog, 'utf8');
+    backupServices(machine, { after: 'not-a-cursor' });
+    expect(readFileSync(machine.changeLog, 'utf8')).toBe(before);
+  });
+
+  it('refuses an unreadable log, or a line that is not JSON, by name and without the line\'s text', () => {
+    mkdirSync(machine.changeLog);
+    expect(backupServices(machine, {}))
+      .toMatchObject({ ok: false, code: 'FILE_UNREADABLE', message: expect.stringContaining(machine.changeLog) as unknown });
+    rmSync(machine.changeLog, { recursive: true });
+    appendFileSync(machine.changeLog, '{"op":"ok"}\nhunter2\n');
+    expect(backupServices(machine, {}))
+      .toEqual({ ok: false, code: 'FILE_UNREADABLE', message: `the change log ${machine.changeLog} has a line at byte 12 that is not a JSON object` });
   });
 });

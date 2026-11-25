@@ -1,7 +1,7 @@
 /**
  * The services driver as an ahpd plugin (#38277 slice 2, @cto).
  *
- * It serves the driver as seven `x-ahpd/services/*` methods (ahpd requires the
+ * It serves the driver as nine `x-ahpd/services/*` methods (ahpd requires the
  * `x-` prefix; `service` alone would read as `ahpd service install`, which is
  * the daemon's own unit), registers the `services` grants a role is given them
  * by, and runs the drift check at start and every five minutes.
@@ -23,8 +23,8 @@ import { mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
-  acknowledgeFiles, controlService, listServices, putService, removeService, serviceLogs,
-  type AcknowledgeParams, type Answer, type Caller, type Machine, type PutParams, type Refusal,
+  acknowledgeFiles, backupServices, controlService, listServices, putService, removeService, serviceLogs,
+  type AcknowledgeParams, type Answer, type BackupParams, type Caller, type Machine, type PutParams, type Refusal,
 } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert } from './drift.js';
 
@@ -62,12 +62,16 @@ export interface Driver {
   readonly control: typeof controlService;
   readonly logs: typeof serviceLogs;
   readonly acknowledge: typeof acknowledgeFiles;
+  readonly backup: typeof backupServices;
 }
 
-export const DRIVER: Driver = { list: listServices, put: putService, remove: removeService, control: controlService, logs: serviceLogs, acknowledge: acknowledgeFiles };
+export const DRIVER: Driver = {
+  list: listServices, put: putService, remove: removeService, control: controlService, logs: serviceLogs, acknowledge: acknowledgeFiles,
+  backup: backupServices,
+};
 
 /** The method names, as the manifest's `contracts.methods` lists them. */
-export const METHODS = ['list', 'put', 'remove', 'start', 'stop', 'restart', 'logs', 'acknowledge'].map((verb) => `x-ahpd/services/${verb}`);
+export const METHODS = ['list', 'put', 'remove', 'start', 'stop', 'restart', 'logs', 'acknowledge', 'backup'].map((verb) => `x-ahpd/services/${verb}`);
 
 /**
  * Who a call is from, for the change log and the `allowRemoteCommands` check.
@@ -90,7 +94,7 @@ const guarded = async (run: () => Promise<unknown> | unknown): Promise<unknown> 
 };
 
 /**
- * The eight methods over one machine. `wrote` is told the file and its new
+ * The nine methods over one machine. `wrote` is told the file and its new
  * hash after each put or remove that wrote, and each file an acknowledge
  * accepted, so drift takes it as known; `acknowledged` runs after an accepted
  * acknowledge, so the plugin can check drift again at once rather than in five
@@ -144,6 +148,12 @@ export function servicesMethods(
         if (answer.ok) acknowledged();
         return answer;
       }),
+    },
+    // Under `services:list`, so the grant that lets Hightea list a machine lets it keep that machine's backup (@cto c89ade9c).
+    'x-ahpd/services/backup': {
+      grant: 'services:list',
+      describe: () => ({ title: 'Back up services', description: 'What list answers plus the change-log lines after a cursor, at most 200 lines or 256 KB: no program output, vault values, plain env values or file text. Reads only.' }),
+      handle: async (params) => guarded(() => driver.backup(machine, params as BackupParams)),
     },
   };
 }
