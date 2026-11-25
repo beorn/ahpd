@@ -333,7 +333,7 @@ A `sync` call waits for `syncTimeoutSeconds`: the endpoint's field, or the plugi
 
 ### The grants
 
-On a host with a users directory, the plugin acts as `plugin:webhook`, with the grants of its entry:
+The plugin acts as `plugin:webhook`, with the grants of its entry, whether or not the host has a users directory (#38446):
 
 | Grant | What it is for |
 | --- | --- |

@@ -2035,7 +2035,7 @@ export function chatAction(
        * people they need what changing the host for everybody needs. A sender
        * without it switches this session alone, as a host with no store does.
        */
-      const keeps = store !== undefined && (ctx.options.users === undefined || connection.root === true
+      const keeps = store !== undefined && ((ctx.options.users === undefined && connection.principal?.plugin === undefined) || connection.root === true
         || connection.principal?.can('config:change') === true);
       const lasting = keeps && key !== undefined;
       /*
@@ -2330,7 +2330,8 @@ export function chatAction(
        * a person with `config:permissions` writes them; anyone else's host
        * grant is kept in this session, as one for the session.
        */
-      const writesHost = ctx.options.users === undefined || connection.root === true
+      // A plugin peer is held to its grants even with no user directory (#38446).
+      const writesHost = (ctx.options.users === undefined && connection.principal?.plugin === undefined) || connection.root === true
         || connection.principal?.can('config:permissions') === true;
       if (grant.scope === 'host' && writesHost) {
         const permissions = withGrant(ctx.rootConfig.permissions, grant.rules);

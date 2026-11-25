@@ -553,9 +553,10 @@ export interface HostOptions {
    * The people who may use this host, when there are any.
    *
    * Left out, there are none: the host advertises no sign-in resource, every
-   * gate it has is inert, and the connection token is the whole of who may be
-   * here - which is what every install that has not configured a directory
-   * gets. `fileUsers()` is the one that ships, and the daemon uses it when the
+   * gate it has is inert for people, and the connection token is the whole of
+   * who may be here - which is what every install that has not configured a
+   * directory gets. A plugin's own connection is the exception: it is held to
+   * its entry's grants either way (#38446). `fileUsers()` is the one that ships, and the daemon uses it when the
    * configuration names a file.
    */
   users?: Users;
