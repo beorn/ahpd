@@ -144,6 +144,14 @@ export function grantRefusals(log: Logger): GrantRefusals {
   };
 }
 
+/**
+ * The grant a command's -32009 names, read from `refusalReason`'s words
+ * (`<id> may not <grant> here`); any other -32009 - a token that cannot be
+ * minted, an owner who has not signed in - is its own message, escaped and cut
+ * as every value is.
+ */
+export const refusedGrant = (message: string): string => /^\S+ may not (\S+) here$/.exec(message)?.[1] ?? message;
+
 /** One per log, so every connection of a host counts against the same minute. */
 const byLog = new WeakMap<Logger, GrantRefusals>();
 

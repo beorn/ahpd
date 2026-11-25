@@ -10,6 +10,8 @@ import { memorySessions } from '../src/sessions/sessions.js';
 import { sdkVersion } from '../src/version.js';
 import { grantRefusals, REFUSAL_WINDOW_MS, REFUSAL_WINDOWS, REFUSAL_WINDOWS_PER_PRINCIPAL } from '../src/host/refusals.js';
 import { echo } from '../../../examples/echo/agent.js';
+import { RpcError } from '../src/rpc.js';
+import { refusalReason } from '../src/host/gate.js';
 import type { LoaderContext } from '../src/types/plugin.js';
 
 /*
@@ -141,4 +143,38 @@ it('the host holds at most 1,000 windows, plus one method=* window per principal
   expect(refusals.open()).toBeLessThanOrEqual(REFUSAL_WINDOWS + principals);
   refusals.close();
   expect(refusals.open()).toBe(0);
+});
+
+/*
+ * The line is written at the command boundary (@cto fbdf4e14), so a -32009 a
+ * handler throws past the gate - a grant checked inside a method, or a refusal
+ * that names no grant - is said exactly once, as the gate's own is.
+ */
+it('a -32009 a handler throws is written once at the boundary: its grant when it names one, else its message', async () => {
+  const lines: string[] = [];
+  const probe = pluginHost('probe', context(), { grants: [] });
+  probe.host.registerMethod('x-probe/deep', {
+    grant: 'session:write', describe: () => ({ title: 'deep' }),
+    handle: async () => { throw new RpcError(-32009, refusalReason('plugin:hightea-pipe', 'computer:write')); },
+  });
+  probe.host.registerMethod('x-probe/owner', {
+    grant: 'session:write', describe: () => ({ title: 'owner' }),
+    handle: async () => { throw new RpcError(-32009, 'soft has to sign in once before an automation of theirs may run'); },
+  });
+  const pipe = pluginHost('hightea-pipe', context(), { grants: ['session:write'] });
+  const { options } = foldHostOptions({
+    path: DIR, agents: [{ ...echo({ path: DIR, pace: 0 }), provider: 'base', displayName: 'Base' }], sessions: memorySessions(),
+    onEvent: (line: string) => { if (REFUSED.test(line)) lines.push(line); },
+  }, [probe.contribution, pipe.contribution]);
+  const host = createHost(options);
+  for (const one of options.pluginConnects ?? []) one.host = host;
+  const peer = pipe.host.connect();
+  await peer.request('initialize', { clientId: 'hightea-pipe', protocolVersions: ['0.9.0'] });
+  await expect(peer.request('x-probe/deep', {})).rejects.toMatchObject({ code: -32009 });
+  await expect(peer.request('x-probe/owner', {})).rejects.toMatchObject({ code: -32009 });
+  await host.close();
+  expect(lines).toEqual([
+    'grant refused: principal=plugin:hightea-pipe method=x-probe/deep needs=computer:write conn=hightea-pipe',
+    'grant refused: principal=plugin:hightea-pipe method=x-probe/owner needs=soft\\x20has\\x20to\\x20sign\\x20in\\x20once\\x20before\\x20an\\x20automation\\x20of\\x20theirs\\x20may\\x20run conn=hightea-pipe',
+  ]);
 });
