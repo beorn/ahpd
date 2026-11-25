@@ -20,6 +20,7 @@ import type { Bag } from '../types/common.js';
 import type { Grant } from '../types/users.js';
 import type { Origin } from './state.js';
 import type { ConnectionContext, HostContext } from './context.js';
+import { refusalsOf } from './refusals.js';
 
 /**
  * The protocol's own answer to "may a client send this?", by action type.
@@ -192,6 +193,7 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
         return;
       }
       if (needed !== undefined && !who.can(needed)) {
+        refusalsOf(ctx.log).refused({ principal: who.id, method: type, needs: needed, conn: connection.clientId || '-' });
         no(`${who.id} may not ${needed} here`);
         return;
       }
@@ -284,6 +286,7 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
         }
         const grant = ctx.resourceAnnotations.commentGrant(ctx.resourceAnnotations.channelOf(holder));
         if (connection.principal !== undefined && !connection.principal.can(grant)) {
+          refusalsOf(ctx.log).refused({ principal: connection.principal.id, method: type, needs: grant, conn: connection.clientId || '-' });
           no(`${connection.principal.id} may not ${grant} here`);
           return;
         }

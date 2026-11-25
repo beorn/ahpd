@@ -99,7 +99,8 @@ it('with no user directory the root connection is still trusted with everything,
  * same no-directory shortcut: a plugin peer could type into a terminal.
  */
 it('with no user directory a plugin peer without terminal:write cannot type into a terminal; root still can', async () => {
-  const made = gateHost({ terminals: shellTerminals() });
+  const logged: string[] = [];
+  const made = gateHost({ terminals: shellTerminals(), onEvent: (line: string) => { logged.push(line); } });
   const owner = watching();
   const rootClient = made.accept(owner, undefined, true);
   await hello(rootClient, 'root');
@@ -121,6 +122,8 @@ it('with no user directory a plugin peer without terminal:write cannot type into
   expect(after).not.toContain('PLUGIN-RAN-THIS');
   const rejected = quiet.seen.filter((one) => one.method === 'action' && typeof one.params.rejectionReason === 'string');
   expect(String(rejected[0]?.params.rejectionReason)).toMatch(/plugin:pipe may not terminal:/);
+  // The host says it too (@cto ab54193c), not only the refused peer.
+  expect(logged.filter((line) => line.startsWith('grant refused: '))).toEqual([expect.stringMatching(/^grant refused: principal=plugin:pipe method=terminal\/input needs=terminal:\S+ conn=pipe$/)]);
 });
 
 /*
@@ -375,9 +378,9 @@ describe('a chat attached to a message with no user directory', () => {
   };
 
   /** A finished turn in one session's chat, and a message in another's attaching it, sent by `who`. */
-  const attaching = async (who: Grant[] | 'root'): Promise<string> => {
+  const attaching = async (who: Grant[] | 'root', logged: string[] = []): Promise<string> => {
     const sent: unknown[][] = [];
-    const made = gateHost({ agents: [recording(sent)] });
+    const made = gateHost({ agents: [recording(sent)], onEvent: (line: string) => { if (line.startsWith('grant refused: ')) logged.push(line); } });
     const owner = watching();
     const rootClient = made.accept(owner, undefined, true);
     await hello(rootClient, 'root');
@@ -402,11 +405,16 @@ describe('a chat attached to a message with no user directory', () => {
   };
 
   it('leaves the excerpt off for a plugin peer without session:read, and hands it over with the grant and to root', async () => {
-    const without = await attaching(['chat:send', 'chat:turns']);
+    const refusals: string[] = [];
+    const without = await attaching(['chat:send', 'chat:turns'], refusals);
     expect(without).toContain('The user referenced another chat');
     expect(without).not.toContain('a secret only a reader may see');
+    // Left off for a grant, and said once in the host's log (@cto fbdf4e14).
+    expect(refusals).toEqual(['grant refused: principal=plugin:pipe method=chat-attachment needs=session:read conn=pipe']);
 
-    expect(await attaching(['chat:send', 'chat:turns', 'session:read'])).toContain('a secret only a reader may see');
+    const granted: string[] = [];
+    expect(await attaching(['chat:send', 'chat:turns', 'session:read'], granted)).toContain('a secret only a reader may see');
+    expect(granted).toEqual([]);
     expect(await attaching('root')).toContain('a secret only a reader may see');
   });
 });
