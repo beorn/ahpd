@@ -13,5 +13,5 @@ export {
   type Machine, type Caller, type Answer, type Refusal, type RefusalCode, type Listing, type PutParams, type AcknowledgeParams,
   type Changes, type ChangesRange,
 } from './compose.js';
-export type { ServiceRecord, ServicePatch, SecretRef, Schedule, Restart, Dependency, Health, RestartPolicy, Condition } from './record.js';
+export type { ServiceRecord, ServicePatch, ServiceSource, SourceKind, SecretRef, Schedule, Restart, Dependency, Health, RestartPolicy, Condition } from './record.js';
 export type { PcSocket } from './pc.js';

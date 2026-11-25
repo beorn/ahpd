@@ -99,6 +99,21 @@ export interface ServiceDeployDeclaration {
   readonly keep?: number;
 }
 
+/** What put a service on this machine: the four places one can come from (#38278, @cto b6ff041e). */
+export const SOURCE_KINDS = ['file', 'program', 'agent', 'ci'] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
+
+/**
+ * Who a service belongs to: the file, program, agent or CI job that declared
+ * it, and its id there. Written on the entry as `x-hh-source`, beside
+ * `x-hh-deploy` and for the same reason (process-compose ignores `x-` keys).
+ * An entry without one is not ours to prune.
+ */
+export interface ServiceSource {
+  readonly kind: SourceKind;
+  readonly id: string;
+}
+
 /** One service, as the driver reads it and Hightea sees it. */
 export interface ServiceRecord {
   readonly name: string;
@@ -110,6 +125,7 @@ export interface ServiceRecord {
   readonly depends_on?: readonly Dependency[];
   readonly health?: Health;
   readonly deploy?: ServiceDeployDeclaration;
+  readonly source?: ServiceSource;
 }
 
 /**
@@ -127,13 +143,17 @@ export interface ServicePatch {
   readonly depends_on?: readonly Dependency[] | null;
   readonly health?: Health | null;
   readonly deploy?: ServiceDeployDeclaration | null;
+  readonly source?: ServiceSource | null;
 }
 
 /** The neutral fields, in the order they are written; `list` answers them as the capability list. */
-export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy'] as const;
+export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source'] as const;
 
 /** The native key a deploy declaration is written under: process-compose ignores `x-` extensions. */
 export const DEPLOY_KEY = 'x-hh-deploy';
+
+/** The native key a service's source is written under, beside the deploy declaration. */
+export const SOURCE_KEY = 'x-hh-source';
 
 /** The wrapper's fixed words. */
 export const WRAPPER = 'ahpd secrets exec';
@@ -224,6 +244,18 @@ export function readDeploy(value: unknown): ServiceDeployDeclaration | string {
   return out as unknown as ServiceDeployDeclaration;
 }
 
+/** One source, or the sentence saying why the value is not one. */
+export function readSource(value: unknown): ServiceSource | string {
+  if (!isObject(value)) return 'it is an object { kind, id }';
+  for (const key of Object.keys(value)) if (key !== 'kind' && key !== 'id') return `${key} is not a source field; the fields are kind, id`;
+  const kind = value['kind'];
+  if (!(SOURCE_KINDS as readonly unknown[]).includes(kind)) return `kind must be one of ${SOURCE_KINDS.join(', ')}`;
+  const id = value['id'];
+  if (typeof id !== 'string' || id.trim() === '') return 'id is a non-empty string';
+  if (id.includes('{{')) return 'id holds "{{", which process-compose reads as a template';
+  return { kind: kind as SourceKind, id };
+}
+
 /**
  * Whether a patch is one the driver will write, or the first reason it is not.
  *
@@ -238,7 +270,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   for (const key of Object.keys(patch)) {
     if (!(FIELDS as readonly string[]).includes(key)) return bad(`"${key}" is not a service field; the fields are ${FIELDS.join(', ')}`);
   }
-  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy } = patch;
+  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source } = patch;
   if (typeof name !== 'string' || !SAFE_NAME.test(name)) return bad('name must be letters, digits, "_", "." or "-", starting with a letter or digit');
   const text = (field: string, value: unknown): Invalid | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return bad(`${field} must be a non-empty string`);
@@ -309,6 +341,10 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   if (deploy !== undefined && deploy !== null) {
     const read = readDeploy(deploy);
     if (typeof read === 'string') return bad(`deploy: ${read}`);
+  }
+  if (source !== undefined && source !== null) {
+    const read = readSource(source);
+    if (typeof read === 'string') return bad(`source: ${read}`);
   }
   return undefined;
 }
@@ -457,6 +493,13 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
     if (typeof read === 'string') return `its ${DEPLOY_KEY} is not a declaration the driver knows: ${read}`;
     record['deploy'] = read;
   }
+
+  const source = entry[SOURCE_KEY];
+  if (source !== undefined && source !== null) {
+    const read = readSource(source);
+    if (typeof read === 'string') return `its ${SOURCE_KEY} is not a source the driver knows: ${read}`;
+    record['source'] = read;
+  }
   return record as unknown as ServiceRecord;
 }
 
@@ -535,6 +578,13 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
         for (const gone of Object.keys(before?.deploy?.[step]?.env ?? {})) if (!kept.has(gone)) leaf([...at, 'env', gone], undefined);
         for (const [key, ref] of Object.entries(held.env ?? {})) leaf([...at, 'env', key, '$secret'], ref.$secret);
       }
+    }
+  }
+  if (changed('source')) {
+    if (after.source === undefined) leaf([SOURCE_KEY], undefined);
+    else {
+      leaf([SOURCE_KEY, 'kind'], after.source.kind);
+      leaf([SOURCE_KEY, 'id'], after.source.id);
     }
   }
   if (changed('schedule')) {
