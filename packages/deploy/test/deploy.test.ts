@@ -317,4 +317,16 @@ describe('deploy driver (#38276)', () => {
     writeJournalEntry(layout, { event: 'switched', to: 'cccc', from: 'aaaa', reason: 'deploy' });
     expect(lastSwitchFrom(layout)).toBe('aaaa');
   });
+
+  // @level l3 @consumer the flag is the contract: rewording the reason cannot turn a switch back into a way back.
+  it('skips a switch back by its flag even when the reason says something else', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'ahpd-way-back-flag-'));
+    const layout = { stateDir, service: 'svc' };
+    writeJournalEntry(layout, { event: 'switched', to: 'aaaa', from: null, reason: 'deploy' });
+    writeJournalEntry(layout, { event: 'switched', to: 'bbbb', from: 'aaaa', reason: 'deploy' });
+    writeJournalEntry(layout, { event: 'switched', to: 'aaaa', from: 'bbbb', reason: 'back to the release that worked', back: true });
+    expect(lastSwitchFrom(layout)).toBe('aaaa');
+    writeJournalEntry(layout, { event: 'switched', to: 'cccc', from: 'aaaa', reason: 'deploy' });
+    expect(lastSwitchFrom(layout)).toBe('aaaa');
+  });
 });
