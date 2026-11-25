@@ -20,6 +20,9 @@
     "bun": ">=1.3.13",
     "node": ">=24"
   },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
   "scripts": {
     "prepack": "tsc -p .",
     "test": "cd ../.. && vitest run packages/services/test"

@@ -222,6 +222,12 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
 
+  packages/services:
+    dependencies:
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
+
   packages/sdk:
     dependencies:
       '@bearly/flock':
