@@ -59,7 +59,7 @@ describe('customer host install manifest (#38280)', () => {
         (entry) => entry.path !== manifest.root && !entry.path.startsWith(manifest.root + '/'),
       );
       expect(outside).toHaveLength(1);
-      expect(outside[0].kind).toBe('boot-item');
+      expect(outside[0]?.kind).toBe('boot-item');
     }
   });
 
@@ -97,7 +97,7 @@ describe('customer host install manifest (#38280)', () => {
     expect(built.ok).toBe(false);
     if (built.ok) throw new Error('unreachable');
     expect(built.refusals).toEqual([{ kind: 'missing-checksum', download: 'runtime' }]);
-    expect(describeRefusal(built.refusals[0])).toContain('runtime has no published checksum');
+    expect(describeRefusal(built.refusals[0]!)).toContain('runtime has no published checksum');
   });
 
   // @level l3 @consumer a floating version is refused before a plan exists, so nothing fetches "latest".
@@ -140,7 +140,7 @@ describe('customer host install manifest (#38280)', () => {
     expect(built.ok).toBe(false);
     if (built.ok) throw new Error('unreachable');
     expect(built.refusals).toEqual([{ kind: 'malformed-checksum', download: 'hostPlugin', checksum: 'sha512-cccc' }]);
-    expect(describeRefusal(built.refusals[0])).toContain('is not sha256:<64 hex> or sha512-');
+    expect(describeRefusal(built.refusals[0]!)).toContain('is not sha256:<64 hex> or sha512-');
   });
 
   // @level l3 @consumer npm's own integrity form is accepted whole, and a truncated one is not.
@@ -161,7 +161,7 @@ describe('customer host install manifest (#38280)', () => {
     });
     expect(truncated.ok).toBe(false);
     if (truncated.ok) throw new Error('unreachable');
-    expect(truncated.refusals[0].kind).toBe('malformed-checksum');
+    expect(truncated.refusals[0]!.kind).toBe('malformed-checksum');
   });
 
   // @level l3 @consumer an http or file source is refused: a checksum only protects what it came from.
@@ -176,7 +176,7 @@ describe('customer host install manifest (#38280)', () => {
       expect(built.ok).toBe(false);
       if (built.ok) throw new Error('unreachable');
       expect(built.refusals).toEqual([{ kind: 'insecure-source', download: 'ahpd', source }]);
-      expect(describeRefusal(built.refusals[0])).toContain('is not https');
+      expect(describeRefusal(built.refusals[0]!)).toContain('is not https');
     }
   });
 

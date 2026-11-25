@@ -41,6 +41,8 @@ const manifestWith = (pins: InstallPins = HONEST) => {
 };
 
 interface Fake extends InstallIo {
+  /** Makes the next `run` answer a non-zero code, without reassigning a read-only io member. */
+  readonly failRun: () => void;
   readonly paths: Set<string>;
   readonly dirs: Set<string>;
   readonly modes: Map<string, number>;
@@ -54,8 +56,12 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
   const modes = new Map<string, number>();
   const commands: string[] = [];
   const content = new Map<string, string>();
+  let runFails = false;
   const children = (path: string) => [...paths].filter((one) => one !== path && one.startsWith(`${path}/`) && !one.slice(path.length + 1).includes('/'));
   return {
+    failRun: () => {
+      runFails = true;
+    },
     paths,
     dirs,
     modes,
@@ -104,7 +110,7 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
     },
     run: (command) => {
       commands.push(command);
-      return { code: 0, output: '' };
+      return runFails ? { code: 1, output: 'launchctl: no such service' } : { code: 0, output: '' };
     },
     hash: (path) => digest(content.get(path) ?? ''),
   };
@@ -325,10 +331,7 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
   it('stops at a boot item that will not disable', () => {
     const manifest = manifestWith();
     const io = fakeIo(manifest.entries.map((entry) => entry.path));
-    io.run = (command) => {
-      io.commands.push(command);
-      return { code: 1, output: 'launchctl: no such service' };
-    };
+    io.failRun();
     const result = uninstallInstall(manifest, io);
     expect(result.ok).toBe(false);
     expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'disable boot item' });
