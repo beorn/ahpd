@@ -19,6 +19,10 @@ Nothing goes to upstream ahpd (ahpio/ahpd: a PR, a pushed commit, an issue, or a
 
 Record both verdicts, with the head sha each one read, on the bead the post serves. A head that changes after review is reviewed again. Posting itself still needs the operator's yes, unless a standing yes covers that kind of post.
 
+## What an upstream post leaves out (operator 2026-11-25)
+
+How our work is made stays behind the scenes. A post upstream (PR description, commit message, issue, or comment) never mentions our review process, how many reviews something went through, which models or agents worked on it, or our seats and beads. Say what the change does and why; the reviews above are recorded on our own bead, not in the post.
+
 ## Where things live
 
 - Keeping up with VS Code's reference host: [UPSTREAM.md](UPSTREAM.md) and [REFERENCE.md](REFERENCE.md). A prior-art pass follows that procedure.
