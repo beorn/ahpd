@@ -36,7 +36,7 @@ import { isRecordPath, isRecordSlug, RECORD_PATH, RECORD_SLUG } from '../resourc
 import type { Pair } from '../utils/pair.js';
 import { reason } from '../utils/values.js';
 import { readSecret } from '../access/vault.js';
-import { checkAdapter, checkAgent, checkEngine, checkChannel, checkChatRequest, checkGrants, checkMethod, checkPort, checkResourceProvider, checkRoute, checkScheme, checkSessionRequest, checkTool, checkTriggerType, checkTunnelKind, declared, miss, reservedName, type CheckedSchema } from './validate.js';
+import { checkAdapter, checkAgent, checkEngine, checkChannel, checkChatRequest, checkGrants, checkMethod, checkPort, checkResourceProvider, checkRoute, checkScheme, checkSessionRequest, checkTool, listedOperations, checkTriggerType, checkTunnelKind, declared, miss, reservedName, type CheckedSchema } from './validate.js';
 import { checkView, VIEW_SURFACES } from './view.js';
 import { gapLine, schemaGaps } from './schemagaps.js';
 
@@ -685,6 +685,21 @@ export function foldHostOptions(base: HostOptions, contributions: Contribution[]
   for (const { by, grant } of requiredGrants(channels, methods, tunnelKinds)) {
     if (listedGrant(entries, grant)) continue;
     problems.push(`plugin ${by} requires ${grant}, which no entry of ahpd.grants lists`);
+  }
+  /*
+   * A channel's operations, as it lists them at the load: an entry that cannot
+   * be served, and a grant no entry lists, are said here as well as at the
+   * call, so a plugin's author sees them before a client runs one.
+   */
+  for (const [scheme, served] of Object.entries(channels)) {
+    const side = served.channel.operations;
+    if (side === undefined) continue;
+    const listed = listedOperations(served.by, `${scheme}://`, () => side.operations());
+    problems.push(...listed.problems);
+    for (const operation of listed.operations) {
+      if (listedGrant(entries, operation.grant)) continue;
+      problems.push(`plugin ${served.by} requires ${operation.grant}, which no entry of ahpd.grants lists`);
+    }
   }
 
   /*
