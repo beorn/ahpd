@@ -23,3 +23,9 @@ Record both verdicts, with the head sha each one read, on the bead the post serv
 
 - Keeping up with VS Code's reference host: [UPSTREAM.md](UPSTREAM.md) and [REFERENCE.md](REFERENCE.md). A prior-art pass follows that procedure.
 - Developing and testing: [DEVELOPER.md](DEVELOPER.md).
+
+## Before running the suites: unset `AHPD_PLUGIN_ROOT`
+
+A seat harness on this host exports `AHPD_PLUGIN_ROOT` pointing at a trial install. Every install and update case that expects to write into its own temporary root then writes somewhere else, and
+`packages/server/test/server-http.test.ts` and its neighbours fail with `400 where 200 was expected` — a red that looks like a product bug and is not. Run the suites as
+`env -u AHPD_PLUGIN_ROOT npx vitest run <paths>`; two review passes were lost to this before it was found (2026-11-25).
