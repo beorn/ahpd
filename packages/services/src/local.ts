@@ -22,14 +22,14 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { userInfo } from 'node:os';
 import {
-  acknowledgeFiles, backupServices, controlService, listServices, putService, removeService, serviceLogs,
-  type AcknowledgeParams, type Answer, type BackupParams, type Caller, type Listing, type Machine, type PutParams,
+  acknowledgeFiles, changesAt, controlService, listServices, putService, removeService, serviceLogs,
+  type AcknowledgeParams, type Answer, type ChangesRange, type Caller, type Listing, type Machine, type PutParams,
 } from './compose.js';
 import { acknowledge } from './drift.js';
 import { machineOf } from './plugin.js';
 
 /** How a services plugin entry in `config.json` is recognised: its source names the package. */
-const SOURCE = /(^|[\\/])(@ahpd[\\/]services|packages[\\/]services)([\\/]|$)/u;
+const SOURCE = /(^|[\\/])(@hallohuman[\\/]hightea-services|@ahpd[\\/]services|packages[\\/]services)([\\/]|$)/u;
 
 /** The driver bound to this machine, as the local user. */
 export interface LocalServices {
@@ -41,7 +41,7 @@ export interface LocalServices {
   control(name: string, verb: 'start' | 'stop' | 'restart'): ReturnType<typeof controlService>;
   logs(params: { readonly name: string; readonly endOffset?: number; readonly limit?: number }): ReturnType<typeof serviceLogs>;
   acknowledge(params: AcknowledgeParams): ReturnType<typeof acknowledgeFiles>;
-  backup(params?: BackupParams): ReturnType<typeof backupServices>;
+  changes(range?: ChangesRange, log?: string): ReturnType<typeof changesAt>;
 }
 
 /**
@@ -63,8 +63,8 @@ export function localServices(configDir: string, user: string = userInfo().usern
   const entries = (Array.isArray(plugins) ? plugins : []).filter((entry): entry is { source: string; options?: unknown } =>
     entry !== null && typeof entry === 'object' && typeof (entry as { source?: unknown }).source === 'string'
     && SOURCE.test((entry as { source: string }).source));
-  if (entries.length === 0) return `${file} has no @ahpd/services plugin entry, so this machine's services are not configured`;
-  if (entries.length > 1) return `${file} has ${entries.length} @ahpd/services plugin entries; keep one`;
+  if (entries.length === 0) return `${file} has no services plugin entry (@hallohuman/hightea-services), so this machine's services are not configured`;
+  if (entries.length > 1) return `${file} has ${entries.length} services plugin entries; keep one`;
   const options = entries[0]!.options;
   const read = machineOf(configDir, options !== null && typeof options === 'object' ? options as Record<string, unknown> : {});
   if (typeof read === 'string') return read;
@@ -90,6 +90,6 @@ export function localServices(configDir: string, user: string = userInfo().usern
     control: (name, verb) => controlService(machine, caller, { name, verb }),
     logs: (params) => serviceLogs(machine, caller, params),
     acknowledge: (params) => acknowledgeFiles(machine, caller, params, (file, hash) => acknowledge(stateFile, file, hash)),
-    backup: (params = {}) => backupServices(machine, params),
+    changes: (range = {}, log) => changesAt(machine, range, log),
   };
 }

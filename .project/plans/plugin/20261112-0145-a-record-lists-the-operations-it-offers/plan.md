@@ -1,7 +1,7 @@
 ---
 title: A record lists the operations it offers now
 domain: plugin
-status: planned
+status: built
 priority: medium
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -70,10 +70,10 @@ channel state -> record.operations (ids) + list operations (labels, grants) -> c
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A record lists the operations it offers](task-01-a-record-lists-its-operations.md) | implemented | - |
-| [02 - Agents serve an operations list](task-02-agents-serve-an-operations-list.md) | implemented | 01 |
-| [03 - Connectors serve an operations list](task-03-connectors-serve-an-operations-list.md) | implemented | 01 |
-| [04 - The docs say what a record offers](task-04-the-docs-say-what-a-record-offers.md) | implemented | 02, 03 |
+| [01 - A record lists the operations it offers](task-01-a-record-lists-its-operations.md) | done | - |
+| [02 - Agents serve an operations list](task-02-agents-serve-an-operations-list.md) | done | 01 |
+| [03 - Connectors serve an operations list](task-03-connectors-serve-an-operations-list.md) | done | 01 |
+| [04 - The docs say what a record offers](task-04-the-docs-say-what-a-record-offers.md) | done | 02, 03 |
 
 ## Risks and tradeoffs
 
@@ -83,7 +83,7 @@ channel state -> record.operations (ids) + list operations (labels, grants) -> c
 ## Resume state
 
 - **Done so far:** all four tasks implemented. [implemented.md](implemented.md) says what exists, what was checked and where the work left the plan.
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** plugin/20261112-0145-a-tunnel-visitor-is-the-named-person changes `packages/tunnel-devtunnel/src/kind.ts` too. Merge `origin/main` after it merges.
 

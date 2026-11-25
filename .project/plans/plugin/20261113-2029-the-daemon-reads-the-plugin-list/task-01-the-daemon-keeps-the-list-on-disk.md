@@ -1,6 +1,6 @@
 ---
 title: The daemon keeps the list on disk
-status: implemented
+status: done
 depends: []
 layer: "server"
 refs:

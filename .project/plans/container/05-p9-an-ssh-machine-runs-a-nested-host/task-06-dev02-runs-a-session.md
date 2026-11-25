@@ -48,7 +48,7 @@ It is listed as `ssh.deb`.
 } } } }
 ```
 `host` sources the box's own `~/.keys`, because a non-interactive ssh does not read a profile and the model keys are the box's.
-agent-acp on both hosts has `presets: { "pi-acp": { "name": "Pi (ACP)", "command": "pi-acp" } }`, keyed `pi-acp` because agent-pi already holds `pi`: [an-acp-preset-and-a-native-agent-share-one-id.md](../../../problems/an-acp-preset-and-a-native-agent-share-one-id.md).
+agent-acp on both hosts has `presets: { "pi-acp": { "name": "Pi (ACP)", "command": "pi-acp" } }`, keyed `pi-acp` because agent-pi already holds `pi`: `an-acp-preset-and-a-native-agent-share-one-id.md`, deleted on 2026-11-21 because `96a82a3b2` gave a record a `base` field (last held at `git://c023af02f`).
 
 **Set by hand on the box.**
 - This host's public key in `~/.ssh/authorized_keys`, and the box's host key accepted once from this host. `BatchMode=yes` refuses both a password and an unknown key.

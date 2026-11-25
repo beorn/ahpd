@@ -93,6 +93,14 @@ export interface SessionOpenedEvent {
   session: string;
   /** The id the client gave at `initialize` or `reconnect`. */
   client: string;
+  /**
+   * The person the opening connection signed in as, on a host with users.
+   *
+   * A client id is the client's own word, so a plugin that matches a client to
+   * a person checks this as well: one connection may give the id another
+   * person's window uses.
+   */
+  owner?: string;
 }
 
 /**

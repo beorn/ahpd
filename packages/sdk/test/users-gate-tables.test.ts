@@ -6,7 +6,7 @@ import { host, peer } from './users-gate-helpers.js';
 import type { Grant } from '../src/types/users.js';
 
 /** How many methods the host serves. A method added is a number raised here. */
-const SERVED = 52;
+const SERVED = 70;
 
 it('classifies every handler the host serves', () => {
   /*
@@ -46,7 +46,8 @@ it('classifies every action a client is allowed to send', () => {
    */
   const dispatchable = IS_CLIENT_DISPATCHABLE as Record<string, boolean>;
   const sendable = Object.entries(dispatchable).filter(([, may]) => may === true).map(([type]) => type);
-  expect(sendable.length).toBe(47);
+  // 48 from AHP 1.1.0, which makes `chat/configChanged` one.
+  expect(sendable.length).toBe(48);
   expect(sendable.filter((one) => GATE.ACTION_NEEDS[one] === undefined)).toEqual([]);
   // And the check would notice one, which is the line above with a type that
   // is in the protocol's map and in nobody's table.

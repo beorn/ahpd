@@ -1,6 +1,6 @@
 ---
 title: Every test runs its own git through gitSync
-status: implemented
+status: done
 depends: [task-01-a-test-git-call-has-a-timeout.md]
 layer: "tests"
 refs:

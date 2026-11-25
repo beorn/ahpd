@@ -98,6 +98,45 @@ export interface ToolsEndpoint {
   close(): void;
 }
 
+/**
+ * A pass-through to one upstream MCP server, for a backend that can only be
+ * handed a URL and headers when its session opens.
+ *
+ * The agent is given this URL and this endpoint's own token. The upstream's
+ * token stays here and is read on every request, so a renewed one applies on
+ * the next request with no reconnect.
+ */
+export interface ProxyEndpoint {
+  /** Where the agent reaches the upstream, on the host's own listener. */
+  readonly url: string;
+  /** The bearer token the agent presents here; never the upstream's. */
+  readonly token: string;
+  /** Take it back: in-flight requests end, and the path answers 404. */
+  close(): void;
+}
+
+/**
+ * An upstream refusing the token it was sent, with what its `WWW-Authenticate`
+ * challenge named: the scope it wants, and where its RFC 9728 metadata is.
+ */
+export interface UpstreamRefusal {
+  status: 401 | 403;
+  scope?: string;
+  metadataUrl?: string;
+}
+
+/** What one proxy endpoint is opened with. Fixed at open: a request can change none of it. */
+export interface ProxyUpstream {
+  /** The upstream server's URL, from the session's own configuration. */
+  url: string;
+  /** Headers its configuration names, sent on every request. */
+  headers?: Record<string, string>;
+  /** The token to send now, in place of a configured Authorization while it answers one. */
+  tokenNow?: () => string | undefined;
+  /** Told when the upstream refuses the token it was sent. */
+  refused?: (refusal: UpstreamRefusal) => void;
+}
+
 /** What a `ToolsServers` was built from. */
 export interface ToolsServerOptions {
   /**
@@ -138,9 +177,93 @@ export interface ToolsServers {
     toolsChanged?: ToolsChanged,
     mayRun?: MayRunTool,
   ): ToolsEndpoint | undefined;
+  /**
+   * Open a pass-through to one upstream MCP server, under a path and a token
+   * of its own. Undefined where nothing can be served, as for `open`.
+   */
+  openProxy(upstream: ProxyUpstream): ProxyEndpoint | undefined;
   /** Answer a request for one of the endpoints open here, or nothing for a path that is not one. */
   request(request: Request): Promise<Response | undefined>;
 }
+
+/*
+ * The headers a request carries upstream, and the ones an answer carries back.
+ *
+ * Allow-lists, so the endpoint's own bearer, the daemon's cookies and host, and
+ * hop-by-hop headers never cross. `WWW-Authenticate` does not come back: the
+ * host's client signs in to the upstream, never the agent.
+ */
+const FORWARDED = ['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'];
+const RETURNED = ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'cache-control'];
+
+/** One open proxy endpoint. */
+interface Proxied extends ProxyUpstream {
+  token: string;
+  inflight: Set<AbortController>;
+}
+
+/** One parameter of a `WWW-Authenticate` challenge: `scope` (RFC 6750 §3) or `resource_metadata` (RFC 9728 §5.1). */
+const paramIn = (challenge: string | null, name: 'scope' | 'resource_metadata'): string | undefined =>
+  new RegExp(`\\b${name}="([^"]*)"`, 'u').exec(challenge ?? '')?.[1];
+
+/**
+ * Forward one request to the endpoint's upstream and stream its answer back.
+ *
+ * The upstream is the one the endpoint opened with, never one the request
+ * names, and a redirect is refused rather than followed.
+ */
+const forward = async (request: Request, proxied: Proxied): Promise<Response> => {
+  const headers = new Headers(proxied.headers);
+  headers.delete('authorization');
+  const configured = Object.entries(proxied.headers ?? {}).find(([name]) => name.toLowerCase() === 'authorization')?.[1];
+  const token = proxied.tokenNow?.();
+  if (token !== undefined) headers.set('authorization', `Bearer ${token}`);
+  else if (configured !== undefined) headers.set('authorization', configured);
+  for (const name of FORWARDED) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  const abort = new AbortController();
+  proxied.inflight.add(abort);
+  let answer: Response;
+  try {
+    answer = await fetch(proxied.url, {
+      method: request.method,
+      headers,
+      ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: await request.arrayBuffer() }),
+      redirect: 'manual',
+      signal: abort.signal,
+    });
+  }
+  catch {
+    proxied.inflight.delete(abort);
+    return json(502, failure(null, -32001, 'The upstream MCP server could not be reached'));
+  }
+  if (answer.status >= 300 && answer.status < 400) {
+    proxied.inflight.delete(abort);
+    await answer.body?.cancel();
+    return json(502, failure(null, -32001, `The upstream MCP server answered ${answer.status}, a redirect this proxy does not follow`));
+  }
+  if (answer.status === 401 || answer.status === 403) {
+    const challenge = answer.headers.get('www-authenticate');
+    const scope = paramIn(challenge, 'scope');
+    const metadataUrl = paramIn(challenge, 'resource_metadata');
+    proxied.refused?.({
+      status: answer.status,
+      ...(scope === undefined ? {} : { scope }),
+      ...(metadataUrl === undefined ? {} : { metadataUrl }),
+    });
+  }
+  const back = new Headers();
+  for (const name of RETURNED) {
+    const value = answer.headers.get(name);
+    if (value !== null) back.set(name, value);
+  }
+  const done = (): void => { proxied.inflight.delete(abort); };
+  const body = answer.body === null ? null : answer.body.pipeThrough(new TransformStream({ flush: done }));
+  if (body === null) done();
+  return new Response(body, { status: answer.status, headers: back });
+};
 
 /** A JSON-RPC message as it arrives, which is checked before it is read. */
 interface Message {
@@ -347,6 +470,8 @@ const bearer = (header: string | null, token: string): boolean => {
 export const toolServers = (options: ToolsServerOptions): ToolsServers => {
   /** What each path serves, by path. An entry is one live session's tools. */
   const serving = new Map<string, Serving>();
+  /** Each open proxy endpoint, by path. */
+  const proxies = new Map<string, Proxied>();
   const info = { name: options.name ?? 'ahpd', version: options.version ?? '0' };
 
   return {
@@ -384,8 +509,32 @@ export const toolServers = (options: ToolsServerOptions): ToolsServers => {
         },
       };
     },
+    openProxy: (upstream) => {
+      const origin = options.origin();
+      if (origin === undefined) return undefined;
+      const path = `${TOOLS_PREFIX}/${crypto.randomUUID()}`;
+      const token = crypto.randomUUID();
+      proxies.set(path, { ...upstream, token, inflight: new Set() });
+      return {
+        url: `${origin.replace(/\/$/, '')}${path}`,
+        token,
+        close: () => {
+          const live = proxies.get(path);
+          if (live !== undefined) for (const one of live.inflight) one.abort();
+          proxies.delete(path);
+        },
+      };
+    },
     request: async (request) => {
       const path = new URL(request.url).pathname;
+      const proxied = proxies.get(path);
+      if (proxied !== undefined) {
+        // The endpoint's own token, before anything goes upstream.
+        if (!bearer(request.headers.get('authorization'), proxied.token)) {
+          return json(401, failure(null, -32001, 'This MCP endpoint answers only its own session\'s token'));
+        }
+        return forward(request, proxied);
+      }
       const found = serving.get(path);
       if (found === undefined) {
         // A path of ours nobody is serving: a session that has ended, or one

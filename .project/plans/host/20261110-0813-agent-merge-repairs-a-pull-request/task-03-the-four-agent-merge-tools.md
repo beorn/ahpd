@@ -1,6 +1,6 @@
 ---
 title: The four Agent Merge tools
-status: implemented
+status: done
 depends:
   - task-02-the-watch-starts-a-repair-turn.md
 layer: "sdk, docs"

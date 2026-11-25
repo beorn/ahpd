@@ -1,6 +1,6 @@
 ---
 title: An open pull request is read again each minute while a client watches
-status: implemented
+status: done
 depends: [task-02-a-session-sends-its-pull-requests.md]
 layer: "sdk"
 refs:

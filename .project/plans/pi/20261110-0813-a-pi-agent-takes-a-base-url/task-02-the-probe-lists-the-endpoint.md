@@ -1,6 +1,6 @@
 ---
 title: The probe lists the endpoint's models
-status: implemented
+status: done
 depends:
   - task-01-a-pi-turn-runs-on-the-endpoint.md
 layer: "agent-pi, docs"

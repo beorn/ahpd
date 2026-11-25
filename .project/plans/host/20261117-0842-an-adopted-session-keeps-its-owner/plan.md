@@ -1,7 +1,7 @@
 ---
 title: An adopted session is kept with its owner
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -65,7 +65,7 @@ chat/turnStarted from a person -> lifecycle: who = ownerFor(sender)
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - adoption writes the owner](task-01-adoption-writes-the-owner.md) | implemented | - |
+| [01 - adoption writes the owner](task-01-adoption-writes-the-owner.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -74,6 +74,7 @@ chat/turnStarted from a person -> lifecycle: who = ownerFor(sender)
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** task 01 is `implemented` on 2026-11-17, on the branch `host/20261117-0842-an-adopted-session-keeps-its-owner`.
 - **Next action:** Softov's review, then the check of *Final verification checklist* on the test daemon.

@@ -33,7 +33,7 @@ import { createConfig } from './session/config.js';
 import type { Choice } from './session/config.js';
 import type { SessionContext } from './session/context.js';
 import { createHandlers } from './session/handlers.js';
-import { createOpening } from './session/opening.js';
+import { createOpening, publishServers, serverNames, signInNeeded } from './session/opening.js';
 import { createTurn } from './session/turn.js';
 import type { AcpOptions, AcpTurn, ConfirmationOption, PermissionAnswer, WatchedSession, WatchedTurn } from './types.js';
 
@@ -182,6 +182,11 @@ export function acpSession(
     turns: [...(start.seed ?? [])],
     seeds: [...(start.seedCustomizations ?? [])],
     commands: [],
+    servers: [],
+    published: (): Bag[] => [...ctx.seeds, ...ctx.servers, ...ctx.commands],
+    proxies: new Map(),
+    serverTokens: new Map(),
+    resources: new Map(),
     modes: undefined,
     active: undefined,
     pendingTurns: [],
@@ -200,6 +205,7 @@ export function acpSession(
     successfulOpening: undefined,
     acpSessionId: undefined,
     openedMeta: undefined,
+    hostTools: undefined,
     closes: false,
     loads: false,
     resumes: false,
@@ -208,6 +214,7 @@ export function acpSession(
     replay: [],
     loading: false,
     opening: undefined,
+    failedOpen: undefined,
     startedWith: '',
     cancelRequested: false,
     disposed: false,
@@ -252,7 +259,7 @@ export function acpSession(
     resumable: () => ctx.loads || ctx.resumes,
     // A terminal the server opened whose process still runs is work the host cannot see.
     busy: () => [...terminals.values()].some((one) => one.exited !== true),
-    customizations: () => [...seeds, ...ctx.commands],
+    customizations: () => ctx.published(),
     allTurns: () => turns,
     /*
      * What a fork copies through, which is the turn's own end.
@@ -333,15 +340,21 @@ export function acpSession(
         defaultChat: start.chatUri,
         chats: [{ resource: start.chatUri, title: ctx.title }],
         workingDirectories: [uriOf(cwd)],
-        customizations: [...seeds, ...ctx.commands],
+        customizations: ctx.published(),
         ...(needed.length > 0 ? { inputNeeded: needed } : {}),
         // The schema *and* what is in force: a client reads
         // `config.schema.properties` for the controls and `config.values` for
         // where each one sits. The schema carries the server's modes once they
         // are known, so `permissionMode` has an enum exactly when it can have one.
         config: { schema: ctx.schemaOf(), values: { ...values } },
-        // The server's own word on opening the conversation, untouched (#37272).
-        ...(ctx.openedMeta !== undefined ? { _meta: structuredClone(ctx.openedMeta) } : {}),
+        // The server's own word on opening the conversation, untouched (#37272),
+        // beside the host's own answer on whether the session was offered its tools.
+        ...(ctx.openedMeta !== undefined || ctx.hostTools !== undefined ? {
+          _meta: {
+            ...(ctx.openedMeta === undefined ? {} : structuredClone(ctx.openedMeta)),
+            ...(ctx.hostTools === undefined ? {} : { 'ahpd/hostTools': { ...ctx.hostTools } }),
+          },
+        } : {}),
       };
     },
 
@@ -359,11 +372,14 @@ export function acpSession(
       ...(draft !== undefined ? { draft } : {}),
     }),
 
+    // Its send resolves once the server holds the session, and rejects when it could not start one.
+    sendBringsUp: true,
+
     // The model is the one picked for this send.
     sendMessage: (turnId, text, from, attachments, turnOptions) => {
       const model = chosen;
       chosen = undefined;
-      ctx.sendMessage(turnId, text, model, from, attachments, turnOptions);
+      return ctx.sendMessage(turnId, text, model, from, attachments, turnOptions);
     },
 
     changeModel: (model) => { chosen = model; },
@@ -448,6 +464,30 @@ export function acpSession(
     // three refuse. False is a real answer: a control that reported success
     // and changed nothing would be worse than one that says no.
     setCustomizationEnabled: async () => false,
+    /*
+     * A client's token for one configured server, which that server's
+     * pass-through sends upstream from its next request on. Only a server this
+     * session reaches through one can take it: a token handed to a server
+     * that was given its headers at open would never reach it.
+     */
+    authenticated: async (_resource, token, server) => {
+      const named = ctx.servers.find((one) => one.id === server)?.name;
+      if (typeof named !== 'string' || !ctx.proxies.has(named)) return false;
+      ctx.serverTokens.set(named, token);
+      publishServers(ctx, serverNames(ctx), (one, was) => one === named && was.kind === 'authRequired' ? { kind: 'ready' } : was);
+      return true;
+    },
+    /*
+     * A client's token for one server ran out: it is not sent again, and the
+     * server says it needs signing in, reason `expired`.
+     */
+    expired: async (_resource, server) => {
+      const named = ctx.servers.find((one) => one.id === server)?.name;
+      const configured = typeof named === 'string' ? start.mcpServers?.[named] : undefined;
+      if (typeof named !== 'string' || configured?.type !== 'http' || !ctx.serverTokens.delete(named)) return false;
+      await signInNeeded(ctx, named, configured.url, 'expired');
+      return true;
+    },
     startMcpServer: async () => false,
     stopMcpServer: async () => false,
 
@@ -523,11 +563,24 @@ export function acpSession(
    */
   const refusal = ctx.refreshOptions();
   if (refusal !== undefined) return Promise.reject(new Error(refusal));
-  return ctx.open().then(() => session).catch((error: unknown) => {
+  return ctx.open().then(() => session).catch(async (error: unknown) => {
     const authentication = ctx.authenticationFailure(error);
     // Keep the protocol error's identity, code and data while using the same
     // corrective method names that a later prompt failure already reports.
     if (authentication !== undefined && error instanceof Error) error.message = authentication.message;
+    /*
+     * Upstream says what a server that never opened ran, and what it wrote on
+     * stderr, on the first turn's error (turn.ts). Here the open is the
+     * creation's, so the creation's refusal carries it instead (#463 sync),
+     * and a record whose `stderrTail` is `log` still leaves it to the log.
+     */
+    const opened = ctx.failedOpen;
+    ctx.failedOpen = undefined;
+    if (opened !== undefined && error instanceof Error && ctx.options.stderrTail !== 'log') {
+      const tail = await opened.connection.stderrTail();
+      const ran = opened.path === undefined ? '' : `\n${opened.command} was started with PATH ${opened.path}`;
+      error.message = `${error.message}${ran}${tail === '' ? '' : `\n${tail}`}`;
+    }
     throw error;
   });
 }

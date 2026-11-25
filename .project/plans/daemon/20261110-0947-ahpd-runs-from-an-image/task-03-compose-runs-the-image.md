@@ -1,6 +1,6 @@
 ---
 title: Compose runs the image
-status: implemented
+status: done
 depends: [task-02-the-entrypoint-seeds-plugins.md]
 layer: "image"
 refs:

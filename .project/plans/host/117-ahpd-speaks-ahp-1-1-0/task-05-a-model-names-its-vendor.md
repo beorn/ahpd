@@ -1,31 +1,33 @@
 ---
 title: A model names its vendor
-status: todo
+status: done
 depends: [01]
 layer: "sdk"
 refs:
-  - "[code://packages/sdk/src/host/catalogue.ts#L664-L686](../../../../packages/sdk/src/host/catalogue.ts#L664-L686) - `learnModels`, which compares ids only"
-  - "git://github.com/microsoft/agent-host-protocol@65114f22 - optional `SessionModelInfo.vendor`"
+  - "[code://packages/sdk/src/host/root.ts#L300-L316](../../../../packages/sdk/src/host/root.ts#L300-L316) - `descriptors`, which spreads each model, so a `vendor` passes through"
+  - "[code://packages/sdk/src/host/catalogue.ts#L1148-L1160](../../../../packages/sdk/src/host/catalogue.ts#L1148-L1160) - `setAgentModels`, which compares the lists with `isDeepStrictEqual`"
 ---
 
 ## Objective
 
-A `vendor` that a backend puts on a model reaches the client, and a changed vendor counts as a changed list.
+A test shows that a `vendor` a backend puts on a model reaches the client, and that a changed vendor counts as a changed list.
+The code already does both, so the task changes no source unless the test fails.
 
 ## Files
 
-- `UPDATE: packages/sdk/test/host-catalogue.test.ts` - the vendor comparison cases.
-- `UPDATE: packages/sdk/src/host/catalogue.ts:664-686` - the comparison includes `vendor`.
+- `UPDATE: packages/sdk/test/host-catalogue.test.ts` - the vendor cases.
 
 ## Steps
 
-1. Change the comparison in `learnModels` to compare `vendor` beside `id`.
-2. Keep each backend's `models()` as it is, since no backend fills `vendor` yet.
+1. Add a case: a backend's model with `vendor` reaches `root` state with the same `vendor`.
+2. Add a case: a backend that changes only a model's `vendor` dispatches `root/agentsChanged`.
+3. Keep each backend's `models()` as it is, since no backend fills `vendor` yet.
 
 ## Validation
 
-- `packages/sdk/test/host-catalogue.test.ts` - a vendor change dispatches `root/agentsChanged`, and an equal list dispatches nothing.
+- `packages/sdk/test/host-catalogue.test.ts` - both cases pass, and an equal list dispatches nothing.
 - The sdk vitest suite passes.
 
 ## Resume
 
+The code already passes a model's `vendor` through, since `descriptors` spreads each model, and `setAgentModels` compares with `isDeepStrictEqual`. A case in `host-harness.test.ts`, beside the model list case, shows both. The vendor reaches `root/agentsChanged`, and a change of the vendor alone says the list again. No source changed.

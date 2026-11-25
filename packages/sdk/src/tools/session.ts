@@ -1,4 +1,9 @@
 import { isAbsolute, resolve } from 'node:path';
+import {
+  CREATE_SESSION_MODEL_OPTIONS_DESCRIPTION, createdModelOptionsOf, createSessionModelOptionsProperties,
+  describeCreateSessionModelOptions, sessionModelOptionsOf,
+} from './modeloptions.js';
+import type { CatalogModel } from './modeloptions.js';
 import { Status, idOf } from '../sessions/catalog.js';
 import { localPath, uriOf } from '../resources/fileuri.js';
 import { flag, optional, required, when } from '../utils/toolinput.js';
@@ -592,6 +597,30 @@ const agentInput = (agents: { provider: string; name: string }[]): object => ({
   description: `Optional provider id of the agent to run. Defaults to the model's provider, then the current chat's. \`list_models\` names the models each agent offers.${agents.length === 0 ? '' : `\n${agents.map((one) => `${one.provider}: ${one.name}`).join('\n')}`}`,
 });
 
+/** What `list_models` says it answers. */
+const LIST_MODELS_DESCRIPTION = 'List the models the agents offer, in the order the host learned them. Pass `agent` for one agent\'s models; omit it for every agent\'s. Each model answers the `id` and `name` that `create_session` and `create_chat` take as `model`, under the `agent` it belongs to.';
+
+/** The heading of the model list `create_session` carries with `sessionModelOptions` at `inline`. */
+const CREATE_SESSION_MODEL_CATALOG_HEADING = 'Available models by agent:';
+
+/**
+ * The models an agent can pass to `create_session`, grouped by agent, one per
+ * line with the options it accepts. `undefined` when there are none to list.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1113-L1131
+ */
+export const createSessionModelChoices = (models: readonly CatalogModel[]): string | undefined => {
+  if (models.length === 0) return undefined;
+  const selectable = [...models].sort((a, b) => a.id.localeCompare(b.id));
+  const providers = [...new Set(selectable.map((model) => model.provider))].sort();
+  return providers.flatMap((provider) => [
+    `${provider}:`,
+    ...selectable.filter((model) => model.provider === provider).map((model) => {
+      const options = describeCreateSessionModelOptions(model);
+      return `- ${model.id} (${model.name})${options ? `: ${options}` : ''}`;
+    }),
+  ]).join('\n');
+};
+
 /** `create_session`'s definition, before one caller's agents are named in its `agent` input. */
 const CREATE_SESSION: ToolDefinition = {
   name: 'create_session',
@@ -738,7 +767,7 @@ export const sessionTools = (): HostTool[] => [
     definition: {
       name: 'list_models',
       title: 'List Models',
-      description: 'List the models the agents offer, in the order the host learned them. Pass `agent` for one agent\'s models; omit it for every agent\'s. Each model answers the `id` and `name` that `create_session` and `create_chat` take as `model`, under the `agent` it belongs to.',
+      description: LIST_MODELS_DESCRIPTION,
       inputSchema: {
         type: 'object',
         properties: {
@@ -747,6 +776,9 @@ export const sessionTools = (): HostTool[] => [
       },
       annotations: { title: 'List Models', readOnlyHint: true, openWorldHint: false },
     },
+    forSession: ({ rootConfig }) => (sessionModelOptionsOf(rootConfig) !== 'tool' ? undefined : {
+      definition: { description: `${LIST_MODELS_DESCRIPTION} Each model also lists, as \`options\`, the \`reasoningEffort\` and \`contextTier\` values \`create_session\` accepts for it.` },
+    }),
     sessionless: true,
     grant: 'session:read',
     run: (input, at) => {
@@ -757,10 +789,20 @@ export const sessionTools = (): HostTool[] => [
         throw new Error(`Invalid ${tool} input: agent "${asked}" is not one this host offers${agents.length > 0 ? `; it offers ${agents.map((one) => one.provider).join(', ')}` : ''}.`);
       const models = at.models();
       const named = asked === undefined ? agents : agents.filter((one) => one.provider === asked);
+      /*
+       * With `sessionModelOptions` at `tool`, each model also says the
+       * `reasoningEffort` and `contextTier` values `create_session` accepts
+       * for it, in the words VS Code's `list_models` lists them with.
+       * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L2631-L2635
+       */
+      const withOptions = sessionModelOptionsOf(at.rootConfig()) === 'tool';
       return JSON.stringify({
         agents: named.map((one) => ({
           agent: one.provider,
-          models: models.filter((model) => model.provider === one.provider).map((model) => ({ id: model.id, name: model.name })),
+          models: models.filter((model) => model.provider === one.provider).map((model) => {
+            const options = withOptions ? describeCreateSessionModelOptions(model) : undefined;
+            return { id: model.id, name: model.name, ...(options === undefined ? {} : { options }) };
+          }),
         })),
       });
     },
@@ -880,14 +922,30 @@ export const sessionTools = (): HostTool[] => [
      * the same ids the enum holds.
      */
     forSession: (session) => {
-      if (session.agents === undefined) return undefined;
+      /*
+       * `reasoningEffort` and `contextTier` are offered only while agents can
+       * choose model options, and with `inline` the `model` description lists
+       * the models and what each accepts, as VS Code's host shapes it.
+       * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L2566-L2580
+       */
+      const mode = sessionModelOptionsOf(session.rootConfig);
+      if (session.agents === undefined && mode === 'off') return undefined;
       const schema = CREATE_SESSION.inputSchema ?? { type: 'object' as const, properties: {} };
+      const catalog = mode === 'inline' && session.models !== undefined ? createSessionModelChoices(session.models) : undefined;
+      const model = mode === 'off' ? undefined : {
+        type: 'string',
+        description: `${CREATE_SESSION_MODEL_OPTIONS_DESCRIPTION}${mode === 'tool' ? ' Call `list_models` to see the models and the options each accepts.' : ''}${catalog === undefined ? '' : `\n\n${CREATE_SESSION_MODEL_CATALOG_HEADING}\n${catalog}`}`,
+      };
       return {
         definition: {
           inputSchema: {
             ...schema,
             type: 'object' as const,
-            properties: { ...schema.properties, agent: agentInput(session.agents) },
+            properties: {
+              ...schema.properties,
+              ...(session.agents === undefined ? {} : { agent: agentInput(session.agents) }),
+              ...(model === undefined ? {} : { model, ...createSessionModelOptionsProperties }),
+            },
           },
         },
       };
@@ -909,6 +967,8 @@ export const sessionTools = (): HostTool[] => [
           throw new Error(`Invalid ${tool} input: agent "${agent}" is not one this host offers${offers.length > 0 ? `; it offers ${offers.join(', ')}` : ''}.`);
       }
       const config = settingsOf(input.config, tool);
+      // Read on every call, as VS Code reads `sessionModelOptions`; off, both options are ignored.
+      const modelOptions = createdModelOptionsOf(input, sessionModelOptionsOf(at.rootConfig()) !== 'off');
       const rows = await at.sessions();
       const calling = at.session;
       const mine = calling === undefined ? undefined : rows.find((row) => row.resource === calling);
@@ -924,6 +984,7 @@ export const sessionTools = (): HostTool[] => [
           ...(agent !== undefined ? { provider: agent } : {}),
           ...(config !== undefined ? { config } : {}),
           ...(model ? { model: model.id } : {}),
+          ...(modelOptions !== undefined ? { modelOptions } : {}),
           from: delegated(at),
         });
         return `Chat created in the current session (${openLink(calling, agent ?? mine?.provider ?? 'claude', idOf(made.chat))}).`;
@@ -953,6 +1014,7 @@ export const sessionTools = (): HostTool[] => [
         ...(agent !== undefined ? { provider: agent } : {}),
         ...(config !== undefined ? { config } : {}),
         ...(model ? { provider: model.provider, model: model.id } : {}),
+        ...(modelOptions !== undefined ? { modelOptions } : {}),
         isolation,
         title,
         prompt,

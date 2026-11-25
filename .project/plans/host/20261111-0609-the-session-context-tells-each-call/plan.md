@@ -1,7 +1,7 @@
 ---
 title: The session context tells each call and each cut reply
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -76,8 +76,8 @@ get_session_context { session, responseTurnId, responseOffset } -> at.context ->
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The context answers VS Code's fields](task-01-the-context-answers-vscodes-fields.md) | implemented | - |
-| [02 - Each tool call says its status](task-02-each-tool-call-says-its-status.md) | implemented | 01 |
+| [01 - The context answers VS Code's fields](task-01-the-context-answers-vscodes-fields.md) | done | - |
+| [02 - Each tool call says its status](task-02-each-tool-call-says-its-status.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -87,7 +87,7 @@ get_session_context { session, responseTurnId, responseOffset } -> at.context ->
 ## Resume state
 
 - **Done so far:** both tasks implemented, 2026-11-11. The code, tests and docs are in the tree; `pnpm exec tsc -p tsconfig.json --noEmit` is clean and `pnpm -s schema` generated 508 definitions.
-- **Next action:** run `packages/sdk` and then `packages/server` under the shared lock, restore `packages/sdk/test/fixtures/wire.jsonl` after each, then close the plan.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:**
 The vitest gates did not run: `flock /home/softov/tmp/ahpd-test/vitest.lock` is denied by this session's permission mode, so a suite cannot take the shared lock.

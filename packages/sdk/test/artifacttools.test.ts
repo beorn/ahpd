@@ -13,9 +13,9 @@ import type { ToolCall } from '../src/types/host.js';
  */
 
 /** A `ToolCall` that holds artifacts and nothing else. */
-const holding = (start: Bag[] = []) => {
+const holding = (start: Bag[] = [], rootConfig: Bag = {}) => {
   let held = start;
-  const at = { artifacts: () => [...held], setArtifacts: (list: Bag[]) => { held = list; } } as unknown as ToolCall;
+  const at = { artifacts: () => [...held], setArtifacts: (list: Bag[]) => { held = list; }, rootConfig: () => rootConfig } as unknown as ToolCall;
   return { at, held: () => held };
 };
 const tool = (name: string) => {
@@ -122,5 +122,65 @@ describe('the three tools', () => {
     const add = tool('add_artifact_or_reference');
     expect(add.instruction).toBeUndefined();
     expect(add.definition.description).toContain('Record one or more artifacts or references so they are surfaced next to the chat input.');
+  });
+});
+
+describe('how the chat shows an entry, behind chatResources', () => {
+  const add = tool('add_artifact_or_reference');
+  const plan = (mode?: string) => ({ type: 'file', label: 'Plan', isArtifact: true, uri: 'file:///tmp/plan.md', ...(mode === undefined ? {} : { mode }) });
+
+  it('offers mode in the schema only while chat resources are on', () => {
+    const off = add.forSession?.({ rootConfig: {} } as never);
+    expect(off).toBeUndefined();
+    const on = add.forSession?.({ rootConfig: { chatResources: true } } as never);
+    const items = (on?.definition?.inputSchema as unknown as { properties: { items: { items: { properties: Record<string, { enum?: string[] }> } } } }).properties.items.items;
+    expect(items.properties.mode?.enum).toEqual(['pinned', 'aboveInput']);
+    expect((add.definition.inputSchema as unknown as { properties: { items: { items: { properties: Record<string, unknown> } } } }).properties.items.items.properties.mode).toBeUndefined();
+  });
+
+  it('ignores mode, even an invalid one, while chat resources are off', async () => {
+    const { at, held } = holding();
+    await add.run({ items: [plan('sideways')] }, at);
+    expect(held()[0]?.mode).toBeUndefined();
+  });
+
+  it('refuses an invalid mode with the reference words while they are on', async () => {
+    const { at } = holding([], { chatResources: true });
+    await expect(async () => add.run({ items: [plan('sideways')] }, at))
+      .rejects.toThrow('Invalid add_artifact_or_reference input: items[0].mode must be one of pinned, aboveInput.');
+  });
+
+  it('records the mode, asks again on a change, and counts the changes after the first', async () => {
+    const { at, held } = holding([], { chatResources: true });
+    await add.run({ items: [plan()] }, at);
+    expect(held()[0]?.mode).toBeUndefined();
+    expect(await add.run({ items: [plan('pinned')] }, at)).toMatch(/^Updated how the chat shows the artifact: /);
+    expect(held()[0]).toMatchObject({ mode: 'pinned' });
+    expect(held()[0]?.modeRevision).toBeUndefined();
+    await add.run({ items: [plan('aboveInput')] }, at);
+    expect(held()[0]).toMatchObject({ mode: 'aboveInput', modeRevision: 1 });
+    expect(await add.run({ items: [plan('aboveInput')] }, at)).toMatch(/^Already recorded: /);
+    expect(held()).toHaveLength(1);
+  });
+
+  it('keeps a reference\'s mode and revision when it is promoted', async () => {
+    const { at, held } = holding([{ id: 'r', type: 'file', label: 'Plan', isArtifact: false, uri: 'file:///tmp/plan.md', mode: 'pinned', modeRevision: 2 }], { chatResources: true });
+    expect(await add.run({ items: [plan()] }, at)).toBe('Promoted artifact: r');
+    expect(held()[0]).toMatchObject({ id: 'r', isArtifact: true, mode: 'pinned', modeRevision: 2 });
+  });
+
+  it('reads a stored mode only when it is valid', () => {
+    const read = artifactsIn([
+      { id: 'a', type: 'file', label: 'A', isArtifact: true, uri: 'file:///a', mode: 'aboveInput', modeRevision: 3 },
+      { id: 'b', type: 'file', label: 'B', isArtifact: true, uri: 'file:///b', mode: 'sideways', modeRevision: 0 },
+    ]);
+    expect(read[0]).toMatchObject({ mode: 'aboveInput', modeRevision: 3 });
+    expect(read[1]?.mode).toBeUndefined();
+    expect(read[1]?.modeRevision).toBeUndefined();
+  });
+
+  it('keeps parseArtifacts blind to mode unless asked', () => {
+    expect(parseArtifacts({ items: [plan('pinned')] }, 'x')[0]?.mode).toBeUndefined();
+    expect(parseArtifacts({ items: [plan('pinned')] }, 'x', true)[0]?.mode).toBe('pinned');
   });
 });

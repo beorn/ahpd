@@ -1,6 +1,6 @@
 ---
 title: Adoption writes the owner
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

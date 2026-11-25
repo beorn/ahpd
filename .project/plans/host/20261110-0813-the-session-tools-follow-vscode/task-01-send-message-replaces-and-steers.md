@@ -1,6 +1,6 @@
 ---
 title: send_message replaces, cancels and steers
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

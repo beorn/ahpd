@@ -1,6 +1,6 @@
 ---
 title: A prerelease part moves to a newer one
-status: implemented
+status: done
 depends: []
 layer: "scripts"
 refs:

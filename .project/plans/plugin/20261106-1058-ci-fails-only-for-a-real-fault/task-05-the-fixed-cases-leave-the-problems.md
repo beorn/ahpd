@@ -1,6 +1,6 @@
 ---
 title: The fixed cases leave the problem records
-status: todo
+status: done
 depends:
   - task-01-cofold-when-has-no-cap-of-its-own.md
   - task-02-servercheck-answers-docker-at-once.md
@@ -8,7 +8,7 @@ depends:
   - task-04-the-steering-after-attachments-arrives.md
 layer: "docs"
 refs:
-  - problems/three-cases-fail-at-random-on-windows.md - holds the cofold edit case and the servercheck case, with three cases this plan does not fix
+  - git://b0fb33f09 - the last commit that holds `problems/three-cases-fail-at-random-on-windows.md`, which held the cofold edit and server-check cases this task took out; the record went after #420
   - problems/two-attachment-cases-time-out-on-windows.md - holds the two attachment cases
   - problems/a-cofold-titling-case-times-out-on-windows.md - holds the cofold titling case
 ---
@@ -38,3 +38,7 @@ Each problem record holds only the cases that are still open, and a record with 
 - `lint-prose.mjs` passes on `three-cases-fail-at-random-on-windows.md`.
 
 ## Resume
+
+The titling and attachment records are deleted. `three-cases-fail-at-random-on-windows.md` keeps its path and holds the two computer cases, with the title "Two computer cases fail at random on Windows". `.project/working/problems-report-20261111.md` and `.project/working/HANDOFF.md` still link the deleted records; they are dated snapshots and stay as written.
+
+Later on 2026-11-21 the record went too. #420 fixed its disposable case. Its computer-needs case had failed once only, and the plan's answer gives such a case no record. That case now asserts its machine was made and found, so a repeat names its cause.

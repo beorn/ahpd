@@ -1,6 +1,6 @@
 ---
 title: The approver reads through a wrapper
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

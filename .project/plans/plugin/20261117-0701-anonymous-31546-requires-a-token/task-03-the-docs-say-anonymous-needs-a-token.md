@@ -1,6 +1,6 @@
 ---
 title: The docs say anonymous needs a token
-status: implemented
+status: done
 depends: [task-02-anonymous-is-refused-without-a-token.md]
 layer: "docs"
 refs:

@@ -1,6 +1,6 @@
 ---
 title: A read-back turn draws its notices
-status: implemented
+status: done
 depends: [task-01-the-turns-before-a-compaction-read-back.md]
 layer: "agent-claude"
 refs:

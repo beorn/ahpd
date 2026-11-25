@@ -1,6 +1,6 @@
 ---
 title: The docs say the cofold names
-status: todo
+status: done
 depends:
   - task-01-the-harness-reads-the-cofold-names.md
 layer: "docs"
@@ -43,3 +43,4 @@ A person who upgrades from papo's names is told where the file goes in one step,
 
 ## Resume
 
+Built 2026-11-21. The README, `PLUGINS.md`, `COMPUTERS.md` and the spec name the cofold files and variables. The 0.15 notes stay as shipped, because `v0.15.0` read the copapo names; the upgrade lines wait in [deferred.md](deferred.md).

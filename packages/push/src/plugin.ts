@@ -1,6 +1,6 @@
 import { posix } from 'node:path';
-import { Status, bag, idOf, reason, secretRef, str, translated } from '@ahpd/sdk';
-import { SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
+import { RpcError, Status, bag, idOf, reason, secretRef, str, translated } from '@ahpd/sdk';
+import { AhpErrorCodes, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
 import { DEVICES_SCHEME, devicesChannel, pushMethods } from './channel.js';
 import { WEB_PUSH_HOSTS, deviceStore, pushProvider } from './provider.js';
 import { createSender } from './send.js';
@@ -164,7 +164,16 @@ export const apply: Plugin['apply'] = (host, options) => {
     ...(vapid === undefined ? {} : { vapid }),
     changed: () => { void devices.refresh(); },
   });
-  host.registerResourceProvider('push', provider);
+  /*
+   * Read, listed and watched by address, and changed by the two commands alone.
+   * The scheme keeps its `put` and `delete` words, which the grants and a
+   * client's controls are read from, and refuses the resource call itself.
+   */
+  host.registerResourceProvider('push', {
+    ...provider,
+    write: async () => { throw new RpcError(AhpErrorCodes.NotFound, 'Change a device with x-ahpd/push/put'); },
+    delete: async () => { throw new RpcError(AhpErrorCodes.NotFound, 'Remove a device with x-ahpd/push/remove'); },
+  });
   for (const [command, method] of Object.entries(pushMethods(provider, devices.refresh))) host.registerMethod(command, method);
 
   const accessToken = options['accessToken'];
@@ -199,15 +208,24 @@ export const apply: Plugin['apply'] = (host, options) => {
     ...(contact === undefined || contact.trim() === '' ? {} : { contact: contact.trim() }),
   });
 
-  /** The clients that created or opened each session, as the host says them. */
-  const opened = new Map<string, Set<string>>();
+  /**
+   * The clients that created or opened each session, as the host says them,
+   * each with the person who opened it through that client. A creator has none
+   * here: whoever created a session is its owner.
+   */
+  const opened = new Map<string, { client: string; owner?: string }[]>();
+  const keep = (session: string, client: string, owner?: string): void => {
+    const held = opened.get(session) ?? [];
+    if (!held.some((one) => one.client === client && one.owner === owner)) held.push({ client, ...(owner === undefined ? {} : { owner }) });
+    opened.set(session, held);
+  };
   host.on('session_start', (event) => {
     if (event.client === undefined || event.client === '') return;
-    opened.set(event.session, (opened.get(event.session) ?? new Set()).add(event.client));
+    keep(event.session, event.client);
   });
   host.on('session_opened', (event) => {
     if (event.client === '') return;
-    opened.set(event.session, (opened.get(event.session) ?? new Set()).add(event.client));
+    keep(event.session, event.client, event.owner);
   });
   host.on('session_end', (event) => { opened.delete(event.session); });
 
@@ -215,7 +233,9 @@ export const apply: Plugin['apply'] = (host, options) => {
    * The devices that hear about a session, as each registration chose
    * (Softov 2026-10-31: "A setting per device").
    *
-   * Every device hears the sessions its own client created or opened. A
+   * Every device hears the sessions its own client created or opened. On a
+   * host with people that is a client the device's owner created or opened
+   * the session through, since a client id is the client's own word. A
    * `person` device, which is one that says nothing, also hears every session
    * of its person: on a host with people the ones the session's owner
    * registered, and on a host with none every session, its one person's.
@@ -226,7 +246,8 @@ export const apply: Plugin['apply'] = (host, options) => {
     return store.ids().flatMap((id) => {
       const device = store.get(id);
       if (device === undefined) return [];
-      const byClient = device.client !== undefined && clients?.has(device.client) === true;
+      const byClient = device.client !== undefined && clients?.some((one) => one.client === device.client
+        && (host.hasUsers !== true || (device.owner !== undefined && (one.owner ?? owner) === device.owner))) === true;
       const byPerson = device.audience !== 'device'
         && (host.hasUsers !== true || (owner !== undefined && device.owner === owner));
       return byClient || byPerson ? [{ id, device }] : [];

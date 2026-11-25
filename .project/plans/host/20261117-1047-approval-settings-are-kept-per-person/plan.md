@@ -1,7 +1,7 @@
 ---
 title: The approval settings are kept per person
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -79,10 +79,10 @@ question in a session -> spawn: the owner's approval settings where they have on
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - a push keeps the approval keys for its person](task-01-a-push-keeps-the-keys-for-its-person.md) | implemented | - |
-| [02 - a question reads the owner's settings](task-02-a-question-reads-the-owners-settings.md) | implemented | 01 |
-| [03 - the docs say whose settings apply](task-03-the-docs-say-whose-settings-apply.md) | implemented | 02 |
-| [04 - a person reads their own settings back](task-04-a-person-reads-their-own-settings.md) | implemented | 01 |
+| [01 - a push keeps the approval keys for its person](task-01-a-push-keeps-the-keys-for-its-person.md) | done | - |
+| [02 - a question reads the owner's settings](task-02-a-question-reads-the-owners-settings.md) | done | 01 |
+| [03 - the docs say whose settings apply](task-03-the-docs-say-whose-settings-apply.md) | done | 02 |
+| [04 - a person reads their own settings back](task-04-a-person-reads-their-own-settings.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -92,6 +92,7 @@ question in a session -> spawn: the owner's approval settings where they have on
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 to 04 are `implemented` on 2026-11-17, on the branch `host/20261117-1047-approval-settings-are-kept-per-person`. Task 04 is Softov's idea of 2026-11-17, added during the build.
 - **Next action:** Softov's review, then the checks of *Final verification checklist* on the test daemon.

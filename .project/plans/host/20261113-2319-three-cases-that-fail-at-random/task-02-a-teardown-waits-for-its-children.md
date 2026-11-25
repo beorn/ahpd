@@ -1,6 +1,6 @@
 ---
 title: A teardown waits for its children
-status: implemented
+status: done
 depends: []
 layer: "sdk and computer tests"
 refs:

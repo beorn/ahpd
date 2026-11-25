@@ -1,6 +1,6 @@
 ---
 title: create_session works with no git
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

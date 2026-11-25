@@ -4,6 +4,7 @@ import { bag, list, str } from './common.js';
 import { pollTaskOutput } from './taskoutput.js';
 import type { TaskOutputPoll, TaskOutputReader } from './taskoutput.js';
 import { titleOf } from '../input.js';
+import { ownEnvOf } from '../options.js';
 
 /**
  * How long a worker's frames are held for its spawn, VS Code's host's
@@ -107,6 +108,17 @@ export interface Workers {
   hasActiveWork: () => boolean;
   /** Forget one task the harness said has ended. */
   dropTask: (taskId: string) => void;
+  /**
+   * Offer the call one `task_started` names to move to the background, when
+   * it runs in the foreground and is a shell or a subagent.
+   */
+  offerMove: (message: Bag) => void;
+  /**
+   * Say that the call `toolUseId` runs in the background now, so its
+   * completion names its row. `taskId` is the harness's own id where the call
+   * said it and no `task_started` has yet.
+   */
+  noteMoved: (toolUseId: string, taskId?: string) => void;
   /**
    * End every output terminal this session made, and the polls behind them.
    *
@@ -394,6 +406,67 @@ export function createWorkers(ctx: SessionContext): Workers {
     if (scope === mainScope) return ctx.options.chatUri;
     const chat = scope.chat?.uri;
     return chat === undefined || chat === '' ? undefined : chat;
+  };
+
+  /** The row a task is listed as, which is the id the call names once it moved. */
+  const rowOfTask = (taskId: string, type: string | undefined): string =>
+    type === 'local_agent' ? `subagent:${taskId}` : `shell:${taskId}`;
+
+  /** The chat a call is on, for the host's record of it. */
+  const chatOfCall = (toolUseId: string): string | undefined => {
+    const scope = scopeOfCall(toolUseId);
+    return scope === undefined ? undefined : workChatOf(scope);
+  };
+
+  /**
+   * Whether this session's harness backgrounds nothing.
+   *
+   * `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` makes the SDK's `backgroundTasks`
+   * throw, so a session with it set offers no call: the button would answer
+   * `false` every time. The record's own `env` comes over the daemon's.
+   */
+  const backgroundOff = (): boolean => {
+    const own = ownEnvOf(ctx.values)['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'];
+    const said = own === null ? undefined : own ?? process.env['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'];
+    return said !== undefined && said !== '' && said !== '0' && said.toLowerCase() !== 'false';
+  };
+
+  const noteMoved = (toolUseId: string, taskId?: string): void => {
+    const calls = ctx.options.movableCalls;
+    const task = taskId ?? tasks.get(toolUseId);
+    const chat = chatOfCall(toolUseId);
+    if (calls === undefined || task === undefined || chat === undefined) return;
+    calls.moved(chat, toolUseId, rowOfTask(task, taskInfo.get(task)?.type));
+  };
+
+  /**
+   * Offer a foreground shell or subagent to move, through the harness's own
+   * move: Ctrl+B in the terminal, `backgroundTasks` with the one call's id
+   * here. The call then answers its model that it runs in the background, and
+   * the task goes on as the row the harness already lists.
+   */
+  const offerMove = (message: Bag): void => {
+    const calls = ctx.options.movableCalls;
+    const toolUseId = str(message.tool_use_id);
+    const taskId = str(message.task_id);
+    const type = str(message.task_type);
+    if (calls === undefined || toolUseId === undefined || taskId === undefined) return;
+    if (message.is_backgrounded !== false || (type !== 'local_bash' && type !== 'local_agent')) return;
+    if (backgroundOff()) return;
+    const chat = chatOfCall(toolUseId);
+    if (chat === undefined) return;
+    calls.offer(chat, toolUseId, async () => {
+      const to = ctx.query;
+      if (to === undefined) return false;
+      try {
+        if (!await to.backgroundTasks(toolUseId)) return false;
+      }
+      catch {
+        return false;
+      }
+      noteMoved(toolUseId, taskId);
+      return true;
+    });
   };
 
   /**
@@ -755,7 +828,7 @@ export function createWorkers(ctx: SessionContext): Workers {
     pendingSummary: undefined as string | undefined,
     taskInfo, backgroundTasks, told,
     scopeFor, recordSpawn, scopeOfCall, emitOn, clearPendingToolCalls, endSubagent,
-    subagentBlock, noteTask, noteBackgroundTasks, dropTask, closeOutputs, hasActiveWork: () => backgroundTasks.size > 0,
+    subagentBlock, noteTask, noteBackgroundTasks, dropTask, offerMove, noteMoved, closeOutputs, hasActiveWork: () => backgroundTasks.size > 0,
     methods: { stopWorker },
   };
 }

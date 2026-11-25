@@ -43,7 +43,7 @@ mkdir -p ~/box && node packages/server/dist/main.js join ws://200.11.121.81:3753
 tail -3 ~/.config/ahpd/usage/$(date +%Y-%m)-computer.jsonl
 ```
 
-5. Run `ahpd --remote http://127.0.0.1:37537 --token-file /home/softov/.vscode/cli/agent-host-token node rm box`. Check that the node's `join` ends, and that the hub refuses a new `join` with the same token. Without `--remote`, the node stays connected: see the problem `node-rm-at-the-terminal-does-not-drop-a-joined-node`.
+5. Run `ahpd --remote http://127.0.0.1:37537 --token-file /home/softov/.vscode/cli/agent-host-token node rm box`. Check that the node's `join` ends, and that the hub refuses a new `join` with the same token. Without `--remote`, the node stays connected: [container/20261118-1107-a-removed-node-is-cut-off-at-once](../plans/container/20261118-1107-a-removed-node-is-cut-off-at-once/plan.md) fixes this.
 
 ## Reply
 

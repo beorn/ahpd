@@ -17,8 +17,7 @@
  * The URL's fetch is the engine's own, under the guard that process runs with.
  */
 
-import { createReadStream } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { open, readFile, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { Readable } from 'node:stream';
 import type { Prop } from './props.ts';
@@ -230,7 +229,20 @@ const attachmentOf = async (value: string, folder: string | undefined, streaming
   const filename = basename(found);
   const extension = extensionFromFilename(filename);
   if (streaming) {
-    return { filename, ...(extension === undefined ? {} : { extension }), size: (await stat(found)).size, body: createReadStream(found) };
+    /*
+     * Opened here, before the body is handed on. A stream made from the path
+     * opens the file later, so a file that went in between failed that open
+     * with nobody listening, which threw in the daemon. A file that does not
+     * open is no file, as one that is not there.
+     */
+    const handle = await open(found, 'r').catch(() => undefined);
+    if (handle === undefined) return null;
+    const size = await handle.stat().then((held) => held.size, () => undefined);
+    if (size === undefined) {
+      await handle.close().catch(() => {});
+      return null;
+    }
+    return { filename, ...(extension === undefined ? {} : { extension }), size, body: handle.createReadStream() };
   }
   return apFile(filename, await readFile(found), extension);
 };

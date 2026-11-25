@@ -291,27 +291,28 @@ export const shellTools = (executable: string = shellOf()): HostTool[] => {
         ...(at.toolCallId !== undefined ? { toolCallId: at.toolCallId } : {}),
         ...(at.opened === undefined ? {} : { opened: at.opened }),
       });
-      if (mode === 'async') {
-        /*
-         * Answered at once, and the shell stays the call's until the command
-         * ends: the row below is the only thing a client has to watch it by,
-         * and the shell it runs in is not offered to the next command.
-         */
-        const rows = at.background();
-        const id = `shell:${ref.shell.id}`;
+      const rows = at.background();
+      const id = `shell:${ref.shell.id}`;
+      const startedAt = new Date().toISOString();
+      /*
+       * The row a command in the background runs as, and the call's word that
+       * it does. The call names the row before it answers, so its completion
+       * carries the row's id.
+       */
+      const goneOn = (): void => {
         rows.set({
           kind: 'shell',
           id,
           label: rowLabel(command),
-          startedAt: new Date().toISOString(),
+          startedAt,
           command,
           terminal: ref.shell.terminalUri,
           /*
            * The stop is an interrupt. Under a pseudoterminal the byte is the
            * line discipline's, which signals the foreground group; on pipes
            * the store turns it into SIGINT itself. The row goes when the
-           * command has really ended, which is the report just below - a row
-           * taken down here would show work gone while it ran.
+           * command has really ended - a row taken down at the stop would show
+           * work gone while it ran.
            */
           stop: async () => {
             if (shells.lifecycle(ref.shell).status !== 'running') return false;
@@ -319,24 +320,70 @@ export const shellTools = (executable: string = shellOf()): HostTool[] => {
             return true;
           },
         });
+        at.movable().moved(id);
+      };
+      /*
+       * The row goes and the shell is let go when the command has ended,
+       * before the chat is woken with it: a wake that ran first would read a
+       * row still saying the work is going.
+       */
+      const done = (): void => { rows.remove(id); ref.release(); };
+      if (mode === 'async') {
         /*
-         * The row goes and the shell is let go when the command has ended,
-         * before the chat is woken with it: a wake that ran first would read
-         * a row still saying the work is going.
+         * Answered at once, and the shell stays the call's until the command
+         * ends: the row is the only thing a client has to watch it by, and the
+         * shell it runs in is not offered to the next command.
          */
-        const done = (): void => { rows.remove(id); ref.release(); };
+        goneOn();
         void shells.start(ref.shell, command, done)
           .catch(() => { done(); /* a call already answered has nowhere to say it could not start */ });
         return asyncAnswer(ref.shell);
       }
+      /*
+       * A command waited for, which a person can let go on in the background
+       * while it runs: the move lets it go, the same as a client narrowing
+       * the terminal's claim, and either way it goes on as an `async` command
+       * does - a row, a stop, and a wake at its end.
+       */
+      let letGo: () => void = () => {};
+      const going = new Promise<void>((resolve) => { letGo = resolve; });
+      let answered = false;
+      let moved = false;
+      const moveOn = (): void => {
+        if (moved) return;
+        moved = true;
+        goneOn();
+      };
+      at.movable().offer(async () => {
+        if (answered || moved) return false;
+        moveOn();
+        letGo();
+        return true;
+      });
+      /*
+       * The offer stands until the call completes, which is where the host
+       * takes the flag off: a move between the answer and the completion
+       * finds `answered` and moves nothing.
+       */
       let release = true;
       try {
-        const result = worded(ref.shell, await shells.run(ref.shell, command, timeoutMs), timeoutMs);
-        if (result.keepShellBusy === true) {
+        const ran = await shells.run(ref.shell, command, timeoutMs, { letGo: going, ended: done });
+        answered = true;
+        if (ran.status === 'background') {
+          // A client's own let-go names the row here, still before the answer.
+          moveOn();
+          release = false;
+        }
+        const result = worded(ref.shell, ran, timeoutMs);
+        if (ran.status !== 'background' && result.keepShellBusy === true) {
           release = false;
           shells.hold(ref.shell);
         }
         return result.ok ? result.text : failed(result.text);
+      }
+      catch (error) {
+        answered = true;
+        throw error;
       }
       finally {
         if (release) ref.release();

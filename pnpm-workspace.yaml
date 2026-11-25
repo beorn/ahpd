@@ -1,11 +1,6 @@
 packages:
   - 'packages/*'
 
-# The private source package keeps a workspace dependency in its monorepo.
-# This consumer supplies the same released lock implementation explicitly.
-overrides:
-  '@bearly/durable-file>@bearly/flock': '0.2.3'
-
 # Native and prebuilt-fetching packages, which pnpm will not run install scripts
 # for unless they are named here. `node-pty` is optional - the terminals port
 # falls back to pipes without it - and esbuild is vitest's bundler.
@@ -23,18 +18,27 @@ allowBuilds:
   protobufjs: false
   utf-8-validate: false
 
+overrides:
+  # The sandbox runtime allows zod 3 or 4; only zod 4.6.6 has the fix for
+  # GHSA-mrhx-c7xc-m3w5, and the runtime's `zod/v3` imports work under it.
+  '@ahpio/sandbox-runtime>zod': ^4.6.6
+  # The private source package keeps a workspace dependency in its monorepo.
+  # This consumer supplies the same released lock implementation explicitly.
+  '@bearly/durable-file>@bearly/flock': '0.2.3'
+
 minimumReleaseAgeExclude:
   - '@bearly/durable-file@0.2.0'
-  - '@microsoft/agent-host-protocol@1.0.0'
-  - '@cofold/agents@0.4.0'
+  - '@microsoft/agent-host-protocol@1.0.0 || 1.1.0'
+  - '@cofold/agents@0.4.0 || 0.4.1'
   - '@cofold/commands@0.2.2 || 0.3.0'
+  - '@cofold/mcp-client@0.2.0'
   - '@cofold/model-openai-compat@0.2.1 || 0.3.0'
   - '@cofold/remote@0.4.0 || 0.5.0'
   - '@cofold/sdk@0.2.0'
   - '@cofold/store-file@0.2.2'
-  - '@cofold/tools@0.4.1'
+  - '@cofold/tools@0.4.1 || 0.4.2'
   - '@cofold/config@0.3.0 || 0.3.1'
-  - '@cofold/terminal@0.3.0 || 0.4.0'
+  - '@cofold/terminal@0.3.0 || 0.4.0 || 0.5.0 || 0.5.1'
   - '@cofold/yaml@0.3.0'
   - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.325'
   - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.325'
@@ -52,3 +56,4 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-mcp@1.5.2'
   - '@earendil-works/pi-telemetry@1.5.2'
   - '@earendil-works/pi-tui@1.5.2'
+  - '@ahpio/sandbox-runtime@0.0.83'

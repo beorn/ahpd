@@ -1,5 +1,5 @@
 import type { CreateElicitationResponse, PromptCapabilities, SessionModeState, SessionUpdate } from '@agentclientprotocol/sdk';
-import type { Bag, BoundTool, Chosen, Emit, MessageAttachment, MessageFrom, OpenedTerminal, Start, TurnOptions } from '@ahpd/sdk';
+import type { Bag, BoundTool, Chosen, Emit, MessageAttachment, MessageFrom, OpenedTerminal, ProxyEndpoint, Start, TurnOptions } from '@ahpd/sdk';
 import type { TypedAnswer } from '../mapping.js';
 import type { AcpConnection, AcpOptions, AcpTurn, ConfirmationOption, PermissionAnswer, WatchedSession, WatchedTurn } from '../types.js';
 import type { ClientCalls } from './clientcalls.js';
@@ -9,6 +9,12 @@ import type { Opening } from './opening.js';
 import type { Turn } from './turn.js';
 
 /** A turn handed while the server ran another: what `sendMessage` was handed. */
+/** Whether a session was offered the host's own tools, and why not when it was not. */
+export interface HostToolsAnswer {
+  available: boolean;
+  reason?: string;
+}
+
 export interface PendingTurn {
   turnId: string;
   text: string;
@@ -16,6 +22,14 @@ export interface PendingTurn {
   from?: MessageFrom | undefined;
   attachments?: MessageAttachment[] | undefined;
   options?: TurnOptions | undefined;
+  /**
+   * Settled once the server holds the session for this turn: resolved when the
+   * turn's open answered, rejected with the turn's own failure when the turn
+   * ended before its server had it. A turn a stop dropped before it ran is
+   * never settled, as the one it waited behind says whether the session is up.
+   * What `sendMessage` returned.
+   */
+  handed?: { resolve: () => void; reject: (error: Error) => void } | undefined;
 }
 
 /**
@@ -113,6 +127,23 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   /** The commands the server last advertised, as the built-in skills container a client draws. */
   commands: Bag[];
   /**
+   * The MCP servers the host configured for this session, as the customizations
+   * a client reads, so a targeted token can name one. Their state is what this
+   * bridge knows: ACP reports nothing about a server once a session opened.
+   */
+  servers: Bag[];
+  /** Everything this session publishes as its customizations: seeds, servers, then commands. */
+  published: () => Bag[];
+  /**
+   * The pass-through each configured HTTP server is reached by, by name: opened
+   * once and kept across a server that died, so the agent's URL stays good.
+   */
+  proxies: Map<string, ProxyEndpoint>;
+  /** The token a client aimed at each server, by name, which its proxy sends upstream. */
+  serverTokens: Map<string, string>;
+  /** Each server's RFC 9728 metadata, found once on its first refusal, by name. */
+  resources: Map<string, Bag>;
+  /**
    * The modes the server named, once it has.
    *
    * ACP only names them on `session/new` and `session/load`, so a session that
@@ -194,6 +225,12 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
    * the proof the move carried (#37272).
    */
   openedMeta: Record<string, unknown> | undefined;
+  /**
+   * Whether this session was offered the host's own tools, as the last opening
+   * decided it, with the reason when it was not. Published in the summary's
+   * `_meta` as `ahpd/hostTools`; absent when the host offers its sessions no tools.
+   */
+  hostTools: HostToolsAnswer | undefined;
   /** Whether the server said it can be asked to close that conversation. */
   closes: boolean;
   /**
@@ -235,6 +272,15 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   loading: boolean;
   /** The one opening, shared by every caller, so one server is spawned. */
   opening: Promise<{ connection: AcpConnection; sessionId: string }> | undefined;
+  /**
+   * The server the last failed open spawned, the command it ran and the PATH
+   * it ran with, absent for a server in a machine, kept until the turn that met
+   * the failure has said them: an open that fails is let go of before the turn
+   * hears of it, and a server
+   * that could not find what it runs is answered by its command, its PATH and
+   * its trace.
+   */
+  failedOpen: { connection: AcpConnection; command: string; path: string | undefined } | undefined;
   /**
    * What the record said when this session's server was last spawned, as one
    * string to compare.

@@ -1,7 +1,7 @@
 ---
 title: A session row lists its chats, and one chat archives
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -79,8 +79,8 @@ archive_chat { chat } -> known(...) -> nested chat: chat/isArchivedChanged | mai
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A row lists its chats](task-01-a-row-lists-its-chats.md) | implemented | - |
-| [02 - archive_chat archives one chat](task-02-archive-chat-archives-one-chat.md) | implemented | 01 |
+| [01 - A row lists its chats](task-01-a-row-lists-its-chats.md) | done | - |
+| [02 - archive_chat archives one chat](task-02-archive-chat-archives-one-chat.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -90,7 +90,7 @@ archive_chat { chat } -> known(...) -> nested chat: chat/isArchivedChanged | mai
 ## Resume state
 
 - **Done so far:** both tasks implemented, 2026-11-11. A row lists its `chats`, and `archive_chat` archives a chat or a whole session, from a session and from `/mcp`. The tests are written, and `pnpm exec tsc -p tsconfig.json --noEmit` passes. The vitest suites are left to review, as the session's mode refused `flock`.
-- **Next action:** run `pnpm typecheck`, then the sdk and server suites one at a time, and review the two new cases in `packages/sdk/test/sessiontools.test.ts`.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:**
 `move_session`'s description already tells a client to read a nested chat's `openLink` from `chats`; task 01 makes that true.

@@ -5,7 +5,8 @@ import { restore } from './session/savedoutput.js';
 import { configDirOf, diskBoundsOf } from './session/disk.js';
 import type { ParseYaml } from './session/disk.js';
 import { createClaudeCustomizationWatcher } from './session/watch.js';
-import { turnsOf, subagentsBySdk, subagentsOf } from './transcript.js';
+import { turnsOf, subagentsBySdk, subagentsOf, writeImportedHistory } from './transcript.js';
+import { UUID } from './session/common.js';
 import { catalogue, findSession, forgetSession, transcriptOf } from './catalog.js';
 import { BEFORE_TOKEN, loginsOf } from './logins.js';
 import type { AgentLogins } from './logins.js';
@@ -13,12 +14,13 @@ import { ownEnvOf } from './options.js';
 import { offeredModels, ownModels, type ModelEntry, type ModelSource, type OfferedModel } from './models.js';
 import { limitOf, onLimitLearned } from './session/parts.js';
 import { realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { fromEnvRef, machineAsked, refuseComputer } from '@ahpd/sdk';
+import { fromEnvRef, idOf, machineAsked, refuseComputer } from '@ahpd/sdk';
 import { spawnInside } from './spawn.js';
 import type { Asked, SpawnedProcess } from './spawn.js';
-import type { Agent, Bag, Listed, MachineNeed, Offered, Session, Start } from '@ahpd/sdk';
+import type { Agent, Bag, ImportedConversation, Listed, MachineNeed, Offered, Session, Start } from '@ahpd/sdk';
 import type { LogLevel } from '@ahpd/sdk';
 
 /**
@@ -239,6 +241,8 @@ export function claude(options: ClaudeOptions): Agent<Session> {
   const readForkAnchorUuids = new Map<string, ReadonlyMap<string, string>>();
   /** The CLIs of this agent's closed sessions still exiting, by the conversation each could write. */
   const exits = new Map<string, Promise<unknown>>();
+  /** The conversation each imported session was written as, by the session URI a start names. */
+  const importedAs = new Map<string, string>();
   /**
    * Whether a session of this harness has a credential beside the CLI's own
    * account: a login the record names that is open and its owner's or the
@@ -423,7 +427,7 @@ export function claude(options: ClaudeOptions): Agent<Session> {
       permissions: {
         type: 'object',
         title: 'Permissions',
-        description: 'Permission rules: a tool name or Tool(specifier), e.g. Shell(npm run *), WebFetch(example.com), WebFetch(example.com/docs/*), Read(./src/**), or Edit(./docs/**). Shell specifiers support wildcards, /regex/flags, and commandLine:<specifier> for the full command line. Deny rules reject matching calls; ask rules require confirmation before allow rules or implicit defaults. Updated automatically when approving "in this Session" or "Always Allow".',
+        description: 'Permission rules: a tool name or Tool(specifier), e.g. Shell(npm run *), WebFetch(example.com), WebFetch(example.com/docs/*), Read(./src/**), Edit(./docs/**), Mcp(server), or Mcp(server/tool). Shell specifiers support wildcards, /regex/flags, and commandLine:<specifier> for the full command line. Deny rules reject matching calls; ask rules require confirmation before allow rules or implicit defaults. Updated automatically when approving "in this Session" or "Always Allow".',
         properties: {
           allow: { type: 'array', title: 'Allowed permission rules', items: { type: 'string', title: 'Permission rule' } },
           deny: { type: 'array', title: 'Denied permission rules', items: { type: 'string', title: 'Permission rule' } },
@@ -731,6 +735,28 @@ export function claude(options: ClaudeOptions): Agent<Session> {
       required: false,
     }],
 
+    /*
+     * A conversation a client brought, written as one this CLI ran.
+     *
+     * The CLI has no transcript seeding: a session it resumes reads the file
+     * that session would have written, so the turns are written as that file
+     * and the session that starts next resumes it. The file is named under the
+     * session's own id where the client gave one, which is the name a session
+     * that never resumed would have used, so a restart finds the conversation
+     * where the catalogue looks for it.
+     */
+    importConversation: (imported: ImportedConversation) => {
+      const folder = workingDirectory(imported.workingDirectory);
+      const named = idOf(imported.uri);
+      const sessionId = UUID.test(named) ? named : randomUUID();
+      writeImportedHistory(imported.turns, {
+        sessionId,
+        folder,
+        ...(imported.model === undefined ? {} : { model: imported.model.id }),
+      });
+      importedAs.set(imported.uri, sessionId);
+    },
+
     create: (start: Start) => {
       /*
        * The machine this session runs in, when it names one.
@@ -745,10 +771,32 @@ export function claude(options: ClaudeOptions): Agent<Session> {
        */
       const inside = insideOf(start);
       const cwd = workingDirectory(start.workingDirectory);
+      /*
+       * The variables the CLI's own process is started with.
+       *
+       * The host's shell authentication variables, on this host only: a CLI in
+       * a machine cannot reach the helper's socket. A token a client pushed is
+       * the variable the CLI reads, which is this file's business and not the
+       * host's: the host knows a token belongs to `https://api.anthropic.com`
+       * and stops there, which is what keeps `createHost` the protocol and
+       * nothing else.
+       */
+      const pushedToken = start.credentials?.[ANTHROPIC];
+      const cliEnv: Record<string, string> = {
+        ...(inside === undefined && start.env !== undefined ? start.env : {}),
+        ...(pushedToken === undefined ? {} : { ANTHROPIC_API_KEY: pushedToken }),
+      };
       // The fork anchors of the turns read back, for a session that carries the
       // same conversation on. A fork is a conversation of its own, whose
       // entries its CLI writes.
       const readBack = start.resume === undefined || start.forkAt !== undefined ? undefined : readForkAnchorUuids.get(start.resume);
+      /*
+       * The conversation a client imported for this session, written before the
+       * session started, unless the host already named a conversation to
+       * resume. The default chat is the one an import writes; a chat with a
+       * name of its own is a conversation of its own and starts fresh.
+       */
+      const resumed = start.resume ?? (start.chatId === undefined ? importedAs.get(start.uri) : undefined);
       return createSession({
       ...(options.log === undefined ? {} : { log: options.log }),
       ...(inside === undefined ? {} : { spawn: inside, spawnExecutable: executable, spawnConfigDir: configDir }),
@@ -824,6 +872,7 @@ export function claude(options: ClaudeOptions): Agent<Session> {
       // The operator's environment for this session's shells, carried as the
       // host resolved it, so the Bash hook writes the lines once.
       ...(start.shellEnv === undefined ? {} : { shellEnv: start.shellEnv }),
+      ...(Object.keys(cliEnv).length === 0 ? {} : { env: cliEnv }),
       // How long the CLI has to answer its handshake, which this variant's own
       // option decides and which the backend's default answers without one.
       ...(options.handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs: options.handshakeTimeoutMs }),
@@ -842,8 +891,8 @@ export function claude(options: ClaudeOptions): Agent<Session> {
        * resumed as it is.
        * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeAgent.ts#L1720-L1736
        */
-      ...(start.resume === undefined ? {} : {
-        resume: start.resume,
+      ...(resumed === undefined ? {} : {
+        resume: resumed,
         ...(start.forkAt !== undefined ? { forkAt: start.forkAt } : {}),
         ...(start.rewindAt !== undefined ? { rewindAt: start.rewindAt } : {}),
       }),
@@ -871,23 +920,13 @@ export function claude(options: ClaudeOptions): Agent<Session> {
       // backend reports each task the harness leaves running, and the host
       // draws the row, its stop flag and the snapshot it reaches.
       ...(start.backgroundTasks ? { backgroundTasks: start.backgroundTasks } : {}),
+      ...(start.movableCalls ? { movableCalls: start.movableCalls } : {}),
       // And the host's output-terminal factory, which is where a background
       // shell's output goes: the host owns the channel, this backend the text.
       ...(start.outputTerminals ? { outputTerminals: start.outputTerminals } : {}),
       // The outputs the host keeps for this chat, which is where a `Bash`
       // result too large to send keeps the output Claude saved for it.
       ...(start.terminalOutputs ? { terminalOutputs: start.terminalOutputs } : {}),
-      /*
-       * A pushed token, as the variable the CLI reads.
-       *
-       * Which variable that is, is this file's business and not the host's:
-       * the host knows a token belongs to `https://api.anthropic.com` and
-       * stops there, which is what keeps `createHost` the protocol and
-       * nothing else.
-       */
-      ...(start.credentials?.[ANTHROPIC]
-        ? { env: { ANTHROPIC_API_KEY: start.credentials[ANTHROPIC] } }
-        : {}),
       // The declared options this variant was configured with, which its
       // sessions are built from. A record's are read live instead, so a turn
       // sees an edit without the daemon rebuilding the agent.

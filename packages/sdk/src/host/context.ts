@@ -13,6 +13,7 @@ import type { Principal } from '../types/users.js';
 import type { StoredWorktree } from '../types/sessions.js';
 import type { DebugLogs } from '../sessions/debuglogs.js';
 import type { CallLinks } from '../automations/calllinks.js';
+import type { StagedImports } from './sessionimport.js';
 import type { ToolResultResources } from '../resources/toolresults.js';
 import type { Claiming, Claimed, Held, HeldState, Learned, LiveSubagent, Origin } from './state.js';
 import type { Admission } from './admission.js';
@@ -48,6 +49,7 @@ import type { SessionLifecycle } from './sessionlifecycle.js';
 import type { Canvases } from './canvases.js';
 import type { Sandbox } from './sandbox.js';
 import type { Asking } from './asking.js';
+import type { ShellAuthentication } from './shellauth.js';
 import type { Logger } from '../log.js';
 
 /**
@@ -95,6 +97,8 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
   shells: HostShells;
   /** Each chat's sandbox: its selection, the floor it is resolved within, and what was applied. */
   sandbox: Sandbox;
+  /** The hold on the machine's idle sleep while a chat works. */
+  keepAwake: { update(): void; stop(): void };
   /** The content backends hand this host to keep, and the provider a client reads it back through. */
   toolResults: ToolResultResources;
   /** The options `createHost` was given. */
@@ -129,7 +133,13 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
    * read is the map itself and never a copy of it, so nothing has to be spilled
    * back when a relay ends.
    */
-  relays: Map<Connection, Map<string, { name: string; folder: string; tail: string[] }>>;
+  relays: Map<Connection, Map<string, { name: string; folder?: string; environment?: string; tail: string[] }>>;
+  /**
+   * The disk usage scans: those in flight by connection and request id, the
+   * two slots every connection shares, and the measures kept by session and
+   * worktree with the one ask at a time of each worktree.
+   */
+  diskUsage: DiskUsageState;
   /** The person who first signed in under each client id, by client id. */
   holders: Map<string, string>;
   /**
@@ -284,6 +294,13 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
   chatInteractivity: Map<string, 'full' | 'read-only' | 'hidden'>;
   /** The opt-in host tools each chat was asked to be offered beside its session's, by URI. */
   chatTools: Map<string, string[]>;
+  /**
+   * The chats a client is giving a workspace to, by URI, while the move runs.
+   *
+   * A chat in here is refused a second workspace request and its first turn:
+   * the folder it was asked for is not where it works until the move is done.
+   */
+  chatWorkspaceMoves: Set<string>;
   /** What started each session, for the ones nothing did. */
   origins: Map<string, { kind: 'automation'; automation: string; run: string }>;
   /** Accepted session starts and creation writes that a close must join. */
@@ -587,6 +604,11 @@ export interface HostContext extends ChatRecord, Routing, Relay, Changesets, Fac
    */
   asks: Asking;
   /**
+   * The socket a command's authentication prompt comes through, the tokens
+   * each chat's processes carry, and the helper's files.
+   */
+  shellAuth: ShellAuthentication;
+  /**
    * Let the state this host holds of a session go, its own and its chats',
    * for a session the residency lets go.
    */
@@ -689,5 +711,18 @@ export interface ConnectionContext {
    * `tail` is the launcher's own last words, kept only so a container that
    * dies can say why in this log.
    */
-  containers: Map<string, { name: string; folder: string; tail: string[] }>;
+  containers: Map<string, { name: string; folder?: string; environment?: string; tail: string[] }>;
+  /**
+   * The conversation chunks this connection staged for a `createSession` it
+   * has not sent yet, and the characters they hold.
+   */
+  imports: StagedImports;
+}
+
+/** See `HostContext.diskUsage`. */
+export interface DiskUsageState {
+  scans: Map<Connection, Map<string, AbortController>>;
+  slot: <T>(work: () => Promise<T>) => Promise<T>;
+  kept: Map<string, { revision: string; bytes: number | undefined }>;
+  queues: Map<string, Promise<unknown>>;
 }

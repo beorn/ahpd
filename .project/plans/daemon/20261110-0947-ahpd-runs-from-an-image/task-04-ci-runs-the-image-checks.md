@@ -1,6 +1,6 @@
 ---
 title: CI runs the image checks
-status: implemented
+status: done
 depends: [task-03-compose-runs-the-image.md]
 layer: "ci"
 refs:

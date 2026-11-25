@@ -21,7 +21,7 @@ import { posix } from '../../../tools/posix.ts';
  * The provider is asked directly for what a registration is, and the plugin is
  * loaded once to show the daemon advertises the scheme and serves a write
  * through it: what a client does to register a phone is the protocol's own
- * `resourceWrite`, so that is the road the last test takes.
+ * `x-ahpd/push/put`, so that is the road the last test takes.
  */
 
 const REPO = join(import.meta.dirname, '../../..');
@@ -306,8 +306,8 @@ it('loads as a plugin, advertises push, and serves a registration through the ho
     });
 
     await client.handle({
-      method: 'resourceWrite',
-      params: { channel: 'ahp-root://', uri: 'push://devices/phone-1', data: JSON.stringify({ token: TOKEN, platform: 'ios' }), encoding: 'utf-8' },
+      method: 'x-ahpd/push/put',
+      params: { channel: 'ahp-root://', id: 'phone-1', record: { token: TOKEN, platform: 'ios' } },
     });
     const read = await client.handle({
       method: 'resourceRead', params: { channel: 'ahp-root://', uri: 'push://devices/phone-1' },

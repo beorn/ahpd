@@ -195,7 +195,16 @@ WHEN a person who is not root dispatches `root/configChanged`
 THEN a change that replaces the config, or names any key but `workspaceTrust`, needs `config:change`, because each key is one value for the whole host
 AND a change that names only `workspaceTrust` needs `trust:push`, which the `member` role holds through `trust:write`
 AND a change that names no key needs no grant beyond sign-in
+AND a change that names only a person's approval settings goes to that person, as *A person's approval settings are their own* says
 AND only root, or a person with `config:settings`, sees the daemon's own settings in the root config.
+
+### A person's approval settings are their own
+
+WHEN a person on a host with users pushes only `terminalAutoApproveRules`, `terminalAutoApproveEnabled`, `editAutoApprovePatterns` or `autoApprovePolicyRestricted`
+THEN the push needs a sign-in and no grant, and goes to that person's file in the person store
+AND a session reads its owner's value of each, then the host's
+AND a terminal rule written `/.../` that VS Code's default table does not carry still needs `config:change`.
+The restriction is a person's own as well, in [decisions/the-auto-approve-restriction-is-kept-per-person.md](../decisions/the-auto-approve-restriction-is-kept-per-person.md).
 
 ### A policy is a record clients edit
 

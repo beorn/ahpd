@@ -97,17 +97,18 @@ const stateOf = (id: string, seed: Seed[]): Pick<AcpMachine, 'state' | 'seed'> =
 /**
  * The machine of an agent that reads its configuration from
  * `$XDG_CONFIG_HOME/<dir>` and its data from `$XDG_DATA_HOME`, both moved under
- * its state directory and seeded from `~/.config/<dir>`.
+ * its state directory and seeded from `~/.config/<dir>`. `<dir>` is the part's
+ * id unless the agent names its folder otherwise, as copapo reads `cofold`.
  *
  * The variables are the whole machine's, so a nested `ahpd` in the same
  * machine keeps its own folder in that state directory too, which is writable.
  * An `env` given is added to that environment, for a variable the agent reads
  * beside its XDG ones.
  */
-const xdgOf = (id: string, files: string[], env: Record<string, string> = {}): AcpMachine => ({
+const xdgOf = (id: string, files: string[], env: Record<string, string> = {}, dir: string = id): AcpMachine => ({
   part: id,
   env: { XDG_CONFIG_HOME: `/ahpd/${id}/config`, XDG_DATA_HOME: `/ahpd/${id}/data`, ...env },
-  ...stateOf(id, files.map((file) => ({ source: `~/.config/${id}/${file}`, target: `config/${id}/${file}` }))),
+  ...stateOf(id, files.map((file) => ({ source: `~/.config/${dir}/${file}`, target: `config/${dir}/${file}` }))),
 });
 
 /** Every shipped row, by the key a preset names. */
@@ -211,9 +212,12 @@ export const presets: Record<string, AcpPreset> = {
   copapo: {
     ...rowOf('copapo'),
     args: ['acp'],
-    // copapo over ACP ignores the `mcpServers` a client sends, so a session this
-    // preset starts runs without the host's MCP servers.
-    machine: xdgOf('copapo', ['config.json'], { COFOLD_HOME: '/ahpd/copapo/home' }),
+    // copapo 0.2.0 and later takes the stdio and http `mcpServers` a client
+    // sends with a session, and refuses an SSE one with a warning; 0.1.0 took
+    // none, so a session on it runs without the host's MCP servers.
+    // The part is copapo; its settings live under cofold's name, which copapo
+    // 0.3.0 and later read, so the folder seeded is `~/.config/cofold`.
+    machine: xdgOf('copapo', ['config.json'], { COFOLD_HOME: '/ahpd/copapo/home' }, 'cofold'),
   },
   devin: {
     ...rowOf('devin'),

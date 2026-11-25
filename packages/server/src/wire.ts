@@ -75,6 +75,13 @@ const MAX_STRING_LENGTH = 16 * 1024;
 /** What VS Code's traffic log writes in place of a canvas's source. */
 const REDACTED_CANVAS_SOURCE = '<redacted canvas source>';
 
+/** A canvas state with each source key it carries redacted. */
+const redactedSource = (state: Record<string, unknown>): Record<string, unknown> => ({
+  ...state,
+  ...(state.uri === undefined ? {} : { uri: REDACTED_CANVAS_SOURCE }),
+  ...(state.url === undefined ? {} : { url: REDACTED_CANVAS_SOURCE }),
+});
+
 /** VS Code's test for a value the replacer can look into: any object, an array too. */
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -83,8 +90,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
  * credential or a payload out of the file wherever in the line it sits: an
  * `authorization` string, the data of a `channel/frame` or a `tcp/data`, the
  * `certificates` of a result, the token of an `authenticate` (one already
- * written as a redaction marker is left as it is), and a canvas's source URL,
- * in a `canvas/stateChanged` action and in the state of an `ahp-canvas:`
+ * written as a redaction marker is left as it is), the `answer` of a
+ * `vscode/answerShellAuthentication`, and a canvas's source URL, in a
+ * `canvas/stateChanged` action and in the state of an `ahp-canvas:`
  * resource.
  *
  * VS Code's replacer also writes a URI object back as its string, which an
@@ -106,12 +114,17 @@ const redacted = (_key: string, value: unknown): unknown => {
     && value.params.token !== '<redacted>' && value.params.token !== '[REDACTED]') {
     return { ...value, params: { ...value.params, token: '<redacted>' } };
   }
-  if (value.type === 'canvas/stateChanged' && isRecord(value.canvas) && value.canvas.url !== undefined) {
-    return { ...value, canvas: { ...value.canvas, url: REDACTED_CANVAS_SOURCE } };
+  // A command's answer, which never belongs in a capture.
+  if (value.method === 'vscode/answerShellAuthentication' && isRecord(value.params) && value.params.answer !== undefined) {
+    return { ...value, params: { ...value.params, answer: '<redacted>' } };
+  }
+  // A canvas's source as AHP 1.1.0's `uri` and as the old `url` the host sends beside it.
+  if (value.type === 'canvas/stateChanged' && isRecord(value.canvas) && (value.canvas.uri !== undefined || value.canvas.url !== undefined)) {
+    return { ...value, canvas: redactedSource(value.canvas) };
   }
   if (typeof value.resource === 'string' && value.resource.toLowerCase().startsWith('ahp-canvas:')
-    && isRecord(value.state) && value.state.url !== undefined) {
-    return { ...value, state: { ...value.state, url: REDACTED_CANVAS_SOURCE } };
+    && isRecord(value.state) && (value.state.uri !== undefined || value.state.url !== undefined)) {
+    return { ...value, state: redactedSource(value.state) };
   }
   return value;
 };

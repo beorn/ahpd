@@ -1,6 +1,6 @@
 ---
 title: The docs say who a tunnel visitor is
-status: implemented
+status: done
 depends: [task-03-tunnel-streams-come-into-the-process.md]
 layer: "docs"
 refs:

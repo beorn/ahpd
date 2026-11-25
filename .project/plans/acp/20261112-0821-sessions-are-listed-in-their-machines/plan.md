@@ -1,7 +1,7 @@
 ---
 title: An ACP agent's sessions are listed in their machines
 domain: acp
-status: planned
+status: built
 priority: medium
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -67,8 +67,8 @@ listSessions -> catalogue -> agent.list() -> catalogueOf -> listingFor -> server
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The listing runs in its machines](task-01-the-listing-runs-in-its-machines.md) | implemented | - |
-| [02 - Load and find use the machine](task-02-load-and-find-use-the-machine.md) | implemented | 01 |
+| [01 - The listing runs in its machines](task-01-the-listing-runs-in-its-machines.md) | done | - |
+| [02 - Load and find use the machine](task-02-load-and-find-use-the-machine.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -79,7 +79,7 @@ listSessions -> catalogue -> agent.list() -> catalogueOf -> listingFor -> server
 ## Resume state
 
 - **Done so far:** both tasks are implemented, and the typecheck passes; no suite has been run.
-- **Next action:** review and merge the PR, then the [Windows check](../../../pending/windows-machine-paths-checks.md).
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** a disposable machine goes with its session, so its sessions are listed from the watched rows after that.
 - **Watch out for:** `implemented` is not one of the do-spec task statuses; the tasks are `done` only after the suites pass.

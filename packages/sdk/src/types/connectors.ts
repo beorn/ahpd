@@ -212,6 +212,8 @@ export interface ConnectorRef {
   owner?: ConnectorOwner | undefined;
   /** What a client calls it, when the record has a title. */
   title?: string | undefined;
+  /** The labels every usage record of work it served carries, when it has some. */
+  tags?: readonly string[] | undefined;
 }
 
 /** One connector, as an adapter's `open` is handed it. */
@@ -224,6 +226,8 @@ export interface Connector {
   owner: ConnectorOwner;
   /** What a client prints for it; absent, its id stands for it. */
   title?: string;
+  /** The labels every usage record of work it served carries, when it has some. */
+  tags?: string[];
   /** The values a person filled in, each secret read back from the vault. */
   config: Record<string, unknown>;
 }

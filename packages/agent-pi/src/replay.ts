@@ -213,6 +213,11 @@ export function replayEntries(entries: readonly SessionEntry[]): Replayed {
         if (block.type === 'thinking') {
           update({ type: 'thinking_start' });
           update({ type: 'thinking_delta', delta: block.thinking });
+          // pi times a message as it begins to stream, so a message that opens
+          // with its thinking says when that began. Nothing says when it ended.
+          const part = turn.parts.at(-1);
+          if (contentIndex === 0 && part?.kind === 'reasoning' && Number.isFinite(answer.timestamp))
+            part.startedAt = new Date(answer.timestamp).toISOString();
         }
         else if (block.type === 'text') {
           update({ type: 'text_start' });

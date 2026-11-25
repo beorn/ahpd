@@ -54,10 +54,10 @@ export const title = 'Agent Claude';
 /**
  * The options every agent of one load shares, and the directories it serves.
  *
- * `paths` defaults to the host's, which is the whole configuration in the
- * ordinary install: the directories the daemon was started on are the ones
- * this backend works in, the first of them where a session goes when a client
- * names none.
+ * The directories are the host's: the ones the daemon was started on are the
+ * ones this backend works in, the first of them where a session goes when a
+ * client names none. A `paths` option is no longer read, and is said in the log.
+ * `model` is the model of a record that names none.
  *
  * These are the plugin's own options rather than any one agent's, and a record
  * takes them as they are: what a record may override is what the engine's schema
@@ -68,7 +68,9 @@ export const title = 'Agent Claude';
  */
 const defaultsOf = (host: PluginHost, values: Record<string, unknown>) => {
   const said = values as Partial<ClaudeOptions>;
-  const paths = said.paths ?? host.paths;
+  const paths = host.paths;
+  if (values['paths'] !== undefined) host.log("agent-claude: the paths option is not read; Claude works in the host's paths, so set them there", 'warn');
+  const model = typeof values['model'] === 'string' && values['model'].trim() !== '' ? values['model'] : undefined;
   const hostTools = typeof values['hostTools'] === 'boolean' ? values['hostTools'] : undefined;
   const shared = {
     log: (line: string, level?: LogLevel) => host.log(line, level),
@@ -84,7 +86,7 @@ const defaultsOf = (host: PluginHost, values: Record<string, unknown>) => {
     ...(said.computerCliFallback === undefined ? {} : { computerCliFallback: said.computerCliFallback }),
     ...(said.handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs: said.handshakeTimeoutMs }),
   };
-  return { paths, shared, hostTools };
+  return { paths, shared, hostTools, model };
 };
 
 /**
@@ -117,7 +119,7 @@ const sourcesOf = (value: unknown): ModelSource[] => (Array.isArray(value) ? val
 /** The plugin's own options, as every agent of one load is built with them. */
 type Shared = ReturnType<typeof defaultsOf>['shared'];
 
-const engineOf = (paths: string[], shared: Shared, hostTools: boolean | undefined, logins: OpenLogins): Engine => ({
+const engineOf = (paths: string[], shared: Shared, hostTools: boolean | undefined, model: string | undefined, logins: OpenLogins): Engine => ({
   name: 'claude',
   title: 'Claude Code',
   description: 'Claude Code, with one record per agent: its own directories, models and options.',
@@ -129,7 +131,7 @@ const engineOf = (paths: string[], shared: Shared, hostTools: boolean | undefine
     description: 'Claude Code as this host runs it, on the directories the plugin serves.',
     config: {},
   }],
-  hostOnly: ['extraArgs'],
+  hostOnly: ['extraArgs', 'computerConfigDir'],
   keyVariables: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   capabilities: [{
     type: 'view',
@@ -144,7 +146,12 @@ const engineOf = (paths: string[], shared: Shared, hostTools: boolean | undefine
       paths,
       provider: record.id,
       displayName: record.name,
-      ...(record.model === undefined ? {} : { model: record.model }),
+      // The record's model, or the plugin's for a record that names none.
+      ...(record.model !== undefined ? { model: record.model } : model !== undefined ? { model } : {}),
+      // A host record's config folder over the plugin's.
+      ...(typeof record.config['computerConfigDir'] === 'string' || record.config['computerConfigDir'] === false
+        ? { computerConfigDir: record.config['computerConfigDir'] }
+        : {}),
       ...(Array.isArray(record.config['models']) ? { models: modelsOf(record.config['models']) } : {}),
       ...(Array.isArray(record.config['modelSources']) ? { modelSources: sourcesOf(record.config['modelSources']) } : {}),
       ...(typeof record.config['keepCliModels'] === 'boolean' ? { keepCliModels: record.config['keepCliModels'] } : {}),
@@ -213,9 +220,9 @@ const throughHost = (host: PluginHost): Pick<OpenLogins, 'onFailure' | 'onCall'>
  * adapter, kept open for the load by the one `OpenLogins` both are built over.
  */
 export const apply: Plugin['apply'] = (host, options) => {
-  const { paths, shared, hostTools } = defaultsOf(host, options);
+  const { paths, shared, hostTools, model } = defaultsOf(host, options);
   const logins = new OpenLogins();
   Object.assign(logins, throughHost(host));
   host.registerAdapter(loginAdapter(logins));
-  host.registerEngine(engineOf(paths, shared, hostTools, logins));
+  host.registerEngine(engineOf(paths, shared, hostTools, model, logins));
 };

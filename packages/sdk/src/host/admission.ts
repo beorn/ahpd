@@ -2,6 +2,7 @@ import { INVALID_PARAMS, RpcError } from '../rpc.js';
 import { computerSource } from '../machines/computers.js';
 import { isRootChannel, methodIn, parseResourceWatchChannelUri, schemeOf, servedIn } from './channels.js';
 import { NEEDS, UNGATED, channelRead, heldToGrants, ownAgentExcused, ownIn, refusalReason } from './gate.js';
+import { CHAT_WORKSPACE_META } from './chatworkspace.js';
 import type { Grant, Principal } from '../types/users.js';
 import type { ConnectionContext, HostContext } from './context.js';
 
@@ -112,6 +113,15 @@ export function createAdmission(ctx: HostContext, conn: ConnectionContext): Admi
         ? params.source
         : {}) as Record<string, unknown>;
       if (source.kind === 'fork') return ['chat:fork'];
+      /*
+       * A chat given a workspace of its own works in a folder of its own, so
+       * the ask carries the grant a chat's folders do on top of the one that
+       * makes a chat.
+       */
+      const meta = (typeof params._meta === 'object' && params._meta !== null
+        ? params._meta
+        : {}) as Record<string, unknown>;
+      if (meta[CHAT_WORKSPACE_META] !== undefined) return ['chat:create', 'chat:folders'];
     }
     /*
      * A changeset is a session's, so running an operation on it writes to

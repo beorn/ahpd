@@ -222,8 +222,8 @@ const defaultChatOf = async (client: Client, session: string): Promise<string> =
 /** A bot, a chat with it, and a client watching that chat. */
 async function talkTo(client: Client): Promise<void> {
   await client.handle({
-    method: 'resourceWrite',
-    params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true },
+    method: 'x-ahpd/bots/put',
+    params: { id: 'backer', record: { name: 'Backer' }, createOnly: true },
   });
   await client.handle({
     method: 'createSession',
@@ -444,8 +444,8 @@ it('makes a talk in the bot\'s folder, trusted, with no grant on the plugin\'s e
   const { host } = made({}, [], null);
   const client = await anyone(host);
   await client.handle({
-    method: 'resourceWrite',
-    params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true },
+    method: 'x-ahpd/bots/put',
+    params: { id: 'backer', record: { name: 'Backer' }, createOnly: true },
   });
 
   const answered = await client.handle({
@@ -743,8 +743,8 @@ it('leaves the chat\'s modified time where a steer finds it', async () => {
   const { host, configDir, records } = made();
   const client = await anyone(host);
   await client.handle({
-    method: 'resourceWrite',
-    params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true },
+    method: 'x-ahpd/bots/put',
+    params: { id: 'backer', record: { name: 'Backer' }, createOnly: true },
   });
   const agent = await backend(configDir, records, () => {});
   // The session a later subscriber is seeded from, read directly.
@@ -830,7 +830,8 @@ it('keeps a queued message behind the steered turn', async () => {
   // The steered turn is the open one, and what was waiting is still waiting.
   const steered = await stateOf(client);
   expect(steered['activeTurn']).toMatchObject({ id: 't1', message: { text: 'hello' } });
-  expect(steered['queuedMessages']).toMatchObject([{ id: 'q1', message: { text: 'and then this' } }]);
+  // AHP 1.1.0 keeps the steered message in the same list, as `steering`, until the turn takes it in.
+  expect(steered['queuedMessages']).toMatchObject([{ id: 'q1', kind: 'queued', message: { text: 'and then this' } }, { id: 's1', kind: 'steering' }]);
   expect(heard.map((one) => one.text)).toEqual(['hello', 'stop that']);
 
   // The work behind the turn takes the steer in, and the turn goes on.
@@ -1050,10 +1051,41 @@ it('opens no turn again in a chat of the talk other than its default chat, which
   expect(heard).toEqual([]);
 });
 
+it('keeps each chat of a talk other than its default chat in a log of its own, and reads each back alone after a restart', async () => {
+  const { host, configDir, records } = made({}, ['session:trust'], { heard: (_message, handle) => { handle.complete(); } });
+  const client = await anyone(host);
+  await talkTo(client);
+  await said(client, 't1', 'hello');
+
+  // Two more chats of the same talk, as a webhook with `threadSessions` off
+  // makes one Front chat for each thread.
+  const fresh = await backend(configDir, records, (_message, handle) => { handle.complete(); });
+  for (const [chatId, text] of [['thread-a', 'from a'], ['thread-b', 'from b']] as const) {
+    const session = await fresh.create({
+      uri: HELD, chatUri: `ahp-chat:/${chatId}`, settings: { bot: 'backer' }, resume: 'one', chatId,
+      schema: () => ({}), emit: () => {}, clientToolTimeoutMs: 0,
+    } as Start);
+    await session.sendMessage(`${chatId}-1`, text);
+  }
+
+  // The default chat's log holds its own turn alone, and the session list
+  // still finds the talk once.
+  expect(lines(configDir, 'one').map((one) => one['id'])).toEqual(['t1', 't1']);
+  const restarted = await backend(configDir, records);
+  expect((await restarted.list?.())?.map((one) => one.id)).toEqual(['one']);
+
+  // Each chat reads back its own turn, and none of the others'.
+  expect((await restarted.transcript?.('one'))?.map((turn) => turn.message.text)).toEqual(['hello']);
+  expect((await restarted.transcript?.('thread-a'))?.map((turn) => turn.message.text)).toEqual(['from a']);
+  expect((await restarted.transcript?.('thread-b'))?.map((turn) => turn.message.text)).toEqual(['from b']);
+  const kept = readFileSync(join(configDir, BOTS_DIR, 'backer', 'logs', 'chats', 'one', 'thread-a.jsonl'), 'utf8');
+  expect(kept).toContain('from a');
+});
+
 it('keeps a talk under the owner the host recorded where the start has no reader, and keeps none for a plugin\'s session', async () => {
   const { host, configDir, records } = made({}, ['session:trust']);
   const client = await anyone(host);
-  await client.handle({ method: 'resourceWrite', params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true } });
+  await client.handle({ method: 'x-ahpd/bots/put', params: { id: 'backer', record: { name: 'Backer' }, createOnly: true } });
   const store = botStore(await records.collection('bots'), await records.collection('bots-gone'), () => {}, { yaml: { parseYaml, stringifyYaml } });
   await store.ready();
   const kept: unknown[][] = [];
@@ -1079,7 +1111,7 @@ it('keeps a talk under the owner the host recorded where the start has no reader
 it('opens a turn of the bot\'s own with speak, whose message is the agent\'s, and reads it back after a restart', async () => {
   const { host, configDir, records } = made({}, ['session:trust']);
   const client = await anyone(host);
-  await client.handle({ method: 'resourceWrite', params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true } });
+  await client.handle({ method: 'x-ahpd/bots/put', params: { id: 'backer', record: { name: 'Backer' }, createOnly: true } });
   const store = botStore(await records.collection('bots'), await records.collection('bots-gone'), () => {}, { yaml: { parseYaml, stringifyYaml } });
   await store.ready();
   const fronts = new Map<string, TurnHandle>();
@@ -1295,8 +1327,8 @@ it('hands a turn sent while another is open on once the open turn is answered, s
   // The bot, written the way a person writes one. No session is started here:
   // what is tested below is the backend the host hands its turns to.
   await client.handle({
-    method: 'resourceWrite',
-    params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true },
+    method: 'x-ahpd/bots/put',
+    params: { id: 'backer', record: { name: 'Backer' }, createOnly: true },
   });
 
   // Somebody answers this chat, which is what leaves the first turn open.
@@ -1724,8 +1756,8 @@ it('tells a resumed chat\'s messages to the agent\'s listener, as it does a new 
   const { host, configDir, records } = made();
   const client = await anyone(host);
   await client.handle({
-    method: 'resourceWrite',
-    params: { uri: 'bot://backer', data: JSON.stringify({ name: 'Backer' }), createOnly: true },
+    method: 'x-ahpd/bots/put',
+    params: { id: 'backer', record: { name: 'Backer' }, createOnly: true },
   });
   const heard: ChatMessage[] = [];
   const agent = await backend(configDir, records, (message) => { heard.push(message); });
@@ -1757,8 +1789,8 @@ it('offers the bots as the answers to the chat setting', async () => {
   const client = await anyone(host);
   for (const [slug, name] of [['backer', 'Backer'], ['builder', 'Builder']] as const) {
     await client.handle({
-      method: 'resourceWrite',
-      params: { uri: `bot://${slug}`, data: JSON.stringify({ name }), createOnly: true },
+      method: 'x-ahpd/bots/put',
+      params: { id: slug, record: { name }, createOnly: true },
     });
   }
 
@@ -1812,8 +1844,8 @@ it('keeps the bots a query matches, by name or by slug', async () => {
   const client = await anyone(host);
   for (const [slug, name] of [['backer', 'Backer'], ['builder', 'Builder']] as const) {
     await client.handle({
-      method: 'resourceWrite',
-      params: { uri: `bot://${slug}`, data: JSON.stringify({ name }), createOnly: true },
+      method: 'x-ahpd/bots/put',
+      params: { id: slug, record: { name }, createOnly: true },
     });
   }
 

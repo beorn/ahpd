@@ -14,6 +14,7 @@ import {
 import { directory, hello, root, signIn } from './users-gate-helpers.js';
 import { SIGNED_IN, builtCount, builtServer, claude, echo, machine, peer, resetSdk, sdk, sessionQueries, settle } from './support/host.js';
 import type { Agent, Start } from '../src/types/agent.js';
+import type { Chosen } from '../src/types/session.js';
 import type { AgentOwner } from '../src/types/agents.js';
 import type { Summary } from '../src/types/catalog.js';
 import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
@@ -2013,6 +2014,82 @@ describe('a tool a person calls with no session', () => {
       relationship: 'independent', prompt: 'say hi', title: 'Wrong model',
       workspace: uriOf(root), worktree: false, agent: 'other', model: 'claude-model',
     })).rejects.toThrow('Invalid create_session input: model "claude-model" is not one this host offers for other.');
+  });
+
+  /*
+   * `reasoningEffort` and `contextTier`, behind `sessionModelOptions`, as
+   * VS Code's host offers and checks them.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L2566-L2580
+   */
+  describe('the model options behind sessionModelOptions', () => {
+    const schema = { type: 'object', properties: { thinkingLevel: { type: 'string', enum: ['low', 'high'], default: 'high' } } };
+    /** A backend whose one model offers an effort, recording each model its chats are handed. */
+    const optioned = (seen: Chosen[]): Agent => {
+      const base = echo({ path: root, pace: 0 });
+      return {
+        ...base,
+        provider: 'opt',
+        displayName: 'Opt',
+        probe: async () => ({ models: [{ id: 'deep', name: 'Deep', configSchema: schema }], commands: [], customizations: [] }),
+        create: async (start: Start) => {
+          const session = await base.create(start);
+          return Object.assign(session, { changeModel: (model: Chosen) => { seen.push(model); } });
+        },
+      };
+    };
+    /** A host with no directory, so a client may push the key, and the key pushed as a client pushes it. */
+    const keyed = async (mode: string, seen: Chosen[]) => {
+      const { host } = hosting([], undefined, [optioned(seen)], { users: undefined as unknown as Users });
+      const client = host.accept(peer());
+      await hello(client);
+      await client.handle({ method: 'dispatchAction', params: { channel: ROOT, action: { type: 'root/configChanged', config: { sessionModelOptions: mode } } } });
+      await settle(8);
+      return host;
+    };
+    const properties = (host: ReturnType<typeof createHost>, caller: ToolCaller, name: string): Record<string, { description?: string }> =>
+      (offered(host, caller)[name]?.definition.inputSchema?.properties ?? {}) as Record<string, { description?: string }>;
+
+    it('offers neither option while off, and ignores one sent', async () => {
+      const seen: Chosen[] = [];
+      const host = await keyed('off', seen);
+      expect(properties(host, { root: true }, 'create_session')).not.toHaveProperty('reasoningEffort');
+      await run(host, { root: true }, 'create_session', {
+        relationship: 'independent', prompt: 'go', title: 'Off', workspace: uriOf(root), worktree: false, model: 'deep', reasoningEffort: 'loud',
+      });
+      await settle(8);
+      expect(seen.at(-1)).toEqual({ id: 'deep' });
+    });
+
+    it('lists the models in the model description at inline, and hands the new chat the effort', async () => {
+      const seen: Chosen[] = [];
+      const host = await keyed('inline', seen);
+      const offeredNow = properties(host, { root: true }, 'create_session');
+      expect(offeredNow).toHaveProperty('reasoningEffort');
+      expect(offeredNow).toHaveProperty('contextTier');
+      expect(offeredNow.model?.description).toContain('Available models by agent:\nopt:\n- deep (Deep): reasoningEffort low|high, default high');
+      await run(host, { root: true }, 'create_session', {
+        relationship: 'independent', prompt: 'go', title: 'Low', workspace: uriOf(root), worktree: false, model: 'deep', reasoningEffort: 'low',
+      });
+      await settle(8);
+      expect(seen.at(-1)).toEqual({ id: 'deep', config: { thinkingLevel: 'low', 'vscode.modelConfiguration.thinkingLevel.source': 'explicit' } });
+      await expect(run(host, { root: true }, 'create_session', {
+        relationship: 'independent', prompt: 'go', title: 'Max', workspace: uriOf(root), worktree: false, model: 'deep', reasoningEffort: 'max',
+      })).rejects.toThrow('Invalid create_session input: model "deep" doesn\'t support reasoningEffort "max". Use one of: low, high, or omit reasoningEffort.');
+      await expect(run(host, { root: true }, 'create_session', {
+        relationship: 'independent', prompt: 'go', title: 'Long', workspace: uriOf(root), worktree: false, model: 'deep', contextTier: 'long_context',
+      })).rejects.toThrow('Invalid create_session input: model "deep" has a single context window, so contextTier doesn\'t apply.');
+    });
+
+    it('points at list_models at tool, which then lists each model\'s options', async () => {
+      const host = await keyed('tool', []);
+      const model = properties(host, { root: true }, 'create_session').model?.description ?? '';
+      expect(model).toContain('Call `list_models` to see the models and the options each accepts.');
+      expect(model).not.toContain('Available models by agent:');
+      expect(offered(host, { root: true })['list_models']?.definition.description).toContain('as `options`');
+      expect(JSON.parse(await run(host, { root: true }, 'list_models', {}))).toEqual({
+        agents: [{ agent: 'opt', models: [{ id: 'deep', name: 'Deep', options: 'reasoningEffort low|high, default high' }] }],
+      });
+    });
   });
 
   /*

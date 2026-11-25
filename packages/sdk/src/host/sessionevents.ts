@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { idOf } from '../sessions/catalog.js';
+import { bag } from '../utils/values.js';
 import type { Bag } from '../types/common.js';
 import type { SessionAbout, SessionEvent, SessionEventKind, SessionTurn } from '../types/triggers.js';
 import type { HostContext } from './context.js';
@@ -49,6 +50,16 @@ export interface SessionEvents {
    * answer for an hour reads as one that has said nothing all along.
    */
   moved(read: (session: string) => void): () => void;
+  /**
+   * Read a session's customizations after an action moved them. The answer
+   * stops reading.
+   *
+   * The list is the one the session's state holds after the action, which is
+   * both halves a client reads: what the backend reported and the plugins its
+   * clients handed it. A customization is drawn for what it is, and a server
+   * that needs a sign-in is read here.
+   */
+  customizations(read: (session: string, customizations: Bag[]) => void): () => void;
 }
 
 /** A hash of what a tool was called with, in the spelling the users file already uses. */
@@ -67,6 +78,14 @@ const hashOf = (input: string): string => `sha256:${createHash('sha256').update(
  */
 const MOVES = new Set([
   'chat/delta', 'chat/reasoning', 'chat/toolCallStart', 'chat/toolCallReady', 'chat/toolCallDelta',
+]);
+
+/**
+ * The actions that move a session's customization list: the whole list, one
+ * entry of it, or one server's state.
+ */
+const CUSTOMIZATIONS = new Set([
+  'session/customizationsChanged', 'session/customizationUpdated', 'session/mcpServerStateChanged',
 ]);
 
 /** The input of a call, which the protocol carries inline or by reference. */
@@ -90,6 +109,8 @@ export function createSessionEvents(ctx: HostContext): SessionEvents {
   const starters = new Set<(turn: SessionTurn) => void>();
   /** And who reads a session moving, which is the same rules again. */
   const movers = new Set<(session: string) => void>();
+  /** Who reads a session's customizations as an action left them. */
+  const customizers = new Set<(session: string, customizations: Bag[]) => void>();
   /** Each chat with a turn open, and how many tool calls that turn has run. */
   const open = new Map<string, number>();
   /** The turn each chat with a turn open is running. */
@@ -191,7 +212,28 @@ export function createSessionEvents(ctx: HostContext): SessionEvents {
       movers.add(read_);
       return () => { movers.delete(read_); };
     },
+    customizations(read_) {
+      customizers.add(read_);
+      return () => { customizers.delete(read_); };
+    },
     observe(channel, action) {
+      /*
+       * A session's customizations moved. These actions are the session's own
+       * rather than a chat's, so they are read here, before the lookup that
+       * answers a chat channel and has nothing to say about a session's.
+       *
+       * The list read is the one the session's state took from the action,
+       * which holds both halves a client reads.
+       */
+      if (CUSTOMIZATIONS.has(String(action.type))) {
+        const left = ctx.stateOf(channel)?.customizations;
+        if (Array.isArray(left)) {
+          for (const reader of [...customizers]) {
+            try { reader(channel, left as Bag[]); }
+            catch { log.error("a session's customizations were dropped: a reader threw"); }
+          }
+        }
+      }
       const chat = byChat.get(channel);
       const worker = chat === undefined ? subagents.get(channel) : undefined;
       // A chat of a live session, or a worker chat, which has no session of

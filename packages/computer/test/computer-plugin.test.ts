@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createHost } from '../../sdk/src/host.js';
 import { fileResources } from '../../sdk/src/resources/resources.js';
 import { gitWorktrees } from '../../sdk/src/repo/worktrees.js';
@@ -20,6 +20,10 @@ import type { HostOptions, HostTool, NodeChange, NodeRegistry } from '../../sdk/
 import type { Peer } from '../../sdk/src/types/rpc.js';
 import type { Usage, UsageEntry, UsageTotal } from '../../sdk/src/types/usage.js';
 import { gitSync } from '../../../tools/git.ts';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * The package as a plugin: the loader, the scheme and the tools.

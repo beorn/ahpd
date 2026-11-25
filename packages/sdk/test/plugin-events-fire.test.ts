@@ -288,6 +288,26 @@ it('names the creating client, and one client per subscription that opened a ses
   expect(opened[0]).toMatchObject({ session: 'ahp-session:/opened' });
 });
 
+/*
+ * A client id is the client's own word, so on a host with users the event
+ * names who opened the session too, and a second person who gives the same id
+ * opens it as somebody else.
+ */
+it('names the person who opened a session on a host with users, under the same client id or not', async () => {
+  const { seen, host } = watched({ agents: [echo({ path: DIR, pace: 0 })], users: directory() });
+  const ana = host.accept(peer(), PEOPLE.ana);
+  await hello(ana);
+  await ana.handle({ method: 'createSession', params: { channel: 'ahp-session:/owned', provider: 'echo' } });
+  await ana.handle({ method: 'subscribe', params: { channel: 'ahp-session:/owned' } });
+  const bo = host.accept(peer(), PEOPLE.bo);
+  await hello(bo);
+  await bo.handle({ method: 'subscribe', params: { channel: 'ahp-session:/owned' } });
+  await settle();
+
+  const opened = of(seen, 'session_opened').map((event) => ({ client: (event as { client: string }).client, owner: (event as { owner?: string }).owner }));
+  expect(opened).toEqual([{ client: 'probe', owner: 'user:ana' }, { client: 'probe', owner: 'user:bo' }]);
+});
+
 it('leaves the client off a session no client created', async () => {
   const { seen, client } = watched({ automations: memoryAutomations() });
   await hello(client);

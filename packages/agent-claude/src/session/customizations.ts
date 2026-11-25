@@ -1,7 +1,7 @@
 import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServerState } from '@microsoft/agent-host-protocol';
-import { pluginPartsOf, uriOf, withSkillArgumentHintMeta } from '@ahpd/sdk';
+import { mcpServerCustomization, pluginPartsOf, uriOf, withSkillArgumentHintMeta } from '@ahpd/sdk';
 import type { Bag, OnWire } from '@ahpd/sdk';
 import { bag, list, str } from './common.js';
 import { frontmatterOf, projectDirOf } from './disk.js';
@@ -55,7 +55,7 @@ export const pluginRootOf = (plugin: Bag): string | undefined => {
  * is exactly too late. A session no CLI has answered yet hands in the names
  * its disk scan found, in the same shapes.
  */
-export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = [], wanted?: Map<string, Published>, plugins: unknown[] = [], ours?: Set<string>, off: Bag[] = [], disk?: Disk, stopRequested?: Set<string>): Bag[] {
+export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = [], wanted?: Map<string, Published>, plugins: unknown[] = [], ours?: Set<string>, off: Bag[] = [], disk?: Disk, stopRequested?: Set<string>, expired?: ReadonlySet<string>): Bag[] {
   const out: Bag[] = [];
 
   /*
@@ -475,7 +475,24 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/customizations/scan/claudeMcpScan.ts#L43-L51
      */
     const published = wanted?.get(name);
-    const state: OnWire<McpServerState> = reported === 'connected' ? { kind: 'ready' }
+    /*
+     * One shape for every sign-in a server needs, with the reason the spec's
+     * `McpAuthRequiredReason` gives: `required` when the CLI says the server
+     * asked, `expired` when a client's token for it ran out. An expired one is
+     * said at once, whatever the CLI reports, because the CLI still holds the
+     * dead header and only learns at the server's next 401.
+     */
+    const asked = (given: Published, reason: 'required' | 'expired'): OnWire<McpServerState> => ({
+      kind: 'authRequired',
+      reason,
+      resource: given,
+      ...(Array.isArray(given.scopes_supported) && given.scopes_supported.length > 0
+        ? { requiredScopes: given.scopes_supported.filter((one): one is string => typeof one === 'string') }
+        : {}),
+      ...(said !== undefined ? { description: said } : {}),
+    } as OnWire<McpServerState>);
+    const state: OnWire<McpServerState> = published !== undefined && expired?.has(name) === true ? asked(published, 'expired')
+      : reported === 'connected' ? { kind: 'ready' }
       : reported === 'disabled' || reported === undefined ? { kind: 'stopped' }
         : reported === 'failed'
           ? {
@@ -484,15 +501,7 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
           }
           : reported === 'needs-auth'
             ? (published !== undefined
-              ? {
-                kind: 'authRequired',
-                reason: 'required',
-                resource: published,
-                ...(Array.isArray(published.scopes_supported) && published.scopes_supported.length > 0
-                  ? { requiredScopes: published.scopes_supported.filter((one): one is string => typeof one === 'string') }
-                  : {}),
-                ...(said !== undefined ? { description: said } : {}),
-              }
+              ? asked(published, 'required')
               : {
                 kind: 'error',
                 error: {
@@ -501,11 +510,7 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
                 },
               })
             : { kind: 'starting' };
-    out.push({
-      type: 'mcpServer',
-      id: `${uri.replaceAll('#', '%23')}#mcp=${encodeURIComponent(name)}`,
-      name,
-      uri,
+    out.push(mcpServerCustomization(uri, name, state, {
       /*
        * `enablement`, not `enabled`.
        *
@@ -522,8 +527,7 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
        * leaves the enabled intent where it was.
        */
       enablement: [{ kind: 'session', enabled: reported === 'disabled' ? stopRequested?.has(name) === true : reported !== 'failed' }],
-      state,
-    });
+    }));
   }
 
   return out;

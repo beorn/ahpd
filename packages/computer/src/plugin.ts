@@ -1107,17 +1107,22 @@ export const apply: Plugin['apply'] = (host, options) => {
    * its SDK cache once startup's own work is out of the way. A file that
    * cannot be read names nothing to keep, so nothing is removed.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSdkDownloader.ts#L241-L242
+   * A close waits for a sweep that has started, so no `docker` call of it
+   * outlives the plugin.
    */
+  let swept: Promise<unknown> | undefined;
   const sweeping = setTimeout(() => {
     let named: Part[];
     try { named = readParts(); }
     catch { return; }
-    for (const docker of [dockered, ...Object.values(farDockers)]) {
-      docker.removeUnusedPartVolumes?.((volume) => requestedVolume(volume, named)).catch(() => { /* the next start sweeps again */ });
-    }
+    swept = Promise.allSettled([dockered, ...Object.values(farDockers)]
+      .map((docker) => docker.removeUnusedPartVolumes?.((volume) => requestedVolume(volume, named))));
   }, PART_VOLUME_SWEEP_DELAY_MS);
   sweeping.unref?.();
-  host.registerClose(() => { clearTimeout(sweeping); });
+  host.registerClose(async () => {
+    clearTimeout(sweeping);
+    await swept;
+  });
 
   /**
    * The runtime, with a stretch around every change of state, and the computer
@@ -1346,6 +1351,15 @@ export const apply: Plugin['apply'] = (host, options) => {
    * when one leaves, and this is the book that keeps score.
    */
   const disposables = new Map<string, Disposable>();
+  /**
+   * The sessions running in each machine, whatever made it.
+   *
+   * The host says each session that enters a machine and each that leaves.
+   * A folder's dev container stop or remove reads it, so a machine a session
+   * runs in is never taken from under it: a session that named the machine by
+   * `computer://<id>` counts here as one that named the folder does.
+   */
+  const occupants = new Map<string, Set<string>>();
 
   /*
    * Whether the daemon has been told to stop.
@@ -1935,14 +1949,15 @@ export const apply: Plugin['apply'] = (host, options) => {
 
   /*
    * Whether a computer can host the sandbox runtime, each kind for itself: this
-   * host by the runtime's own dependency check and VS Code's bubblewrap probe;
+   * host by the runtime's own dependency check, VS Code's bubblewrap probe and a
+   * start of the runtime itself;
    * a container by its real Docker settings, as VS Code checks a dev container
    * before it treats it as able to host the sandbox, and then by the runtime's
    * own start run inside it; a box or a VM by that start alone.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/devContainerAgentHostService.ts#L498-L504
    */
   const sandboxSupport: NonNullable<ComputerPort['sandboxSupport']> = async (id) => {
-    if (id === undefined) return await hostSandboxRefusal();
+    if (id === undefined) return await hostSandboxRefusal(host.configDir);
     const held = await made.inspect(id);
     if (held === undefined) return `There is no computer called ${id}`;
     if (typeof held['HostConfig'] === 'object' && held['HostConfig'] !== null && !isSandboxSupported(JSON.stringify(held))) {
@@ -2334,6 +2349,9 @@ export const apply: Plugin['apply'] = (host, options) => {
      * arm that machine's delay under the session running in it.
      */
     enter: async (id, session) => {
+      const inside = occupants.get(id) ?? new Set<string>();
+      inside.add(session);
+      occupants.set(id, inside);
       await listing;
       const held = disposables.get(id);
       if (held === undefined) return;
@@ -2344,6 +2362,8 @@ export const apply: Plugin['apply'] = (host, options) => {
       }
     },
     leave: async (id, session) => {
+      const inside = occupants.get(id);
+      if (inside?.delete(session) === true && inside.size === 0) occupants.delete(id);
       await listing;
       const held = disposables.get(id);
       /*
@@ -2502,6 +2522,8 @@ export const apply: Plugin['apply'] = (host, options) => {
         return await folders.queue(at, async () => {
           const found = await machineFor(at);
           if (found === undefined) return true;
+          // A session runs in it: "it is still in use", in the port's words.
+          if ((occupants.get(found.id)?.size ?? 0) > 0) return false;
           await made.stop(found.id);
           return true;
         });
@@ -2511,6 +2533,7 @@ export const apply: Plugin['apply'] = (host, options) => {
         return await folders.queue(at, async () => {
           const found = await machineFor(at);
           if (found === undefined) return true;
+          if ((occupants.get(found.id)?.size ?? 0) > 0) return false;
           await made.remove(found.id);
           return true;
         });

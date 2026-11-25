@@ -10,7 +10,10 @@ import type { ResourceProvider, ResourceStore } from './resources.js';
 import type { Grant, Principal, Users } from './users.js';
 import type { CommandTerminal, TerminalStore } from './terminals.js';
 import type { Shells } from './shells.js';
-import type { ChatBackgroundTasks } from './background.js';
+import type { RemovalTimings, WorktreeRemovalStore } from '../host/worktreeremovals.js';
+import type { CreatedModelOptions } from '../tools/modeloptions.js';
+import type { AcquireKeepAwake } from '../host/keepawake.js';
+import type { CallMovable, ChatBackgroundTasks } from './background.js';
 import type { ChangesetOperationContribution, ChangesetSource } from './changes.js';
 import type { Worktrees } from './worktrees.js';
 import type { PullRequests } from './github.js';
@@ -530,6 +533,13 @@ export interface HostOptions {
    */
   worktrees?: Worktrees;
   /**
+   * Where the worktree removals still to make are kept, so they outlive a
+   * restart. Absent, they live as long as the host.
+   */
+  worktreeRemovals?: WorktreeRemovalStore;
+  /** The queue's waits, which a test shortens. */
+  worktreeRemovalTimings?: RemovalTimings;
+  /**
    * An absolute folder every session tree goes under.
    *
    * With one, a session's worktree is `<root>/<repo>/<name>` rather than
@@ -660,6 +670,19 @@ export interface HostOptions {
    * It says nothing without a `usage` port.
    */
   usagePer?: 'turn' | 'report';
+  /**
+   * The tags of an agent and of a connector, which each usage record of work
+   * that passed through it carries.
+   *
+   * Read as each record is written. Absent, records carry no tags. It says
+   * nothing without a `usage` port.
+   */
+  usageTags?: {
+    /** The tags of the agent with this id, empty when it has none. */
+    agent(id: string): readonly string[];
+    /** The tags of the connector with this id, empty when it has none or there is no such connector. */
+    connector(id: string): readonly string[];
+  };
   /**
    * The zone a day, a week and a month start in, as `Intl` names one.
    *
@@ -1164,6 +1187,13 @@ export interface HostOptions {
    */
   rootConfig?: RootConfigPort;
   /**
+   * Takes a hold on the machine's idle sleep, for the host to keep while a
+   * chat works as `keepAwakeWhileWorking` says. `allowOnBattery` is false for
+   * `whenPluggedIn`. Absent, the host never holds: a host in a test or an
+   * embedder that brings no helper changes nothing on the machine.
+   */
+  keepAwake?: AcquireKeepAwake;
+  /**
    * Where the root config a client pushed is kept between starts.
    *
    * Written whole after each change a client or this host makes to it, and
@@ -1381,6 +1411,10 @@ export interface ToolSession {
    * the set, which is what a tool that moves one chat alone needs.
    */
   multipleDirectories?: boolean | undefined;
+  /** The root config as the host holds it, which a tool shaped by a root key reads. */
+  rootConfig?: Readonly<Record<string, unknown>> | undefined;
+  /** The models of the agents in `agents`, or of every agent where it is absent, each with its `configSchema`. */
+  models?: { id: string; name: string; provider: string; configSchema?: Record<string, unknown> }[] | undefined;
 }
 
 /**
@@ -1766,7 +1800,7 @@ export interface ToolCall {
   /** The chats of a running session, the default first. Empty for one that is not running. */
   chats(session: string): { resource: string; title: string }[];
   /** Models any session here can run on, each with the provider it belongs to. */
-  models(): { id: string; name: string; provider: string }[];
+  models(): { id: string; name: string; provider: string; configSchema?: Record<string, unknown> }[];
   /**
    * The provider ids this host offers, in the order it holds them.
    *
@@ -1836,6 +1870,8 @@ export interface ToolCall {
     workingDirectory: string;
     provider?: string;
     model?: string;
+    /** The model options the call asked for, present while agents can choose them; checked against the model's `configSchema`. */
+    modelOptions?: CreatedModelOptions;
     config?: Record<string, unknown>;
     isolation?: 'worktree' | 'folder';
     title: string;
@@ -1868,6 +1904,8 @@ export interface ToolCall {
   createChat(session: string, options: {
     title?: string;
     model?: string;
+    /** As `create` takes it. */
+    modelOptions?: CreatedModelOptions;
     provider?: string;
     config?: Record<string, unknown>;
     prompt: string;
@@ -1942,6 +1980,8 @@ export interface ToolCall {
   artifacts(): Bag[];
   /** Replace them, and tell every client watching the session. */
   setArtifacts(list: Bag[]): void;
+  /** The root config as the host holds it now, which a tool shaped by a root key reads on each call. */
+  rootConfig(): Readonly<Record<string, unknown>>;
   /**
    * The marks on the calling session, as its annotations channel holds them.
    *
@@ -2006,6 +2046,15 @@ export interface ToolCall {
    * client goes on holding its stop until there is nothing left to stop.
    */
   background(): ChatBackgroundTasks;
+  /**
+   * This call's offer to move to the background, and its report that it did.
+   *
+   * A tool whose work can go on after it answers offers the call while it
+   * runs; a person's `x-ahpd/backgroundToolCall` then calls the move, and the
+   * tool answers its model at once. A tool that starts its work in the
+   * background reports the row with `moved`, so the call names its row too.
+   */
+  movable(): CallMovable;
   /**
    * Read a resource this host serves, as text.
    *
@@ -2094,6 +2143,8 @@ export interface Credential {
   scopes: string[];
   /** The one MCP server the client aimed it at: its session and its customization id. */
   target?: { session: string; customizationId: string };
+  /** The client's own hint of the account the token is for, kept as it sent it; nothing here reads it yet. */
+  accountId?: string;
 }
 
 /** One connected client and what it is watching. */
@@ -2398,6 +2449,15 @@ export interface Host {
    * than stopping the rest.
    */
   endSessionsOf(agent: Agent | string): Promise<void>;
+  /**
+   * Stop every session running on one agent, without removing it.
+   *
+   * What turning an agent off owes its sessions: a quiet one sleeps now, and
+   * one with a turn in flight sleeps when that turn ends. The row, its chats
+   * and the backend id stay, so the next turn resumes the conversation. A stop
+   * that fails is logged rather than stopping the rest.
+   */
+  stopSessionsOf(agent: Agent | string): Promise<void>;
   /**
    * Say that a restart is what puts the configuration in force.
    *

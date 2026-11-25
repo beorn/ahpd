@@ -4,7 +4,7 @@
  *
  * process-compose starts, restarts and schedules a machine's programs itself,
  * often while ahpd is down, so a value cannot be handed in by the daemon at
- * each start. The services driver (`@ahpd/services`, `record.ts`
+ * each start. The services driver (`@hallohuman/hightea-services`, `record.ts`
  * `nativeCommand`) writes a program that needs a secret as
  *
  *     ahpd secrets exec <service> --env KEY=<scope>:<name> ... -- '<command>'

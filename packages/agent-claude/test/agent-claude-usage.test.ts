@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -44,6 +44,8 @@ const sdk = vi.hoisted(() => {
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('../../sdk/test/support/warmed.js')).warmed({
   createSdkMcpServer: (given: Record<string, unknown>) => ({ type: 'sdk', name: given.name, tools: given.tools }),
+  // A resumed conversation is one the SDK has on disk.
+  getSessionInfo: async () => ({}),
   query: ({ prompt }: { prompt: unknown }) => {
     // The CLI reads every prompt it is handed, which is when a turn's prompt leaves the queue.
     if (typeof prompt === 'object' && prompt !== null && Symbol.asyncIterator in prompt) {
@@ -196,7 +198,7 @@ const round = (usage: Bag, output: number): Record<string, unknown>[] => [
 ];
 
 /** Replay frames through a real session with a recording host seam. */
-async function replay(frames: Record<string, unknown>[]) {
+async function replay(frames: Record<string, unknown>[], resume?: string) {
   sdk.reset();
   const main: Bag[] = [];
   const workers = new Map<string, Bag[]>();
@@ -216,6 +218,7 @@ async function replay(frames: Record<string, unknown>[]) {
     cwd: mkdtempSync(join(tmpdir(), 'ahpd-usage-')),
     emit: (_channel, action) => { main.push(action as Bag); },
     subagent,
+    ...(resume === undefined ? {} : { resume }),
   });
   await settle();
   // The turn the frames answer.
@@ -454,4 +457,65 @@ it('keeps an input of 0 beside an output of 0', async () => {
 it('keeps the input a provider counted', async () => {
   const { main } = await replay([...round({ input_tokens: 10 }, 6), result(0.5)]);
   expect(payload(reports(main).at(-1))).toMatchObject({ inputTokens: 10, outputTokens: 6 });
+});
+
+/**
+ * A CLI config folder whose one project holds a transcript under `id`.
+ *
+ * Each `costs` entry is one `cost-state` line, as the CLI saves its running
+ * spend, with what it had spent on `claude-opus-5`.
+ */
+const transcriptWith = (id: string, ...costs: number[]): string => {
+  const config = mkdtempSync(join(tmpdir(), 'ahpd-usage-config-'));
+  const project = join(config, 'projects', '-work');
+  mkdirSync(project, { recursive: true });
+  const lines = [
+    { type: 'user', sessionId: id, message: { role: 'user', content: 'go' } },
+    ...costs.map((cost) => ({ type: 'cost-state', sessionId: id, totalCostUSD: cost, modelUsage: { 'claude-opus-5': { costUSD: cost } } })),
+  ];
+  writeFileSync(join(project, `${id}.jsonl`), lines.map((one) => JSON.stringify(one)).join('\n') + '\n');
+  return config;
+};
+
+/** Run `body` with the CLI's config folder at `config`. */
+const inConfig = async (config: string, body: () => Promise<void>): Promise<void> => {
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = config;
+  try { await body(); }
+  finally {
+    if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = was;
+  }
+};
+
+const RESUMED = '0f6a3c1e-7b2d-4e59-9a14-3c8d2b7e5f10';
+
+it('charges a resumed turn only what it added to the total its transcript saved', async () => {
+  await inConfig(transcriptWith(RESUMED, 12.5, 19.017), async () => {
+    const { main } = await replay([...fixture('claude-answered-round.jsonl'), result(19.272)], RESUMED);
+    const cost = (payload(reports(main).at(-1))?._meta as Bag)['ahpd.cost'] as Bag;
+    expect(cost.currency).toBe('USD');
+    expect(cost.amount).toBeCloseTo(0.255, 9);
+  });
+});
+
+it('charges nothing on a resumed turn whose transcript saved no total, and differences the next from it', async () => {
+  await inConfig(transcriptWith(RESUMED), async () => {
+    const { main, session } = await replay([...fixture('claude-answered-round.jsonl'), result(19.272)], RESUMED);
+    expect(payload(reports(main).at(-1))).not.toHaveProperty(['_meta', 'ahpd.cost']);
+
+    session.sendMessage('t2', 'and again');
+    await settle();
+    sdk.push(...fixture('claude-empty-round.jsonl'), result(19.5));
+    await settle();
+    const cost = (payload(reports(main).at(-1))?._meta as Bag)['ahpd.cost'] as Bag;
+    expect(cost.amount).toBeCloseTo(0.228, 9);
+  });
+});
+
+it('charges a fresh conversation from zero, whatever a transcript under its id saved', async () => {
+  await inConfig(transcriptWith(RESUMED, 19.017), async () => {
+    const { main } = await replay([...fixture('claude-answered-round.jsonl'), result(0.5)]);
+    expect(payload(reports(main).at(-1))?._meta).toMatchObject({ 'ahpd.cost': { amount: 0.5, currency: 'USD' } });
+  });
 });

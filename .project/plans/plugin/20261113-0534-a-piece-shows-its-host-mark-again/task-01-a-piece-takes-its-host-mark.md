@@ -1,6 +1,6 @@
 ---
 title: A piece takes its host mark
-status: implemented
+status: done
 depends: []
 layer: "activepieces"
 refs:

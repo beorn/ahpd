@@ -1,6 +1,6 @@
 ---
 title: The two cases wait on what they read
-status: implemented
+status: done
 depends: []
 layer: "sdk tests"
 refs:

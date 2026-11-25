@@ -14,8 +14,57 @@ import { output } from '@cofold/commands';
 import type { Command, CommandContext, Registry } from '@cofold/commands';
 import { fileNodes, nodesFileOf, type Nodes } from '@ahpd/sdk';
 import { loadConfig } from '../config.js';
+import { running } from '../daemon.js';
 import { conflict, stop, userAt } from './options.js';
+import { API_PREFIX, reachable, tokenIn } from './paths.js';
 import type { ServedFacts } from './served.js';
+
+/** How long a change sent to the running daemon waits for its answer before the file is written instead. */
+const API_WAIT_MS = 10_000;
+
+/** Said where the file was written while a daemon runs that the change did not reach. */
+const STAYS = 'The running daemon was not told, so a node it has connected stays connected until it restarts.';
+
+/**
+ * Send one change to the daemon the record names, which changes its own
+ * registry and file, so the node's connection goes at once.
+ *
+ * Nothing when there is no daemon with an HTTP API, or when the one recorded
+ * did not answer: the caller then writes the file. A refusal is the daemon's
+ * own sentence, raised as this verb's failure.
+ */
+const forward = async (verb: 'add' | 'rm', id: string): Promise<Record<string, unknown> | undefined> => {
+  const held = running();
+  if (held?.api === undefined) return undefined;
+  const token = tokenIn(held.connectUrl);
+  let answer: Response;
+  try {
+    answer = await fetch(`${reachable(held.api)}${API_PREFIX}/node/${verb}/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+      },
+      body: '{}',
+      signal: AbortSignal.timeout(API_WAIT_MS),
+    });
+  }
+  catch {
+    // Nothing listening, or nothing answering in time: the file is still there to write.
+    return undefined;
+  }
+  const body: unknown = await answer.json().catch(() => undefined);
+  const said = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
+  const message = typeof said['message'] === 'string' ? said['message'] : `The daemon refused the change (HTTP ${String(answer.status)}).`;
+  if (answer.status === 409) conflict(message);
+  if (!answer.ok) stop(message);
+  return said;
+};
+
+/** Whether a change at the terminal goes to the running daemon: no file was named, so the daemon's own is the one meant. */
+const toDaemon = (input: Readonly<Record<string, unknown>>, served?: ServedFacts): boolean =>
+  served === undefined && input['users'] === undefined && input['configFile'] === undefined;
 
 /** Said where a hub cannot keep nodes, whichever verb asked. */
 const NO_USERS = 'No users file, so there is nowhere for the nodes file to sit. Pass --users <file> or set "users" in the configuration.';
@@ -90,8 +139,13 @@ export const declareNodes = (registry: Registry<object>, served?: ServedFacts): 
     input: { ...at, id: { type: 'string', description: 'The name the node is listed by.' } },
     scopes: ['node:write'],
     run: async (context) => {
-      const { nodes } = place(context, served);
       const id = nameOf(context, 'node add');
+      const sent = toDaemon(context.input, served) ? await forward('add', id) : undefined;
+      if (typeof sent?.['token'] === 'string') {
+        context.error('Added on the running daemon. Shown once, and only its hash is stored. A node that was already there has its token replaced and its connection closed.');
+        return output({ id, token: sent['token'] }, `${sent['token']}\n`);
+      }
+      const { nodes } = place(context, served);
       const had = (await nodes.list()).some((one) => one.id === id);
       const token = await nodes.add(id).catch((error: unknown) => {
         stop(error instanceof Error ? error.message : String(error));
@@ -101,6 +155,7 @@ export const declareNodes = (registry: Registry<object>, served?: ServedFacts): 
       context.error(had
         ? `Node ${id} was already there, so its token was replaced. Shown once; only its hash is stored.`
         : 'Shown once. Only its hash is stored, and adding the node again replaces it.');
+      if (had && served === undefined && running() !== undefined) context.error(STAYS);
       return output({ id, token }, `${token}\n`);
     },
   });
@@ -108,7 +163,7 @@ export const declareNodes = (registry: Registry<object>, served?: ServedFacts): 
   const rm = registry.action({
     id: 'node.rm',
     summary: 'Take a node out of the file',
-    description: 'Its token is refused from its next connection on.',
+    description: 'A running daemon drops it at once, with every session it runs. With no daemon answering, its token is refused from its next connection on.',
     surfaces: { cli: { pattern: ['node', 'rm', ':id'] }, http: { method: 'POST', path: '/node/rm/{id}' } },
     // The name is what says which node the confirm is about to take out.
     effect: 'remove',
@@ -116,10 +171,14 @@ export const declareNodes = (registry: Registry<object>, served?: ServedFacts): 
     input: { ...at, id: { type: 'string', description: 'The node to take out.' } },
     scopes: ['node:write'],
     run: async (context) => {
-      const { nodes } = place(context, served);
       const id = nameOf(context, 'node rm');
+      if (toDaemon(context.input, served) && await forward('rm', id) !== undefined) {
+        return output({ id }, `Removed node ${id} on the running daemon. Its token is refused and its connection is closed.\n`);
+      }
+      const { nodes } = place(context, served);
       const gone = await nodes.remove(id);
       if (!gone) conflict(`No node called ${id}.`);
+      if (served === undefined && running() !== undefined) context.error(STAYS);
       return output({ id }, `Removed node ${id}. Its token is refused from now on.\n`);
     },
   });

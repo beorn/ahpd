@@ -11,6 +11,9 @@ import type { WireTurn } from '../types/wire.js';
 import type { HostContext } from './context.js';
 import type { Turn } from '@microsoft/agent-host-protocol';
 
+/** How often a replacement asks whether the turn it waits on has ended. */
+const TURN_ENDED_POLL_MS = 25;
+
 /** What a session that already happened offers the rest of the host. */
 export interface History {
   history: Map<string, Bag[]>;
@@ -35,6 +38,21 @@ export interface History {
   listedSessions(): Promise<Summary[]>;
   /** A stored session restored: its row found, and its turns read, or nothing for a session nobody has. */
   restoreSession(id: string): Promise<Bag[] | undefined>;
+  /**
+   * Whether this host has the session loaded: its turns read, or state held
+   * for the session or its default chat.
+   */
+  loaded(id: string): boolean;
+  /**
+   * A loaded session's turns read again, and the turns its default chat holds
+   * replaced with them.
+   *
+   * A chat running a turn is not replaced under it: the turn is waited out,
+   * that wait is not the caller's, and the read after it carries the turn.
+   * Answers the turns read, or nothing where the read is still to happen or
+   * the backend has none.
+   */
+  reloadSession(id: string): Promise<Bag[] | undefined>;
   /**
    * A session's row in the catalogue, found as `restoreSession` finds it with
    * no turns read, or nothing for a session nobody has.
@@ -541,6 +559,85 @@ export function createHistory(ctx: HostContext): History {
     listedSummaries = [...listedSummaries.filter((one) => idFor(one.resource) !== id), row];
   };
 
+  /** The chat a session's turns are read into, as `restoreSession` names it. */
+  const defaultChat = (id: string): string => ctx.defaultChatFor(nameOf(id));
+
+  /**
+   * Whether this host has the session loaded: its turns read, or state held
+   * for the session or its default chat.
+   *
+   * VS Code reads its state manager for the same answer, and what it decides
+   * is whether a reload is worth a read of the transcript.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentService.ts#L2600-L2601
+   */
+  const loaded = (id: string): boolean => {
+    const session = nameOf(id);
+    return history.has(id) || ctx.stateOf(session) !== undefined || ctx.stateOf(defaultChat(id)) !== undefined;
+  };
+
+  /**
+   * A loaded session's turns read again, and the turns its default chat holds
+   * replaced with them: `chat/truncated` and then `chat/turnsLoaded`, the pair
+   * the reference host refreshes a chat's persisted history with.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentService.ts#L2623-L2662
+   *
+   * Replaced rather than merged, because turns that ran live carry ids this
+   * host made and turns rebuilt from storage carry the backend's, so the two
+   * sets are not the same conversation.
+   *
+   * A chat running a turn is not replaced under it: the turn is waited out and
+   * the read after it is the one that replaces the turns, so the turn is in
+   * them. The wait is not the caller's - the request that asked for the reload
+   * is answered, as VS Code answers it, and the replacement lands when the
+   * chat is quiet.
+   */
+  const reloadSession = async (id: string): Promise<Bag[] | undefined> => {
+    const session = nameOf(id);
+    const chat = defaultChat(id);
+    /** The held turns forgotten and read again, so the read asks the backend rather than the cache. */
+    const read = async (): Promise<Bag[] | undefined> => {
+      // A read already out carries the turns this reload replaces, so it is
+      // waited on: the read after it is the one asked again.
+      const out = reading.get(id);
+      if (out !== undefined) await out.catch(() => {});
+      const row = listedSummaries.find((one) => idFor(one.resource) === id);
+      if (row === undefined) {
+        history.delete(id);
+        subHistory.delete(id);
+      }
+      else evictSessionState(row);
+      return await restoreSession(id);
+    };
+    /** The read turns put in the chat's held state, with each worker linked from the call that ran it. */
+    const replace = async (turns: Bag[] | undefined): Promise<Bag[] | undefined> => {
+      if (turns === undefined || ctx.stateOf(chat) === undefined) return turns;
+      const owner = owners.get(session);
+      const workers = owner === undefined ? [] : await restoredSubagents(id, owner, turns as unknown as WireTurn<Turn>[]);
+      ctx.dispatch(chat, { type: 'chat/truncated' });
+      ctx.dispatch(chat, {
+        type: 'chat/turnsLoaded',
+        turns: ctx.withSender(session, ctx.stampedCalls(session, chat, linkedTurns(session, turns, workers))),
+      });
+      return turns;
+    };
+    const turnRunning = (): boolean => {
+      const state = ctx.stateOf(chat);
+      return state !== undefined && state.activeTurn !== undefined && state.activeTurn !== null;
+    };
+    if (!turnRunning()) return await replace(await read());
+    const ended = new Promise<void>((resolve) => {
+      const ask = (): void => {
+        if (!turnRunning()) resolve();
+        else setTimeout(ask, TURN_ENDED_POLL_MS).unref?.();
+      };
+      setTimeout(ask, TURN_ENDED_POLL_MS).unref?.();
+    });
+    void ended.then(async () => await replace(await read())).catch((error: unknown) => {
+      ctx.log.warn(`could not read ${session} again: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return undefined;
+  };
+
   /**
    * A listed row nobody's, adopted by the agent its opening caller names.
    *
@@ -568,7 +665,7 @@ export function createHistory(ctx: HostContext): History {
 
   return {
     history, subHistory, titles, restoredSubagents, launchWorkingDirectory, restoredParentChat, linkedTurns, refresh,
-    listedSessions, restoreSession, removeListedSession, evictSessionState, adoptListed,
+    listedSessions, restoreSession, loaded, reloadSession, removeListedSession, evictSessionState, adoptListed,
     catalogueRow: (id) => catalogueRow(id, listingEpoch),
   };
 }

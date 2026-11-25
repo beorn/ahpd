@@ -1,6 +1,6 @@
 ---
 title: A plugin reaches its own agents' sessions
-status: implemented
+status: done
 depends: [task-01-a-plugins-own-folder-is-trusted.md]
 layer: "sdk, docs"
 refs:

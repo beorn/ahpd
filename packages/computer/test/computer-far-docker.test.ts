@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { fileResources } from '../../sdk/src/resources/resources.js';
 import { loadPlugins } from '../../server/src/plugins.js';
 import { registryOf } from '../src/parts.js';
@@ -15,7 +15,10 @@ import type { MachineNeed } from '../../sdk/src/types/machine.js';
 
 import type { Vault } from '../../sdk/src/types/vault.js';
 import type { Usage, UsageEntry, UsageTotal } from '../../sdk/src/types/usage.js';
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A profile whose machines are made on a box's Docker, reached as

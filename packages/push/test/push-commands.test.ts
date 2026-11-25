@@ -146,7 +146,7 @@ it('lists each person their own devices, with no credential, and sends each chan
   }
 });
 
-it('refuses another person\'s device through the commands and the resource methods', async () => {
+it('refuses another person\'s device through the commands, and everybody\'s through the resource methods', async () => {
   const host = await made({ ana: PERSON, bo: PERSON, admin: ['*:*'] });
   try {
     const ana = await as(host, 'ana');
@@ -157,8 +157,11 @@ it('refuses another person\'s device through the commands and the resource metho
 
     expect(await bo.call('x-ahpd/push/put', phone('shared'))).toBe(-32009);
     expect(await bo.call('x-ahpd/push/remove', { id: 'shared' })).toBe(-32009);
-    expect(await bo.call('resourceWrite', { channel: ROOT, uri, data: JSON.stringify({ token: TOKEN, platform: 'android' }), encoding: 'utf-8' })).toBe(-32009);
-    expect(await bo.call('resourceDelete', { channel: ROOT, uri })).toBe(-32009);
+    expect(await bo.call('resourceWrite', { channel: ROOT, uri, data: JSON.stringify({ token: TOKEN, platform: 'android' }), encoding: 'utf-8' })).toBe(-32008);
+    expect(await bo.call('resourceDelete', { channel: ROOT, uri })).toBe(-32008);
+    // The owner too: a device changes by the commands alone.
+    expect(await ana.call('resourceWrite', { channel: ROOT, uri, data: JSON.stringify({ token: TOKEN, platform: 'android' }), encoding: 'utf-8' })).toBe(-32008);
+    expect(await ana.call('resourceDelete', { channel: ROOT, uri })).toBe(-32008);
     // Still ana's, as she registered it.
     const read = await admin.call('resourceRead', { channel: ROOT, uri }) as Bag;
     expect(JSON.parse(String(read.data))).toMatchObject({ platform: 'ios', owner: 'user:ana' });

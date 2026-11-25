@@ -1,6 +1,6 @@
 ---
 title: The watch starts a repair turn
-status: implemented
+status: done
 depends:
   - task-01-github-reads-checks-and-threads.md
 layer: "sdk"

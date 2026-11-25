@@ -887,6 +887,9 @@ export const automationsDir = (): string => join(configDir(), 'automations');
  */
 export const automationStatePath = (): string => join(configDir(), 'automations-state.json');
 
+/** Where the worktree removals still to make are kept, so a restart tries them again. */
+export const worktreeRemovalsPath = (): string => join(configDir(), 'worktree-removals.json');
+
 /**
  * Where the on/off decisions about customizations are kept.
  *

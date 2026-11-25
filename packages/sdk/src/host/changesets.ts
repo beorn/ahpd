@@ -39,6 +39,9 @@ const CHANGE_WORDS_MOST = 2 * 60_000;
 /** The four places the words can come from, as the schema declares them. */
 const MODES = new Set<string>(['session-title', 'forced', 'model', 'agent']);
 
+/** The protocol's `ChangesetFileStatus.Editing`. */
+const EDITING = 1;
+
 /** What a session's changesets offer the rest of the host. */
 export interface Changesets {
   dirOf(uri: string): string | undefined;
@@ -48,7 +51,13 @@ export interface Changesets {
   operationsOf(channel: string): Bag[];
   operationsMoved(uri: string): void;
   contentMoved(uri: string): Promise<void>;
+  /** Say whether an agent is editing a file, on each changeset shown that holds it. */
+  editingMoved(path: string): void;
   changesetsOf(uri: string): Bag;
+  /** A chat's own changesets, as its state carries them: `{ changesets }`, or nothing. */
+  chatChangesetsOf(session: string, chat: string): Bag;
+  /** Say `chat/changesetsChanged` to each chat of a session whose list differs from its state. */
+  chatChangesetsMoved(session: string): void;
   relaysChangesets(uri: string): boolean;
   relayedChannel(channel: string): SessionChannel | undefined;
   operationContext(asked: string, dir: string): ChangesetOperationContext;
@@ -113,7 +122,7 @@ export function createChangesets(ctx: HostContext): Changesets {
    * that vanished when anything changed.
    */
   const catalogueOf = (uri: string, dir: string): Bag[] =>
-    (options.changes?.scopes(dir, uri, cutOf(uri)) ?? []).map((scope) => ({
+    (options.changes?.scopes(dir, idOf(uri), cutOf(uri)) ?? []).map((scope) => ({
       label: scope.label,
       uriTemplate: `${uri}/changeset/${scope.id}`,
       changeKind: scope.changeKind,
@@ -126,17 +135,26 @@ export function createChangesets(ctx: HostContext): Changesets {
   /**
    * What one changeset URI is a changeset *of*.
    *
-   * `<sessionUri>/changeset/<scope>` split back into its two halves, which is
-   * wanted in four places now. Undefined for a URI that is not one.
+   * `<ownerUri>/changeset/<scope>` split back into its session and its
+   * scope, the owner a session or a chat of it. Undefined for a URI that is
+   * not one.
    *
    * The commit the session's work is counted from comes with it, because it is
    * the session's and not the directory's: a scope named in a URI is answered
    * against it, and by the time the state is read the session may be gone.
    */
+  /**
+   * The session a changeset's owner names: the session itself, or the one
+   * that holds a chat, as VS Code main names This Turn under the chat.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/changesetUri.ts#L181-L184
+   */
+  const sessionOfOwner = (owner: string): string =>
+    (sessions.has(owner) ? owner : ctx.sessionHolding(owner) ?? ctx.sessionFor(owner));
+
   const changesetAt = (channel: string): { owner: string; scope: string; dir: string; base?: string } | undefined => {
     const cut = channel.indexOf('/changeset/');
     if (cut <= 0) return undefined;
-    const owner = channel.slice(0, cut);
+    const owner = sessionOfOwner(channel.slice(0, cut));
     const dir = dirOf(owner);
     if (dir === undefined) return undefined;
     const base = cutOf(owner);
@@ -146,7 +164,7 @@ export function createChangesets(ctx: HostContext): Changesets {
   /** Whether a changeset channel is one of a session's: it hangs off the session's URI. */
   const changesetOf = (channel: string, uri: string): boolean => {
     const cut = channel.indexOf('/changeset/');
-    return cut > 0 && channel.slice(0, cut) === uri;
+    return cut > 0 && sessionOfOwner(channel.slice(0, cut)) === uri;
   };
 
   /**
@@ -473,7 +491,7 @@ export function createChangesets(ctx: HostContext): Changesets {
      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostChangesetOperationService.ts#L178-L185
      */
     const offered = [
-      ...(options.changes?.operations?.(at.dir, at.owner, at.scope, context) ?? []),
+      ...(options.changes?.operations?.(at.dir, idOf(at.owner), at.scope, context) ?? []),
       ...(options.changesetOperations ?? []).flatMap((one) => one.operations(at.dir, at.owner, at.scope, context) ?? []),
     ].filter((operation, at_, all) => all.findIndex((other) => other.id === operation.id) === at_);
     return offered.map((operation) => ({
@@ -647,7 +665,7 @@ export function createChangesets(ctx: HostContext): Changesets {
         }
         let settled = false;
         try {
-          const state = await options.changes?.state(at.dir, at.owner, at.scope, at.base);
+          const state = await options.changes?.state(at.dir, idOf(at.owner), at.scope, at.base);
           if (state) {
             const operations = operationsOf(channel);
             told(channel, state, operations);
@@ -697,6 +715,25 @@ export function createChangesets(ctx: HostContext): Changesets {
   };
 
   /**
+   * A file's `Editing` mark, on each changeset shown that holds the file.
+   *
+   * The row is said again with the one bit moved and the rest as it was, so
+   * a client holds back its operations on a file as an agent begins to write.
+   * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/node/agentHostChangesetService.ts#L632-L660
+   */
+  const editingMoved = (path: string): void => {
+    const id = uriOf(path);
+    const now = options.changes?.editing?.(path) === true;
+    for (const [channel, was] of [...shown]) {
+      const row = was.files.find((file) => file.id === id);
+      if (row === undefined || (((row.status ?? 0) & EDITING) !== 0) === now) continue;
+      const file = { ...row, status: now ? (row.status ?? 0) | EDITING : (row.status ?? 0) & ~EDITING };
+      shown.set(channel, { ...was, files: was.files.map((one) => (one.id === id ? file : one)) });
+      dispatch(channel, { type: 'changeset/fileSet', file });
+    }
+  };
+
+  /**
    * The changesets this session can be asked about, as URIs a client
    * subscribes to.
    *
@@ -719,6 +756,39 @@ export function createChangesets(ctx: HostContext): Changesets {
   };
 
   /**
+   * A chat's own changesets: Branch, Uncommitted, This Turn and Compare
+   * Turns, each named under the chat, where the session offers that scope.
+   * The session's Session Changes stays off it, since VS Code's window puts
+   * the session's own entry before This Turn.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/changesetUri.ts#L442-L540
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/changesetUri.ts#L130-L162
+   */
+  const CHAT_ORDER = ['branch', 'uncommitted', 'turn', 'compare-turns'];
+  const chatCatalogueOf = (session: string, chat: string, dir: string): Bag[] =>
+    catalogueOf(session, dir)
+      .filter((entry) => CHAT_ORDER.includes(String(entry.changeKind)))
+      .sort((a, b) => CHAT_ORDER.indexOf(String(a.changeKind)) - CHAT_ORDER.indexOf(String(b.changeKind)))
+      .map((entry) => ({ ...entry, uriTemplate: `${chat}${String(entry.uriTemplate).slice(session.length)}` }));
+
+  const chatChangesetsOf = (session: string, chat: string): Bag => {
+    const dir = dirOf(session);
+    if (dir === undefined) return {};
+    const changesets = chatCatalogueOf(session, chat, dir);
+    return changesets.length > 0 ? { changesets } : {};
+  };
+
+  const chatChangesetsMoved = (session: string): void => {
+    const dir = dirOf(session);
+    if (dir === undefined || relaysChangesets(session)) return;
+    for (const chat of sessions.get(session)?.chats.keys() ?? []) {
+      const state = ctx.stateOf(chat);
+      if (state === undefined) continue;
+      const changesets = chatCatalogueOf(session, chat, dir);
+      if (!isDeepStrictEqual(state.changesets ?? [], changesets)) dispatch(chat, { type: 'chat/changesetsChanged', changesets });
+    }
+  };
+
+  /**
    * Whether a session's changesets are its backend's to say: a session in a
    * machine, whose host there runs it and lists them, which its proxy serves
    * out here while it runs. Read off the running backend, and off the session's
@@ -738,13 +808,13 @@ export function createChangesets(ctx: HostContext): Changesets {
   const relayedChannel = (channel: string): SessionChannel | undefined => {
     const chat = chatOfCanvas(channel);
     const cut = channel.indexOf('/changeset/');
-    const session = chat !== undefined ? ctx.sessionHolding(chat) : cut > 0 ? channel.slice(0, cut) : undefined;
+    const session = chat !== undefined ? ctx.sessionHolding(chat) : cut > 0 ? sessionOfOwner(channel.slice(0, cut)) : undefined;
     const held = session === undefined ? undefined : sessions.get(session);
     return held === undefined ? undefined : leadOf(held)?.channel?.(channel);
   };
 
   return {
-    dirOf, catalogueOf, changesetAt, changesetOf, operationsOf, operationsMoved, contentMoved,
-    changesetsOf, relaysChangesets, relayedChannel, operationContext, opKey, operationLanes, inFlightOperations, shown, operationStatusSaid,
+    dirOf, catalogueOf, changesetAt, changesetOf, operationsOf, operationsMoved, contentMoved, editingMoved,
+    changesetsOf, chatChangesetsOf, chatChangesetsMoved, relaysChangesets, relayedChannel, operationContext, opKey, operationLanes, inFlightOperations, shown, operationStatusSaid,
   };
 }

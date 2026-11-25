@@ -47,11 +47,20 @@ export default function setup(project: { config: { root: string } }): () => void
    * committed as `a\n` comes back from a checkout as `a\r\n`: git doing what
    * that machine asked, and a test of ahpd's own behaviour reading the
    * machine's instead. The command-line form of config outranks every file.
+   *
+   * And no maintenance in the background. Each `git commit` and `git fetch`
+   * starts a detached `git maintenance run --auto`, which works in the
+   * repository after the command and the case have ended. No holder check can
+   * find it, and on Windows it was still writing in `.git` when a teardown
+   * removed the folder, which failed with ENOTEMPTY.
    */
+  const pairs = [['core.autocrlf', 'false'], ['maintenance.auto', 'false'], ['gc.auto', '0']] as const;
   const count = Number(process.env.GIT_CONFIG_COUNT ?? '0');
-  process.env[`GIT_CONFIG_KEY_${String(count)}`] = 'core.autocrlf';
-  process.env[`GIT_CONFIG_VALUE_${String(count)}`] = 'false';
-  process.env.GIT_CONFIG_COUNT = String(count + 1);
+  pairs.forEach(([key, value], at) => {
+    process.env[`GIT_CONFIG_KEY_${String(count + at)}`] = key;
+    process.env[`GIT_CONFIG_VALUE_${String(count + at)}`] = value;
+  });
+  process.env.GIT_CONFIG_COUNT = String(count + pairs.length);
   /*
    * Real files for the filesystem suites, in a repository of the run's own.
    * Only these suites' read fixtures are copied: child processes still load
@@ -77,7 +86,7 @@ export default function setup(project: { config: { root: string } }): () => void
   process.env.CLAUDE_CONFIG_DIR = join(run, 'claude-config');
   /*
    * And a config home of the run's own, for the same reason: cofold's backend
-   * reads the person's `~/.config/copapo/config.json` as its harness layer, and
+   * reads the person's `~/.config/cofold/config.json` as its harness layer, and
    * a model named there was read into a case that expected none. The daemon's
    * own `~/.config/ahpd` is under it too. A test that names one still sets its
    * own.

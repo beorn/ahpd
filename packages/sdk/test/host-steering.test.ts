@@ -132,7 +132,8 @@ it('steers a queued message sent again as steering, and the queue holds it no mo
 
   expect(steers).toEqual([{ id: 's1', text: 'look there' }]);
   expect(envelopes(p, chatUri).find((one) => one.origin?.clientSeq === 3)?.rejectionReason).toBeUndefined();
-  expect(((await state()).queuedMessages as Bag[] | undefined ?? []).map((one) => one.id)).toEqual([]);
+  // AHP 1.1.0 keeps both kinds in one list, so the entry is no longer a queued one.
+  expect(((await state()).queuedMessages as Bag[] | undefined ?? []).filter((one) => one.kind !== 'steering').map((one) => one.id)).toEqual([]);
 });
 
 /*

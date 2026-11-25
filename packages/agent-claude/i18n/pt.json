@@ -4,8 +4,8 @@
     "description": "Execute o Claude Code como agente AHP, com configurações independentes para cada agente."
   },
   "options": {
-    "paths": {
-      "description": "Pastas incluídas no catálogo do espaço de trabalho e usadas como local padrão das sessões. Quando omitido, herda os caminhos do host."
+    "model": {
+      "description": "Modelo padrão para os agentes que não definem um."
     },
     "computerExecutable": {
       "description": "Caminho do executável da CLI do Claude dentro de um computador. Por padrão, 'claude' do PATH do computador."

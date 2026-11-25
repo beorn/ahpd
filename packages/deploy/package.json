@@ -1,0 +1,72 @@
+{
+  "name": "@ahpd/deploy",
+  "version": "0.15.0-rc.4",
+  "type": "module",
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "description": "Git deploy driver for ahpd: one call places service S on machine M at version X in a release folder and switches a current symlink, or says loudly why it did not. Served as the x-hh-deploys:// channel (operation deploy) with each run's journal at hh-deploys://<deployId>/log.",
+  "keywords": [
+    "ahp",
+    "ahpd",
+    "deploy",
+    "release",
+    "git"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:bin": "bun build src/bin.ts --target=node --outfile dist/bin.js",
+    "prepack": "tsc -p . && bun run build:bin",
+    "test": "cd ../.. && vitest run packages/deploy/test"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE"
+  ],
+  "ahpd": {
+    "entry": "./dist/index.js",
+    "title": "Deploy",
+    "description": "This machine's deploys as the x-hh-deploys:// channel: run one deploy of a service at a version, and read what each run did from its journal.",
+    "categories": [],
+    "contracts": {
+      "methods": [
+        "x-ahpd/deploy/run",
+        "x-ahpd/deploy/report"
+      ],
+      "channels": [
+        "x-hh-deploys"
+      ],
+      "resourceProviders": [
+        "hh-deploys"
+      ],
+      "grants": [
+        "deploy"
+      ]
+    },
+    "optionsSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "dependencies": {
+    "@hallohuman/hightea-services": "workspace:*",
+    "tar": "^7.5.23"
+  },
+  "bin": {
+    "ahpd-host-install": "./dist/bin.js"
+  }
+}

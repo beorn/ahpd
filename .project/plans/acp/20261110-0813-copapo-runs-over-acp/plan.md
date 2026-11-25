@@ -1,7 +1,7 @@
 ---
 title: copapo runs over ACP
 domain: acp
-status: planned
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -72,7 +72,7 @@ knownAgents.copapo -> presets.copapo { command: copapo, args: [acp] } -> agent-a
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - copapo is a shipped ACP agent](task-01-copapo-is-a-shipped-acp-agent.md) | implemented | - |
+| [01 - copapo is a shipped ACP agent](task-01-copapo-is-a-shipped-acp-agent.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -82,7 +82,7 @@ knownAgents.copapo -> presets.copapo { command: copapo, args: [acp] } -> agent-a
 ## Resume state
 
 - **Done so far:** task 01 implemented 2026-11-10: the `copapo` row, the preset with its MCP comment, the npm part and its locks, the four test files and the release note line.
-- **Next action:** Softov reviews task 01, then the by-hand item: install `@cofold/copapo`, add a copapo agent and send a turn in a trusted folder.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `packages/computer/images/parts/copapo/` is untracked, since `git add` is denied here and the commit carries no new files.
 - **Watch out for:** the sdk suite's two `host-permissions` cases fail while `os.tmpdir()` is a dot-folder of the home (`platformRestricted` always asks about a write there); this sandbox's is `/home/softov/.local/cache/tmp`, and setting `TMPDIR` is denied here.

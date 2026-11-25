@@ -1,17 +1,16 @@
 ---
 title: CI fails only for a real fault
 domain: plugin
-status: planned
+status: built
 priority: high
 created: 2026-11-06
-revalidated: 2026-11-06
+revalidated: 2026-11-21
 decisions:
   - decisions/on-windows-a-test-has-twenty-seconds.md
-problems:
-  - problems/three-cases-fail-at-random-on-windows.md
-  - problems/two-attachment-cases-time-out-on-windows.md
-  - problems/a-cofold-titling-case-times-out-on-windows.md
+problems: []
 refs:
+  - git://b0fb33f09 - the last commit that holds `problems/three-cases-fail-at-random-on-windows.md`, deleted once #420 fixed its disposable case and its computer-needs case had failed once only
+  - git://f8706a399 - the last commit that holds `problems/two-attachment-cases-time-out-on-windows.md` and `problems/a-cofold-titling-case-times-out-on-windows.md`, which task 05 deletes
   - git://04a43a2f - the last commit that holds the brief `briefs/ci-fails-only-for-a-real-fault.md`, with the CI runs read
   - "[code://vitest.config.ts#L34](../../../../vitest.config.ts#L34) - `testTimeout`: 20 s on Windows, 5 s elsewhere"
   - "[code://packages/agent-cofold/test/agent-cofold-tools.test.ts#L36-L43](../../../../packages/agent-cofold/test/agent-cofold-tools.test.ts#L36-L43) - `when`, which throws after 5000 ms of wall-clock time"
@@ -57,7 +56,7 @@ The CI runs read, and the count for each case, are in the brief at `git://04a43a
 | CI does not turn on Vitest's `retry` | Softov, 2026-11-06, asked "Should CI turn on Vitest's retry until the flake fixes land?": "No retry (Recommended)" | all |
 | The streaming body is fixed in the test and in the code | Softov, 2026-11-06, asked "Fix only the test, or the code too?": "Test and code (Recommended)" | 03 |
 | Only the cases that failed in two or more runs are fixed; a case that failed once gets a problem record when it fails again | Softov, 2026-11-06, asked "Does this plan read the cases that failed once?": "Only repeat failures (Recommended)" | 05 |
-| The cofold `when` keeps its loop and loses its deadline; the suite's `testTimeout` ends a case | (defaulted: [`decisions/on-windows-a-test-has-twenty-seconds.md`](../../../decisions/on-windows-a-test-has-twenty-seconds.md) sets the limit once, in `vitest.config.ts`) | 01 |
+| The cofold `when` keeps its loop and waits `WAIT_MS`, the shared limit just under the case's budget, rather than losing its deadline | (defaulted: `1e0251f5c` and [`code://tools/wait.ts`](../../../../tools/wait.ts) made that the suite's rule on 2026-11-08, after this plan was written) | 01 |
 | The servercheck case puts a `docker` that exits at once first on the script's `PATH` | (defaulted: the case asserts nothing that `docker` answers) | 02 |
 | The streaming body comes from a file handle opened before the body is made; a file that does not open is no file, `null`, as a missing file is today | (defaulted: one open, no race between `stat` and the stream) | 03 |
 | The attachment fault is looked for on Linux first, then on a Windows runner through the branch's PR | (defaulted: a Linux loop costs nothing on CI) | 04 |
@@ -75,11 +74,11 @@ The CI runs read, and the count for each case, are in the brief at `git://04a43a
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The cofold when has no deadline of its own](task-01-cofold-when-has-no-cap-of-its-own.md) | todo | - |
-| [02 - The servercheck case answers docker at once](task-02-servercheck-answers-docker-at-once.md) | todo | - |
-| [03 - A streamed file opens before its body](task-03-a-streamed-file-opens-before-its-body.md) | todo | - |
-| [04 - The steering after attachments arrives](task-04-the-steering-after-attachments-arrives.md) | todo | - |
-| [05 - The fixed cases leave the problem records](task-05-the-fixed-cases-leave-the-problems.md) | todo | 01, 02, 03, 04 |
+| [01 - The cofold when has no deadline of its own](task-01-cofold-when-has-no-cap-of-its-own.md) | done | - |
+| [02 - The servercheck case answers docker at once](task-02-servercheck-answers-docker-at-once.md) | done | - |
+| [03 - A streamed file opens before its body](task-03-a-streamed-file-opens-before-its-body.md) | done | - |
+| [04 - The steering after attachments arrives](task-04-the-steering-after-attachments-arrives.md) | done | - |
+| [05 - The fixed cases leave the problem records](task-05-the-fixed-cases-leave-the-problems.md) | done | 01, 02, 03, 04 |
 
 ## Risks and tradeoffs
 
@@ -90,8 +89,8 @@ The CI runs read, and the count for each case, are in the brief at `git://04a43a
 
 ## Resume state
 
-- **Done so far:** nothing.
-- **Next action:** [task-01-cofold-when-has-no-cap-of-its-own.md](task-01-cofold-when-has-no-cap-of-its-own.md). Tasks 01 to 04 do not depend on each other.
+- **Done so far:** tasks 01 to 05, 2026-11-21. `1e0251f5c`, #396 and `be174c104` fixed tasks 01, 02 and 04 before this build. Task 03 is built here, and task 05 removes the fixed cases' records. See [implemented.md](implemented.md).
+- **Next action:** the PR's CI, Windows jobs included, with no rerun.
 - **Open questions:** none.
 - **Watch out for:** never make a wait longer to pass a case, and never add a retry. One test suite at a time on Softov's machine. Task 04 stops at the cause and reports it.
 

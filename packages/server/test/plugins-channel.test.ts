@@ -1490,6 +1490,49 @@ it('refuses an update of a plugin nobody configured, or one named by its path', 
   await close();
 });
 
+/*
+ * A scoped plugin the daemon refused is listed under its package name without
+ * its scope, which is the name it gives itself once it loads, so a client can
+ * name it to update it and the row keeps its id through the update.
+ */
+it('lists a scoped plugin the daemon refused under an id a client can update it by', async () => {
+  const manifests: Record<string, Record<string, unknown>> = { '@acme/demo': { version: '1.0.0', peerDependencies: { '@ahpd/sdk': '>=0.20' } } };
+  const { runner, calls } = fakeNpm({ '@acme/demo': '^1.0.0' }, { esm: true, manifests, names: { '@acme/demo': 'demo' } });
+  await runner('npm', ['install', '--prefix', join(home, 'ahpd'), '@acme/demo']);
+  manifests['@acme/demo'] = { version: '1.1.0', peerDependencies: { '@ahpd/sdk': '>=0.14' } };
+  calls.length = 0;
+  writeFileSync(config, JSON.stringify({ plugins: [...held().plugins, '@acme/demo'] }));
+  const { host, users, close } = await live({
+    run: runner,
+    sdk: '0.14.1',
+    // The registry's path writes a scope's slash as `%2f`.
+    fetch: registryHolding({ '@acme%2fdemo': ['1.0.0 >=0.20', '1.1.0 >=0.14'] }),
+  });
+  const ana = await as(host, users, 'ana');
+  const jo = await as(host, users, 'jo');
+  expect((await ana.rows())['demo']).toMatchObject({ loaded: false });
+
+  expect(await jo.call('x-ahpd/plugins/update', { id: 'demo' })).toMatchObject({ result: { id: 'demo', from: '1.0.0', to: '1.1.0' } });
+  expect(calls[0]?.argv.at(-1)).toBe('@acme/demo@1.1.0');
+  expect((await ana.rows())['demo']).toMatchObject({ version: '1.1.0', loaded: true });
+  await close();
+});
+
+it('takes a row\'s own id with a / in it, and refuses one with a ? or one no row answers', async () => {
+  const { runner } = fakeNpm({});
+  const missing = join(home, 'missing-plugin');
+  writeFileSync(config, JSON.stringify({ plugins: [...held().plugins, missing] }));
+  const { host, users, close } = await live({ run: runner, fetch: registryHolding({}) });
+  const jo = await as(host, users, 'jo');
+  expect(Object.keys(await jo.rows())).toContain(missing);
+
+  // A path npm did not install is named, and then refused for what it is.
+  expect(await jo.call('x-ahpd/plugins/update', { id: missing })).toMatchObject({ code: -32602, message: expect.stringMatching(/is not installed in/) });
+  expect(await jo.call('x-ahpd/plugins/update', { id: `${missing}?x` })).toMatchObject({ code: -32602, message: expect.stringMatching(/with no \/ or \?/) });
+  expect(await jo.call('x-ahpd/plugins/update', { id: 'some/other' })).toMatchObject({ code: -32602, message: expect.stringMatching(/with no \/ or \?/) });
+  await close();
+});
+
 it('refuses an update to a role without plugin:install', async () => {
   const { runner, calls } = await installedDemo('1.1.0');
   const { host, users, close } = await live({ run: runner, fetch: registryHolding({ demo: ['1.1.0'] }) });

@@ -793,7 +793,7 @@ it('draws no question for a restored one that was never answered', async () => {
 
 /*
  * The request as VS Code's Claude agent builds it: each question keyed by its
- * header, or `q-<index>` with none, typed answers only where a question allows
+ * header, or `q-<index>` with none, typed answers unless a question forbids
  * them, no request message and nothing required, and the AskUser purpose.
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeInteractiveTools.ts#L89-L125
  */
@@ -803,7 +803,7 @@ it('keys and titles each question by its header, as VS Code\'s Claude builds the
     questions: [
       { question: 'Which colour?', header: 'Colour', options: [{ label: 'Red' }] },
       { question: 'Which size?', options: [{ label: 'S' }], allowFreeformInput: true },
-      { question: 'Which shape?', header: 'Shape', multiSelect: true, options: [{ label: 'Round' }] },
+      { question: 'Which shape?', header: 'Shape', multiSelect: true, options: [{ label: 'Round' }], allowFreeformInput: false },
     ],
   }, 'toolu_ask');
   expect(request).not.toHaveProperty('message');
@@ -812,7 +812,8 @@ it('keys and titles each question by its header, as VS Code\'s Claude builds the
   expect(request.questions?.map((one) => one.message)).toEqual(['Which colour?', 'Which size?', 'Which shape?']);
   expect(request.questions?.map((one) => one.title)).toEqual(['Colour', undefined, 'Shape']);
   expect(request.questions?.[1]).not.toHaveProperty('title');
-  expect(request.questions?.map((one) => (one as Bag).allowFreeformInput)).toEqual([false, true, false]);
+  // A typed answer unless the question forbids one, as the SDK promises the model.
+  expect(request.questions?.map((one) => (one as Bag).allowFreeformInput)).toEqual([true, true, false]);
   for (const one of request.questions ?? []) expect(one).not.toHaveProperty('required');
   expect([...keys.entries()]).toEqual([['Colour', 'Which colour?'], ['q-1', 'Which size?'], ['Shape', 'Which shape?']]);
 });

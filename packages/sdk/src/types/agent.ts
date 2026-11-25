@@ -1,6 +1,6 @@
 /** An agent backend, and everything the host asks one for. */
 
-import type { ActionOrigin, Turn } from '@microsoft/agent-host-protocol';
+import type { ActionOrigin, ModelSelection, Turn } from '@microsoft/agent-host-protocol';
 import type { Bag } from './common.js';
 import type { ContentRef, FileEdit } from './changes.js';
 import type { WireTurn } from './wire.js';
@@ -11,8 +11,8 @@ import type { ResourceStore } from './resources.js';
 import type { Principal } from './users.js';
 import type { Owner } from './usage.js';
 import type { CommandTerminal, StartTerminals, OutputTerminals, TerminalOutputs } from './terminals.js';
-import type { BackgroundTasks } from './background.js';
-import type { MayRunTool, RunClientTool, ToolsChanged, ToolsEndpoint } from '../tools/server.js';
+import type { BackgroundTasks, MovableCalls } from './background.js';
+import type { MayRunTool, ProxyEndpoint, ProxyUpstream, RunClientTool, ToolsChanged, ToolsEndpoint } from '../tools/server.js';
 import type { ComputerPort } from './computers.js';
 import type { MachineNeed } from './machine.js';
 import type { ShellEnv } from '../machines/shellenv.js';
@@ -307,6 +307,17 @@ export interface Start {
   /** Directories beside it the agent may also work in. */
   additional?: string[];
   /**
+   * Variables for the agent's own process, over the environment it would
+   * otherwise be started with.
+   *
+   * The host puts the shell authentication helper's variables and the chat's
+   * token here while that setting is on, so a command the agent runs may ask
+   * the person for a password. Absent when the setting is off, and for a
+   * session in a machine: the helper reaches this host's socket, which a
+   * process in a machine cannot.
+   */
+  env?: Record<string, string>;
+  /**
    * Whether one folder is trusted, by the host's one trust value.
    *
    * The host answers it for any folder, the session's own included, because
@@ -522,6 +533,14 @@ export interface Start {
     mayRun?: MayRunTool;
   }): ToolsEndpoint | undefined;
   /**
+   * Open a pass-through on the host's listener to one upstream MCP server,
+   * for a backend that is handed a server's URL and headers only once, when
+   * its session opens. The agent gets the endpoint's URL and token; the
+   * upstream's token stays with the host and is read per request. Closed with
+   * the session. Undefined where the host serves nothing, as `toolsServer`.
+   */
+  proxyServer?(upstream: ProxyUpstream): ProxyEndpoint | undefined;
+  /**
    * How long this host lets one of a session's client calls wait.
    *
    * A backend holding a call a client runs needs a limit, because the turn is
@@ -619,6 +638,16 @@ export interface Start {
    * Always offered, unlike `terminals`: a task is a record and needs no store.
    */
   backgroundTasks?: BackgroundTasks;
+  /**
+   * The running calls this backend can move to the background, as it learns
+   * them, and the calls whose work it already runs there.
+   *
+   * The backend runs the call, so it knows how to answer it early and keep
+   * its work going; the host writes what a client reads of it, the `_meta`
+   * keys `ahpd.backgroundToolCall` and `ahpd.backgroundWork`. A backend that
+   * can move nothing never calls it. Always offered, as `backgroundTasks` is.
+   */
+  movableCalls?: MovableCalls;
   /** A session of this backend's to continue, rather than starting a new one. */
   resume?: string;
   /** The prompt to resume *at*, so a fork leaves the turns after it behind. */
@@ -771,6 +800,28 @@ export interface Start {
    * always did.
    */
   plan?: boolean;
+}
+
+/**
+ * A conversation a client imported into a session this host is creating.
+ *
+ * The turns are the client's own, in the protocol's shape, and every one has
+ * an id minted for this session. The backend writes them in its own record
+ * under `uri`, so the session that starts is the one that continues them.
+ */
+export interface ImportedConversation {
+  /** The session channel URI the conversation is imported into. */
+  uri: string;
+  /** The directory the session works in, as a path, where it has one. */
+  workingDirectory?: string;
+  /** The values in force: this agent's defaults with the client's on top. */
+  settings: Record<string, unknown>;
+  /** The conversation's turns, each with an id minted for this session. */
+  turns: Turn[];
+  /** The model the conversation was held under, where the client named one. */
+  model?: ModelSelection;
+  /** The title the client gave the session, where it named a nonblank one. */
+  title?: string;
 }
 
 /**
@@ -1182,6 +1233,18 @@ export interface Agent<Started extends Session | Promise<Session> = Session | Pr
    * `at` is the session's recorded folder, as `find` is handed it.
    */
   subagents?(id: string, turns?: WireTurn<Turn>[], at?: SessionAt): Promise<RestoredSubagent[] | undefined>;
+
+  /**
+   * Write a conversation this host did not run, before the session it belongs
+   * to starts.
+   *
+   * A client that already has a conversation imports it into a session this
+   * host creates. The backend writes the turns in its own record under
+   * `uri`, and the `create` that follows continues them. An agent with no way
+   * to write its own history leaves this out, and the host then refuses an
+   * import for it.
+   */
+  importConversation?(imported: ImportedConversation): Promise<void> | void;
 
   /**
    * Start one.

@@ -1,6 +1,6 @@
 ---
 title: The version check reads the chosen folder
-status: implemented
+status: done
 depends: []
 layer: "scripts/install"
 refs:

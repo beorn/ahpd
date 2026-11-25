@@ -175,8 +175,8 @@ it('makes a row id of the words that name a back session', () => {
 it('reads a bot as its record alone, and starts nothing', async () => {
   const { host } = made({ soft: ['bot:*', ...CHATTER] });
   const soft = await as(host, 'soft');
-  got(await call(soft, 'resourceWrite', {
-    uri: 'bot://motion', data: JSON.stringify({ name: 'Motion' }), createOnly: true,
+  got(await call(soft, 'x-ahpd/bots/put', {
+    id: 'motion', record: { name: 'Motion' }, createOnly: true,
   }));
 
   const bot = await record(soft, 'bot://motion');
@@ -193,8 +193,8 @@ it('reads a bot as its record alone, and starts nothing', async () => {
 it('answers nothing under a bot, and nothing at a path-form address', async () => {
   const { host } = made({ soft: ['bot:*', ...CHATTER] });
   const soft = await as(host, 'soft');
-  got(await call(soft, 'resourceWrite', {
-    uri: 'bot://motion', data: JSON.stringify({ name: 'Motion' }), createOnly: true,
+  got(await call(soft, 'x-ahpd/bots/put', {
+    id: 'motion', record: { name: 'Motion' }, createOnly: true,
   }));
 
   expect(await call(soft, 'resourceResolve', { uri: 'bot://motion' })).toMatchObject({ result: { type: 'file' } });
@@ -213,8 +213,8 @@ it('answers nothing under a bot, and nothing at a path-form address', async () =
 it('opens a chat with a bot by a create that names the bot', async () => {
   const { host } = made({ soft: ['bot:*', ...CHATTER] });
   const soft = await as(host, 'soft');
-  got(await call(soft, 'resourceWrite', {
-    uri: 'bot://motion', data: JSON.stringify({ name: 'Motion' }), createOnly: true,
+  got(await call(soft, 'x-ahpd/bots/put', {
+    id: 'motion', record: { name: 'Motion' }, createOnly: true,
   }));
 
   got(await call(soft, 'createSession', { channel: 'ahp-session:/talk', provider: CHAT_PROVIDER, config: { bot: 'motion' } }));

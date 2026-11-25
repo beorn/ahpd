@@ -24,4 +24,4 @@ A line that a plugin says through `problem` after its load has answered goes to 
 
 ## Left for later
 
-- An edit made before the bot store loads, or while the daemon is down, takes the new owner with no refusal. It is in [a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md](../../../problems/a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md).
+- An edit made before the bot store loads, or while the daemon is down, takes the new owner with no refusal. It is in [a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md](../../bots/20261123-0945-a-bot-owner-edited-by-hand-is-logged/plan.md).

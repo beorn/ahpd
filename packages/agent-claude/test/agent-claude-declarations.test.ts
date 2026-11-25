@@ -100,7 +100,7 @@ const queried = async (
 };
 
 it('turns a sandbox value into the flag settings layer, and default into nothing', () => {
-  expect(sandbox.toQuery?.('on')).toEqual({ settings: { sandbox: { enabled: true, autoAllowBashIfSandboxed: true } } });
+  expect(sandbox.toQuery?.('on')).toEqual({ settings: { sandbox: { enabled: true } } });
   expect(sandbox.toQuery?.('off')).toEqual({ settings: { sandbox: { enabled: false } } });
   expect(sandbox.toQuery?.('default')).toEqual({});
 });
@@ -238,11 +238,25 @@ it('takes the same modes away for a tool\'s name the operator\'s eligibility set
 
 it('builds a session query from the declared values of its record', async () => {
   const options = await queried({ sandbox: 'on', thinking: 'disabled', outputStyle: 'concise' });
-  expect(options.settings).toEqual({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+  expect(options.settings).toEqual({ sandbox: { enabled: true } });
   expect(options.thinking).toEqual({ type: 'disabled' });
   // The style is not an option of the query; it waits for the handshake.
   await settle();
   expect(sdk.flags).toContainEqual({ outputStyle: 'concise' });
+});
+
+it('says whether a sandboxed Bash command asks only where the record does', async () => {
+  expect((await queried({ sandbox: 'on', autoAllowBashIfSandboxed: true })).settings)
+    .toEqual({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+  expect((await queried({ sandbox: 'on', autoAllowBashIfSandboxed: false })).settings)
+    .toEqual({ sandbox: { enabled: true, autoAllowBashIfSandboxed: false } });
+  // The settings files turn the sandbox on, and the record says how it asks.
+  expect((await queried({ sandbox: 'default', autoAllowBashIfSandboxed: true })).settings)
+    .toEqual({ sandbox: { autoAllowBashIfSandboxed: true } });
+  expect((await queried({ sandbox: 'off', autoAllowBashIfSandboxed: true })).settings)
+    .toEqual({ sandbox: { enabled: false } });
+  expect((await queried({ autoAllowBashIfSandboxed: true }, { sandboxEnabled: 'on' })).settings)
+    .toEqual({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
 });
 
 it('leaves the sandbox layer out when nobody asked for one', async () => {
@@ -256,7 +270,7 @@ it('names a switched-off plugin server in the CLI\'s own settings', async () => 
   // reads from its settings, and what a record put in them is added to rather
   // than replaced.
   expect(options.settings).toEqual({
-    sandbox: { enabled: true, autoAllowBashIfSandboxed: true },
+    sandbox: { enabled: true },
     deniedMcpServers: [{ serverName: 'one' }, { serverName: 'two words' }],
   });
 });
@@ -281,5 +295,5 @@ it('a record with no sandbox keeps a stored on', async () => {
   // The other half of that: an upgrade never runs a session less sandboxed
   // than it was, so a stored on still turns it on where the record is silent.
   expect((await queried({ thinking: 'disabled' }, { sandboxEnabled: 'on' })).settings)
-    .toEqual({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+    .toEqual({ sandbox: { enabled: true } });
 });

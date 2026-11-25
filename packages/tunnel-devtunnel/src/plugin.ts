@@ -239,6 +239,7 @@ export const apply: Plugin['apply'] = (plugin, options) => {
     ...(asked.requireToken === true ? { requireToken: true } : {}),
     keep,
     open: (id) => tunnels.held(id) !== undefined,
+    onHold: (listener) => tunnels.onHold(listener),
     daemonPort: () => daemonPort,
     guarded: () => guarded,
     connectionToken: () => connectionToken,

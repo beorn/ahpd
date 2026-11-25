@@ -23,8 +23,12 @@
  * agent record, such as pausing it. `connector` is one connector record, such
  * as turning it off. A kind declares the scopes an operation accepts, and the
  * host refuses an invocation whose target is not one of them.
+ *
+ * A plugin channel that offers operations names its own record, such as
+ * `service`: every scope but `list` is one record taking `target: { id }`, so
+ * the command reads them alike and the name is only what a client shows.
  */
-export type OperationScope = 'list' | 'tunnel' | 'client' | 'agent' | 'connector';
+export type OperationScope = 'list' | 'tunnel' | 'client' | 'agent' | 'connector' | (string & {});
 
 /**
  * How an invocation of an operation is going.
@@ -104,7 +108,14 @@ export interface KindOperation {
 export interface Operation extends KindOperation {
   /** The `name` of the kind that declared it. */
   kind: string;
-  /** The scopes an invocation may name, as the kind declared them. */
+  /**
+   * The scopes an invocation may name, as the kind declared them.
+   *
+   * At runtime only one thing is read: `list` runs on the channel as a whole
+   * and takes no target, and any other name runs on one record and needs
+   * `target.id`. A new name, such as a plugin's `service`, adds no behaviour;
+   * it is what a client shows.
+   */
   scopes: OperationScope[];
   /** The grant a caller holds to invoke it, which the host resolved. */
   grant: string;

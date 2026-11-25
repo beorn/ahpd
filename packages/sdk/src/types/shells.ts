@@ -61,6 +61,22 @@ export interface ShellClaim {
   opened?: (terminal: CommandTerminal) => void;
 }
 
+/**
+ * How a `run` goes on in the background, when its caller lets it.
+ *
+ * A command answered `background` - because `letGo` settled, or a client
+ * narrowed the terminal's claim - goes on in its shell. With `ended`, the run
+ * follows it there as `start` follows a command: `ended` runs at its real end,
+ * which is where the caller takes its row down and lets the shell go, and the
+ * chat is woken with the end after it.
+ */
+export interface GoingOn {
+  /** Settles when the caller lets the command go on in the background. */
+  letGo?: Promise<void>;
+  /** The command's real end, after it went on in the background. */
+  ended?: () => void;
+}
+
 /** A chat's shells, and what may be done with them. */
 export interface Shells {
   /** The program a new shell runs. */
@@ -69,8 +85,13 @@ export interface Shells {
   shellType(): ShellType;
   /** An idle shell, or a new one claimed by the call that asked. */
   acquire(claim: ShellClaim): Promise<HeldShell>;
-  /** Write one command, and answer how it ended. */
-  run(shell: ManagedShell, command: string, timeoutMs: number): Promise<ShellCommandResult>;
+  /**
+   * Write one command, and answer how it ended.
+   *
+   * With `going`, the caller can let the command go on in the background
+   * while it runs, and follows it there: see `GoingOn`.
+   */
+  run(shell: ManagedShell, command: string, timeoutMs: number, going?: GoingOn): Promise<ShellCommandResult>;
   /**
    * Start one command, and answer once it has really ended.
    *

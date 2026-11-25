@@ -49,8 +49,6 @@ import type {
 } from '@microsoft/agent-host-protocol';
 import { idOf, Status, uriFor } from './catalog.js';
 import { posixUriOf, uriOf } from '../resources/fileuri.js';
-import { reduceChatConfigChanged } from '../vscode/chatconfig.js';
-import type { ChatConfigChangedAction, ChatConfigState } from '../vscode/chatconfig.js';
 import { machinePathOf } from '../machines/machine.js';
 import { canvasResource, chatOfCanvas } from '../host/channels.js';
 import { STOP_FLAG } from '../host/background.js';
@@ -110,7 +108,7 @@ const NO_AGENT = -32001;
 /** The session actions about one chat in the session's catalogue. */
 const CATALOGUE = new Set(['session/chatAdded', 'session/chatUpdated', 'session/chatRemoved', 'session/defaultChatChanged']);
 
-/** Where a changeset of a session hangs off the session's URI. */
+/** Where a changeset of a session, or of a chat, hangs off its URI. */
 const CHANGESET = '/changeset/';
 
 /*
@@ -778,11 +776,15 @@ const nestedSession = (provider: string, variant: boolean, start: Start, options
 
   /**
    * A changeset or a canvas of the host inside, under the name this session
-   * serves it by out here: a changeset hangs off the outer session's URI, and
-   * a canvas names the outer chat. Nothing for any other value.
+   * serves it by out here: a session's changeset hangs off the outer session's
+   * URI, a chat's changeset off the outer chat's, and a canvas names the outer
+   * chat. Nothing for any other value.
    */
   const outerChannel = (uri: string): string | undefined => {
     if (uri.startsWith(`${innerSession}${CHANGESET}`)) return `${start.uri}${uri.slice(innerSession.length)}`;
+    for (const [inner, outer] of outerOf) {
+      if (uri.startsWith(`${inner}${CHANGESET}`)) return `${outer}${uri.slice(inner.length)}`;
+    }
     const chat = chatOfCanvas(uri);
     const named = chat === undefined ? undefined : outerOf.get(chat);
     return named === undefined ? undefined : canvasResource(named, uri.slice(uri.lastIndexOf('/') + 1));
@@ -791,6 +793,9 @@ const nestedSession = (provider: string, variant: boolean, start: Start, options
   /** The changeset or canvas of the host inside that an outer name stands for. */
   const innerChannel = (uri: string): string | undefined => {
     if (uri.startsWith(`${start.uri}${CHANGESET}`)) return `${innerSession}${uri.slice(start.uri.length)}`;
+    for (const [inner, outer] of outerOf) {
+      if (uri.startsWith(`${outer}${CHANGESET}`)) return `${inner}${uri.slice(outer.length)}`;
+    }
     const chat = chatOfCanvas(uri);
     const named = chat === undefined ? undefined : [...outerOf].find(([, outer]) => outer === chat)?.[0];
     return named === undefined ? undefined : canvasResource(named, uri.slice(uri.lastIndexOf('/') + 1));
@@ -1110,11 +1115,7 @@ const nestedSession = (provider: string, variant: boolean, start: Start, options
             if (session !== undefined) session = sessionReducer(session, action as SessionAction);
           }
           else if (chat !== undefined) {
-            // A chat's own config through VS Code's case for it, which the
-            // package's reducer is behind.
-            chat = String(action.type) === 'chat/configChanged'
-              ? reduceChatConfigChanged(chat as ChatState & { config?: ChatConfigState }, action as unknown as ChatConfigChangedAction)
-              : chatReducer(chat, action as ChatAction);
+            chat = chatReducer(chat, action as ChatAction);
           }
         }
         catch (error) {

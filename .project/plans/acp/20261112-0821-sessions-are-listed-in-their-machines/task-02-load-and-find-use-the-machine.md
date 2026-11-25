@@ -1,6 +1,6 @@
 ---
 title: Load and find use the machine
-status: implemented
+status: done
 depends:
   - task-01-the-listing-runs-in-its-machines.md
 layer: "agent-acp"

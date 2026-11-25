@@ -62,12 +62,10 @@ const idParam = (command: string, params: Record<string, unknown>): string => {
  * - `put` `{ id, record, createOnly?, ifMatch? }` registers `push://devices/<id>`.
  * - `remove` `{ id }` takes it out.
  *
- * Each runs the provider's own `write` or `delete`, so a command and a
- * resource call are refused with the same rules and the same sentences: a
- * device is registered by the person on the connection, and another person's
- * is refused. `put` needs `push:put` and `remove` needs `push:delete`, the
- * grants the resource write and delete need. Both answer `{}` once `refresh`
- * has sent the change.
+ * Each runs the provider's own `write` or `delete`, whose rules are the
+ * plugin's: a device is registered by the person on the connection, and another
+ * person's is refused. `put` needs `push:put` and `remove` needs `push:delete`.
+ * Both answer `{}` once `refresh` has sent the change.
  */
 export const pushMethods = (provider: Pick<PushProvider, 'write' | 'delete'>, refresh: () => Promise<void>): Record<string, PluginMethod> => ({
   [PUT]: {

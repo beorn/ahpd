@@ -1,6 +1,6 @@
 ---
 title: A restart wakes the bot again
-status: implemented
+status: done
 depends:
   - task-03-the-back-is-a-chat-of-the-front.md
 layer: "bot"

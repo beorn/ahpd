@@ -1,6 +1,7 @@
 /** Automations held in memory, run when somebody asks. */
 
 import { randomUUID } from 'node:crypto';
+import { consumedBy, oneTimeRunOf, oneTimeTriggerOf } from './onetime.js';
 import type { AutomationTriggerDefinition, ConfigPropertySchema, ConfigSchema, JsonPrimitive } from '@microsoft/agent-host-protocol';
 import { localPath } from '../resources/fileuri.js';
 import { mayUseAgentFor, ownershipOf } from '../agents/usable.js';
@@ -8,7 +9,9 @@ import type { Acting } from '../agents/usable.js';
 import { durationMs } from './triggers.js';
 import { WATCH_PRESETS } from './triggerpresets.js';
 import type { AgentOwner } from '../types/agents.js';
-import type { Automation, AutomationEntry, AutomationRun, AutomationStore, StartSession } from '../types/automations.js';
+import type {
+  Automation, AutomationDeletion, AutomationDeletionReceipt, AutomationEntry, AutomationRun, AutomationStore, StartSession,
+} from '../types/automations.js';
 import type { Bag } from '../types/common.js';
 import { connectorRefusal } from '../connectors/fields.js';
 import type { ConnectorRef } from '../types/connectors.js';
@@ -84,14 +87,29 @@ export interface AutomationsOptions {
    * Write a change down before the store holds it and says it, as VS Code's
    * automation service persists a mutation before it publishes it, its runs
    * beside its catalogue: a create, an update or a met condition hands the
-   * entry it would hold, a removal the resource it takes away, and a run that
+   * entry it would hold, a removal the resource it takes away, a run that
    * begins or moves every run its automation would keep, newest first, as
-   * `runsOf` and `runs`. A throw fails the change and leaves the store as it
-   * was, so nothing is announced that was not written.
+   * `runsOf` and `runs`, and a deletion that starts, ends or is acknowledged
+   * the deletions still running and every receipt, as `deletions` and
+   * `receipts`. A throw fails the change and leaves the store as it was, so
+   * nothing is announced that was not written.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostAutomationService.ts#L346-L350
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostAutomationService.ts#L779-L803
    */
-  persist?: (change: { automation: AutomationEntry } | { removed: string } | { runsOf: string; runs: AutomationRun[] }) => void;
+  persist?: (change:
+    | { automation: AutomationEntry }
+    | { removed: string }
+    | { runsOf: string; runs: AutomationRun[] }
+    | { deletions: AutomationDeletion[]; receipts: AutomationDeletionReceipt[] }) => void;
+  /**
+   * The deletions and their receipts a store reading its own file restores.
+   *
+   * A deletion still there is finished when the host starts, and a receipt is
+   * answered to the retry that asks for it. Absent on a store that keeps
+   * neither.
+   */
+  deletions?: AutomationDeletion[];
+  receipts?: AutomationDeletionReceipt[];
 }
 
 /** How many runs a summary list carries before it needs a cursor. */
@@ -548,6 +566,12 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
   const loaded = new Map<string, number>();
   /** Every run by its own URI, for the channel a client watches it on. */
   const byRun = new Map<string, AutomationRun>();
+  /** Deletions still running, by the automation each removes. */
+  const deletions = new Map<string, AutomationDeletion>(
+    (options.deletions ?? []).map((one) => [one.automation, one]));
+  /** What a deletion answered, by request id, until its client has it. */
+  const receipts = new Map<string, AutomationDeletionReceipt>(
+    (options.receipts ?? []).map((one) => [one.requestId, one]));
   const listeners: ((event: { automation?: string; run?: string; removed?: string }) => void)[] = [];
   const said = (event: { automation?: string; run?: string; removed?: string }): void => {
     for (const listener of listeners) listener(event);
@@ -609,6 +633,14 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
     options.persist?.({ runsOf: resource, runs: windowed(next) });
   };
 
+  /** Hand the persist hook the deletions and receipts this store would hold. */
+  const persistDeletions = (
+    nextDeletions: Map<string, AutomationDeletion>,
+    nextReceipts: Map<string, AutomationDeletionReceipt>,
+  ): void => {
+    options.persist?.({ deletions: [...nextDeletions.values()], receipts: [...nextReceipts.values()] });
+  };
+
   /** Rebuild the entry a client reads, so `runs` and `operations` are never stale. */
   const entry = (automation: Automation): AutomationEntry => {
     const { owner, runCount, ...rest } = automation;
@@ -633,7 +665,9 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
        * offering no button for one would be a client that cannot do what this
        * host would allow.
        */
-      operations: ['update', 'remove', 'run'],
+      // No `update` once a one-time trigger has run, as VS Code offers none.
+      // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostAutomationService.ts#L306
+      operations: oneTimeRunOf(automation.definition) === undefined ? ['update', 'remove', 'run'] : ['remove', 'run'],
       /*
        * Whose work this is, where a client can read it.
        *
@@ -654,6 +688,15 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
    * learns an automation stopped. Nothing is removed: the definition, its runs
    * and its count all stay, and a person may still start it by hand.
    */
+  /** Record the run a one-time trigger created, which consumes it, as `stop` records a switch-off. */
+  const consume = (automation: Automation, run: string): void => {
+    const definition = consumedBy(automation.definition, run);
+    const modifiedAt = now();
+    options.persist?.({ automation: entry({ ...automation, definition, modifiedAt }) });
+    automation.definition = definition;
+    automation.modifiedAt = modifiedAt;
+  };
+
   const stop = (automation: Automation): void => {
     if (automation.definition.enabled === false) return;
     const definition = { ...automation.definition, enabled: false };
@@ -796,6 +839,47 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
       return true;
     },
 
+    deletionOf: (automation) => deletions.get(automation),
+    deletions: () => [...deletions.values()],
+    beginDeletion: (automation, sessions, requestId, requester) => {
+      const before = deletions.get(automation);
+      const keptRequester = before?.requester ?? requester;
+      const next: AutomationDeletion = {
+        automation,
+        sessions: [...new Set([...(before?.sessions ?? []), ...sessions])],
+        requestIds: [...new Set([...(before?.requestIds ?? []), ...(requestId === undefined ? [] : [requestId])])],
+        ...(keptRequester === undefined ? {} : { requester: keptRequester }),
+      };
+      const nextDeletions = new Map(deletions).set(automation, next);
+      persistDeletions(nextDeletions, receipts);
+      deletions.set(automation, next);
+      return next;
+    },
+    finishDeletion: (automation, sessions) => {
+      const before = deletions.get(automation);
+      if (before === undefined) return;
+      const nextDeletions = new Map(deletions);
+      nextDeletions.delete(automation);
+      const nextReceipts = new Map(receipts);
+      for (const requestId of before.requestIds) {
+        nextReceipts.set(requestId, { requestId, automation, sessions });
+      }
+      persistDeletions(nextDeletions, nextReceipts);
+      deletions.delete(automation);
+      for (const requestId of before.requestIds) {
+        receipts.set(requestId, { requestId, automation, sessions });
+      }
+    },
+    receiptOf: (requestId) => receipts.get(requestId),
+    acknowledgeDeletion: (requestId) => {
+      if (!receipts.has(requestId)) return false;
+      const nextReceipts = new Map(receipts);
+      nextReceipts.delete(requestId);
+      persistDeletions(deletions, nextReceipts);
+      receipts.delete(requestId);
+      return true;
+    },
+
     run: async (resource, origin, start) => {
       const found = held.get(resource);
       if (!found) return undefined;
@@ -809,6 +893,14 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
        * read against the origin rather than against the automation.
        */
       const scheduled = bag(origin).kind === 'trigger';
+      /*
+       * The one-time trigger's own run, which happens once: a second fire of
+       * it is refused, and a press of Run is not its run, so it leaves the
+       * trigger to fire.
+       */
+      const oneTime = oneTimeTriggerOf(found.definition);
+      const consumes = scheduled && oneTime !== undefined && bag(origin).triggerId === oneTime.id;
+      if (consumes && oneTimeRunOf(found.definition) !== undefined) return undefined;
       const conditions = disableConditionsOf(found.definition.disableConditions);
       if (scheduled) {
         if (found.definition.enabled === false) return undefined;
@@ -862,6 +954,7 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
         found.runCount = (found.runCount ?? 0) + 1;
         if (found.runCount >= conditions.allowedRuns) stop(found);
       }
+      if (consumes) consume(found, run.resource);
       said({ automation: resource, run: run.resource });
 
       const directories = Array.isArray(template.workingDirectories) ? template.workingDirectories : [];
@@ -888,19 +981,25 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
       };
 
       /*
-       * Running before the session is asked for.
+       * Running as its turn starts.
        *
        * A backend can finish the turn it is given before `start` resolves -
        * the echo backend with no pace does exactly that - and a finished turn
-       * is what settles this run. Marking it running first means that ending
-       * finds a run with the `startedAt` the protocol requires, rather than a
-       * `pending` one where a completed ending has to be refused. A terminal
-       * lifecycle the ending produced is left alone below, so the start
-       * resolving cannot reopen it.
+       * is what settles this run. So the host calls `running` just before it
+       * starts the turn, and the ending finds the `startedAt` the protocol
+       * requires. A run whose message waits in a chat's queue stays `pending`
+       * until the queue takes it up, as AHP 1.2.0 says. A start that never
+       * calls it is marked running once it resolves.
+       * https://github.com/microsoft/agent-host-protocol/blob/e36b0a20/types/channels-automation/state.ts#L316-L346
        */
-      const running = { ...run.lifecycle, status: 'running', startedAt: now() };
-      persistRuns(resource, { ...run, lifecycle: running });
-      run.lifecycle = running;
+      const markRunning = (): void => {
+        if (run.lifecycle.status !== 'pending') return;
+        const running = { ...run.lifecycle, status: 'running', startedAt: now() };
+        persistRuns(resource, { ...run, lifecycle: running });
+        run.lifecycle = running;
+        said({ automation: resource, run: run.resource });
+      };
+      options.running = markRunning;
       /*
        * The run answered as recorded, and its session made after.
        *
@@ -913,11 +1012,18 @@ export function memoryAutomations(options: AutomationsOptions = {}): AutomationS
       void (async () => {
         try {
           const session = await start(options);
+          markRunning();
           persistRuns(resource, { ...run, sessions: [session], primarySession: session });
           run.sessions = [session];
           run.primarySession = session;
         }
         catch (error) {
+          // A run the host already ended, as one whose queued message was
+          // withdrawn, keeps the ending it was given.
+          if (ended(run.lifecycle)) {
+            said({ automation: resource, run: run.resource });
+            return;
+          }
           // Failed, and why. A run that vanished would be indistinguishable
           // from one that never started. The protocol's failed lifecycle calls
           // the final timestamp `completedAt`, not `endedAt` - and no execution

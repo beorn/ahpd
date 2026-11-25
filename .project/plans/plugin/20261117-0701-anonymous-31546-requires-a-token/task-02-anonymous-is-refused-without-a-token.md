@@ -1,6 +1,6 @@
 ---
 title: Anonymous is refused without a token
-status: implemented
+status: done
 depends: [task-01-an-anonymous-hop-swaps-no-token.md]
 layer: "tunnel-devtunnel"
 refs:

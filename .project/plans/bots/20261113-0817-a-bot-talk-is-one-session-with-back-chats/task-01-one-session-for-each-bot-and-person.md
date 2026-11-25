@@ -1,6 +1,6 @@
 ---
 title: One session for each bot and person
-status: implemented
+status: done
 depends: []
 layer: "bot"
 refs:

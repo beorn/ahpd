@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { expandHome, fileResources, mayUseAgentFor, ownershipOf, reason, Status } from '@ahpd/sdk';
-import { SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
+import { RpcError, expandHome, fileResources, mayUseAgentFor, ownershipOf, reason, Status } from '@ahpd/sdk';
+import { AhpErrorCodes, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
 import { botAsk } from './ask.js';
 import { botCatalogue, CATALOGUE_SCHEME } from './catalogue.js';
 import type { BotCatalogue } from './catalogue.js';
@@ -556,6 +556,7 @@ export const apply: Plugin['apply'] = (host, options) => {
     fronts,
     configDir: host.configDir,
     kept: (uri) => host.sessionKept(uri),
+    opens: (uri) => host.sessionOpens(uri),
     owner: (uri) => host.sessionOwner(uri),
     // A talk written down is the bot again to the person whose talk it is.
     onKeep: (bot, talker, session) => { catalogue.talked(bot, talker, session); },
@@ -668,7 +669,16 @@ export const apply: Plugin['apply'] = (host, options) => {
     available,
     talks,
   });
-  host.registerResourceProvider('bot', provider);
+  /*
+   * Read, listed and watched by address, and changed by the two commands alone.
+   * The scheme keeps its `put` and `delete` words, which the grants and a
+   * client's controls are read from, and refuses the resource call itself.
+   */
+  host.registerResourceProvider('bot', {
+    ...provider,
+    write: async () => { throw new RpcError(AhpErrorCodes.NotFound, 'Change a bot with x-ahpd/bots/put'); },
+    delete: async () => { throw new RpcError(AhpErrorCodes.NotFound, 'Remove a bot with x-ahpd/bots/remove'); },
+  });
   for (const [command, method] of Object.entries(botMethods(provider))) host.registerMethod(command, method);
   // The one grant a bot asks for, apart from reading it: talking to it.
   host.registerGrants('bot', { operations: ['chat'] });

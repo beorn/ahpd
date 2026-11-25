@@ -18,6 +18,10 @@ import type { Agent } from '../../sdk/src/types/agent.js';
 import type { HostOptions, HostTool } from '../../sdk/src/types/host.js';
 import type { MachineNeed } from '../../sdk/src/types/machine.js';
 import type { Vault } from '../../sdk/src/types/vault.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A machine made from what its agents declared.
@@ -1198,10 +1202,16 @@ it('fails every command into the machine when a vault-named value cannot be read
 it('drops only the unreadable variable and logs it, where the profile says drop', async () => {
   const state = join(temp(), 'docker.json');
   const first = await loadLogged(vaultedOptions(state, { secretUnreadable: 'drop' }), holding({ 'user:ada/token': 'ada-token', 'host:other': 'other-token' }));
-  await written(first.options, 'ada', { profile: 'claude' }, 'user:ada');
+  /*
+   * The machine is made, and found again, before anything is read of its
+   * arguments: a create that failed on a slow runner was once read as a machine
+   * with no variables at all, `[]` where two were expected.
+   */
+  expect(await written(first.options, 'ada', { profile: 'claude' }, 'user:ada')).toBeUndefined();
 
   const again = await loadLogged(vaultedOptions(state, { secretUnreadable: 'drop' }), holding({ 'host:other': 'other-token' }));
   const how = await again.options.computers?.how('ada', { command: 'true', env: { A: '1' } });
+  expect(how).toBeDefined();
   const args = how?.args ?? [];
   expect(args.flatMap((one, at) => (args[at - 1] === '-e' ? [one] : []))).toEqual(['OTHER_KEY', 'A']);
   expect(how?.env).toMatchObject({ OTHER_KEY: 'other-token', A: '1' });
@@ -1572,6 +1582,25 @@ it('sweeps the part volumes of versions the file does not name half a minute aft
     vi.useRealTimers();
   }
   await vi.waitFor(() => { expect(volumes()).toEqual([current]); }, { timeout: 60_000, interval: 50 });
+});
+
+it('waits at its close for a sweep that has started', async () => {
+  const state = join(temp(), 'docker.json');
+  const aged = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const current = `ahpd-part-codex-${PARTS.get('codex') ?? ''}`;
+  const volumes = (): string[] => Object.keys((JSON.parse(readFileSync(state, 'utf8')) as { volumes?: Record<string, unknown> }).volumes ?? {});
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    await loadParts(state, { parts: ['codex'] }, [CODEXER], {
+      volumes: { 'ahpd-part-codex-0.0.1-aaaaaaaaaaaa': { files: [], created: aged }, [current]: { files: [], created: aged } },
+    });
+    vi.advanceTimersByTime(30_000);
+  }
+  finally {
+    vi.useRealTimers();
+  }
+  await closeAll();
+  expect(volumes()).toEqual([current]);
 });
 
 it('refuses a mount at a part\'s target as any other shared target', async () => {

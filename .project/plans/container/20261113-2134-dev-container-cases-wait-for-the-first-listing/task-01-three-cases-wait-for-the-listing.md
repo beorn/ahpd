@@ -1,6 +1,6 @@
 ---
 title: Three cases wait for the listing
-status: implemented
+status: done
 depends: []
 layer: "computer tests"
 refs:

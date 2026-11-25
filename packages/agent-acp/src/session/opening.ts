@@ -1,7 +1,7 @@
 import { RequestError } from '@agentclientprotocol/sdk';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
-import { machineAsked, machinePathOf } from '@ahpd/sdk';
-import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
+import { machineAsked, machinePathOf, mcpServerCustomization, protectedResource } from '@ahpd/sdk';
+import type { ProxyEndpoint, Spawn, Start, ToolsEndpoint, UpstreamRefusal } from '@ahpd/sdk';
 import { heardCapabilities, isNoRollout, watchSession } from '../catalog.js';
 import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
 import { HOST_TOOLS } from '../mapping.js';
@@ -9,8 +9,8 @@ import type { AcpConnection, AcpOptions } from '../types.js';
 import { messageOf } from './common.js';
 import { admitCustody } from './custody.js';
 import type { Custody, CustodyIdentity } from './custody.js';
-import type { SessionContext } from './context.js';
-import type { LogLevel } from '@ahpd/sdk';
+import type { HostToolsAnswer, SessionContext } from './context.js';
+import type { Bag, LogLevel } from '@ahpd/sdk';
 
 /** Spawning the server, signing in and opening the one session on it. */
 export interface Opening {
@@ -53,7 +53,7 @@ const SPAWN_KEYS = [
 const LIVE_KEYS = [
   'command', 'args', 'env', 'cwd', 'provider', 'displayName', 'description', 'model',
   'authenticate', 'authenticateInMachine', 'hostTools', 'honoursTrust', 'toolsChanged', 'machine', 'variant',
-  'cutTurns', 'stderrTail', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
+  'cutTurns', 'stderrTail', 'portFailures', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
   'listingIdleMs', 'sessionListMaxPages', 'exitGraceMs', 'stderrBytes', 'killGraceMs', 'closeGraceMs',
 ] as const;
 
@@ -120,6 +120,77 @@ const addressOf = (url: string): string => {
 };
 
 /**
+ * Publish the configured MCP servers as this session's customizations and say
+ * so to every client watching. A server's id comes from its name alone, so it
+ * stays the same across reloads and a targeted token stays aimed. `stateOf`
+ * is handed the server's state as it stood, `starting` for one not yet said.
+ */
+export const publishServers = (ctx: SessionContext, names: readonly string[], stateOf: (name: string, was: Bag) => Bag): void => {
+  const before = new Map(ctx.servers.map((one) => [String(one.name), (one.state ?? { kind: 'starting' }) as Bag]));
+  ctx.servers = names.map((name) => mcpServerCustomization(
+    `acp-internal:/mcp/${encodeURIComponent(name)}`,
+    name,
+    stateOf(name, before.get(name) ?? { kind: 'starting' }),
+  ));
+  ctx.emit('session', { type: 'session/customizationsChanged', customizations: ctx.published() });
+};
+
+/** Every configured server this session publishes, by name, in order. */
+export const serverNames = (ctx: SessionContext): string[] => ctx.servers.map((one) => String(one.name));
+
+/**
+ * Say one server needs signing in to, as the spec's `authRequired` state.
+ *
+ * The resource is the server's RFC 9728 metadata, found once, from the URL
+ * its own challenge named when it named one. The scopes are the ones the
+ * challenge asked for, else the ones the metadata says it supports.
+ */
+export const signInNeeded = async (
+  ctx: SessionContext,
+  name: string,
+  url: string,
+  reason: 'required' | 'expired' | 'insufficientScope',
+  said: Partial<UpstreamRefusal> = {},
+): Promise<void> => {
+  const resource = ctx.resources.get(name)
+    ?? await protectedResource(url, name, 15_000, said.metadataUrl).catch((): Bag => ({ resource: url, resource_name: name }));
+  ctx.resources.set(name, resource);
+  const scopes = said.scope !== undefined
+    ? said.scope.split(' ').filter((one) => one !== '')
+    : Array.isArray(resource.scopes_supported) ? resource.scopes_supported.filter((one: unknown): one is string => typeof one === 'string') : [];
+  publishServers(ctx, serverNames(ctx), (one, was) => one !== name ? was : {
+    kind: 'authRequired',
+    reason,
+    resource,
+    ...(scopes.length > 0 ? { requiredScopes: scopes } : {}),
+  });
+};
+
+/**
+ * The pass-through one configured HTTP server is reached by, opened the first
+ * time and kept: a server that died is reopened with the same URL and token.
+ * A 401 or 403 the upstream answers is the one signal ACP will ever give about
+ * a server, so it is said as `authRequired`: `insufficientScope` for a 403
+ * that named a scope, `required` otherwise.
+ */
+const proxyOf = (ctx: SessionContext, name: string, server: { url: string; headers?: Record<string, string> }): ProxyEndpoint | undefined => {
+  const held = ctx.proxies.get(name);
+  if (held !== undefined) return held;
+  const opened = ctx.start.proxyServer?.({
+    url: server.url,
+    ...(server.headers === undefined ? {} : { headers: server.headers }),
+    tokenNow: () => ctx.serverTokens.get(name),
+    refused: (said) => {
+      // The token that was refused is not sent again.
+      ctx.serverTokens.delete(name);
+      void signInNeeded(ctx, name, server.url, said.status === 403 && said.scope !== undefined ? 'insufficientScope' : 'required', said);
+    },
+  });
+  if (opened !== undefined) ctx.proxies.set(name, opened);
+  return opened;
+};
+
+/**
  * The MCP servers a session is opened with, in ACP's shape.
  *
  * The host's own map, less whatever the handshake says this server cannot take,
@@ -135,9 +206,22 @@ const serversFor = async (
   hostTools: boolean,
   machine: string | undefined,
   say: (line: string) => void,
+  leftOut: (name: string, why: string) => void = () => {},
+  proxied: (name: string, server: { url: string; headers?: Record<string, string> }) => ProxyEndpoint | undefined = () => undefined,
+  toolsAnswer: (answer: HostToolsAnswer) => void = () => {},
 ): Promise<AcpMcpServer[]> => {
   const taken: AcpMcpServer[] = [];
   const mcp = capabilities?.mcpCapabilities;
+  /**
+   * The URL a session's machine reaches a daemon endpoint at, or nothing where
+   * it cannot: a machine's runtime names the host its own way, and a loopback
+   * address is out of reach from a container.
+   */
+  const reachedFrom = async (url: string): Promise<string | undefined> => {
+    const reached = machine === undefined ? undefined : await start.computers?.reach?.(machine, url);
+    const at = reached ?? url;
+    return reached === undefined && !toolsReachable(at, machine === undefined ? undefined : `computer://${machine}`) ? undefined : at;
+  };
   for (const [name, one] of Object.entries(start.mcpServers ?? {})) {
     // ACP has one shape per transport and this host has two, so a stdio server
     // is a name, a command and a list of variables, and an HTTP one is a name,
@@ -145,14 +229,25 @@ const serversFor = async (
     if (one.type === 'http') {
       if (mcp?.http !== true) {
         say(`${name}: this ACP server takes no MCP server over HTTP, so it was left out`);
+        leftOut(name, 'This ACP server takes no MCP server over HTTP.');
         continue;
       }
-      taken.push({
-        type: 'http',
-        name,
-        url: one.url,
-        headers: Object.entries(one.headers ?? {}).map(([header, value]) => ({ name: header, value })),
-      });
+      /*
+       * Through the host's pass-through where there is one: ACP hands a server
+       * its headers once, when the session opens, so a token a client renews
+       * would never reach it. The agent gets the endpoint's URL and its own
+       * token; the upstream's token, and the configured headers, stay with the
+       * host. A machine that cannot reach the daemon gets the server direct,
+       * and is told a renewal will not reach it.
+       */
+      const through = proxied(name, one);
+      const at = through === undefined ? undefined : await reachedFrom(through.url);
+      if (through !== undefined && at === undefined) {
+        say(`${name}: computer://${String(machine)} cannot reach the daemon at ${addressOf(through.url)}, so it gets this server direct and a renewed token will not reach it`);
+      }
+      taken.push(at === undefined || through === undefined
+        ? { type: 'http', name, url: one.url, headers: Object.entries(one.headers ?? {}).map(([header, value]) => ({ name: header, value })) }
+        : { type: 'http', name, url: at, headers: [{ name: 'authorization', value: `Bearer ${through.token}` }] });
       continue;
     }
     // ACP cannot say where a stdio server starts, so a directory goes with it
@@ -167,15 +262,24 @@ const serversFor = async (
       env: Object.entries(one.env ?? {}).map(([variable, value]) => ({ name: variable, value })),
     });
   }
-  if (!hostTools || start.toolsServer === undefined) return taken;
+  // A host that offers its sessions no tools has nothing to answer about them.
+  if (start.toolsServer === undefined) return taken;
+  if (!hostTools) {
+    toolsAnswer({ available: false, reason: 'Host tools are turned off for this agent.' });
+    return taken;
+  }
   // The host's own tools are one HTTP server among the rest, so a server that
   // takes none over HTTP is not told about this one either.
   if (mcp?.http !== true) {
     say(`${HOST_TOOLS}: this ACP server takes no MCP server over HTTP, so it was left out`);
+    toolsAnswer({ available: false, reason: 'This ACP server takes no MCP server over HTTP.' });
     return taken;
   }
   const endpoint = own();
-  if (endpoint === undefined) return taken;
+  if (endpoint === undefined) {
+    toolsAnswer({ available: false, reason: 'The host opened no tools endpoint for this session.' });
+    return taken;
+  }
   /*
    * The URL the machine uses for the daemon, where its port answers one.
    *
@@ -184,10 +288,10 @@ const serversFor = async (
    * under. An answer replaces the endpoint's own address; no answer keeps the
    * reading below.
    */
-  const reached = machine === undefined ? undefined : await start.computers?.reach?.(machine, endpoint.url);
-  const url = reached ?? endpoint.url;
-  if (reached === undefined && !toolsReachable(url, machine === undefined ? undefined : `computer://${machine}`)) {
+  const url = await reachedFrom(endpoint.url);
+  if (url === undefined) {
     say(`host tools: computer://${String(machine)} cannot reach the daemon at ${addressOf(endpoint.url)}, so they were left out`);
+    toolsAnswer({ available: false, reason: `computer://${String(machine)} cannot reach the host's tools.` });
     return taken;
   }
   // ACP spells an HTTP server as a URL and a list of headers, so the token goes
@@ -198,7 +302,31 @@ const serversFor = async (
     url,
     headers: [{ name: 'authorization', value: `Bearer ${endpoint.token}` }],
   });
+  toolsAnswer({ available: true });
   return taken;
+};
+
+/**
+ * What a machine port answers, with a refusal said as `portFailures` says.
+ *
+ * `spawn`, the default, says `The <what> could not start in computer://<id>.`
+ * and logs the port's own message, which can name a socket path, a registry or
+ * an image. `message` passes the port's refusal on as it is.
+ */
+export const askMachine = async <T>(
+  options: Pick<AcpOptions, 'portFailures' | 'log' | 'provider'>,
+  id: string,
+  what: 'agent' | 'terminal',
+  ask: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await ask();
+  }
+  catch (error) {
+    if (options.portFailures === 'message') throw error;
+    options.log?.(`${options.provider}: computer://${id}: the ${what} could not start: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    throw new Error(`The ${what} could not start in computer://${id}.`);
+  }
 };
 
 /**
@@ -304,11 +432,11 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
      * paths that mean anything inside the machine are its own. The port uses
      * the machine's working directory when the caller names none.
      */
-    const spawn = await computers.how(id, {
+    const spawn = await askMachine(options, id, 'agent', () => computers.how(id, {
       command: options.command,
       ...(options.args === undefined ? {} : { args: options.args }),
       ...(options.env === undefined ? {} : { env: options.env }),
-    });
+    }));
     if (spawn === undefined) throw new Error(`There is no computer called ${id}`);
     return spawn;
   };
@@ -389,6 +517,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
   const open = (): Promise<{ connection: AcpConnection; sessionId: string }> => {
     if (ctx.opening !== undefined) return ctx.opening;
     ctx.loading = true;
+    ctx.failedOpen = undefined;
     /*
      * The config every client holds as the open begins, read before the open
      * learns the server's own: `learnModes`, `learnConfigOptions` and
@@ -397,8 +526,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
      */
     const values = { ...ctx.values };
     const startingWith = spawnOf(options);
-    /** The server this open spawned, once it has. */
+    /** The server this open spawned, once it has, with what it ran. */
     let made: AcpConnection | undefined;
+    let ran: { command: string; path: string | undefined } | undefined;
     /** This opening's custody of the seat's ACP child (#34599), held from admission until its child's end is recorded. */
     let custody: Custody | undefined;
     // Install the pending identity before the opening body can reach placement.
@@ -455,6 +585,11 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         }
         custody = held;
       }
+      // A machine's PATH is the machine's, which this host does not know.
+      ran = {
+        command: moved?.command ?? options.command,
+        path: moved === undefined ? start.env?.PATH ?? options.env?.PATH ?? process.env.PATH : undefined,
+      };
       let connection: AcpConnection;
       let escaped: import('node:child_process').ChildProcess | undefined;
       let setupFailed = false;
@@ -476,14 +611,24 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         ...(moved !== undefined
           ? { args: moved.args }
           : options.args === undefined ? {} : { args: options.args }),
-        ...(moved?.env !== undefined
-          ? { env: moved.env }
-          : moved === undefined && options.env !== undefined ? { env: {
-            ...options.env,
-            ...(custody?.spawnGuard === undefined ? {} : { HAB_ACP_SPAWN_GUARD: JSON.stringify({
-              ...custody.spawnGuard, fd: 3, opening: custody.opening,
-            }) }),
-          } } : {}),
+        /*
+         * On this host the agent's own variables go over the preset's, so the
+         * commands it runs reach the shell authentication helper. In a machine
+         * only the machine's are used: the helper's socket is this host's.
+         * The spawn guard the host projects goes last, so nothing a record or
+         * the helper names can stand in for it (#34599).
+         */
+        ...(moved !== undefined
+          ? (moved.env === undefined ? {} : { env: moved.env })
+          : (options.env === undefined && start.env === undefined
+            ? {}
+            : { env: {
+              ...(options.env ?? {}),
+              ...(start.env ?? {}),
+              ...(custody?.spawnGuard === undefined ? {} : { HAB_ACP_SPAWN_GUARD: JSON.stringify({
+                ...custody.spawnGuard, fd: 3, opening: custody.opening,
+              }) }),
+            } })),
         ...(moved?.cwd !== undefined ? { cwd: moved.cwd } : moved === undefined ? { cwd } : {}),
         handlers: {
           update: ctx.sessionUpdate,
@@ -598,6 +743,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * HTTP server unless the deployment turned that off or the machine the
        * session runs in cannot reach them.
        */
+      const left = new Map<string, string>();
       const servers = await serversFor(
         start,
         toolsServer,
@@ -605,7 +751,19 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         options.hostTools !== false,
         moved === undefined ? undefined : machineIdOf(start),
         (line: string, level?: LogLevel) => options.log?.(line, level),
+        (name, why) => left.set(name, why),
+        (name, server) => proxyOf(ctx, name, server),
+        (answer) => { ctx.hostTools = answer; },
       );
+      /*
+       * The configured servers as customizations, so a targeted token can name
+       * one (the host looks a target up among them). `starting` until the
+       * server answers the open, `error` for one this server could not take.
+       * The host's own tools are not among them: their token is the host's.
+       */
+      publishServers(ctx, Object.keys(start.mcpServers ?? {}), (name) => left.has(name)
+        ? { kind: 'error', error: { errorType: 'mcpServerFailed', message: left.get(name) } }
+        : { kind: 'starting' });
       /*
        * The conversation to continue: the one this session already had when
        * its server died, or else the one a resume named. Both go through the
@@ -719,6 +877,12 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * agent-pi do. Without this a client is never offered a model.
        */
       assertCurrent();
+      /*
+       * Opened with every server it was handed, which is the last thing ACP
+       * says about them: `ready` now is the truthful moment, and nothing
+       * later moves it.
+       */
+      publishServers(ctx, ctx.servers.map((one) => String(one.name)), (name, was) => was.kind === 'starting' ? { kind: 'ready' } : was);
       ctx.start.onHandshake?.();
       /*
        * The catalogue's record starts here, where the server has named the
@@ -778,6 +942,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
       if (ctx.opening === pending) ctx.opening = undefined;
       if (made === undefined) return;
       if (ctx.successfulOpening?.connection === made) ctx.successfulOpening = undefined;
+      ctx.failedOpen = { connection: made, command: ran?.command ?? options.command, path: ran?.path };
       if (ctx.live === made) ctx.live = undefined;
       void made.close();
     });

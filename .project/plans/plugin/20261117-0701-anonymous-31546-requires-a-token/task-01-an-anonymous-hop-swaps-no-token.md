@@ -1,6 +1,6 @@
 ---
 title: An anonymous hop swaps no token
-status: implemented
+status: done
 depends: []
 layer: "tunnel-devtunnel"
 refs:

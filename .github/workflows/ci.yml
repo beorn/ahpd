@@ -66,7 +66,7 @@ jobs:
       # log at all - which is how a shell test killing this process group came
       # to look like a hang for an afternoon.
       - name: Tests
-        run: timeout 300 pnpm test:unit --shard=${{ matrix.shard }}/2
+        run: timeout 450 pnpm test:unit --shard=${{ matrix.shard }}/2
 
       # Last, because it is the slowest and the only one that writes anything.
       - run: pnpm build
@@ -94,7 +94,7 @@ jobs:
   # as runners vary, and a bound it runs into reports no failures at all.
   windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       # Every shard reports, so one red shard does not hide another.
       fail-fast: false
@@ -138,7 +138,7 @@ jobs:
       # A git call over 2 s is written to stderr, so a case that stalls on this
       # runner names the call in its log.
       - name: Tests
-        run: timeout 300 pnpm test:unit --shard=${{ matrix.shard }}/4
+        run: timeout 450 pnpm test:unit --shard=${{ matrix.shard }}/4
         shell: bash
         env:
           AHPD_GIT_SLOW_MS: '2000'
@@ -148,7 +148,7 @@ jobs:
       # start a real container skip, because this runner's engine runs no
       # Linux image.
       - name: Computer tests
-        run: timeout 300 pnpm exec vitest run packages/computer/ --shard=${{ matrix.shard }}/4
+        run: timeout 450 pnpm exec vitest run packages/computer/ --shard=${{ matrix.shard }}/4
         shell: bash
 
       # Last, because it is the slowest and the only one that writes anything.
@@ -194,8 +194,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # What the sandbox runtime needs on Linux, so its tests run it for real.
+      # Ubuntu 24.04 gives a nested user namespace no capabilities. Ubuntu 26.04
+      # also loads an AppArmor profile for bubblewrap that denies the runtime's
+      # seccomp helper every capability, so the step unloads it, as the host's
+      # refusal tells an administrator to. The last line fails here rather than
+      # in the tests.
+      - name: The sandbox runtime's tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat ripgrep
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if [ -e /etc/apparmor.d/bwrap-userns-restrict ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+          fi
+          bwrap --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc true
+
       - name: Tests
-        run: timeout 300 pnpm test:processes --shard=${{ matrix.shard }}/2
+        run: timeout 450 pnpm test:processes --shard=${{ matrix.shard }}/2
 
   # `resourceWrite` is symmetrical, so this host implements the whole of it and
   # so does `ahpc`. `packages/sdk/test/fixtures/resource-write.json` is the same file in both

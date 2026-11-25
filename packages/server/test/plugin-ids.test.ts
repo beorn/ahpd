@@ -1,4 +1,7 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { IMPORT_CASE_MS } from '../../../tools/wait.ts';
+
+vi.setConfig({ testTimeout: IMPORT_CASE_MS });
 
 /*
  * The id each plugin this repository ships exports: its package name without

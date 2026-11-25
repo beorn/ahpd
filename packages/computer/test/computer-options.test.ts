@@ -2,11 +2,15 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { loadPlugins } from '../../server/src/plugins.js';
 import { echo } from '../../../examples/echo/agent.js';
 import { closeAll, keeping } from './support/closing.js';
 import manifest from '../package.json' with { type: 'json' };
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * The plugin's options, held to the schema its manifest declares.

@@ -1,6 +1,6 @@
 ---
 title: A stopped row lists its chats
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

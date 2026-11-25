@@ -1,6 +1,6 @@
 ---
 title: An install takes a listed version
-status: implemented
+status: done
 depends: [task-01-the-daemon-keeps-the-list-on-disk.md]
 layer: "server"
 refs:

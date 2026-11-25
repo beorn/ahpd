@@ -14,7 +14,10 @@ import type { HostOptions } from '../../sdk/src/types/host.js';
 import type { Peer } from '../../sdk/src/types/rpc.js';
 import type { Principal, Users } from '../../sdk/src/types/users.js';
 import type { Usage, UsageEntry, UsageTotal } from '../../sdk/src/types/usage.js';
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * The up time a machine is charged for.

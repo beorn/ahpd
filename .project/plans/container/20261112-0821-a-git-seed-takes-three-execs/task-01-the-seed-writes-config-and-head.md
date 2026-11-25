@@ -1,6 +1,6 @@
 ---
 title: The seed writes config and HEAD
-status: implemented
+status: done
 depends: []
 layer: "computer"
 refs:

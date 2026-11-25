@@ -256,6 +256,17 @@ it('passes the _meta the server answered opening the conversation through on the
   expect((await start(silent, 'meta-none')).session.sessionState()._meta).toBeUndefined();
 });
 
+// #38499: whether the session was offered the host's tools sits beside the server's own word, which stays untouched.
+it('puts the host-tools answer beside the server\'s own opening _meta, never into it', async () => {
+  const { agent } = backend(['--says-meta']);
+  const tools = { url: 'http://127.0.0.1:4242/ahp-mcp/one', token: 't-kn', setTools: () => {}, close: () => {} };
+  const opened = await start(agent, 'meta-tools', { toolsServer: () => tools });
+  expect(opened.session.sessionState()._meta).toEqual({
+    fixture: { answered: 'session/new' },
+    'ahpd/hostTools': { available: true },
+  });
+});
+
 it('tells the host once the server has named its models', async () => {
   const { agent } = backend();
   let told = 0;
@@ -406,6 +417,8 @@ describe('the MCP servers a session is opened with', () => {
       url: 'http://127.0.0.1:4242/ahp-mcp/one',
       headers: [{ name: 'authorization', value: 'Bearer t-kn' }],
     }]);
+    // The session says so itself, for a client deciding whether to count on them (#38499).
+    expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools']).toEqual({ available: true });
   });
 
   it('leaves the host\'s tools out where the deployment said hostTools: false', async () => {
@@ -416,6 +429,8 @@ describe('the MCP servers a session is opened with', () => {
     await until(() => watch.endings().length > before);
 
     expect(opened(log)).toEqual([]);
+    expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools'])
+      .toEqual({ available: false, reason: 'Host tools are turned off for this agent.' });
   });
 
   it('leaves the host\'s own tools out of a server that takes none over HTTP, and says which', async () => {
@@ -429,6 +444,8 @@ describe('the MCP servers a session is opened with', () => {
     // refuses the others refuses this one, and says so the same way.
     expect(opened(log)).toEqual([]);
     expect(said).toEqual(['host: this ACP server takes no MCP server over HTTP, so it was left out']);
+    expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools'])
+      .toEqual({ available: false, reason: 'This ACP server takes no MCP server over HTTP.' });
   });
 
   it('keeps one endpoint of the host\'s own across a server that died', async () => {
@@ -464,6 +481,61 @@ describe('the MCP servers a session is opened with', () => {
       { name: 'files', command: 'mcp-files', args: ['--root', '/tmp'], env: [{ name: 'KEY', value: 'k-1' }] },
       { type: 'http', name: 'api', url: 'https://example.test/mcp', headers: [{ name: 'authorization', value: 'Bearer k-2' }] },
     ]);
+  });
+
+  /** The MCP servers a session publishes, by name, with their state. */
+  const published = (session: Session): Record<string, Bag> => Object.fromEntries(session.customizations()
+    .filter((one) => one.type === 'mcpServer')
+    .map((one) => [String(one.name), one]));
+
+  /** The states each `customizationsChanged` said a server was in, in order. */
+  const statesSaid = (watch: Watcher, name: string): string[] => watch.actions
+    .filter((one) => one.action.type === 'session/customizationsChanged')
+    .map((one) => (one.action.customizations as Bag[]).find((c) => c.type === 'mcpServer' && c.name === name))
+    .filter((one): one is Bag => one !== undefined)
+    .map((one) => String((one.state as Bag).kind));
+
+  it('publishes each configured server as a customization, starting until the open answers and ready after', async () => {
+    const { agent } = withLog();
+    const { session, watch } = await start(agent, 'published', { mcpServers: servers, toolsServer: () => hostTools });
+    await runTurn(session, watch, 't1', 'hi');
+
+    // What a targeted token names: the id the host looks a target up by.
+    expect(published(session)).toEqual({
+      files: { type: 'mcpServer', id: 'acp-internal:/mcp/files#mcp=files', name: 'files', uri: 'acp-internal:/mcp/files', state: { kind: 'ready' } },
+      api: { type: 'mcpServer', id: 'acp-internal:/mcp/api#mcp=api', name: 'api', uri: 'acp-internal:/mcp/api', state: { kind: 'ready' } },
+    });
+    // The host's own tools are not a server a client signs in to.
+    expect(Object.keys(published(session))).not.toContain('host');
+    // Collapsed, because a commands update says the whole list again unchanged.
+    expect(statesSaid(watch, 'api').filter((kind, at, all) => all[at - 1] !== kind)).toEqual(['starting', 'ready']);
+  });
+
+  it('publishes a server this ACP server could not take as an error that says why', async () => {
+    const { agent } = withLog({}, ['--no-http-mcp']);
+    const { session, watch } = await start(agent, 'published-nohttp', { mcpServers: servers });
+    await runTurn(session, watch, 't1', 'hi');
+
+    expect(published(session)['api']?.state).toEqual({
+      kind: 'error',
+      error: { errorType: 'mcpServerFailed', message: 'This ACP server takes no MCP server over HTTP.' },
+    });
+    expect(published(session)['files']?.state).toEqual({ kind: 'ready' });
+  });
+
+  it('keeps each server\'s id across a server that died and a load, so a targeted token stays aimed', async () => {
+    const { agent } = withLog();
+    const first = await start(agent, 'stable', { mcpServers: servers });
+    await runTurn(first.session, first.watch, 't1', 'hi');
+    const ids = Object.values(published(first.session)).map((one) => one.id);
+    await runTurn(first.session, first.watch, 't2', 'die now');
+    await runTurn(first.session, first.watch, 't3', 'hi again');
+    expect(Object.values(published(first.session)).map((one) => one.id)).toEqual(ids);
+    expect(Object.values(published(first.session)).map((one) => (one.state as Bag).kind)).toEqual(['ready', 'ready']);
+
+    const loaded = await start(agent, 'stable-loaded', { mcpServers: servers, resume: 'old-one' });
+    await runTurn(loaded.session, loaded.watch, 't1', 'hi');
+    expect(Object.values(published(loaded.session)).map((one) => one.id)).toEqual(ids);
   });
 
   /*
@@ -2161,7 +2233,7 @@ it('says how long a call ran at its completion, and reads back with the same num
 });
 
 it('measures a call from the first update about it to the one that finished it', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   mapUpdate(turn, toolCall('c1', 'pending'), 1_000);
   mapUpdate(turn, toolCallUpdate('c1', 'in_progress'), 2_000);
   mapUpdate(turn, toolCallUpdate('c1', 'completed'), 5_000);
@@ -2172,7 +2244,7 @@ it('measures a call from the first update about it to the one that finished it',
 });
 
 it('measures a call whose row a permission question opened from its first update', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   // The row a `session/request_permission` opened, left the way the session
   // leaves it for the mapping to find: a call nobody has heard anything about.
   turn.calls.set('c1', { toolCallId: 'c1', toolName: 'rm', displayName: 'Remove', readied: true, asked: true });
@@ -2193,7 +2265,7 @@ it('measures a call whose row a permission question opened from its first update
 });
 
 it('measures a call that arrives already finished as one moment', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const sent = mapUpdate(turn, toolCall('c1', 'completed'), 7_000);
   const complete = sent.find((one) => one.type === 'chat/toolCallComplete');
   const held = metaOf(turn.parts[0]?.toolCall as Bag);
@@ -2202,7 +2274,7 @@ it('measures a call that arrives already finished as one moment', () => {
 });
 
 it('says a call\'s kind from the kind ACP reports for it, for a client to draw it by', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const kindOf = (id: string, kind: string): unknown => {
     const sent = mapUpdate(turn, { sessionUpdate: 'tool_call', toolCallId: id, title: id, kind, status: 'pending' } as unknown as SessionUpdate, 1_000);
     return (sent.find((one) => one.type === 'chat/toolCallStart')?._meta as Bag | undefined)?.toolKind;
@@ -2217,7 +2289,7 @@ it('says a call\'s kind from the kind ACP reports for it, for a client to draw i
 });
 
 it('stamps nothing for an update a session load replayed', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   // No `at`: the update carries no receive time of its own, and the replay's
   // own clock would time a call by when this process read about it.
   const sent = mapUpdate(turn, toolCall('c1', 'pending'));
@@ -2233,7 +2305,7 @@ it('stamps nothing for an update a session load replayed', () => {
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/copilotToolDisplay.ts#L895-L898
  */
 it('says a failed call failed in its past tense, and a success by its name', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   mapUpdate(turn, toolCall('c1', 'in_progress'));
   mapUpdate(turn, toolCall('c2', 'in_progress'));
   const failed = mapUpdate(turn, toolCallUpdate('c1', 'failed')).find((one) => one.type === 'chat/toolCallComplete');
@@ -2250,7 +2322,7 @@ it('says a failed call failed in its past tense, and a success by its name', () 
  * https://github.com/microsoft/agent-host-protocol/blob/v1.0.0/types/channels-chat/state.ts#L1045-L1053
  */
 it('answers a resource the agent linked or embedded as a content reference part', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const said = (content: unknown): Bag[] =>
     mapUpdate(turn, { sessionUpdate: 'agent_message_chunk', content } as unknown as SessionUpdate);
   said({ type: 'text', text: 'Here: ' });
@@ -2318,7 +2390,7 @@ it('leaves out an image and audio the host keeps nothing of, and names an embedd
 });
 
 it('answers an image that names its source as a content reference part', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const drawn = mapUpdate(turn, {
     sessionUpdate: 'agent_message_chunk',
     content: { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png', uri: 'file:///tmp/chart.png' },
@@ -2340,7 +2412,6 @@ it('titles a call\'s terminal by the call, with how its command ended once it ha
     turnId: 't1',
     parts: [],
     calls: new Map(),
-    opening: [],
     reach: {
       within: () => false,
       changed: () => {},
@@ -2373,7 +2444,7 @@ it('titles a call\'s terminal by the call, with how its command ended once it ha
  * https://agentclientprotocol.com/protocol/schema#contentchunk
  */
 it('opens a new part for a chunk of a new message, and runs on within one', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const said = (text: string, messageId: string): Bag[] =>
     mapUpdate(turn, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, messageId } as unknown as SessionUpdate);
   said('First ', 'm1');

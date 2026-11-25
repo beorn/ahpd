@@ -1,6 +1,6 @@
 ---
 title: An entry error names its file
-status: implemented
+status: done
 depends: []
 layer: "computer"
 refs:

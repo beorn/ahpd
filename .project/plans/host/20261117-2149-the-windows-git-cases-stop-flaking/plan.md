@@ -1,7 +1,7 @@
 ---
 title: The Windows git cases stop failing at random
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -63,8 +63,8 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 | Task | Status | Depends on |
 | --- | --- | --- |
 | [01 - the git watch reads once when armed](task-01-the-git-watch-reads-once-when-armed.md) | dropped | - |
-| [02 - the moved-tree case waits by the clock](task-02-the-moved-tree-case-waits-by-the-clock.md) | implemented | - |
-| [03 - a slow git call says so](task-03-a-slow-git-call-says-so.md) | implemented | - |
+| [02 - the moved-tree case waits by the clock](task-02-the-moved-tree-case-waits-by-the-clock.md) | done | - |
+| [03 - a slow git call says so](task-03-a-slow-git-call-says-so.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -73,6 +73,7 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** task 01 is `dropped`, and tasks 02 and 03 are `implemented` on 2026-11-17, on the branch `host/20261117-2149-the-windows-git-cases-stop-flaking`.
 - **Next action:** Softov's review; the CI runs after the merge are the check.

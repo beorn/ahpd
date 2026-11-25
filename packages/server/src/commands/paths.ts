@@ -46,7 +46,7 @@ const API_WAIT_MS = 10_000;
  * Written out rather than imported from `http.ts`, which reaches this file
  * through the commands a served request runs.
  */
-const API_PREFIX = '/api';
+export const API_PREFIX = '/api';
 
 /**
  * The line an add prints: the folder, the start folder before it when the add
@@ -92,7 +92,7 @@ export const reachable = (api: string): string => {
  * its API presents. A record an older daemon wrote has none, and the call is
  * made without one: the refusal is then the daemon's own.
  */
-const tokenIn = (connectUrl: string): string | undefined => {
+export const tokenIn = (connectUrl: string): string | undefined => {
   try {
     return new URL(connectUrl).searchParams.get('tkn') ?? undefined;
   }

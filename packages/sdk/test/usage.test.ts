@@ -389,6 +389,17 @@ it('reads a pool\'s records newest first, across a month boundary', async () => 
     .toHaveLength(1);
 });
 
+it('reads a record\'s tags back, and a line edited by hand as tags alone', async () => {
+  const usage = fileUsage({ folder });
+  await usage.record(modelUse('2026-10-04T10:00:00.000Z', ['p'], {}, { tags: ['work', 'main'] }));
+  await usage.record(modelUse('2026-10-04T11:00:00.000Z', ['p'], {}, { tags: ['ok', 7, 'ok', ''] as unknown as string[] }));
+  await usage.record(modelUse('2026-10-04T12:00:00.000Z', ['p'], {}, { tags: 'work' as unknown as string[] }));
+
+  const again = fileUsage({ folder });
+  const found = await again.records('p', month.from, month.until);
+  expect(found.map((one) => one.tags)).toEqual([undefined, ['ok'], ['work', 'main']]);
+});
+
 it('answers no records for a pool nothing was charged to', async () => {
   const usage = fileUsage({ folder });
   await usage.record(modelUse('2026-10-04T10:00:00.000Z', ['p'], { input: 10 }));

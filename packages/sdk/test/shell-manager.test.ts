@@ -149,6 +149,9 @@ const host = (over: { computers?: ComputerPort; sessions?: Map<string, unknown>;
     log: () => {},
     closed: false,
     fire: () => {},
+    // No setting in these cases: a shell is opened with the environment it
+    // would have had before there was a helper.
+    shellAuth: { envFor: () => ({}) },
     dirOfFile: () => undefined,
     refreshWatched: async () => {},
     keepExited: (chat: string, key: string, session: string) => { kept.push({ chat, key, session }); },

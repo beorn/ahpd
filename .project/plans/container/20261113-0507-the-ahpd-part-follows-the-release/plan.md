@@ -1,7 +1,7 @@
 ---
 title: The ahpd part follows the last release
 domain: container
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -22,7 +22,7 @@ refs:
 
 The ahpd part in a machine, and the ahpd installed on an ssh box, run the last release that npm serves.
 The weekly parts bump proposes it, as it proposes every other part, so nobody moves the pin by hand.
-The same version as the host is the brief [the-ahpd-part-is-the-releases-own-build.md](../../../briefs/the-ahpd-part-is-the-releases-own-build.md), for 0.16.
+The same version as the host is the plan [container/20261125-0130](../20261125-0130-the-ahpd-part-is-the-releases-own/plan.md), for 0.16.
 
 ## Reconnaissance
 
@@ -64,7 +64,7 @@ parts-bump.yml weekly -> parts-bump.mjs -> npm dist-tags of @ahpd/server -> vers
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The bump moves the ahpd part](task-01-the-bump-moves-the-ahpd-part.md) | implemented | - |
+| [01 - The bump moves the ahpd part](task-01-the-bump-moves-the-ahpd-part.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -74,7 +74,7 @@ parts-bump.yml weekly -> parts-bump.mjs -> npm dist-tags of @ahpd/server -> vers
 ## Resume state
 
 - **Done so far:** task 01 is implemented on 2026-11-13, as [implemented.md](implemented.md) says.
-- **Next action:** review the PR, then run `parts-bump.yml` by hand after it merges.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `newerThan` stays as it is for every other part. Only the ahpd part takes a prerelease.
 

@@ -1,6 +1,6 @@
 ---
 title: move_session reorganizes sessions
-status: implemented
+status: done
 depends: []
 layer: "sdk, docs"
 refs:

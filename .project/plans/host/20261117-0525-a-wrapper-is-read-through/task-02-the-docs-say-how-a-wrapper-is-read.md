@@ -1,6 +1,6 @@
 ---
 title: The docs say how a wrapper is read
-status: implemented
+status: done
 depends: [task-01-the-approver-reads-through-a-wrapper.md]
 layer: "docs"
 refs:

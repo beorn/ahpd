@@ -25,6 +25,10 @@ export interface ChangesetFile {
   id: string;
   edit: FileEdit;
   reviewed?: boolean;
+  /** The protocol's `ChangesetFileStatus` bits: `1` while an agent is editing the file. */
+  status?: number;
+  /** Names the two sides this row describes; a client echoes it on an operation's target. */
+  nonce?: string;
   /**
    * Server-defined metadata, the protocol's opaque bag.
    *
@@ -129,6 +133,8 @@ export interface ChangesetOperationTarget {
   side?: 'before' | 'after';
   /** Present iff `kind` is `range`. Lines are 1-based, as the protocol has them. */
   range?: { startLine: number; startColumn?: number; endLine: number; endColumn?: number };
+  /** The {@link ChangesetFile.nonce} of the row the client showed, which the host checks. */
+  nonce?: string;
 }
 
 /**
@@ -402,6 +408,11 @@ export const BASELINE_TURN = '0';
  * installed, against a directory that may not be a repository. A host given
  * none advertises no changesets, which is a true answer rather than an empty
  * screen.
+ *
+ * Every `session` the host hands a source is the session's id, `idOf` of its
+ * channel URI, and never the URI itself. The checkpoint refs are named by it,
+ * and a source that keeps what a session's tools wrote keys it the same way,
+ * so the two halves of a session's changes are found under one name.
  */
 export interface ChangesetSource {
   /**
@@ -552,6 +563,10 @@ export interface ChangesetSource {
    * caller waits for, so a `before` is read before the write that follows it.
    */
   observe?(dir: string, session: string, turnId: string, path: string, phase: 'before' | 'after', text?: string): Promise<void> | void;
+  /** Whether an agent is editing a file: {@link observe} was told `before` and not yet `after`. */
+  editing?(path: string): boolean;
+  /** A turn ended: what it left being edited is let go of, and those paths are answered. */
+  editsEnded?(session: string, turnId: string): string[];
   /**
    * A file a *person* is being asked to approve, and the text the tool would leave.
    *

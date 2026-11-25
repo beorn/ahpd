@@ -4,7 +4,13 @@ Seeded 2026-11-24 from #38158 (@dev/6, per @cto 193269b5 / b443133f); completed 
 @dev/1 from the 70-patch rebase census (#38120).
 
 This list measures the operator's "zero patches" target. One line is one patch carried on
-`hh/integration` over `upstream/main` (ahpio/ahpd): commit(s) · what · why (issue) · upstream status.
+beorn `main` over `upstream/main` (ahpio/ahpd): commit(s) · what · why (issue) · upstream status.
+
+Moved from `hh/integration` to `main` on 2026-11-25 by @dev/6 (@cto 882d5e88): `main` is the release line, so the
+list of what we carry lives here. Every row names commits on `main`. A row whose change is still only on
+`hh/integration` says `not on main: <sha>, awaiting its author's PR` and is not counted as carried. A patch that
+reached `main` under a different hash names the `main` commit, with the `hh/integration` one after it.
+`hh/integration` is retired by its owner under the branch-cleanup rule once no commit of it is missing from `main`.
 
 Upstream status is one of:
 - `PR pending card` — upstream text is ready and is posted only on the operator's upstream card;
@@ -37,6 +43,20 @@ Upstream status is one of:
   intent and two waits that raced our slower start`. The repairs are rebase artefacts, not
   behaviour; they are not counted as patches.
 
+### Re-measured 2026-11-25 (@dev/1, #38436 first pass)
+
+- measured on `origin/main` at `8b2925b18` over `upstream/main` `ca66aafab`: **108 non-merge
+  commits carried, 0 upstream-equivalent** (`git cherry upstream/main origin/main` is `+` for all
+  108), so this pass offers no drop: nothing we carry has reached upstream by patch-id.
+- 100 shas were already named here. The 29 whose change had no row are added below.
+- Of the 16 named shas that are not ancestors of `main`, 9 are hh/integration twins already paired
+  with their main commit on the row itself; the rest are the five #38233 commits, `c6f74e9d0` and
+  `535303cf5`, each already marked awaiting its author's PR.
+- 3 more hh/integration-only fixups had no row and landed in this pass: `7eb7aae9a` with the #38233
+  row (PR #22), `173a6ff76` and `c24cccacf` under Rebase repairs and test-only fixups (PR #24).
+- The 29 newly rowed commits split 24 `upstream ask not written` and 5 `not upstreamable` (2 of them
+  the users-read census harness, 3 our own process and ledger docs). No new upstream card is implied.
+
 ## Patches
 
 ### Host: chat binding and conversation provenance
@@ -62,8 +82,8 @@ Upstream status is one of:
 - `d0e6bf9b5`, `2453628ee`, `e107907ed` · scope nested child sessions by hub and inner id, dispose joined sessions from their durable scope, with the two-host test · #37250 · upstream ask not written (`joinedSessionIds` absent upstream)
 - `780688f0f` · avoid duplicate provider assignments and track fork identity honestly · #34955 · upstream ask not written
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
-- `27f6093df` + its adoption undo · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses takes the claim back so the row is nobody's for the harness that can open it · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
-- `c6f74e9d0` · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
+- not on main: `c6f74e9d0`, awaiting its author's PR · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
+- not on main: `27f6093df`, `c46e0acf0`, awaiting their author's PR · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses puts the row back nobody's · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
 
 ### acp: openings, native identity and custody
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written
@@ -71,8 +91,8 @@ Upstream status is one of:
 - `3400a70d0`, `1d14f2ce8`, `322b91d98`, `e5fb82b7a` · project only the current successful native chat identity, checkpoint it per start, and preserve identity capabilities and opening failures · #32996 · not upstreamable as written: same `HAB_ACP_*` protocol (`successfulOpening` absent upstream)
 - `4ec4c8a2f` · retain shared capabilities with isolated launch options · #32996 · upstream ask not written
 - `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · not upstreamable as written: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
+- not on main: `4ba34f69e`, awaiting its author's PR · the custody record carries `spawnedAt` and the spawning turn id from its `spawning` write through `ended`, so hab fences a hosted child's turn events without the file's mtime · #38456 · not upstreamable as written: same `HAB_ACP_*` custody record
 - `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · not upstreamable as written: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
-- `4ba34f69e` · the custody record carries `spawnedAt` and the spawning turn id from its `spawning` write through `ended`, so hab fences a hosted child's turn events without the file's mtime · #38456 · not upstreamable as written: same `HAB_ACP_*` custody record
 - `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · upstream ask not written (`openedMeta` absent upstream)
 
 ### acp / server: failure handling and retries
@@ -93,15 +113,34 @@ Upstream status is one of:
 - `31d558b65`, `2a73aba1b`, `ab933f119`, `f3f3f3937`, `0ac4f15c2` · re-derive the usage JSONL append source from Ag (three provenance pins), preserve the zero-tail repair, and re-read the append boundary so a later record is never glued to a zero tail · #35067, #33944 · not upstreamable: reads hh's inhab JSONL journals and pins an Ag commit (`inhab-jsonl.provenance.json`), a format upstream does not have
 
 ### Host: a record's writes and a person's delegation
-- `6dc16d309`, `ef7eb440a`, `50af536bbc`, `25d15c7dec`, `d6e8b735d` · count every write on an agent record and let a write say which revision it read; keep the secrets a saved row shows; let a plugin write a `user:`-owned record only while that owner lists it in `delegates` on the record, keeping the owner, logged after the write lands · #38233 (@cto dea0a98b) · upstream ask not written (host-side owner rule and write count; no upstream issue names either)
+- `326837da6` (PR #22; hh/integration `6dc16d309`, `ef7eb440a`, `50af536bbc`, `25d15c7dec`, `d6e8b735d`, `7eb7aae9a`) · count every write on an agent record and let a write say which revision it read; keep the secrets a saved row shows; let a plugin write a `user:`-owned record only while that owner lists it in `delegates` on the record, keeping the owner, logged after the write lands · #38233 (@cto dea0a98b) · upstream ask not written (host-side owner rule and write count; no upstream issue names either)
 
 ### Services: machine-local switches
-- `67799d139` · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
-- `1a7e8f52b`, `6e6f65762` · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · upstream ask not written (new package)
-- `163563a48`, `4791459b9`, `54e5d3de0`, `5ce94713c`, `849057267`, `076967b87` · `@ahpd/services` as a plugin: `x-ahpd/services/{list,put,remove,start,stop,restart,logs}` under the `services` grants (every caller remote: a handler is told no transport), drift alerts `services-drift:<what>` at start and every 5 minutes (names process-compose holds vs the `-f` files, file sha256 vs the hash last written or acknowledged in `services/drift.json`); plus `ahpd secrets exec` in `packages/server` (`commands/secrets.ts`, read in `main.ts` before the program), the wrapper process-compose starts a program through: reads `vault.json` with no daemon, values only in the child's environment, a missing value starts nothing · #38277 slice 2 (@cto) · upstream ask not written (new package; the server half is one new file and five lines of `main.ts`)
+- `d82d697ed` (hh/integration `67799d139`) · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
+- `9b7bd1b3f` (hh/integration `1a7e8f52b`), `4027fc96d` (hh/integration `6e6f65762`) · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · upstream ask not written (new package)
+- `178dc5f65` (hh/integration `163563a48`), `52344b179` (hh/integration `4791459b9`), `540754037` (hh/integration `54e5d3de0`), `54fa98c0c` (hh/integration `5ce94713c`), `acb6a760a` (hh/integration `849057267`), `fccbe345e` (hh/integration `076967b87`) · `@ahpd/services` as a plugin: `x-ahpd/services/{list,put,remove,start,stop,restart,logs}` under the `services` grants (every caller remote: a handler is told no transport), drift alerts `services-drift:<what>` at start and every 5 minutes (names process-compose holds vs the `-f` files, file sha256 vs the hash last written or acknowledged in `services/drift.json`); plus `ahpd secrets exec` in `packages/server` (`commands/secrets.ts`, read in `main.ts` before the program), the wrapper process-compose starts a program through: reads `vault.json` with no daemon, values only in the child's environment, a missing value starts nothing · #38277 slice 2 (@cto) · upstream ask not written (new package; the server half is one new file and five lines of `main.ts`)
+
+### Deploy: a customer host install and a git deploy driver
+- `250b9a040`, `660c68dbd`, `e67e9ddc6`, `f4e97111d`, `b7f54963b`, `16fe9d2ed`, `1676d7a99`, `777d90ebe` · a customer host install manifest and plan, apply and uninstall from it, a step's exec modes, a resumable record, keep-vs-purge, named refusals for thrown effects, one `activateRelease` that journals the switch, an explicit install root so `$AHPD_HOME` is honoured, npm's own sha512 integrity beside sha256, and root tsc back to its 19-error baseline · #38280 (@dev/5) · upstream ask not written (generic installer; no upstream issue names it)
+- `dea9643b1`, `94828e260`, `902022937`, `8cec6324d`, `391703390` · a git deploy driver and the `ahpd deploy` verb: a step's own environment and timeout, gates before the switch, a lock that names its process, `started` answered only once the child holds the lock, the child stopped before refusing, and the driver served to a host as two AHP methods · #38276 (@dev/3) · upstream ask not written (generic deploy driver)
+
+### Host: plugin grants reach every path
+- `fe791140b`, `2c18ddc14`, `e838dfb01`, `3a38b2fa6`, `68a74eee8`, `dcc52429c`, `a58415897`, `bdf1b98bb` · every grant refusal logged once at the boundary, `-32009` logged once rather than at four sites, one `heldToGrants` check plus four more paths a plugin skipped its grants with no users directory, a plugin's own connection held to its entry's grants, a refusal line escaping what the caller chose with capped windows, a transcript excerpt left off for `session:read` logged once, and a `host.connect()` connection always carrying `principal.plugin` · #38446 (@cto rulings; PRs #8-#11) · upstream ask not written (host-side grant enforcement)
+- `523f50534`, `e42b06de9` · the users-read census runs git through `gitSync` and counts copies of a line, so a fourth identical read is not lost · #38446 · not upstreamable: the census is our own test harness
+- `ff37e12a2` · the plugins contracts table names grants · #38446 prior art (PR #9) · upstream ask not written (a generic docs table)
+
+### Services: the grants its manifest applies
+- `eac0dabf0`, `31e23c05d` · the services manifest declares the grants `apply()` registers, and a test proves no daemon method, plugin hook or pipe path reaches `localServices` · #38277 · upstream ask not written (same new package as the rows above)
+
+### Our own process docs
+- `c17289eb2`, `4c403b657` · every upstream post gets `/pro` and an independent Fable critique first, and prior art is checked before any ahpd change · #38236 · not upstreamable: our review process
+- `594b14cc8` · this file moves to `main`, since `main` is the release line · #463 · not upstreamable: the fork's own ledger
+
+### Rebase repairs and test-only fixups
+- `dae7f13d4` (PR #24; hh/integration `173a6ff76`, `c24cccacf`) · `@bearly/durable-file` from the registry, and each plugin-route daemon with its own `XDG_CONFIG_HOME` so the store's one-writer fence does not refuse the other three · #38185 · upstream ask not written (test-only; the durable-file change is a rebase repair named under Rebase below)
 
 ### Superseded
-- `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0)
+- `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 (@cto ruling C 1e5710d0) · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0); not on main: `535303cf5`, awaiting its author's PR. Upstream's test "shows a file a shell command wrote in the session's own changeset" (packages/sdk/test/changes-refresh.test.ts) needs these checkpoints and is skipped on `main` with this reason (#463 sync, `0f92e1c41`), so the next sync shows it again
 
 ## PR prepared (not carried)
 
@@ -117,7 +156,7 @@ are not in the patch count; each waits for the operator's upstream card.
 
 ## What is left on the zero-patch target
 
-Measured over the 70 patches of 2026-11-24, and 71 with #38259's `27f6093df` added on 2026-11-25:
+Measured over the 70 patches:
 
 - 1 has an upstream PR posted (#38159, `c6f74e9d0`, ahpio/ahpd#462, 2026-11-24);
 - 1 is superseded (`d17130bbf`, replaced by #38158's `535303cf5`, whose text is also a
@@ -125,7 +164,10 @@ Measured over the 70 patches of 2026-11-24, and 71 with #38259's `27f6093df` add
 - 22 are not upstreamable as written, all for one of two reasons: they speak hab's `HAB_ACP_*` /
   `HAB_ID_TOKEN_FILE` child protocol (17), or they read hh's inhab JSONL journals pinned to an Ag
   commit (5);
-- 47 are absent upstream with no ask written — the real remaining work on the zero-patch target.
+- 46 are absent upstream with no ask written — the real remaining work on the zero-patch target.
+- Re-counted 2026-11-25 over `main` (#38436): the 29 newly rowed patches add 24 asks and 5
+  `not upstreamable`, so the target reads 70 upstream asks plus the 1 prepared, with 27 fork-only.
 
-The honest shape of the target is therefore: 47 upstream asks plus the 1 prepared, and a decision on
+
+The honest shape of the target is therefore: 46 upstream asks plus the 1 prepared, and a decision on
 the 22 fork-protocol patches, which stay ours unless upstream grows hab's protocol.

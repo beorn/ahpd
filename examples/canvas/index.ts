@@ -76,7 +76,7 @@ export const page = (at: Date): string => `<!doctype html>
 export const apply: Plugin['apply'] = (host, options) => {
   const asked = options.origin;
   /** Where the page is reached: at once from `origin`, else once the daemon has bound its port. */
-  let url = typeof asked === 'string' && asked !== '' ? `${new URL(asked).origin}${PREFIX}` : undefined;
+  let uri = typeof asked === 'string' && asked !== '' ? `${new URL(asked).origin}${PREFIX}` : undefined;
   /** The canvases opened before the page had a URL, by chat, to be drawn again with it. */
   const opened = new Map<string, string>();
   const stateOf = (): CanvasState => ({
@@ -84,14 +84,14 @@ export const apply: Plugin['apply'] = (host, options) => {
     extensionId: name,
     canvasId: 'check',
     title: 'Example canvas',
-    ...(url === undefined ? {} : { url }),
+    ...(uri === undefined ? {} : { uri }),
   });
-  if (url === undefined) {
+  if (uri === undefined) {
     host.on('listening', (event) => {
       const origins = originsOf(event.host, event.port);
       const origin = origins.network[0] ?? origins.local[0];
       if (origin === undefined) return;
-      url = `${origin}${PREFIX}`;
+      uri = `${origin}${PREFIX}`;
       // A canvas opened before the page had a URL takes it now, as VS Code
       // draws a canvas again once its source is there.
       for (const resource of opened.values()) host.updateCanvas(resource, stateOf());
@@ -124,13 +124,13 @@ export const apply: Plugin['apply'] = (host, options) => {
     definition: {
       name: 'open_check_canvas',
       title: 'Open Check Canvas',
-      description: 'Open the example canvas beside this chat. Answer: the canvas resource and its URL.',
+      description: 'Open the example canvas beside this chat. Answer: the canvas resource and its URI.',
       inputSchema: { type: 'object', properties: {} },
     },
     run: async (_input, at) => {
       const resource = await host.openCanvas(at.chat, stateOf());
-      if (url === undefined) opened.set(at.chat, resource);
-      return JSON.stringify({ resource, url });
+      if (uri === undefined) opened.set(at.chat, resource);
+      return JSON.stringify({ resource, uri });
     },
   });
 };

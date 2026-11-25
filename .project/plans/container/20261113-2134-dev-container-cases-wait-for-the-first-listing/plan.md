@@ -1,7 +1,7 @@
 ---
 title: Dev container cases wait for the first listing
 domain: container
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -59,7 +59,7 @@ load -> the plugin starts docker ps, not awaited -> the case asks run_in_compute
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - Three cases wait for the listing](task-01-three-cases-wait-for-the-listing.md) | implemented | - |
+| [01 - Three cases wait for the listing](task-01-three-cases-wait-for-the-listing.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -68,7 +68,7 @@ load -> the plugin starts docker ps, not awaited -> the case asks run_in_compute
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the cases that start the fake CLIs for three connects time out on this machine with no fault, as `problems/computer-cases-time-out-on-a-busy-machine.md` says.
 

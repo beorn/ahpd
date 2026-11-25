@@ -26,10 +26,16 @@ export interface Parts {
   sum: () => Bag | undefined;
   /** Tell everybody the running turn what it has cost so far. */
   sayUsage: () => void;
+  /** A usage with the login this run signs in with, in `_meta['ahpd.connectors']`. */
+  withLogin: (usage: Bag) => Bag;
   /** What one `result` cost, as the change in `modelUsage` since the last. */
   costOf: (message: Bag) => Bag | undefined;
   /** Forget the cost baseline: the CLI's running total starts again. */
   newConversation: () => void;
+  /** Start the cost baseline at the total a resumed CLI starts from, by model. */
+  seedCost: (costs: Readonly<Record<string, number>>) => void;
+  /** Charge the next `result` nothing, because the total it starts from is unknown. */
+  costUnknown: () => void;
   /** The session's status, read into the snapshot and into `status`. */
   status: () => number;
   /** Say the session is waiting on one request. */
@@ -125,6 +131,20 @@ export function createParts(ctx: SessionContext): Parts {
     }
   };
 
+  /**
+   * A usage with the login this run signs in with, as `_meta['ahpd.connectors']`.
+   *
+   * A run signs in with one login, and a turn that fails over runs again on
+   * the next, so each run names its own and the host joins the runs' lists.
+   * The host reads each connector's tags into the turn's record. A run on no
+   * login names none.
+   */
+  const withLogin = (usage: Bag): Bag => {
+    const login = ctx.login?.id;
+    if (login === undefined) return usage;
+    return { ...usage, _meta: { ...bag(usage._meta), 'ahpd.connectors': [login] } };
+  };
+
   /** The sum so far, in the protocol's spelling, or nothing if no call reported. */
   const sum = (): Bag | undefined => (Object.keys(spent).length === 0 ? undefined : usageOf({ ...spent }, ctx.ran));
 
@@ -142,8 +162,9 @@ export function createParts(ctx: SessionContext): Parts {
    */
   const sayUsage = (): void => {
     const turn = ctx.active;
-    const used = sum();
-    if (turn === undefined || used === undefined) return;
+    const counted = sum();
+    if (turn === undefined || counted === undefined) return;
+    const used = withLogin(counted);
     turn.usage = mergeLogicalTurnUsage(ctx.resumedFrom?.usage, used);
     ctx.emit('chat', { type: 'chat/usage', turnId: turn.id, usage: used });
   };
@@ -151,13 +172,38 @@ export function createParts(ctx: SessionContext): Parts {
   /**
    * What `modelUsage` had cost each model at the last `result`.
    *
-   * `modelUsage` and `total_cost_usd` are cumulative per `query()` call, not
+   * `modelUsage` and `total_cost_usd` are cumulative per conversation, not
    * per turn, and each result carries the running total so far. A turn's cost
    * is therefore the change since the last one. Keyed by model because a turn
    * can cross models: a worker on another one adds to its own entry and not to
    * the lead agent's.
+   *
+   * A resumed CLI starts from the total its transcript's last `cost-state`
+   * saved, so a query that resumes starts the baseline there with `seedCost`.
    */
   const paid = new Map<string, number>();
+
+  /**
+   * Whether the next `result` only sets the baseline.
+   *
+   * Set where the query resumes from a total this host cannot read, so the
+   * first `result` reports a spend whose start is unknown: it is charged
+   * nothing, and every `result` after it differences from it.
+   */
+  let unknownStart = false;
+
+  /** Start the baseline at what the CLI resumes from, by model. */
+  const seedCost = (costs: Readonly<Record<string, number>>): void => {
+    paid.clear();
+    unknownStart = false;
+    for (const [model, cost] of Object.entries(costs)) paid.set(model, cost);
+  };
+
+  /** Charge the next `result` nothing and take its figures as the baseline. */
+  const costUnknown = (): void => {
+    paid.clear();
+    unknownStart = true;
+  };
 
   /**
    * Forget the baseline, because the CLI's own total starts again.
@@ -169,7 +215,7 @@ export function createParts(ctx: SessionContext): Parts {
    * reads as a figure that did not go up - billed as nothing until the total
    * climbs back past the old one.
    */
-  const newConversation = (): void => { paid.clear(); };
+  const newConversation = (): void => { paid.clear(); unknownStart = false; };
 
   /**
    * What this `result` cost, as the change in `modelUsage` since the last one.
@@ -192,6 +238,14 @@ export function createParts(ctx: SessionContext): Parts {
   const costOf = (message: Bag): Bag | undefined => {
     const models = bag(message.modelUsage);
     if (Object.keys(models).length === 0) return undefined;
+    if (unknownStart) {
+      unknownStart = false;
+      for (const [model, value] of Object.entries(models)) {
+        const cost = bag(value).costUSD;
+        if (typeof cost === 'number') paid.set(model, cost);
+      }
+      return undefined;
+    }
     let amount = 0;
     let spent = false;
     let guessed = false;
@@ -360,8 +414,8 @@ export function createParts(ctx: SessionContext): Parts {
   };
 
   return {
-    setModifiedAt, endedAt, retitle, usageOf, newTurn, count, sum, sayUsage, costOf,
-    newConversation, inputNeededSet, inputNeededRemoved, openTurn, addPart, holdPart,
+    setModifiedAt, endedAt, retitle, usageOf, newTurn, count, sum, sayUsage, withLogin, costOf,
+    newConversation, seedCost, costUnknown, inputNeededSet, inputNeededRemoved, openTurn, addPart, holdPart,
     stampStart, stampEnd, untimed, addFailure,
     /*
      * `pending` is a question a client or a person is being asked, and a turn is

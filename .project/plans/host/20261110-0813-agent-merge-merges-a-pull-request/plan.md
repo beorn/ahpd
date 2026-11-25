@@ -1,7 +1,7 @@
 ---
 title: Agent Merge merges a pull request
 domain: host
-status: planned
+status: built
 priority: low
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -61,7 +61,7 @@ watch: required checks pass, reviews approved, no conflict -> mergePullRequest a
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The watch merges as allowed](task-01-the-watch-merges-as-allowed.md) | implemented | - |
+| [01 - The watch merges as allowed](task-01-the-watch-merges-as-allowed.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -70,7 +70,7 @@ watch: required checks pass, reviews approved, no conflict -> mergePullRequest a
 ## Resume state
 
 - **Done so far:** task 01. The watch merges a ready pull request when `mergePullRequest` is `always`, or `ifUnchanged` with the local commit unchanged since a repair turn started; `never` stays the default. The method comes from `mergeMethod` among the repository's allowed methods, the head commit is pinned, and a merged pull request ends the folder's watch.
-- **Next action:** none; the plan's only task is implemented and waits for Softov's review.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** ahpd's own repository is merged by Softov by hand; never turn the merge on for it. A repository that requires a merge queue is not merged, and the watch stays. Four `worktrees.test.ts` cases fail under this session's `TMPDIR`, which is inside this checkout, so a folder meant to be outside a repository resolves to this worktree; the failure is environmental.
 

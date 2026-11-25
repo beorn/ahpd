@@ -1,6 +1,6 @@
 ---
 title: set_workspace moves the calling chat
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

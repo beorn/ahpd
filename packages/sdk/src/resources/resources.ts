@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { uriOf } from './fileuri.js';
 import { INVALID_PARAMS, RpcError } from '../rpc.js';
-import type { Entry, Metadata, Read, ResourceChange, ResourceStore, WatchOptions, Watcher, Write } from '../types/resources.js';
+import type { Entry, Metadata, Read, ReadRange, ResourceChange, ResourceStore, WatchOptions, Watcher, Write } from '../types/resources.js';
 
 /**
  * The host's filesystem, as the reference host serves it: all of it.
@@ -221,6 +221,51 @@ export async function read(uri: string, wanted?: string): Promise<Read> {
     return { data: bytes.toString('base64'), encoding: 'base64' };
   }
   return { data: bytes.toString('utf8'), encoding: 'utf-8', contentType: 'text/plain' };
+}
+
+/**
+ * Where `bytes` stops being whole UTF-8: the end of its last complete
+ * character, so a ranged text read never ends inside one.
+ */
+function wholeUtf8(bytes: Buffer): Buffer {
+  for (let back = 1; back <= Math.min(4, bytes.length); back++) {
+    const lead = bytes[bytes.length - back] as number;
+    if ((lead & 0xc0) === 0x80) continue;
+    const need = lead < 0x80 ? 1 : lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+    return need > back ? bytes.subarray(0, bytes.length - back) : bytes;
+  }
+  return bytes;
+}
+
+/**
+ * A byte range of one file, and the file's size, as AHP 1.1.0's ranged
+ * `resourceRead` asks it.
+ *
+ * Read through a handle, so a range of a large file reads only that range. A
+ * text answer ends before a character the range would cut; one that starts
+ * inside a character is not text, and comes back base64, as any read that is
+ * not UTF-8 does.
+ * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/common/commands.ts#L866-L920
+ */
+export async function readRange(uri: string, wanted: string | undefined, range: ReadRange): Promise<Read> {
+  const path = await allowed(uri);
+  const handle = await open(path, 'r').catch(() => {
+    throw new RpcError(NOT_FOUND, `No file at ${uri}`);
+  });
+  try {
+    const { size } = await handle.stat();
+    const position = Math.min(range.position ?? 0, size);
+    const length = Math.min(range.length ?? size - position, size - position);
+    const bytes = Buffer.alloc(length);
+    const { bytesRead } = length === 0 ? { bytesRead: 0 } : await handle.read(bytes, 0, length, position);
+    const got = bytes.subarray(0, bytesRead);
+    if (wanted === 'base64') return { data: got.toString('base64'), encoding: 'base64', size };
+    const text = wholeUtf8(got);
+    if (!textual(text)) return { data: got.toString('base64'), encoding: 'base64', size };
+    return { data: text.toString('utf8'), encoding: 'utf-8', contentType: 'text/plain', size };
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -605,7 +650,7 @@ export async function watch(
  * ```
  */
 export const fileResources = (): ResourceStore => ({
-  list, read, resolve, complete,
+  list, read, readRange, resolve, complete,
   write, delete: erase, mkdir, move, copy,
   watch,
 });

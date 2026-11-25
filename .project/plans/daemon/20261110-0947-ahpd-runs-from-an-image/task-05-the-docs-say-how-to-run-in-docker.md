@@ -1,6 +1,6 @@
 ---
 title: The docs say how to run it in Docker
-status: implemented
+status: done
 depends: [task-03-compose-runs-the-image.md]
 layer: "docs"
 refs:

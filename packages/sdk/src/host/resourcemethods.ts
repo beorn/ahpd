@@ -1,7 +1,7 @@
 import { AhpErrorCodes } from '@microsoft/agent-host-protocol';
 import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
 import { notServed } from '../resources/resources.js';
-import { Status } from '../sessions/catalog.js';
+import { Status, idOf } from '../sessions/catalog.js';
 import { need, served } from './common.js';
 import { buildResourceWatchChannelUri, schemeOf } from './channels.js';
 import { AGENT_CLIENT_SCHEME } from './clienturi.js';
@@ -89,7 +89,29 @@ const CONFLICT = -32011;
       // plugin registered is asked after it.
       const own = await options.changes?.read?.(uri);
       if (own) return own;
-      return await served(need(storeFor(uri), 'resourceRead').read, 'read', uri)(
+      /*
+       * A byte range, from AHP 1.1.0: each bound a whole number of 0 or more,
+       * and honoured by a store that reads ranges, which answers the size. A
+       * store that does not reads the whole resource, as the protocol lets a
+       * receiver that does not honour ranges.
+       * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/common/commands.ts#L866-L920
+       */
+      for (const bound of ['position', 'length'] as const) {
+        const value = params[bound];
+        if (value !== undefined && !(typeof value === 'number' && Number.isInteger(value) && value >= 0))
+          throw new RpcError(INVALID_PARAMS, `${bound} must be an integer of 0 or more`);
+      }
+      const ranged = params.position !== undefined || params.length !== undefined;
+      const store = storeFor(uri);
+      if (ranged && store !== undefined && 'readRange' in store && typeof store.readRange === 'function') {
+        const range = {
+          ...(params.position !== undefined ? { position: params.position as number } : {}),
+          ...(params.length !== undefined ? { length: params.length as number } : {}),
+        };
+        const encoding = typeof params.encoding === 'string' ? params.encoding : undefined;
+        return await served(store.readRange.bind(store), 'read', uri)(uri, encoding, range);
+      }
+      return await served(need(store, 'resourceRead').read, 'read', uri)(
         uri,
         typeof params.encoding === 'string' ? params.encoding : undefined,
         connection.principal,
@@ -329,6 +351,7 @@ const CONFLICT = -32011;
           ...(typeof raw.range === 'object' && raw.range !== null
             ? { range: raw.range as { startLine: number; endLine: number } }
             : {}),
+          ...(typeof raw.nonce === 'string' ? { nonce: raw.nonce } : {}),
         }
         : undefined;
       // No target is the changeset itself, which is how the protocol says
@@ -371,6 +394,22 @@ const CONFLICT = -32011;
           throw new RpcError(CONFLICT, `the work of ${at.owner} waits in ${brought.waiting}: nothing acts on ${at.dir} until it is on the branch`);
         }
 
+        /*
+         * And the row the client showed, where it named one by its nonce: the
+         * folder is read again, and an operation on changes nobody saw is
+         * refused, with the changes as they are now said first. A row or a
+         * target with no nonce is not checked.
+         * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/channels-changeset/commands.ts#L32-L41
+         */
+        if (target?.nonce !== undefined) {
+          await source.refresh?.(at.dir).catch(() => false);
+          const row = (await source.state(at.dir, idOf(at.owner), at.scope, at.base))?.files.find((one) => one.id === target.resource);
+          if (row === undefined || (row.nonce !== undefined && row.nonce !== target.nonce)) {
+            await contentMoved(at.owner);
+            throw new RpcError(CONFLICT, `The changes to ${target.resource.slice(target.resource.lastIndexOf('/') + 1)} changed since they were shown.`);
+          }
+        }
+
         ctx.operationStatusSaid(channel, { type: 'changeset/operationStatusChanged', operationId, status: 'running' });
         try {
           const meta = typeof params._meta === 'object' && params._meta !== null ? params._meta as Record<string, unknown> : undefined;
@@ -389,13 +428,15 @@ const CONFLICT = -32011;
            * VS Code invokes the handler registered for an operation's id.
            * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentHostChangesetOperationService.ts#L424
            */
-          const own = (source.operations?.(at.dir, at.owner, at.scope, context) ?? []).some((one) => one.id === operationId);
+          const own = (source.operations?.(at.dir, idOf(at.owner), at.scope, context) ?? []).some((one) => one.id === operationId);
           const handler = own ? undefined : (options.changesetOperations ?? [])
             .find((one) => (one.operations(at.dir, at.owner, at.scope, context) ?? []).some((offer) => offer.id === operationId))
             ?.handlers[operationId];
           const result = handler !== undefined
             ? await handler(request)
-            : await need(source.invoke, 'invokeChangesetOperation').call(source, request);
+            // The source keys a session's changes by its id; a contribution
+            // is handed the session's URI, as it always was.
+            : await need(source.invoke, 'invokeChangesetOperation').call(source, { ...request, session: idOf(at.owner) });
           ctx.operationStatusSaid(channel, { type: 'changeset/operationStatusChanged', operationId, status: 'idle' });
           // Before the refresh, so GitHub's later answer is what survives.
           if (result.pullRequest !== undefined) recordPullRequest(at.owner, at.dir, result.pullRequest);

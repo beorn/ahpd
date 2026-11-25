@@ -10,6 +10,15 @@ No ahpd change is built or posted until its author has written a short prior-art
 
 If the note shows the spec or an existing primitive already covers the case, use that instead of building the new thing. The check exists because a change that smells of over-engineering usually has its answer in the standard or in a client that already solved it.
 
+## Before any upstream post: two reviews (standing rule, operator 2026-11-24)
+
+Nothing goes to upstream ahpd (ahpio/ahpd: a PR, a pushed commit, an issue, or a review comment) until it has had both of these reviews, and every finding is fixed or answered in the post. This applies to every post, not only batches: #463 skipped both because it went up outside the batch flow.
+
+1. **A `/pro` review** of the exact diff being posted.
+2. **An independent critique by a Fable-model reviewer.** It gets the same diff and prompt, and reads no other review first.
+
+Record both verdicts, with the head sha each one read, on the bead the post serves. A head that changes after review is reviewed again. Posting itself still needs the operator's yes, unless a standing yes covers that kind of post.
+
 ## Where things live
 
 - Keeping up with VS Code's reference host: [UPSTREAM.md](UPSTREAM.md) and [REFERENCE.md](REFERENCE.md). A prior-art pass follows that procedure.

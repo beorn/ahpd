@@ -451,6 +451,9 @@ export const pluginsChannel = (options: PluginsChannelOptions): PluginsChannel =
   /** The id one command was given, or the refusal that says what it needs. */
   const idParam = (command: string, params: Record<string, unknown>): string => {
     const id = params.id;
+    // A row's own id is taken as it is, since a plugin that did not load may
+    // be called by a path or a URL.
+    if (typeof id === 'string' && id !== '' && !id.includes('?') && specs().some((spec) => idOf(spec) === id)) return id;
     if (typeof id !== 'string' || id === '' || /[/?]/u.test(id)) {
       throw new RpcError(INVALID_PARAMS, `${command} needs id, the plugin's id as a row answers it, with no / or ?`);
     }

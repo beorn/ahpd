@@ -1,6 +1,6 @@
 ---
 title: The docs say whose settings apply
-status: implemented
+status: done
 depends: [task-02-a-question-reads-the-owners-settings.md]
 layer: "docs"
 refs:

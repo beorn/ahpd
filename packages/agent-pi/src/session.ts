@@ -648,6 +648,12 @@ export function piSession(
     };
 
     const decided = decide(event.toolName, input);
+    /*
+     * A question asked while a stopped turn winds down, or with no turn
+     * running, has nobody to answer it, and pi would wait on it for ever. It
+     * is refused as the stop refuses the questions it leaves.
+     */
+    if (decided === 'ask' && (cancelled || active === undefined)) return { block: true, reason: 'The turn was stopped' };
     if (decided === 'ask') {
       const title = `Run ${displayName}?`;
       /*
@@ -1026,6 +1032,12 @@ export function piSession(
       ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
       ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
       ...(tools.length > 0 ? { tools } : {}),
+      /*
+       * The host's shell authentication variables, for the shell pi runs
+       * commands in: pi is in this process, so there is no agent process to
+       * put them on.
+       */
+      ...(start.env === undefined ? {} : { env: start.env }),
       ...(instructions.length > 0 ? { instructions } : {}),
       // The inline extension pi loads is this host's, and this is the handler
       // it calls before a tool runs.

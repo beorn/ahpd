@@ -51,6 +51,7 @@ export { ripgrepFiles } from './resources/workspacefiles.js';
 export { localPath, uriOf } from './resources/fileuri.js';
 export { clientPluginsIn } from './plugins/clientplugins.js';
 export { partsOf as pluginPartsOf } from './plugins/pluginparts.js';
+export { mcpServerCustomization, mcpServerIdOf, protectedResource } from './plugins/mcpserver.js';
 export { shellTerminals } from './machines/terminals.js';
 export { isShellName, shellEnvOf } from './machines/shellenv.js';
 export type { ShellEnv } from './machines/shellenv.js';
@@ -67,7 +68,7 @@ export { managedRuleOf } from './host/permissions.js';
 export { hostTools } from './tools/index.js';
 export { answerTools, toolServers, TOOLS_PREFIX } from './tools/server.js';
 export type {
-  MayRunTool, RunClientTool, ToolsChanged, ToolsEndpoint, ToolsInfo, ToolsServing, ToolsServerOptions, ToolsServers,
+  MayRunTool, ProxyEndpoint, ProxyUpstream, RunClientTool, ToolsChanged, ToolsEndpoint, ToolsInfo, ToolsServing, ToolsServerOptions, ToolsServers, UpstreamRefusal,
 } from './tools/server.js';
 export { createClientCalls, DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from './tools/clientcalls.js';
 export type { ClientCall, ClientCallAnswer, ClientCalls, ClientCallsOptions } from './tools/clientcalls.js';
@@ -80,6 +81,10 @@ export {
 } from './sandbox.js';
 export type { SandboxOverrides } from './sandbox.js';
 export { SANDBOX_ENABLED_KEY, SANDBOX_ENABLED_PROPERTY, SANDBOX_ROOT_KEY } from './types/sandbox.js';
+export { KEEP_AWAKE_KEY, KEEP_AWAKE_RELEASE_DELAY, keepAwakeModeOf } from './host/keepawake.js';
+export { createWorktreeRemovalQueue, memoryWorktreeRemovals } from './host/worktreeremovals.js';
+export type { RemovalOutcome, RemovalTimings, WorktreeCleanupStatus, WorktreeRemoval, WorktreeRemovalStore } from './host/worktreeremovals.js';
+export type { AcquireKeepAwake, KeepAwakeHold, KeepAwakeMode } from './host/keepawake.js';
 export { nestedAgent } from './sessions/nested.js';
 export type { NestedAsked, NestedHost, NestedOptions, NestedStarted } from './sessions/nested.js';
 export { resolveNeeds, expandHome, partTarget, PART_ROOT, machinePathOf, hostPathOf } from './machines/machine.js';
@@ -99,6 +104,11 @@ export type { CallOutcome, CheckResult, CodeSignIn, ConnectorAccount, ConnectorM
 export { MODEL_DIALECTS } from './types/connectors.js';
 export { AGENT_RECORD_VARIABLE } from './types/computers.js';
 export { disableConditionsOf } from './automations/automations.js';
+export { oneTimeProblem, oneTimeRunAt, oneTimeRunOf, oneTimeTriggerOf } from './automations/onetime.js';
+export { ONE_TIME_TRIGGER, TARGET_KINDS } from './types/automations-next.js';
+export { continues, targetOf, targetProblem } from './automations/targets.js';
+export type { AutomationChatTarget, AutomationTarget, AutomationTargetsCapabilities } from './types/automations-next.js';
+export type { AutomationOneTimeTrigger } from './types/automations-next.js';
 export { enablementKeyOf, memoryEnablement } from './plugins/enablement.js';
 export type { EnablementStore, HeldDecisions, HeldEnablementStore } from './plugins/enablement.js';
 export { nextOccurrence, parseCron } from './automations/cron.js';
@@ -144,8 +154,8 @@ export { tunnelsChannel } from './tunnels/channel.js';
 export type { TunnelsChannel, TunnelsChannelOptions } from './tunnels/channel.js';
 export { clientsChannel, countFrame } from './clients/channel.js';
 export type { ClientCounts, ClientsChannel, ClientsChannelOptions } from './clients/channel.js';
-export { invokeOperation, OPERATION_COMMAND, OPERATION_GRANT } from './kinds/operations.js';
-export type { InvokeOperationOptions, OperationChannel } from './kinds/operations.js';
+export { invokeOperation, OPERATION_COMMAND, OPERATION_GRANT, pluginOperationChannels } from './kinds/operations.js';
+export type { InvokeOperationOptions, OperationCaller, OperationChannel } from './kinds/operations.js';
 export { BINDINGS_KEY, BINDINGS_SCHEME, bindingTarget, bindingsOf, checkBindings } from './connectors/bindings.js';
 export type { Binding } from './connectors/bindings.js';
 export { actionTools, actionToolName } from './connectors/actions.js';
@@ -175,7 +185,10 @@ export { uriFor, idFor, idOf, Status, statusOf, activityOf, titleFrom, holdsTheQ
 export { ensureWorkspacelessScratchDir } from './sessions/scratch.js';
 export type { Activity, StatusBits } from './sessions/catalog.js';
 export { tail, older, PAGE } from './sessions/paging.js';
+export { launch } from './utils/npm.js';
+export type { Launch } from './utils/npm.js';
 export { toolCallDurationMs, withToolCallDuration } from './utils/timing.js';
+export { joinTags, MAX_TAG_LENGTH, MAX_TAGS, tagsOf, tagsProblem } from './utils/tags.js';
 export { appendEscapedMarkdownInlineCode, truncate } from './utils/markdown.js';
 export { steerOf, steerPart } from './sessions/steer.js';
 export { CommandAutoApprover, DEFAULT_TERMINAL_AUTO_APPROVE_RULES, splitCommand } from './access/commandautoapprover.js';
@@ -185,4 +198,5 @@ export type {
 } from './access/commandautoapprover.js';
 
 export type * from './types/index.js';
+export { DEV_CONTAINER_ENVIRONMENT_IMAGES, DEV_CONTAINER_ENVIRONMENT_ID, isDevContainerEnvironmentId } from './types/containers.js';
 export type { PluginView, ViewComponent, ViewHandle, ViewSurface } from './types/plugin.js';

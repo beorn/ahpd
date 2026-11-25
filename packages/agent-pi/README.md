@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 The [pi coding agent](https://github.com/earendil-works/pi) as a backend for [`@ahpd/sdk`](https://www.npmjs.com/package/@ahpd/sdk), and a plugin for the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon. A pi session runs on one machine and is driven from VS Code, [`ahpc`](https://github.com/ahpio/ahpc) or any other AHP client, with more than one watching at once.
 
@@ -50,9 +52,9 @@ Every option below is a key under `options` in the plugin's entry, and the daemo
 | `model` | pi's own default | The model a record that names none runs on, as `provider/modelId`; a turn may choose another, and a resumed or forked session keeps its own |
 | `baseUrl` | pi's own providers | The OpenAI-compatible endpoint a record that names none runs on, such as `https://api.example.com/v1` |
 | `apiKey` | none | The key that endpoint's requests carry. A read answers `<set>`: the value stays in the configuration file |
+| `hostTools` | `true` | Whether the host's own tools reach each session. A record can turn them off for one agent |
 | `projectTrust` | `trust` | Whether a record that names none loads a project's own pi extensions, skills and prompts |
 | `sessionDir` | pi's own | Where a record that names none keeps its pi sessions |
-| `hostTools` | `true` | Whether the host's own tools reach each session. A record can turn them off for one agent |
 
 `projectTrust` is `trust` or `deny`. pi's third answer, `ask`, is not offered, because a daemon has nobody at a terminal to answer it. `trust` loads the project's pi resources, which runs its code.
 
@@ -71,10 +73,10 @@ A record of the engine holds what one pi agent runs on, and the channel owns its
 | `model` | The model this agent runs on, as `provider/modelId` |
 | `baseUrl` | The OpenAI-compatible endpoint this agent runs on. Its models are listed as `<record id>/<model id>` |
 | `apiKey` | The key that endpoint's requests carry. Kept in the vault, as a `secret` field |
-| `projectTrust` | `trust` or `deny`, as above |
-| `sessionDir` | Where this agent's pi sessions live. Host records only |
 | `hostTools` | Whether the host's own tools reach this agent's sessions. Off drops them and keeps each client's tools |
 | `env` | Variables pi is given, by name |
+| `projectTrust` | `trust` or `deny`, as above |
+| `sessionDir` | Where this agent's pi sessions live. Host records only |
 
 A variable in `env` is a key of this agent's own when pi takes a key from it, such as `ANTHROPIC_API_KEY` or `DEEPSEEK_API_KEY`: it is kept in the vault, a client is told it is set and never what it is, and a team's or a person's record may set it. Any other variable is the host's to set, because a free environment can run a program. The record's variables go on pi's own runtime each turn, over the daemon's environment and over `auth.json`, and they are never written to `process.env` where the daemon's other agents would see them.
 

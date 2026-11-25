@@ -61,7 +61,7 @@ export interface Caller {
 export type RefusalCode =
   | 'INVALID' | 'PLAIN_ENV_VALUE' | 'NOT_FOUND' | 'READ_ONLY' | 'STALE_VERSION' | 'REMOTE_COMMANDS_OFF'
   | 'SWITCHES_UNREADABLE' | 'UNSUPPORTED_LAYOUT' | 'FILE_UNREADABLE' | 'RELOAD_FAILED' | 'PC_REFUSED'
-  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED' | 'EXISTS' | 'CURSOR_RESET';
+  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED' | 'EXISTS' | 'CHANGES_REPLACED';
 
 export interface Refusal {
   readonly ok: false;
@@ -710,72 +710,42 @@ export async function serviceLogs(machine: Machine, caller: Caller, params: { re
   }
 }
 
-/** The most change-log lines one backup answer carries, and the most bytes of them: one bounded read per round trip. */
-export const BACKUP_LINES_MAX = 200;
-export const BACKUP_BYTES_MAX = 256 * 1024;
+/** The most bytes one read of the change log answers: one bounded read per round trip (@cto 720ff22b). */
+export const CHANGES_BYTES_MAX = 256 * 1024;
 
-/** What a backup answers in place of a change-log line that is not a JSON object: where it is and how long, never its text. */
+/** What a read of the change log answers in place of a line that is not a JSON object: where it is and how long, never its text. */
 export interface UnreadableLine {
   readonly unreadable: true;
   readonly offset: number;
   readonly bytes: number;
 }
 
-/** Whether a backed-up line is the marker for one that could not be read. */
+/** Whether a line read from the change log is the marker for one that could not be read. */
 export const isUnreadableLine = (line: Record<string, unknown>): line is Record<string, unknown> & UnreadableLine =>
   line['unreadable'] === true && typeof line['offset'] === 'number' && typeof line['bytes'] === 'number';
 
-/** A backup's arguments: the cursor the last answer gave, or nothing to start at the change log's first line. */
-export interface BackupParams {
-  readonly after?: string;
+/** A byte range of the change log, as AHP's `resourceRead` asks it: from `position`, at most `length` bytes. */
+export interface ChangesRange {
+  readonly position?: number;
+  readonly length?: number;
 }
 
-/** What `backup` answers. */
-export interface Backup {
-  /** Exactly `list`'s answer: records with secret references only, read-only names, plain env KEY names, hashes. */
-  readonly listing: { readonly ok: true } & Listing;
+/** What one read of the change log answers. */
+export interface Changes {
   /**
-   * The change-log lines after the cursor, each parsed; diffs in them are already blanked at the source. A line that
-   * is not a JSON object is an {@link UnreadableLine} marker.
+   * The log's identity: its device, inode and creation time. It changes when the file is replaced or rotated,
+   * and is empty while no change has been made on this machine yet.
    */
+  readonly log: string;
+  /** The byte the read started at: the `position` asked for. */
+  readonly position: number;
+  /** The byte after the last whole line answered: where the next read starts. */
+  readonly end: number;
+  /** The log's size now, in bytes. */
+  readonly size: number;
+  /** The whole lines in `[position, end)`, each parsed; a line that is not a JSON object is an {@link UnreadableLine}. */
   readonly lines: ReadonlyArray<Record<string, unknown>>;
-  /** Where the next backup starts: give it back as `after`. */
-  readonly cursor: string;
-  /** Whether whole lines remain after `cursor`. */
-  readonly more: boolean;
 }
-
-/**
- * Where a backup stopped: the change log's identity (device, inode and creation time, as
- * decimal text, so a large inode keeps every digit) and the byte after the last
- * line answered. Empty identity is the cursor for a log that did not exist yet,
- * which can only be at byte 0 and so reads any log from its start.
- */
-interface Cursor {
-  readonly dev: string;
-  readonly ino: string;
-  /**
-   * The log's creation time in nanoseconds (0 where the filesystem keeps none): ext4 hands a replaced file's inode
-   * number straight to the next file made, so device and inode alone call a new log the old one.
-   */
-  readonly birth: string;
-  readonly offset: number;
-}
-
-const CURSOR_FORMAT = /^services-log\.v2:(\d*):(\d*):(\d*):(\d+)$/u;
-
-const encodeCursor = (cursor: Cursor): string =>
-  Buffer.from(`services-log.v2:${cursor.dev}:${cursor.ino}:${cursor.birth}:${cursor.offset}`, 'utf8').toString('base64url');
-
-const decodeCursor = (value: unknown): Cursor | undefined => {
-  if (typeof value !== 'string') return undefined;
-  const match = CURSOR_FORMAT.exec(Buffer.from(value, 'base64url').toString('utf8'));
-  if (!match) return undefined;
-  const [, dev = '', ino = '', birth = '', digits = ''] = match;
-  const offset = Number(digits);
-  if (!Number.isSafeInteger(offset) || (dev === '') !== (ino === '') || (dev === '') !== (birth === '') || (dev === '' && offset !== 0)) return undefined;
-  return { dev, ino, birth, offset };
-};
 
 /** Fill `buffer` from `position`; answers how many bytes there were (fewer when the file is shorter than asked). */
 const readAt = (fd: number, buffer: Buffer, position: number): number => {
@@ -802,14 +772,27 @@ const nextNewline = (fd: number, from: number, size: number): number => {
 };
 
 /**
- * The change log's whole lines after `from`, at most BACKUP_LINES_MAX lines and
- * BACKUP_BYTES_MAX bytes of them. A trailing line with no newline yet is a write
- * in progress and waits for the next backup. One line longer than the byte bound
- * is answered alone, so a backup always moves past it rather than stopping there
- * for good.
+ * One read of the change log (#38277, @cto 720ff22b): the whole lines from
+ * `position`, cut at the last newline at or before `position + length` (length
+ * at most CHANGES_BYTES_MAX), with the log's identity and where the next read
+ * starts. A byte position is the log's own addressing, which AHP's
+ * `resourceRead` carries; there is no cursor of ours.
+ *
+ * `log` is the identity the caller holds, when it holds one. A changed identity,
+ * or a position past the end, is refused CHANGES_REPLACED, never restarted from
+ * 0 on the caller's behalf: the caller takes a fresh listing and reads the new
+ * log from 0. A trailing line with no newline yet is a write in progress and
+ * waits for the next read. One line longer than the bound is answered alone, so
+ * a reader always moves past it. It reads only.
  */
-function readChanges(file: string, from: Cursor): Refusal | Omit<Backup, 'listing'> {
-  const again = 'ask again without "after" to start from its first line';
+export function changesAt(machine: Machine, range: ChangesRange = {}, log?: string): Answer<Changes> {
+  const file = machine.changeLog;
+  const position = range.position ?? 0;
+  const length = Math.min(range.length ?? CHANGES_BYTES_MAX, CHANGES_BYTES_MAX);
+  if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(length) || length < 0) {
+    return refuse('INVALID', 'position and length must be whole numbers of 0 or more');
+  }
+  const again = 'take a fresh listing and read the new log from 0';
   let fd: number;
   try {
     fd = openSync(file, 'r');
@@ -817,27 +800,24 @@ function readChanges(file: string, from: Cursor): Refusal | Omit<Backup, 'listin
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return refuse('FILE_UNREADABLE', `cannot read the change log ${file}: ${(error as Error).message}`);
     // No change has been made on this machine yet: nothing to answer, and no error (@cto c89ade9c).
-    if (from.ino !== '') return refuse('CURSOR_RESET', `the change log ${file} is gone since that cursor was given; ${again}`);
-    return { lines: [], cursor: encodeCursor({ dev: '', ino: '', birth: '', offset: 0 }), more: false };
+    if ((log !== undefined && log !== '') || position > 0) return refuse('CHANGES_REPLACED', `the change log ${file} is gone; ${again}`);
+    return { ok: true, log: '', position: 0, end: 0, size: 0, lines: [] };
   }
   try {
     const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile()) return refuse('FILE_UNREADABLE', `the change log ${file} is not a regular file`);
-    const dev = String(stat.dev);
-    const ino = String(stat.ino);
-    const birth = String(stat.birthtimeNs);
+    const identity = `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
     const size = Number(stat.size);
-    if (from.ino !== '' && (from.dev !== dev || from.ino !== ino || from.birth !== birth)) {
-      return refuse('CURSOR_RESET', `the change log ${file} was replaced since that cursor was given (it is another file now); ${again}`);
+    if (log !== undefined && log !== '' && log !== identity) {
+      return refuse('CHANGES_REPLACED', `the change log ${file} was replaced (it is another file now); ${again}`);
     }
-    if (from.offset > size) {
-      return refuse('CURSOR_RESET', `that cursor is at byte ${from.offset} of the change log ${file}, past its end (${size} bytes); ${again}`);
+    if (position > size) {
+      return refuse('CHANGES_REPLACED', `position ${position} is past the end of the change log ${file} (${size} bytes); ${again}`);
     }
-    const start = from.offset;
-    const window = Buffer.alloc(Math.min(size - start, BACKUP_BYTES_MAX));
-    const held = window.subarray(0, readAt(fd, window, start));
-    // A line that is not a JSON object (a crash mid-append leaves one) is answered as a marker and the backup goes on
-    // (@cto f7a8801f): stopping there would leave every later change unbacked-up until someone noticed. Its text is
+    const window = Buffer.alloc(Math.min(size - position, length));
+    const held = window.subarray(0, readAt(fd, window, position));
+    // A line that is not a JSON object (a crash mid-append leaves one) is answered as a marker and the read goes on
+    // (@cto f7a8801f): stopping there would leave every later change unread until someone noticed. Its text is
     // never sent: what it holds is unknown.
     const parse = (bytes: Buffer, at: number): Record<string, unknown> => {
       let value: unknown;
@@ -852,69 +832,30 @@ function readChanges(file: string, from: Cursor): Refusal | Omit<Backup, 'listin
     };
     const lines: Array<Record<string, unknown>> = [];
     let next = 0;
-    while (lines.length < BACKUP_LINES_MAX) {
+    for (;;) {
       const newline = held.indexOf(0x0a, next);
       if (newline < 0) break;
-      lines.push(parse(held.subarray(next, newline), start + next));
+      lines.push(parse(held.subarray(next, newline), position + next));
       next = newline + 1;
     }
-    let end = start + next;
-    if (lines.length === 0 && held.length === BACKUP_BYTES_MAX) {
-      const newline = nextNewline(fd, start + held.length, size);
+    let end = position + next;
+    if (lines.length === 0 && held.length === length && length > 0) {
+      const newline = nextNewline(fd, position + held.length, size);
       if (newline >= 0) {
-        const long = Buffer.alloc(newline - start);
-        lines.push(parse(long.subarray(0, readAt(fd, long, start)), start));
+        const long = Buffer.alloc(newline - position);
+        lines.push(parse(long.subarray(0, readAt(fd, long, position)), position));
         end = newline + 1;
       }
     }
-    const inHeld = end - start;
-    const more = end < size && ((inHeld < held.length && held.indexOf(0x0a, inHeld) >= 0) || nextNewline(fd, Math.max(end, start + held.length), size) >= 0);
-    return { lines, cursor: encodeCursor({ dev, ino, birth, offset: end }), more };
+    return { ok: true, log: identity, position, end, size, lines };
   }
   catch (error) {
     if (error instanceof FileError) return refuse('FILE_UNREADABLE', error.message);
     const code = (error as NodeJS.ErrnoException).code;
     if (typeof code === 'string') return refuse('FILE_UNREADABLE', `cannot read the change log ${file}: ${(error as Error).message}`);
-    throw error;
+    return failed(error);
   }
   finally {
     closeSync(fd);
-  }
-}
-
-/**
- * `backup` (#38277 slice 3b, @cto c89ade9c): what a machine runs and how it got
- * there, for an owner to see and restore elsewhere if the machine dies. Hightea
- * pulls it; ahpd opens no connection and keeps no queue for it.
- *
- * It answers `list`'s answer and the change-log lines after `after`. It reads
- * only: it writes no file and adds no change-log line, refusals included. It
- * never carries program output, vault values, plain environment values or the
- * file's text - the listing names plain keys only, and the change log's records
- * hold secret references and its diffs are blanked when written.
- *
- * A cursor names the log by device and inode as well as offset, so a log that
- * was replaced, or cut shorter than the cursor, answers CURSOR_RESET rather than
- * lines from some other file.
- */
-export function backupServices(machine: Machine, params: BackupParams): Answer<Backup> {
-  try {
-    const after = params?.after;
-    let from: Cursor = { dev: '', ino: '', birth: '', offset: 0 };
-    if (after !== undefined) {
-      const decoded = decodeCursor(after);
-      if (decoded === undefined) {
-        return refuse('INVALID', `"after" is not a cursor a backup of the change log ${machine.changeLog} answered; leave it out to start from its first line`);
-      }
-      from = decoded;
-    }
-    const listing = listServices(machine);
-    if (!listing.ok) return listing;
-    const changes = readChanges(machine.changeLog, from);
-    if ('code' in changes) return changes;
-    return { ok: true, listing, ...changes };
-  }
-  catch (error) {
-    return failed(error);
   }
 }

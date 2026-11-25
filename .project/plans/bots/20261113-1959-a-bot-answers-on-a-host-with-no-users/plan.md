@@ -1,7 +1,7 @@
 ---
 title: A bot answers on a host with no users
 domain: bots
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -63,7 +63,7 @@ Front turn -> wake.woken -> seams.sessions.owner(session) -> undefined on a host
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The wake takes the bot's owner on a host with no users](task-01-the-wake-takes-the-bots-owner.md) | implemented | - |
+| [01 - The wake takes the bot's owner on a host with no users](task-01-the-wake-takes-the-bots-owner.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -73,7 +73,7 @@ Front turn -> wake.woken -> seams.sessions.owner(session) -> undefined on a host
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `hasUsers` is required on `BotSessions`, so a new fake of the seam must name it.
 
