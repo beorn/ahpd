@@ -22,7 +22,7 @@ import { describePlugin, sourceOf, optionsSchemaOf, pluginIdOf, pluginIdsOf, plu
 import { availablePlugins, configuredMarketplaces } from '../pluginlist.js';
 import type { Available, InstalledRow } from '../pluginlist.js';
 import type { Where } from '../plugins.js';
-import type { PluginSpec } from '@ahpd/sdk';
+import type { Grant, PluginSpec, Principal } from '@ahpd/sdk';
 import { keyed, maskOption, schemasFor, withoutSpecSecrets, withoutUserinfoIn } from './config.js';
 import { namedOptionsFrom, pluginWriteFields, flagFields, serverFields, servedPluginWriteFields, splitPluginOption, stop, typedValue } from './options.js';
 import { reachable, tokenIn } from './paths.js';
@@ -295,6 +295,15 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
             marketplaces: served === undefined ? configuredMarketplaces(namedFile) : served.options.pluginMarketplaces,
             marketplace: context.optional<string>('marketplace'),
             grant: context.flag('grant'),
+            /*
+             * Served, the grants a manifest asks the new entry for are the
+             * caller's to give and only up to what the caller holds: the
+             * deployment token holds every one, and a person's are their roles.
+             * The terminal's own run is the owner and passes nothing here.
+             */
+            ...(served === undefined ? {} : {
+              mayGrant: (one: Grant) => (context.request?.actor as Principal | undefined)?.can(one) === true,
+            }),
             report: (facts) => { reported = facts; },
             /*
              * A pipe, a payload and a daemon serving a request have nobody to

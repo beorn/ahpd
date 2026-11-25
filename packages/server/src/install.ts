@@ -536,6 +536,19 @@ export interface InstallOptions {
   marketplace?: string | undefined;
   /** Whether a person said `--grant`, which writes every grant the manifests ask the entry for. */
   grant?: boolean | undefined;
+  /**
+   * Whether the caller may hand out a grant, when a caller rather than the
+   * owner is asking.
+   *
+   * A served install is a caller's: `plugin:install` says it may install code,
+   * and a grant written into the new entry is permission on this host, so
+   * handing out one the caller does not hold is escalation under another name
+   * (Kubernetes RBAC refuses the same move without its `escalate` verb). Every
+   * asked grant this answers false for is refused by name before anything is
+   * written, so a refusal leaves the entry, and the file, as they were. Absent
+   * for the terminal's own run, which is the owner and has no caller to bound.
+   */
+  mayGrant?: ((grant: Grant) => boolean) | undefined;
   /** A terminal to ask for consent on; absent on a pipe and served, where nobody is there to answer. */
   confirm?: ((question: string) => Promise<boolean>) | undefined;
   /**
@@ -870,6 +883,21 @@ export async function installPlugins(names: readonly string[], options: InstallO
   }
   const consent = options.grant === true
     || (missing.size > 0 && options.confirm !== undefined && await options.confirm(asksOf(missing)));
+  /*
+   * A caller hands out only what it holds, and the refusal names the grant:
+   * `plugin:install` is permission to install code, not to give that code
+   * powers the caller itself lacks. Refused before the entry is named, so a
+   * refused install writes nothing and the next call is a person's decision.
+   */
+  if (consent && options.mayGrant !== undefined) {
+    const mayGrant = options.mayGrant;
+    for (const [name, grants] of missing) {
+      const beyond = grants.find((one) => !mayGrant(one as Grant));
+      if (beyond !== undefined) {
+        throw new Error(`${name} asks for ${beyond}, which this caller does not hold, so nothing was granted and ${options.configFile} was not written; a person who holds ${beyond} may install it and grant it`);
+      }
+    }
+  }
   const added = enableNames(options.configFile, packages);
   options.say(added.length === 0
     ? `${options.configFile} already names ${packages.join(', ')}.`
