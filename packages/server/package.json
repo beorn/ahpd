@@ -47,6 +47,7 @@
     "test": "cd ../.. && vitest run packages/server/test"
   },
   "dependencies": {
+    "@ahpd/deploy": "workspace:*",
     "@ahpd/sdk": "workspace:*",
     "@bearly/durable-file": "github:beorn/bearly#00a4322732bcb079ee76200493d9f8fca9868024&path:/packages/durable-file",
     "@cofold/commands": "^0.3.0",

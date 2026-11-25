@@ -1,0 +1,58 @@
+{
+  "name": "@ahpd/deploy",
+  "version": "0.15.0-rc.4",
+  "type": "module",
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "description": "Git deploy driver for ahpd: one call places service S on machine M at version X in a release folder and switches a current symlink, or says loudly why it did not. Served as x-ahpd/deploy/run and x-ahpd/deploy/report.",
+  "keywords": [
+    "ahp",
+    "ahpd",
+    "deploy",
+    "release",
+    "git"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prepack": "tsc -p .",
+    "test": "cd ../.. && vitest run packages/deploy/test"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE"
+  ],
+  "ahpd": {
+    "entry": "./dist/index.js",
+    "title": "Deploy",
+    "description": "This machine's services at a version: fetches into a release folder, builds, switches one symlink, checks. run starts and answers at once; report reads what the last deploy did.",
+    "categories": [],
+    "contracts": {
+      "methods": [
+        "x-ahpd/deploy/run",
+        "x-ahpd/deploy/report"
+      ]
+    },
+    "optionsSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "dependencies": {
+    "@ahpd/services": "workspace:*"
+  }
+}
