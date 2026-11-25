@@ -139,7 +139,8 @@ release candidate.
 `node_modules`, native modules built for that machine), the way node and VS Code server ship (@cto 2026-11-25). Nothing
 resolves from npm at install time and no package manager runs on the customer's machine.
 
-The archive is read twice. First every entry is listed and checked: one absolute path, one `..`, one device or fifo, one
+It is read with npm's own `tar` (node-tar), so GNU long names, pax headers and hardlinks arrive intact and no
+code here interprets header bytes. It is read twice. First every entry is listed and checked: one absolute path, one `..`, one device or fifo, one
 entry outside the single top directory named after the archive, or one link that points outside the release refuses the
 whole archive and names the entry that did it. Only then is it written, into `<release>.staging`, with modes preserved
 so `bin` entries and native `.node` files keep their exec bits, and ownership never touched. One rename puts the

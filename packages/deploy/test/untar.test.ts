@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { listArchive, unpackArchive } from '../src/untar.js';
 
-const top = 'ahpd-0.15.0-rc.4-beorn.12345678-linux-x64';
+const top = 'ahpd-0.15.0-beorn.12345678-linux-x64';
 
 interface Tarred {
   readonly name: string;
@@ -61,6 +61,11 @@ const write = (bytes: Buffer, name = 'archive.tgz'): string => {
 
 const into = (): string => join(mkdtempSync(join(tmpdir(), 'ahpd-into-')), 'release');
 
+const gnuTar = (from: string, out: string): void => {
+  const tarred = spawnSync('tar', ['--format=gnu', '-czf', out, '-C', from, top], { encoding: 'utf8' });
+  if (tarred.status !== 0) throw new Error('tar failed: ' + tarred.stderr);
+};
+
 describe('a pinned release archive is checked before it is written (#38280)', () => {
   // @level l3 @consumer the tree a customer runs keeps its exec bits, and only the top directory is dropped.
   it('unpacks one top directory into the release tree, exec bits included', () => {
@@ -70,14 +75,33 @@ describe('a pinned release archive is checked before it is written (#38280)', ()
     writeFileSync(join(dir, top, 'bin', 'ahpd'), '#!/bin/sh\nexit 0\n');
     chmodSync(join(dir, top, 'bin', 'ahpd'), 0o755);
     const out = join(dir, 'archive.tgz');
-    const tarred = spawnSync('tar', ['-czf', out, '-C', dir, top], { encoding: 'utf8' });
-    if (tarred.status !== 0) throw new Error(`tar failed: ${tarred.stderr}`);
+    gnuTar(dir, out);
     const release = into();
     expect(unpackArchive(out, release, top).length).toBeGreaterThan(0);
     expect(existsSync(join(release, 'package.json'))).toBe(true);
     expect(existsSync(join(release, top))).toBe(false);
     expect(statSync(join(release, 'bin', 'ahpd')).mode & 0o111).not.toBe(0);
     expect(readdirSync(release).sort()).toEqual(['bin', 'package.json']);
+  });
+
+  // @level l3 @consumer a path and a link target past the 100-byte header field survive: GNU writes them as long
+  // name headers, and the install of a real release depends on node-tar reading those rather than truncating.
+  it('unpacks a GNU long path and a long symlink target', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ahpd-long-'));
+    const deep = join('a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40));
+    mkdirSync(join(dir, top, deep), { recursive: true });
+    writeFileSync(join(dir, top, deep, 'deep.txt'), 'deep\n');
+    const target = join('a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40), 'deep.txt');
+    mkdirSync(join(dir, top, 'links'), { recursive: true });
+    symlinkSync(join('..', target), join(dir, top, 'links', 'deep'));
+    const out = join(dir, 'archive.tgz');
+    gnuTar(dir, out);
+    expect([...target].length).toBeGreaterThan(100);
+    const release = into();
+    unpackArchive(out, release, top);
+    expect(readdirSync(join(release, deep)).sort()).toEqual(['deep.txt']);
+    expect(readlinkSync(join(release, 'links', 'deep'))).toBe(join('..', target));
+    expect(lstatSync(join(release, 'links', 'deep')).isSymbolicLink()).toBe(true);
   });
 
   // @level l3 @consumer a `..` in any entry refuses the whole archive, and nothing is written before the refusal.
@@ -99,7 +123,7 @@ describe('a pinned release archive is checked before it is written (#38280)', ()
     const release = into();
     expect(() => unpackArchive(archive, release, top)).toThrow(/absolute/u);
     expect(existsSync(release)).toBe(false);
-    expect(listArchive(gunzipSync(readFileSync(archive))).map((one) => one.name)).toContain('/absolute');
+    expect(listArchive(archive).map((one) => one.name)).toContain('/absolute');
   });
 
   // @level l3 @consumer a second top-level entry is not a release: it is refused and named.
@@ -128,6 +152,19 @@ describe('a pinned release archive is checked before it is written (#38280)', ()
       expect(() => unpackArchive(archive, release, top)).toThrow(/escape/u);
       expect(existsSync(release)).toBe(false);
     }
+  });
+
+  // @level l3 @consumer a hard link is not a link out: one that names a path outside the release is refused.
+  it('refuses a hard link that names a path outside the release', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/package.json`, body: '{}' },
+        { name: `${top}/hl`, typeflag: '1', target: '/etc/passwd' },
+      ]),
+    );
+    const release = into();
+    expect(() => unpackArchive(archive, release, top)).toThrow(/hl/u);
+    expect(existsSync(release)).toBe(false);
   });
 
   // @level l3 @consumer a device or fifo is not a file this installer places, and it is named.
