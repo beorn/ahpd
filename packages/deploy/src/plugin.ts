@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@hallohuman/hightea-services';
 import { readJournal, resolveVersion, status, writeJournalEntry } from './index.js';
 import type { DeployDeclaration, DeployLayout } from './index.js';
-import { CHANGED, CHANNEL, OPERATION, READS_SCHEME, SCHEME, deploysChannel, deploysProvider, deploysState, refusalError } from './channel.js';
+import { CHANGED, CHANNEL, OPERATION, READS_SCHEME, SCHEME, deploysChannel, deploysProvider, deploysState, refusalError, type DeploysState } from './channel.js';
 
 /** The plugin's id. */
 export const name = 'deploy';
@@ -352,10 +352,19 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
     };
   };
   let handle: DeployChannelHandle | undefined;
+  // An unreadable services listing is this channel's own sentence, never a throw out of a snapshot: the services
+  // plugin's shape, so a wrong `files` path or a missing socket leaves the rest of the daemon serving (@dev/14).
+  const stateNow = (): DeploysState => {
+    try {
+      return deploysState(machine.name, servicesNow(), layout);
+    } catch (error) {
+      return { machine: machine.name, runs: [], operations: [OPERATION], error: `this machine's services could not be read: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  };
   // A state that cannot be published is said out loud, once per failure: a quiet channel is the failure this exists for.
   const publishState = (): void => {
     try {
-      handle?.publish(CHANNEL, { type: CHANGED, ...deploysState(machine.name, servicesNow(), layout) });
+      handle?.publish(CHANNEL, { type: CHANGED, ...stateNow() });
     } catch (error) {
       host.alert({ level: 'warning', text: `the deploy channel could not publish its new state: ${error instanceof Error ? error.message : String(error)}`, ref: 'deploy-publish' });
     }
@@ -378,7 +387,7 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
     machine: machine.name,
     services: servicesNow,
     layout,
-    state: () => deploysState(machine.name, servicesNow(), layout),
+    state: stateNow,
     deploy: async (input: Record<string, unknown>, caller: { readonly client: string; readonly owner?: string }): Promise<unknown> => {
       const answer = await methods.run.handle(input, undefined, caller.client, caller.owner) as Record<string, unknown> & { ok?: boolean; code?: string; message?: string };
       if (answer['ok'] === false) throw refusalError({ code: String(answer['code'] ?? 'DRIVER_FAILED'), message: String(answer['message'] ?? 'the deploy was refused') });
