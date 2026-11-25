@@ -94,6 +94,16 @@ if (process.env[CHECK_LINE_ENV] === '1') {
   process.exit(0);
 }
 
+/*
+ * The secrets wrapper process-compose starts a program through (#38277). Read
+ * before the program exists: its line is the services driver's, its exit is
+ * the child's, and it must run with no daemon up. See `commands/secrets.ts`.
+ */
+if (argv0[0] === 'secrets' && argv0[1] === 'exec') {
+  const { runSecretsExec } = await import('./commands/secrets.js');
+  await runSecretsExec(argv0.slice(2));
+}
+
 const remoteUrl = readGlobal(argv0, '--remote');
 const refresh = argv0.includes('--refresh');
 
