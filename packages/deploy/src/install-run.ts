@@ -424,7 +424,7 @@ export const applyInstall = async (
       const switchedBack = await attempt(
         'switch back to the previous release',
         `${layout.stateDir}/deploy/${layout.service}/current`,
-        () => switchTo(layout, previous.version, 'switching back after a failed start'),
+        () => switchTo(layout, previous.version, 'switching back after a failed start', { back: true }),
       );
       const restarted = await attempt('start the previous release', manifest.bootItem.path, () =>
         io.run(manifest.bootItem.enable),

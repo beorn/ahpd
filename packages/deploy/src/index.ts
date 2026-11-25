@@ -380,12 +380,26 @@ export const activateRelease = (
   journal(layout, { ...detail, event: 'switched', to: version, from, reason });
 };
 
-/** The release the last switch left, which is the one a rollback returns to; null when nothing switched yet. */
+/**
+ * A line that undid a switch, so the release it left is not a way back: the forward switch that followed it is.
+ *
+ * The `back` flag is the contract (@cto 2026-11-25): a reason is prose, and a prune that reads prose silently changes
+ * what it keeps the moment somebody rewords it. The text match stays only for lines written before the flag existed.
+ */
+const isSwitchBack = (entry: Readonly<Record<string, unknown>>): boolean =>
+  entry['back'] === true || (typeof entry['reason'] === 'string' && entry['reason'].startsWith('switching back'));
+
+/**
+ * The release the last forward switch left, which is the one a rollback returns to; null when nothing switched yet.
+ *
+ * Switch-back lines are skipped on purpose (@cto 2026-11-25): after a failed upgrade the newest `switched` row leaves
+ * the *bad* release, and treating that as the way back would prune the good one and keep the one that failed.
+ */
 export const lastSwitchFrom = (layout: DeployLayout): string | null => {
   const entries = readJournal(layout);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry === undefined || entry['event'] !== 'switched') continue;
+    if (entry === undefined || entry['event'] !== 'switched' || isSwitchBack(entry)) continue;
     const from = entry['from'];
     return typeof from === 'string' && from !== '' ? from : null;
   }
@@ -659,7 +673,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
       : `check exited ${String(checked.code)}${checked.code === EXIT_NO_VALUE ? `: ${checked.output ?? ''}` : ''}`;
     if (options.declaration.migrations === 'expand-only' && from !== null) {
       // The migration is already applied, so the folder goes back and the report says the migration stays.
-      activateRelease(layout, from, 'switching back after a failed check', { deployId, sha });
+      activateRelease(layout, from, 'switching back after a failed check', { deployId, sha, back: true });
       journal(layout, { event: 'switched back', deployId, sha, to: from });
       return finish({ state: 'switched back, migration stays applied', sha, from, reason });
     }
