@@ -386,7 +386,7 @@ export interface Tooling {
    */
   deniedMcpServers(uri: string): string[];
   /** The endpoints opened for a session, by the session that opened them. */
-  served: Map<string, ToolsEndpoint[]>;
+  served: Map<string, Array<{ close(): void }>>;
   /** Take back every endpoint a session opened. */
   toolsServersGone(uri: string): void;
   /**
@@ -2964,7 +2964,7 @@ export function createTooling(ctx: HostContext): Tooling {
    * Closed when the session goes, so a path nobody holds a token for is a path
    * that stopped answering rather than one that outlived the tools behind it.
    */
-  const served = new Map<string, ToolsEndpoint[]>();
+  const served = new Map<string, Array<{ close(): void }>>();
   /**
    * Take back everything a session kept of its own, now that it is gone.
    *

@@ -1,7 +1,7 @@
 import { RequestError } from '@agentclientprotocol/sdk';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
-import { machineAsked, machinePathOf, mcpServerCustomization } from '@ahpd/sdk';
-import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
+import { machineAsked, machinePathOf, mcpServerCustomization, protectedResource } from '@ahpd/sdk';
+import type { ProxyEndpoint, Spawn, Start, ToolsEndpoint, UpstreamRefusal } from '@ahpd/sdk';
 import { heardCapabilities, isNoRollout, watchSession } from '../catalog.js';
 import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
 import { HOST_TOOLS } from '../mapping.js';
@@ -125,7 +125,7 @@ const addressOf = (url: string): string => {
  * stays the same across reloads and a targeted token stays aimed. `stateOf`
  * is handed the server's state as it stood, `starting` for one not yet said.
  */
-const publishServers = (ctx: SessionContext, names: readonly string[], stateOf: (name: string, was: Bag) => Bag): void => {
+export const publishServers = (ctx: SessionContext, names: readonly string[], stateOf: (name: string, was: Bag) => Bag): void => {
   const before = new Map(ctx.servers.map((one) => [String(one.name), (one.state ?? { kind: 'starting' }) as Bag]));
   ctx.servers = names.map((name) => mcpServerCustomization(
     `acp-internal:/mcp/${encodeURIComponent(name)}`,
@@ -133,6 +133,61 @@ const publishServers = (ctx: SessionContext, names: readonly string[], stateOf: 
     stateOf(name, before.get(name) ?? { kind: 'starting' }),
   ));
   ctx.emit('session', { type: 'session/customizationsChanged', customizations: ctx.published() });
+};
+
+/** Every configured server this session publishes, by name, in order. */
+export const serverNames = (ctx: SessionContext): string[] => ctx.servers.map((one) => String(one.name));
+
+/**
+ * Say one server needs signing in to, as the spec's `authRequired` state.
+ *
+ * The resource is the server's RFC 9728 metadata, found once, from the URL
+ * its own challenge named when it named one. The scopes are the ones the
+ * challenge asked for, else the ones the metadata says it supports.
+ */
+export const signInNeeded = async (
+  ctx: SessionContext,
+  name: string,
+  url: string,
+  reason: 'required' | 'expired' | 'insufficientScope',
+  said: Partial<UpstreamRefusal> = {},
+): Promise<void> => {
+  const resource = ctx.resources.get(name)
+    ?? await protectedResource(url, name, 15_000, said.metadataUrl).catch((): Bag => ({ resource: url, resource_name: name }));
+  ctx.resources.set(name, resource);
+  const scopes = said.scope !== undefined
+    ? said.scope.split(' ').filter((one) => one !== '')
+    : Array.isArray(resource.scopes_supported) ? resource.scopes_supported.filter((one: unknown): one is string => typeof one === 'string') : [];
+  publishServers(ctx, serverNames(ctx), (one, was) => one !== name ? was : {
+    kind: 'authRequired',
+    reason,
+    resource,
+    ...(scopes.length > 0 ? { requiredScopes: scopes } : {}),
+  });
+};
+
+/**
+ * The pass-through one configured HTTP server is reached by, opened the first
+ * time and kept: a server that died is reopened with the same URL and token.
+ * A 401 or 403 the upstream answers is the one signal ACP will ever give about
+ * a server, so it is said as `authRequired`: `insufficientScope` for a 403
+ * that named a scope, `required` otherwise.
+ */
+const proxyOf = (ctx: SessionContext, name: string, server: { url: string; headers?: Record<string, string> }): ProxyEndpoint | undefined => {
+  const held = ctx.proxies.get(name);
+  if (held !== undefined) return held;
+  const opened = ctx.start.proxyServer?.({
+    url: server.url,
+    ...(server.headers === undefined ? {} : { headers: server.headers }),
+    tokenNow: () => ctx.serverTokens.get(name),
+    refused: (said) => {
+      // The token that was refused is not sent again.
+      ctx.serverTokens.delete(name);
+      void signInNeeded(ctx, name, server.url, said.status === 403 && said.scope !== undefined ? 'insufficientScope' : 'required', said);
+    },
+  });
+  if (opened !== undefined) ctx.proxies.set(name, opened);
+  return opened;
 };
 
 /**
@@ -152,9 +207,20 @@ const serversFor = async (
   machine: string | undefined,
   say: (line: string) => void,
   leftOut: (name: string, why: string) => void = () => {},
+  proxied: (name: string, server: { url: string; headers?: Record<string, string> }) => ProxyEndpoint | undefined = () => undefined,
 ): Promise<AcpMcpServer[]> => {
   const taken: AcpMcpServer[] = [];
   const mcp = capabilities?.mcpCapabilities;
+  /**
+   * The URL a session's machine reaches a daemon endpoint at, or nothing where
+   * it cannot: a machine's runtime names the host its own way, and a loopback
+   * address is out of reach from a container.
+   */
+  const reachedFrom = async (url: string): Promise<string | undefined> => {
+    const reached = machine === undefined ? undefined : await start.computers?.reach?.(machine, url);
+    const at = reached ?? url;
+    return reached === undefined && !toolsReachable(at, machine === undefined ? undefined : `computer://${machine}`) ? undefined : at;
+  };
   for (const [name, one] of Object.entries(start.mcpServers ?? {})) {
     // ACP has one shape per transport and this host has two, so a stdio server
     // is a name, a command and a list of variables, and an HTTP one is a name,
@@ -165,12 +231,22 @@ const serversFor = async (
         leftOut(name, 'This ACP server takes no MCP server over HTTP.');
         continue;
       }
-      taken.push({
-        type: 'http',
-        name,
-        url: one.url,
-        headers: Object.entries(one.headers ?? {}).map(([header, value]) => ({ name: header, value })),
-      });
+      /*
+       * Through the host's pass-through where there is one: ACP hands a server
+       * its headers once, when the session opens, so a token a client renews
+       * would never reach it. The agent gets the endpoint's URL and its own
+       * token; the upstream's token, and the configured headers, stay with the
+       * host. A machine that cannot reach the daemon gets the server direct,
+       * and is told a renewal will not reach it.
+       */
+      const through = proxied(name, one);
+      const at = through === undefined ? undefined : await reachedFrom(through.url);
+      if (through !== undefined && at === undefined) {
+        say(`${name}: computer://${String(machine)} cannot reach the daemon at ${addressOf(through.url)}, so it gets this server direct and a renewed token will not reach it`);
+      }
+      taken.push(at === undefined || through === undefined
+        ? { type: 'http', name, url: one.url, headers: Object.entries(one.headers ?? {}).map(([header, value]) => ({ name: header, value })) }
+        : { type: 'http', name, url: at, headers: [{ name: 'authorization', value: `Bearer ${through.token}` }] });
       continue;
     }
     // ACP cannot say where a stdio server starts, so a directory goes with it
@@ -202,9 +278,8 @@ const serversFor = async (
    * under. An answer replaces the endpoint's own address; no answer keeps the
    * reading below.
    */
-  const reached = machine === undefined ? undefined : await start.computers?.reach?.(machine, endpoint.url);
-  const url = reached ?? endpoint.url;
-  if (reached === undefined && !toolsReachable(url, machine === undefined ? undefined : `computer://${machine}`)) {
+  const url = await reachedFrom(endpoint.url);
+  if (url === undefined) {
     say(`host tools: computer://${String(machine)} cannot reach the daemon at ${addressOf(endpoint.url)}, so they were left out`);
     return taken;
   }
@@ -660,6 +735,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         moved === undefined ? undefined : machineIdOf(start),
         (line: string, level?: LogLevel) => options.log?.(line, level),
         (name, why) => left.set(name, why),
+        (name, server) => proxyOf(ctx, name, server),
       );
       /*
        * The configured servers as customizations, so a targeted token can name

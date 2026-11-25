@@ -51,7 +51,7 @@ export { ripgrepFiles } from './resources/workspacefiles.js';
 export { localPath, uriOf } from './resources/fileuri.js';
 export { clientPluginsIn } from './plugins/clientplugins.js';
 export { partsOf as pluginPartsOf } from './plugins/pluginparts.js';
-export { mcpServerCustomization, mcpServerIdOf } from './plugins/mcpserver.js';
+export { mcpServerCustomization, mcpServerIdOf, protectedResource } from './plugins/mcpserver.js';
 export { shellTerminals } from './machines/terminals.js';
 export { isShellName, shellEnvOf } from './machines/shellenv.js';
 export type { ShellEnv } from './machines/shellenv.js';
@@ -68,7 +68,7 @@ export { managedRuleOf } from './host/permissions.js';
 export { hostTools } from './tools/index.js';
 export { answerTools, toolServers, TOOLS_PREFIX } from './tools/server.js';
 export type {
-  MayRunTool, RunClientTool, ToolsChanged, ToolsEndpoint, ToolsInfo, ToolsServing, ToolsServerOptions, ToolsServers,
+  MayRunTool, ProxyEndpoint, ProxyUpstream, RunClientTool, ToolsChanged, ToolsEndpoint, ToolsInfo, ToolsServing, ToolsServerOptions, ToolsServers, UpstreamRefusal,
 } from './tools/server.js';
 export { createClientCalls, DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from './tools/clientcalls.js';
 export type { ClientCall, ClientCallAnswer, ClientCalls, ClientCallsOptions } from './tools/clientcalls.js';

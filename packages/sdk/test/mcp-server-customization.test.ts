@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { mcpServerCustomization, mcpServerIdOf } from '../src/plugins/mcpserver.js';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mcpServerCustomization, mcpServerIdOf, protectedResource } from '../src/plugins/mcpserver.js';
 
 /*
  * The two builders this helper replaced, as they stood before the move, so the
@@ -32,7 +35,7 @@ describe('mcpServerIdOf', () => {
 });
 
 describe('mcpServerCustomization', () => {
-  it('builds the mcpServer customization with the extra fields before the state', () => {
+  it('builds the mcpServer customization with the extra fields first', () => {
     const built = mcpServerCustomization('claude-internal:/mcp/user', 'gh', { kind: 'ready' }, { enablement: [{ kind: 'session', enabled: true }] });
     expect(built).toEqual({
       type: 'mcpServer',
@@ -42,6 +45,52 @@ describe('mcpServerCustomization', () => {
       enablement: [{ kind: 'session', enabled: true }],
       state: { kind: 'ready' },
     });
-    expect(Object.keys(built)).toEqual(['type', 'id', 'name', 'uri', 'enablement', 'state']);
+    expect(Object.keys(built)).toEqual(['enablement', 'type', 'id', 'name', 'uri', 'state']);
+  });
+
+  it('lets an extra field add to the customization and never replace what names it', () => {
+    const built = mcpServerCustomization('acp-internal:/mcp/a', 'a', { kind: 'ready' }, { id: 'other', type: 'skill', name: 'b', uri: 'x:', state: { kind: 'stopped' } });
+    expect(built).toMatchObject({ type: 'mcpServer', id: 'acp-internal:/mcp/a#mcp=a', name: 'a', uri: 'acp-internal:/mcp/a', state: { kind: 'ready' } });
+  });
+});
+
+describe('protectedResource with the metadata URL a server named', () => {
+  let server: Server;
+  let origin: string;
+  const asked: string[] = [];
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      asked.push(request.url ?? '');
+      const send = (status: number, body?: unknown, headers: Record<string, string> = {}): void => {
+        response.writeHead(status, { 'content-type': 'application/json', ...headers });
+        response.end(body === undefined ? undefined : JSON.stringify(body));
+      };
+      if (request.url === '/named-meta') send(200, { resource: `${origin}/mcp`, authorization_servers: ['https://named.example'] });
+      else if (request.url === '/moved-meta') send(302, undefined, { location: `${origin}/named-meta` });
+      else if (request.url === '/.well-known/oauth-protected-resource/mcp') send(200, { resource: `${origin}/mcp`, authorization_servers: ['https://wellknown.example'] });
+      else send(404);
+    });
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(async () => { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); });
+
+  it('asks the URL the server named first', async () => {
+    expect(await protectedResource(`${origin}/mcp`, 'up', 5_000, `${origin}/named-meta`))
+      .toMatchObject({ authorization_servers: ['https://named.example'] });
+  });
+
+  it('never follows a redirect from the named URL, and falls back to the well-known path', async () => {
+    asked.length = 0;
+    expect(await protectedResource(`${origin}/mcp`, 'up', 5_000, `${origin}/moved-meta`))
+      .toMatchObject({ authorization_servers: ['https://wellknown.example'] });
+    expect(asked).not.toContain('/named-meta');
+  });
+
+  it('does not ask a named URL that is plain http off this machine', async () => {
+    asked.length = 0;
+    expect(await protectedResource(`${origin}/mcp`, 'up', 5_000, 'http://upstream.invalid/meta'))
+      .toMatchObject({ authorization_servers: ['https://wellknown.example'] });
   });
 });

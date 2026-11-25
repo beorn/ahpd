@@ -33,7 +33,7 @@ import { createConfig } from './session/config.js';
 import type { Choice } from './session/config.js';
 import type { SessionContext } from './session/context.js';
 import { createHandlers } from './session/handlers.js';
-import { createOpening } from './session/opening.js';
+import { createOpening, publishServers, serverNames, signInNeeded } from './session/opening.js';
 import { createTurn } from './session/turn.js';
 import type { AcpOptions, AcpTurn, ConfirmationOption, PermissionAnswer, WatchedSession, WatchedTurn } from './types.js';
 
@@ -184,6 +184,9 @@ export function acpSession(
     commands: [],
     servers: [],
     published: (): Bag[] => [...ctx.seeds, ...ctx.servers, ...ctx.commands],
+    proxies: new Map(),
+    serverTokens: new Map(),
+    resources: new Map(),
     modes: undefined,
     active: undefined,
     pendingTurns: [],
@@ -449,6 +452,30 @@ export function acpSession(
     // three refuse. False is a real answer: a control that reported success
     // and changed nothing would be worse than one that says no.
     setCustomizationEnabled: async () => false,
+    /*
+     * A client's token for one configured server, which that server's
+     * pass-through sends upstream from its next request on. Only a server this
+     * session reaches through one can take it: a token handed to a server
+     * that was given its headers at open would never reach it.
+     */
+    authenticated: async (_resource, token, server) => {
+      const named = ctx.servers.find((one) => one.id === server)?.name;
+      if (typeof named !== 'string' || !ctx.proxies.has(named)) return false;
+      ctx.serverTokens.set(named, token);
+      publishServers(ctx, serverNames(ctx), (one, was) => one === named && was.kind === 'authRequired' ? { kind: 'ready' } : was);
+      return true;
+    },
+    /*
+     * A client's token for one server ran out: it is not sent again, and the
+     * server says it needs signing in, reason `expired`.
+     */
+    expired: async (_resource, server) => {
+      const named = ctx.servers.find((one) => one.id === server)?.name;
+      const configured = typeof named === 'string' ? start.mcpServers?.[named] : undefined;
+      if (typeof named !== 'string' || configured?.type !== 'http' || !ctx.serverTokens.delete(named)) return false;
+      await signInNeeded(ctx, named, configured.url, 'expired');
+      return true;
+    },
     startMcpServer: async () => false,
     stopMcpServer: async () => false,
 

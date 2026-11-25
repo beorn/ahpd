@@ -44,7 +44,7 @@ import type { Connection } from '../types/host.js';
 import type { Session, SubagentChat, SubagentRequest } from '../types/session.js';
 import type { MessageAttachment } from '@microsoft/agent-host-protocol';
 import type { ResourceStore } from '../types/resources.js';
-import type { MayRunTool, RunClientTool, ToolsChanged, ToolsEndpoint } from '../tools/server.js';
+import type { MayRunTool, ProxyEndpoint, ProxyUpstream, RunClientTool, ToolsChanged, ToolsEndpoint } from '../tools/server.js';
 import { isWorkspaceless } from './lifecycle.js';
 import { AGENT_HOST_WORKSPACELESS_INSTRUCTIONS } from '../vscode/workspacelessinstructions.js';
 import type { Move } from './lifecycle.js';
@@ -1336,6 +1336,16 @@ export function createSpawn(ctx: HostContext): Spawn {
       ctx.served.set(uri, open);
       return { ...opened, setTools: (now) => opened.setTools(held(now)) };
     };
+    /** A pass-through to one upstream MCP server, closed with the session as a tools endpoint is. */
+    const proxyServer = (upstream: ProxyUpstream): ProxyEndpoint | undefined => {
+      if (bare) return undefined;
+      const opened = options.toolsServers?.openProxy(upstream);
+      if (opened === undefined) return undefined;
+      const open = ctx.served.get(uri) ?? [];
+      open.push(opened);
+      ctx.served.set(uri, open);
+      return opened;
+    };
     /*
      * What this backend is told about the folders it is handed.
      *
@@ -1489,7 +1499,7 @@ export function createSpawn(ctx: HostContext): Spawn {
        */
       ...(plugins.length === 0 ? {} : { plugins }),
       ...(denied.length === 0 ? {} : { deniedMcpServers: denied }),
-      ...(options.toolsServers === undefined ? {} : { toolsServer }),
+      ...(options.toolsServers === undefined ? {} : { toolsServer, proxyServer }),
       // Resolved here rather than left for the backend to default, so what a
       // call waits is one number the host decided and a deployment set once.
       clientToolTimeoutMs: options.clientToolTimeoutMs ?? DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
