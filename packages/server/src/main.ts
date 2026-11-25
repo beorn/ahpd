@@ -94,6 +94,16 @@ if (process.env[CHECK_LINE_ENV] === '1') {
   process.exit(0);
 }
 
+/*
+ * The secrets wrapper process-compose starts a program through (#38277). Read
+ * before the program exists: its line is the services driver's, its exit is
+ * the child's, and it must run with no daemon up. See `commands/secrets.ts`.
+ */
+if (argv0[0] === 'secrets' && argv0[1] === 'exec') {
+  const { runSecretsExec } = await import('./commands/secrets.js');
+  await runSecretsExec(argv0.slice(2));
+}
+
 const remoteUrl = readGlobal(argv0, '--remote');
 const refresh = argv0.includes('--refresh');
 
@@ -184,8 +194,10 @@ const program: Program = new Program({
   liveHelp: (_command, prefix) => {
     if (prefix.length > 0) return Promise.resolve('');
     const run = registry.find('daemon.run');
-    if (run === undefined) return Promise.resolve('');
-    return Promise.resolve(runHelp(run));
+    // `secrets exec` is read ahead of the program (above), so the program does not list it; named here (@cto 876bcedd).
+    const wrapper = `\nWrapper:\n  secrets exec <service> --env NAME=<scope>:<name> -- '<command>'\n      The services driver's wrapper, which process-compose starts a program through; not for use by hand.\n`;
+    if (run === undefined) return Promise.resolve(wrapper);
+    return Promise.resolve(`${runHelp(run)}${wrapper}`);
   },
   /*
    * Where a command runs, declared with the other options: `--remote` is the
