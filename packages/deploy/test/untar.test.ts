@@ -220,6 +220,33 @@ describe('a pinned release archive is checked before it is written (#38280)', ()
     expect(statSync(join(release, 'x', 'y')).ino).toBe(statSync(join(release, 'x', 'z')).ino);
   });
 
+  // @level l3 @consumer the top folder is dropped by strip: 1, so a link that names it again points nowhere real.
+  it('refuses a symlink that climbs to the top folder by name and re-enters it', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/b`, body: 'b\n' },
+        { name: `${top}/a`, kind: 'symlink', target: `../${top}/b` },
+      ]),
+    );
+    const release = into();
+    expect(() => unpackArchive(archive, release, top)).toThrow(new RegExp(`${top}/a`, 'u'));
+    expect(existsSync(release)).toBe(false);
+  });
+
+  // @level l3 @consumer an entry node-tar cannot write fails the unpack; a warning would leave a release missing a
+  // file while reporting success (a hard link to a path the archive never carries).
+  it('fails the unpack when node-tar refuses an entry, instead of leaving a partial release', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/x/z`, body: 'z\n' },
+        { name: `${top}/x/y`, typeflag: '1', target: `${top}/missing` },
+      ]),
+    );
+    const release = into();
+    expect(() => unpackArchive(archive, release, top)).toThrow(/ENOENT|link/u);
+    expect(existsSync(join(release, 'x', 'y'))).toBe(false);
+  });
+
   // @level l3 @consumer a device or fifo is not a file this installer places, and it is named.
   it('refuses a fifo entry', () => {
     const archive = write(

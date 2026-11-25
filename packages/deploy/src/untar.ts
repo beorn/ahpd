@@ -54,8 +54,12 @@ const plainRelative = (path: string): boolean => {
  * The two link kinds resolve from different places, and getting that wrong is an escape. A symlink's target is
  * relative to the folder the link sits in, so `top/link -> ../x` points BESIDE the release, not at `top/x`. A hard
  * link's target is a path in the archive root, not relative to the entry at all. Both are resolved from their own
- * base, `..` is allowed to climb only within the release, and a hard link that climbs at all is refused outright:
- * nothing in a release needs one, so there is no reason to accept the arithmetic.
+ * base, and a hard link that climbs at all is refused outright: nothing in a release needs one, so there is no reason
+ * to accept the arithmetic.
+ *
+ * A symlink may climb inside the release but never past its top folder. That folder is dropped by the `strip: 1` that
+ * turns the archive into the release tree, so `top/a -> ../top/b` names a path that does not exist after the strip,
+ * and on disk it points beside the release (@dev/6 2026-11-25).
  */
 const linkStaysInside = (entry: ArchiveEntry, topDir: string): boolean => {
   const target = entry.target;
@@ -65,7 +69,7 @@ const linkStaysInside = (entry: ArchiveEntry, topDir: string): boolean => {
   for (const part of target.split('/')) {
     if (part === '' || part === '.') continue
     if (part === '..') {
-      if (!fromFolder || parts.length === 0) return false
+      if (!fromFolder || parts.length <= 1) return false
       parts.pop()
       continue
     }
@@ -106,6 +110,10 @@ export const unpackArchive = (archive: string, into: string, topDir: string): re
     preservePaths: false,
     preserveOwner: false,
     noChmod: false,
+    // A warning about an entry we could not write is an incomplete release, and a half-written release that reports
+    // success is the failure this whole file exists to prevent: any entry node-tar refuses throws instead (@dev/6
+    // 2026-11-25). The caller removes the staging tree it was writing into.
+    strict: true,
   });
   return entries.map((entry) => entry.name);
 };
