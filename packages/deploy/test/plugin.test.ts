@@ -248,7 +248,7 @@ describe('the deploy plugin as ahpd loads it', () => {
     expect(providers).toEqual(['hh-deploys']);
     expect(alerts).toHaveLength(0);
     // The retired names still exist, so a caller on the old grants is told what replaced them.
-    expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:read');
+    expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:status');
   });
 });
 
