@@ -73,6 +73,8 @@ export interface DeployRequest {
 /** What a started child tells the method: when it ended, and how. */
 export interface StartedDeploy {
   readonly whenExited?: Promise<number | null>;
+  /** Stops the child and everything it started: the process group it leads. */
+  readonly killGroup?: () => void;
 }
 
 /** Starts one accepted deploy; `ahpd deploy` as a detached child by default. */
@@ -243,8 +245,17 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
             return refused('DRIVER_FAILED', `the deploy of ${service} stopped before taking the lock (exit ${exited === null ? 'by signal' : String(exited)})`);
           }
           if (Date.now() >= deadline) {
-            writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `the deploy child did not take the lock in ${String(budget)} ms` });
-            return refused('DRIVER_FAILED', `the deploy child did not take the lock in ${String(budget)} ms`);
+            // Stop the child before answering: one that takes the lock after this answer would deploy behind a caller
+            // that was told the deploy never began, so the refusal is made true rather than merely early.
+            try {
+              started?.killGroup?.();
+            } catch (error) {
+              const why = error instanceof Error ? error.message : String(error);
+              writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `did not take the lock in ${String(budget)} ms and was not stopped: ${why}` });
+              return refused('DRIVER_FAILED', `the deploy child did not take the lock in ${String(budget)} ms and could not be stopped: ${why}`);
+            }
+            writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `killed after ${String(budget)} ms without taking the lock` });
+            return refused('DRIVER_FAILED', `the deploy child was killed after ${String(budget)} ms without taking the lock`);
           }
         }
       },
@@ -336,5 +347,19 @@ export function startChild(machine: Machine, stateDir: string, request: DeployRe
     env: { ...process.env, ...(machine.name === '' ? {} : { AHPD_MACHINE: machine.name }) },
   });
   child.unref();
-  return { whenExited: new Promise<number | null>((resolve) => { child.on('exit', (code) => { resolve(code); }); }) };
+  const pid = child.pid;
+  return {
+    whenExited: new Promise<number | null>((resolve) => { child.on('exit', (code) => { resolve(code); }); }),
+    // A child that outlived the lock wait can still take the lock afterwards, which would make a refusal that said
+    // the deploy never began false (@cto 2026-11-25). It leads its own group, so the whole group is what stops.
+    killGroup: () => {
+      if (pid === undefined) throw new Error('the deploy child was never given a pid');
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch (error) {
+        // Already gone is the outcome this call wants; anything else is a child that may still deploy.
+        if (!(error instanceof Error && (error as NodeJS.ErrnoException).code === 'ESRCH')) throw error;
+      }
+    },
+  };
 }

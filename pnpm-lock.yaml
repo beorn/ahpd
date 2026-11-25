@@ -213,6 +213,12 @@ importers:
         specifier: workspace:*
         version: link:../sdk
 
+  packages/deploy:
+    dependencies:
+      '@ahpd/services':
+        specifier: workspace:*
+        version: link:../services
+
   packages/push:
     devDependencies:
       '@ahpd/sdk':
@@ -221,12 +227,6 @@ importers:
       '@microsoft/agent-host-protocol':
         specifier: ^1.0.0
         version: 1.0.0
-
-  packages/services:
-    dependencies:
-      yaml:
-        specifier: 2.9.0
-        version: 2.9.0
 
   packages/sdk:
     dependencies:
@@ -243,6 +243,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@ahpd/deploy':
+        specifier: workspace:*
+        version: link:../deploy
       '@ahpd/sdk':
         specifier: workspace:*
         version: link:../sdk
@@ -281,6 +284,12 @@ importers:
       node-pty:
         specifier: ^1.1.0-beta40
         version: 1.1.0
+
+  packages/services:
+    dependencies:
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   packages/tasks:
     devDependencies:

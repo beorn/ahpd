@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -76,6 +76,45 @@ describe('the deploy plugin (#38276 slice 2)', () => {
     expect(answer).toMatchObject({ ok: false, code: 'UNKNOWN_SERVICE' });
     expect(String(answer['message'])).toContain('web, api');
   });
+
+  it('kills a child that outlives the lock budget, so no lock can appear after the refusal (#38276)', async () => {
+    // @cto 2026-11-25: a child that takes the lock after we answered DRIVER_FAILED would deploy behind a caller told
+    // the deploy never began. The refusal is only true if the child is stopped, so the budget is a kill, not a wait.
+    const stateDir = machine();
+    const repo = repoFixture();
+    const root = join(stateDir, 'deploy', 'web');
+    let killed = false;
+    let late: ReturnType<typeof setTimeout> | undefined;
+    const found = deployMethods({
+      stateDir,
+      switches: () => ON,
+      services: () => ['web'],
+      waitForLockMs: 120,
+      start: () => ({
+        // Never ends on its own, and would take the lock well after the budget.
+        whenExited: new Promise<number | null>(() => {}),
+        killGroup: () => {
+          killed = true;
+          if (late !== undefined) clearTimeout(late);
+        },
+      }),
+    });
+    late = setTimeout(() => {
+      mkdirSync(root, { recursive: true });
+      const lock = { deployId: 'late', step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: '' };
+      writeFileSync(join(root, 'deploy.lock'), JSON.stringify(lock) + '\n');
+    }, 400);
+    const run = (found['x-ahpd/deploy/run'] as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Promise<Record<string, unknown> & Partial<DeployRefusal>>;
+    const answer = await run;
+    expect(answer['code']).toBe('DRIVER_FAILED');
+    expect(String(answer['message'])).toContain('killed after 120 ms');
+    expect(killed).toBe(true);
+    // Past the child's own moment: nothing took the lock behind the refusal.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(existsSync(join(root, 'deploy.lock'))).toBe(false);
+    const lines = readFileSync(join(root, 'deploy.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines.at(-1)).toMatchObject({ event: 'not started', reason: 'killed after 120 ms without taking the lock' });
+  }, 20_000);
 
   it('refuses a second deploy by the running deploy id', async () => {
     const stateDir = machine();
