@@ -176,13 +176,13 @@ describe('ifVersion (rule: a stale write is refused with the difference, never m
   it('refuses a put made against an older version, shows what changed, and leaves the file as it is', async () => {
     writeFileSync(local, 'processes:\n  web:\n    command: one\n');
     const read1 = version();
-    const edited = 'processes:\n  web:\n    command: two   # someone on the machine\n';
+    const edited = 'processes:\n  web:\n    command: "two"   # someone on the machine\n';
     writeFileSync(local, edited);
     const answer = await putService(machine, LOCAL_ONLY, { service: { name: 'web', cwd: '/srv' }, ifVersion: read1 });
     expect(answer).toMatchObject({ ok: false, code: 'STALE_VERSION' });
     if (answer.ok) return;
     expect(answer.diff).toContain('-    command: one');
-    expect(answer.diff).toContain('+    command: two   # someone on the machine');
+    expect(answer.diff).toContain('+    command: "two"   # someone on the machine');
     expect(answer.message).toContain(sha(edited));
     expect(read()).toBe(edited);
     expect(seen).toEqual([]);

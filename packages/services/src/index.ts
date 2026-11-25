@@ -5,6 +5,7 @@ export {
   type ServiceOperation, type ServiceRow, type ServicesState, type ServicesChannel, type ServicesProvider, type ChannelContext, type OperationCaller, type Reader,
 } from './channel.js';
 export { compareDrift, checkDrift, driftFacts, acknowledge, readKnown, DRIFT_REF, type DriftAlert, type DriftFacts } from './drift.js';
+export { watchAlerts, cutCommand, GAVE_UP_REF, CUT_COMMAND_REF } from './watch.js';
 export { localServices, type LocalServices } from './local.js';
 export { machineSwitches, MACHINE_KEY, REMOTE_COMMANDS_OFF, ROOM_ASKS_OFF, type MachineSwitches } from './switches.js';
 export {
