@@ -3,11 +3,11 @@
 // so a host needs no package manager (#38280, @cto 078f53e9). Run it on the machine it builds for: native modules
 // are taken for this machine, never cross-built.
 //
-//   node scripts/pack-host-archive.mjs --commit <full sha> --tag <release tag> --out <empty dir>
+//   node scripts/pack-host-archive.mjs --commit <full sha> --tag <release tag> --source-base <https url> --out <empty dir>
 //
 // Writes <out>/ahpd-<version>-<platform>-<arch>.tar.gz and <out>/pins-<platform>-<arch>.json. Refuses, by name:
 // a dirty tree, a HEAD that is not the commit, an @ahpd/* package that did not come from this workspace, a
-// non-empty output folder, and a missing build output. Prints the node, pnpm, bun and tar versions it used, so
+// non-empty output folder, a source base that is not https, any type error, and a missing build output. Prints the node, pnpm, bun and tar versions it used, so
 // two builds can be compared.
 
 import { spawnSync } from 'node:child_process';
@@ -15,7 +15,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const REPO = 'https://github.com/beorn/ahpd';
 const PLATFORMS = { linux: 'linux', darwin: 'darwin' };
 const ARCHES = { x64: 'x64', arm64: 'arm64' };
 
@@ -46,6 +45,10 @@ const arg = (name) => {
 
 const commit = arg('commit');
 const tag = arg('tag');
+// Where hosts download from: the pin's source is <base>/<tag>/<name>. No default: assets are served from Hightea's
+// origin, not from GitHub (@cto fd9e170b), and a host must never be pointed at plain http.
+const sourceBase = arg('source-base').replace(/\/+$/, '');
+if (!/^https:\/\/[^/\s]+/.test(sourceBase)) fail(`--source-base must be an https URL, got ${sourceBase}`);
 const out = resolve(arg('out'));
 const root = must('git', ['rev-parse', '--show-toplevel']);
 
@@ -77,12 +80,12 @@ const foreignInLock = [...new Set([...lock.matchAll(/^ {2}'?(@ahpd\/[^@\s']+)@([
 if (foreignInLock.length > 0) fail(`pnpm-lock.yaml resolves @ahpd packages from outside the workspace: ${foreignInLock.join(', ')}`);
 
 must('corepack', ['pnpm', 'install', '--frozen-lockfile'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
-// tsc in dependency order over the server's closure. The known type errors (packages/server listener.ts FormData)
-// do not stop emit; a missing dist does.
+// tsc in dependency order over the server's closure. A release compiles clean: any type error refuses (@cto c96c46ad).
 const built = run('corepack', ['pnpm', '--filter', '@ahpd/server...', '-r', '--workspace-concurrency=1', 'exec', 'tsc', '-p', '.'], { cwd: root });
 const typeErrors = ((built.stdout ?? '') + (built.stderr ?? '')).split('\n').filter((line) => /error TS\d+/.test(line));
-if (!existsSync(join(root, 'packages/server/dist/main.js'))) fail(`no packages/server/dist/main.js after the build:\n${typeErrors.join('\n')}`);
-process.stdout.write(`pack-host-archive: build emitted with ${typeErrors.length} type error(s)${typeErrors.length ? `:\n${typeErrors.join('\n')}` : ''}\n`);
+if (typeErrors.length > 0) fail(`the build has ${typeErrors.length} type error(s):\n${typeErrors.join('\n')}`);
+if (built.status !== 0) fail(`the build exited ${built.status}\n${(built.stdout ?? '').slice(-2000)}${(built.stderr ?? '').slice(-2000)}`);
+if (!existsSync(join(root, 'packages/server/dist/main.js'))) fail('no packages/server/dist/main.js after the build');
 
 mkdirSync(out, { recursive: true });
 const stage = join(out, 'stage');
@@ -118,7 +121,7 @@ const pins = {
   commit,
   built: versions,
   pins: {
-    ahpd: { version, platform, arch, source: `${REPO}/releases/download/${tag}/${name}`, checksum: `sha256:${sha256}` },
+    ahpd: { version, platform, arch, source: `${sourceBase}/${tag}/${name}`, checksum: `sha256:${sha256}` },
   },
 };
 writeFileSync(join(out, `pins-${platform}-${arch}.json`), `${JSON.stringify(pins, null, 2)}\n`);
