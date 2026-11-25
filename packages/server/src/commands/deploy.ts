@@ -14,7 +14,7 @@
  * because a person at this terminal is the machine's owner.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { output } from '@cofold/commands';
 import type { Command, Registry } from '@cofold/commands';
 import { DEFAULT_KEEP, deploy } from '@ahpd/deploy';
@@ -63,6 +63,8 @@ const readHanded = (file: string): { deployId: string; declaration: DeployDeclar
   if (typeof body.deployId !== 'string' || body.deployId === '' || typeof body.declaration !== 'object' || body.declaration === null) {
     stop(`deploy: ${file} is not a request { deployId, declaration }`);
   }
+  // Read once, then gone: the journal is the record from here on, and a copy lying about would be a second one.
+  rmSync(file, { force: true });
   return { deployId: body.deployId, declaration: body.declaration as DeployDeclaration };
 };
 

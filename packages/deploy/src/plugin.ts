@@ -19,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@ahpd/services';
-import { readJournal, resolveVersion, status } from './index.js';
+import { readJournal, resolveVersion, status, writeJournalEntry } from './index.js';
 import type { DeployCommand, DeployDeclaration, DeployLayout } from './index.js';
 
 /** The plugin's id. */
@@ -70,6 +70,14 @@ export interface DeployRequest {
   readonly deployId: string;
 }
 
+/** What a started child tells the method: when it ended, and how. */
+export interface StartedDeploy {
+  readonly whenExited?: Promise<number | null>;
+}
+
+/** Starts one accepted deploy; `ahpd deploy` as a detached child by default. */
+export type StartDeploy = (request: DeployRequest) => StartedDeploy | void;
+
 export interface DeployMethodsOptions {
   /** Where a service's deploy state sits: the host's configuration directory. */
   readonly stateDir: string;
@@ -78,8 +86,13 @@ export interface DeployMethodsOptions {
   /** Every service this machine runs, by name, for the "unknown service" check. */
   readonly services: () => readonly string[] | Promise<readonly string[]>;
   /** How the steps start once the checks pass; `ahpd deploy` as a detached child by default. */
-  readonly start: (request: DeployRequest) => void;
+  readonly start: StartDeploy;
+  /** How long to wait for the child to take the lock before answering that it did not. */
+  readonly waitForLockMs?: number;
 }
+
+/** How long a run waits for its child to hold the lock, inside the 9 s a host request has (@cto 2026-11-25). */
+export const WAIT_FOR_LOCK_MS = 5_000;
 
 const refused = (code: DeployRefusalCode, message: string): DeployRefusal => ({ ok: false, code, message });
 
@@ -204,12 +217,36 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
         }
 
         const request: DeployRequest = { service, version: sha, declaration, deployId: randomUUID() };
+        let started: StartedDeploy | void;
         try {
-          options.start(request);
+          started = options.start(request);
         } catch (error) {
           return refused('DRIVER_FAILED', `the deploy of ${service} could not start: ${error instanceof Error ? error.message : String(error)}`);
         }
-        return { ok: true, service, sha, deployId: request.deployId, state: 'started' };
+        // Answering before the child holds the lock would let two calls both say started and one of them be false:
+        // the loser refuses in its child and the person was told a deploy began that never did (@cto 2026-11-25).
+        let exited: number | null | undefined;
+        const ending = started?.whenExited?.then((code) => { exited = code; });
+        const budget = options.waitForLockMs ?? WAIT_FOR_LOCK_MS;
+        const deadline = Date.now() + budget;
+        for (;;) {
+          const held = status(layout).lock;
+          if (held !== undefined) {
+            if (held.deployId === request.deployId) return { ok: true, service, sha, deployId: request.deployId, state: 'started' };
+            return refused('RUNNING', `a deploy of ${service} is already running (${held.deployId})`);
+          }
+          // A tick between checks, or the child's end when there is one to watch: racing against an absent promise
+          // would resolve at once and spin here, starving the child that is meant to take the lock.
+          const tick = new Promise((resolve) => setTimeout(resolve, 25));
+          await (ending === undefined ? tick : Promise.race([tick, ending]));
+          if (exited !== undefined) {
+            return refused('DRIVER_FAILED', `the deploy of ${service} stopped before taking the lock (exit ${exited === null ? 'by signal' : String(exited)})`);
+          }
+          if (Date.now() >= deadline) {
+            writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `the deploy child did not take the lock in ${String(budget)} ms` });
+            return refused('DRIVER_FAILED', `the deploy child did not take the lock in ${String(budget)} ms`);
+          }
+        }
       },
     },
     'x-ahpd/deploy/report': {
@@ -287,7 +324,7 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
  * The child is given one file rather than a line of flags: a build command arrives as a program and its arguments,
  * and rebuilding a shell line from that to re-split in the child is where a quoting bug would live.
  */
-export function startChild(machine: Machine, stateDir: string, request: DeployRequest): void {
+export function startChild(machine: Machine, stateDir: string, request: DeployRequest): StartedDeploy {
   const root = join(stateDir, 'deploy', request.service);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const file = join(root, REQUEST_FILE);
@@ -299,4 +336,5 @@ export function startChild(machine: Machine, stateDir: string, request: DeployRe
     env: { ...process.env, ...(machine.name === '' ? {} : { AHPD_MACHINE: machine.name }) },
   });
   child.unref();
+  return { whenExited: new Promise<number | null>((resolve) => { child.on('exit', (code) => { resolve(code); }); }) };
 }
