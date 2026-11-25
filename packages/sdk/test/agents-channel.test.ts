@@ -1754,3 +1754,24 @@ it('takes no delegates on a host record: only a person delegates', async () => {
   expect(answer['message']).toContain("takes delegates only for a person's record");
   await close();
 });
+
+it('a delegated put that is refused for being stale leaves no delegated write line', async () => {
+  const { host, users, lists, problems, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+
+  // The plugin is listed, so the delegation carries it: what refuses this put is
+  // the revision it read, and the log must say nothing about a write that did
+  // not land.
+  const stale = await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'Too late', ifRevision: 9 }));
+  expect(stale['code']).toBeDefined();
+  expect(problems.filter((line) => line.includes('delegated write'))).toEqual([]);
+
+  // The same plugin writing what it read commits, and that one is logged.
+  const fresh = await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'On time', ifRevision: 1 }));
+  expect(fresh['result']).toMatchObject({ name: 'On time', revision: 2 });
+  expect(problems.filter((line) => line.includes('delegated write'))).toEqual([
+    'x-ahpd-agents: delegated write: plugin:hightea-pipe make mine, owned by user:cy',
+  ]);
+  await close();
+});
