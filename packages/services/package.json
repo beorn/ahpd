@@ -26,5 +26,57 @@
   "scripts": {
     "prepack": "tsc -p .",
     "test": "cd ../.. && vitest run packages/services/test"
+  },
+  "ahpd": {
+    "entry": "./dist/index.js",
+    "title": "Services",
+    "description": "This machine's programs under process-compose: list, change the machine's own file, start, stop, restart and read logs, with drift alerts.",
+    "categories": [],
+    "contracts": {
+      "methods": [
+        "x-ahpd/services/list",
+        "x-ahpd/services/put",
+        "x-ahpd/services/remove",
+        "x-ahpd/services/start",
+        "x-ahpd/services/stop",
+        "x-ahpd/services/restart",
+        "x-ahpd/services/logs"
+      ],
+      "closers": [
+        "the five-minute drift check"
+      ]
+    },
+    "optionsSchema": {
+      "type": "object",
+      "required": [
+        "files",
+        "socket"
+      ],
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "process-compose's -f files as absolute paths, in the order it is given them. Only the last (the machine's own) is written."
+        },
+        "socket": {
+          "type": "string",
+          "description": "Absolute path of process-compose's Unix socket (its -u). Never TCP."
+        },
+        "tokenFile": {
+          "type": "string",
+          "description": "Absolute path of the file holding process-compose's API token (its --token-file)."
+        },
+        "changeLog": {
+          "type": "string",
+          "description": "Absolute path of the JSONL change log. Default: <configDir>/services/changes.jsonl."
+        },
+        "machine": {
+          "type": "string",
+          "description": "The machine's name as messages say it. Default: the host name."
+        }
+      }
+    }
   }
 }

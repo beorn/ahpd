@@ -57,7 +57,7 @@ export interface Caller {
 export type RefusalCode =
   | 'INVALID' | 'PLAIN_ENV_VALUE' | 'NOT_FOUND' | 'READ_ONLY' | 'STALE_VERSION' | 'REMOTE_COMMANDS_OFF'
   | 'SWITCHES_UNREADABLE' | 'UNSUPPORTED_LAYOUT' | 'FILE_UNREADABLE' | 'RELOAD_FAILED' | 'PC_REFUSED'
-  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED';
+  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED';
 
 export interface Refusal {
   readonly ok: false;
