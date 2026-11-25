@@ -90,6 +90,9 @@ Upstream status is one of:
 ### usage: inhab JSONL source
 - `31d558b65`, `2a73aba1b`, `ab933f119`, `f3f3f3937`, `0ac4f15c2` · re-derive the usage JSONL append source from Ag (three provenance pins), preserve the zero-tail repair, and re-read the append boundary so a later record is never glued to a zero tail · #35067, #33944 · not upstreamable: reads hh's inhab JSONL journals and pins an Ag commit (`inhab-jsonl.provenance.json`), a format upstream does not have
 
+### Services: machine-local switches
+- `67799d139` · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
+
 ### Superseded
 - `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0)
 
