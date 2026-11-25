@@ -236,12 +236,13 @@ const misnamed = (opened: Opened[], handles: Map<string, ViewHandle>): ServedEng
  * `fold` is called with each agent list before the host takes it, so a case
  * can ask something of the host while a fold is in flight.
  */
-async function served(options: { register?: boolean; fold?: (agents: Agent[]) => Promise<void>; connectors?: readonly ConnectorRef[] } = {}) {
+async function served(options: { register?: boolean; fold?: (agents: Agent[]) => Promise<void>; connectors?: readonly ConnectorRef[]; stop?: (id: string) => Promise<void> } = {}) {
   const register = options.register ?? true;
   const collection: RecordCollection = await memoryRecords().collection('agents', { format: 'json' });
   const opened: Opened[] = [];
   const problems: string[] = [];
   const ended: string[] = [];
+  const stopped: string[] = [];
   const vault = made();
   /** The view handle each opening was handed, by agent id. */
   const handles = new Map<string, ViewHandle>();
@@ -296,6 +297,11 @@ async function served(options: { register?: boolean; fold?: (agents: Agent[]) =>
       ended.push(id);
       await host?.endSessionsOf(id);
     },
+    stopSessionsOf: async (id) => {
+      stopped.push(id);
+      if (options.stop !== undefined) { await options.stop(id); return; }
+      await host?.stopSessionsOf(id);
+    },
     holderOf: (id) => holders.get(id),
     ...(options.connectors === undefined ? {} : { connectors: () => options.connectors as readonly ConnectorRef[] }),
     onProblem: (line) => { problems.push(line); },
@@ -312,7 +318,7 @@ async function served(options: { register?: boolean; fold?: (agents: Agent[]) =>
   });
   host = createHost(hostOptions([]));
   await lists.openAll();
-  return { host, users, collection, lists, engines, opened, ended, problems, handles, vault, close: async () => { await host?.close(); } };
+  return { host, users, collection, lists, engines, opened, ended, stopped, problems, handles, vault, close: async () => { await host?.close(); } };
 }
 
 /**
@@ -975,6 +981,43 @@ it('turns an agent off: the row is disabled and the fold no longer gets it', asy
   expect((await cy.rows())['mine']).toMatchObject({ state: 'disabled', mode: 'disabled' });
   // A record that is off is not built, so nothing is asked of its engine.
   expect(opened).toHaveLength(1);
+  await close();
+});
+
+it('stops an agent\'s sessions when it is turned off, and removes none of them', async () => {
+  const { host, users, stopped, ended, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', config: { target: 'a' },
+  });
+
+  expect(await cy.call('x-ahpd/agents/disable', { id: 'mine' })).toMatchObject({ result: { state: 'disabled' } });
+  // Slept, not removed: the record going out is what ends its sessions, and
+  // turning it off is not that, so its chat is there for the next turn.
+  expect(stopped).toEqual(['mine']);
+  expect(ended).toEqual([]);
+
+  // A record that is kept open owes its sessions their work: neither pausing
+  // it nor turning it back on stops anything.
+  await cy.call('x-ahpd/agents/enable', { id: 'mine' });
+  await cy.call('x-ahpd/agents/pause', { id: 'mine' });
+  expect(stopped).toEqual(['mine']);
+  await close();
+});
+
+it('says a disabled agent\'s sessions could not be stopped, and still answers its row', async () => {
+  const { host, users, problems, close } = await served({
+    stop: async (id) => { throw new Error(`${id} said no`); },
+  });
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', config: { target: 'a' },
+  });
+
+  // The record is off whether or not the stop landed, so the turn answers its
+  // row and the failure is said beside it rather than swallowed or thrown.
+  expect(await cy.call('x-ahpd/agents/disable', { id: 'mine' })).toMatchObject({ result: { state: 'disabled' } });
+  expect(problems).toContainEqual(expect.stringContaining('mine is disabled, but its sessions could not be stopped: mine said no'));
   await close();
 });
 

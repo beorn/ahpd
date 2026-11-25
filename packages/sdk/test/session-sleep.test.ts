@@ -984,6 +984,56 @@ it('lists a sleeping session in the catalogue, and counts it among no sessions r
   expect(await listed()).toContain(one.resource);
 });
 
+/*
+ * Turning an agent off stops its sessions, and never removes them: the row,
+ * its chats and the backend id stay. A session with nothing in hand sleeps at
+ * once, and one with a turn in flight finishes that turn and sleeps at its
+ * end, so a record nobody serves is not left spending against it.
+ */
+it('stops a quiet session at once when its agent is turned off', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { host, open, awake } = await serving(knobs);
+  const one = await open('one');
+  await one.leave();
+  expect(awake()).toBe(1);
+
+  await host.stopSessionsOf('echo');
+  expect(knobs.closes).toEqual(['stopping']);
+  expect(awake()).toBe(0);
+});
+
+it('stops a session whose agent was turned off when its turn ends, not before', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { host, time, open, awake } = await serving(knobs);
+  const one = await open('one');
+  // `SessionStatus` 8, in progress: a turn running.
+  knobs.status = 8;
+  await one.leave();
+
+  // A turn in flight is finished, never cut: the stop waits for its end.
+  await host.stopSessionsOf('echo');
+  expect(knobs.closes).toEqual([]);
+  expect(awake()).toBe(1);
+
+  delete knobs.status;
+  time.pass(0);
+  await until(() => knobs.closes.length > 0);
+  expect(knobs.closes).toEqual(['stopping']);
+  expect(awake()).toBe(0);
+});
+
+it('stops nothing when no session runs on the agent that was turned off', async () => {
+  const knobs: Knobs = { closes: [] };
+  const { host, open, awake } = await serving(knobs);
+  const one = await open('one');
+  await one.leave();
+
+  // The base agent is not the one that was turned off, so its session stays.
+  await host.stopSessionsOf('somebody-else');
+  expect(knobs.closes).toEqual([]);
+  expect(awake()).toBe(1);
+});
+
 it('never sleeps with sleepAfterMinutes 0 and sessionResidencyLimit 0', async () => {
   const knobs: Knobs = { closes: [] };
   const { time, open, awake } = await serving(knobs, { sleepAfterMinutes: 0, sessionResidencyLimit: 0 });

@@ -43,8 +43,9 @@
  * answer the row a client now holds. `x-ahpd/agents/check` takes `{ id }`,
  * builds the backend again, asks its probe and answers the row with its alerts.
  * `x-ahpd/agents/disable` takes `{ id }` and writes `mode: disabled`, so the
- * record is no longer opened, its sessions are kept, and the row reads
- * `disabled`; `x-ahpd/agents/enable` writes `mode: enabled` and opens it again.
+ * record is no longer opened, its sessions are kept and slept once they are
+ * quiet (never removed), and the row reads `disabled`; `x-ahpd/agents/enable`
+ * writes `mode: enabled` and opens it again.
  * `x-ahpd/agents/pause` writes `mode: paused`: the record stays open and its
  * sessions and alerts are kept, and the host starts nothing new on it. All
  * three answer the row.
@@ -163,6 +164,14 @@ export interface AgentsChannelOptions {
   refold(agents: Agent[]): Promise<ReadonlySet<string>>;
   /** End every session running on one agent, before its record is removed. */
   endSessionsOf(id: string): Promise<void>;
+  /**
+   * Stop every session running on one agent, without removing it.
+   *
+   * What a disable owes its sessions: a quiet one sleeps now, and one with a
+   * turn in flight sleeps when that turn ends. The row, its chats and the
+   * backend id stay, so the conversation resumes on the next turn.
+   */
+  stopSessionsOf?(id: string): Promise<void>;
   /**
    * What already serves an agent id this store does not hold, if anything.
    *
@@ -1353,10 +1362,11 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
   /**
    * Put one record in one mode, once its turn comes.
    *
-   * A record that is off is not opened, so turning one off leaves the backend a
-   * running session holds alone and ends nothing; turning it on or paused opens
-   * it again, or keeps it open. The record keeps every other field it held. The
-   * answer is the record's row.
+   * A record that is off is not opened, and its sessions are stopped but never
+   * removed: a quiet one sleeps now and one mid-turn sleeps when its turn ends,
+   * so the conversation stays and resumes on the next turn. Turning it on or
+   * paused opens it again, or keeps it open. The record keeps every other field
+   * it held. The answer is the record's row.
    */
   const toggleOne = async (
     command: string,
@@ -1390,6 +1400,16 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       throw new RpcError(INTERNAL_ERROR, `${id} is ${mode}, but the host did not take the new list: ${reason(error)}`);
     }
     await channel.refresh();
+    /*
+     * A record that is off keeps its sessions, but not their work: a quiet one
+     * sleeps now and one mid-turn sleeps when its turn ends, so turning an
+     * agent off does not leave it spending against a record nobody serves. A
+     * stop that failed is said, never swallowed.
+     */
+    if (mode === 'disabled') {
+      try { await options.stopSessionsOf?.(id); }
+      catch (error) { options.onProblem?.(`${id} is disabled, but its sessions could not be stopped: ${reason(error)}`); }
+    }
     return row(record);
   };
 

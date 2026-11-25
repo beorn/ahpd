@@ -2272,6 +2272,20 @@ export function createHost(options: HostOptions): Host {
         catch (error) { log.error(`ending ${uri} for ${provider} failed: ${reason(error)}`); }
       }
     },
+    stopSessionsOf: async (agent) => {
+      const provider = typeof agent === 'string' ? agent : agent.provider;
+      for (const uri of [...sessions.keys()]) {
+        const held = sessions.get(uri);
+        if (held === undefined) continue;
+        const onIt = held.agent.provider === provider
+          || [...held.backends.values()].some((backend) => backend.agent.provider === provider);
+        if (!onIt) continue;
+        // Slept, not removed: the row and the conversation stay, and a turn in
+        // flight ends before the session goes quiet. A stop that fails is said.
+        try { await ctx.stopWhenQuiet(uri); }
+        catch (error) { log.error(`stopping ${uri} for ${provider} failed: ${reason(error)}`); }
+      }
+    },
     connections: () => connections.size,
     localeOf: ctx.localeOf,
     close: () => {

@@ -65,6 +65,15 @@ export interface Sleep {
   reconcile(): void;
   /** One action on a channel, which moves its session's quiet time. */
   stirred(channel: string, action: Bag): void;
+  /**
+   * Let a session go because the agent it runs on was turned off.
+   *
+   * A quiet one sleeps now, and any other is slept by a later sweep once it
+   * has nothing in flight (a turn ends, or a viewer leaves). Never a removal:
+   * the row, its chats and the backend id stay, so the next turn resumes the
+   * conversation.
+   */
+  stopWhenQuiet(uri: string): Promise<'slept' | 'deferred' | 'notRunning'>;
   /** Start the sweep's clock. */
   startSleep(): void;
   /** Stop the sweep's clock, for a host that is closing. */
@@ -207,6 +216,27 @@ export function createSleep(ctx: HostContext): Sleep {
   /** Whether a session is archived, which sleeps it without waiting out the timeout. */
   const archived = (uri: string): boolean => (kept.flags(idOf(uri)) & Status.IsArchived) !== 0;
 
+  /**
+   * Sessions a disable asked to stop once their turn ends.
+   *
+   * Kept apart from the timeout so a turn that is running is finished rather
+   * than cut, and so the stop happens at the turn's own end rather than after
+   * the quiet window.
+   */
+  const stopsWanted = new Set<string>();
+
+  const stopWhenQuiet = async (uri: string): Promise<'slept' | 'deferred' | 'notRunning'> => {
+    if (!sessions.has(uri)) return 'notRunning';
+    if (!quiet(uri, true)) {
+      stopsWanted.add(uri);
+      return 'deferred';
+    }
+    stopsWanted.delete(uri);
+    if (await sleep(uri, true)) return 'slept';
+    stopsWanted.add(uri);
+    return 'deferred';
+  };
+
   const sleep = async (uri: string, stopping = false): Promise<boolean> => {
     const id = idOf(uri);
     /*
@@ -317,6 +347,13 @@ export function createSleep(ctx: HostContext): Sleep {
 
   const sweep = (): void => {
     const at = now();
+    // A stop an agent's being turned off asked for, once its turn has ended.
+    for (const uri of [...stopsWanted]) {
+      if (!sessions.has(uri)) { stopsWanted.delete(uri); continue; }
+      if (!quiet(uri, true)) continue;
+      stopsWanted.delete(uri);
+      void sleep(uri, true);
+    }
     for (const [uri, held] of sessions) {
       if (sleepAfterMs > 0 && at - held.quietSince >= sleepAfterMs && quiet(uri)) void sleep(uri);
     }
@@ -550,6 +587,8 @@ export function createSleep(ctx: HostContext): Sleep {
   };
 
   const wake = (uri: string, chat?: string, sender?: Connection): Promise<{ uri: string; chat: Session }> => {
+    // A stop a disable asked for is not owed to a session somebody brings back.
+    stopsWanted.delete(uri);
     const live = sessions.get(uri);
     const lead = live === undefined ? undefined : picked(uri, chat);
     if (lead !== undefined) return Promise.resolve({ uri, chat: lead });
@@ -585,5 +624,5 @@ export function createSleep(ctx: HostContext): Sleep {
     await Promise.all([...closing.values(), ...[...waking.values()].map(settled)]);
   };
 
-  return { quiet, sleep, wake, hold, slept, sweep, touch, reconcile, stirred, startSleep, stopSleep };
+  return { quiet, sleep, wake, hold, slept, sweep, touch, reconcile, stirred, stopWhenQuiet, startSleep, stopSleep };
 }
