@@ -204,6 +204,8 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
     log(`${connection.clientId || 'a client'}'s sign-in expired`);
     connection.peer.notify('auth/required', { channel: ROOT, resource: metadataFor(resource), reason: 'expired' });
   };
+  /** The sessions already said to fall back to `auth/required` for an expired server token, so it is said once each. */
+  const expiryFallbackSaid = new Set<string>();
   const expireToken = (key: string): void => {
     const held = connection.tokens.get(key);
     if (held?.expiresAt === undefined) return;
@@ -216,6 +218,23 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
     expiring.delete(key);
     connection.tokens.delete(key);
     log(`${connection.clientId || 'a client'}'s token for ${held.resource}${held.target === undefined ? '' : ` at ${held.target.customizationId}`} expired`);
+    /*
+     * A token aimed at one MCP server ends as that server's state: the spec
+     * has no `auth/required` notification for an MCP server, so the backend is
+     * told and says `authRequired` with reason `expired` on the customization.
+     * A backend that cannot is said once per session, and keeps the old notify.
+     */
+    const target = held.target;
+    if (target !== undefined) {
+      const chats = [...(sessions.get(target.session)?.chats.values() ?? [])];
+      const telling = chats.filter((chat) => chat.expired !== undefined);
+      for (const chat of telling) void chat.expired?.(held.resource, target.customizationId);
+      if (telling.length > 0) return;
+      if (!expiryFallbackSaid.has(target.session)) {
+        expiryFallbackSaid.add(target.session);
+        log(`${target.session}'s backend cannot say an MCP server's token expired as its state, so auth/required is sent on the session instead`);
+      }
+    }
     connection.peer.notify('auth/required', {
       // An MCP server's requirement is drawn on its session, and a token
       // aimed at one names that session itself.
