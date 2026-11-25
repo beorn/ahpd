@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@hallohuman/hightea-services';
 import { readJournal, resolveVersion, status, writeJournalEntry } from './index.js';
 import type { DeployCommand, DeployDeclaration, DeployLayout } from './index.js';
+import { CHANGED, CHANNEL, OPERATION, READS_SCHEME, SCHEME, deploysChannel, deploysProvider, deploysState, refusalError } from './channel.js';
 
 /** The plugin's id. */
 export const name = 'deploy';
@@ -28,8 +29,17 @@ export const name = 'deploy';
 /** What a listing prints. */
 export const title = 'Deploy';
 
-/** The method names, as the manifest's `contracts.methods` lists them. */
-export const METHODS = ['x-ahpd/deploy/run', 'x-ahpd/deploy/report'];
+/** The release that replaced the two methods with the channel: what a refusal of an old call names. */
+export const REPLACED_IN = '@ahpd/deploy 0.16.0';
+
+/** The methods this plugin served before the channel, by what replaced each (@cto 2026-11-25). */
+export const RETIRED: Readonly<Record<string, string>> = {
+  'x-ahpd/deploy/run': `the deploy operation on ${CHANNEL}`,
+  'x-ahpd/deploy/report': `a subscribe to ${CHANNEL} and ${READS_SCHEME}://<deployId>/log`,
+};
+
+/** Every retired method, in the one list a host registration loops over. */
+export const METHODS = Object.keys(RETIRED);
 
 /** Why a call was refused, so a person reads a sentence rather than an empty answer. */
 export type DeployRefusalCode =
@@ -59,7 +69,14 @@ export interface DeployHost {
   readonly configDir: string;
   registerMethod(name: string, method: DeployMethod): void;
   registerGrants(subject: string, entry: { title?: string; description?: string; operations: string[] }): void;
+  registerChannel(scheme: string, channel: unknown): DeployChannelHandle;
+  registerResourceProvider(scheme: string, provider: unknown): void;
   alert(alert: { level: 'error' | 'warning' | 'info'; text: string; ref: string }): void;
+}
+
+/** What `registerChannel` answers: the members of the sdk's `ChannelHandle` this uses. */
+export interface DeployChannelHandle {
+  publish(uri: string, action: { type: string } & Record<string, unknown>): void;
 }
 
 /** One deploy as the method accepted it, and as the child is given it. */
@@ -167,10 +184,10 @@ const gateRefusal = (switches: MachineSwitches): string | undefined =>
   switches.allowRemoteCommands ? undefined : REMOTE_COMMANDS_OFF;
 
 /** The two methods over one machine's deploy state. */
-export function deployMethods(options: DeployMethodsOptions): Record<string, DeployMethod> {
+export function deployMethods(options: DeployMethodsOptions): { run: DeployMethod; report: DeployMethod } {
   const stateOf = (service: string): DeployLayout => ({ stateDir: options.stateDir, service });
   return {
-    'x-ahpd/deploy/run': {
+    run: {
       grant: 'deploy:run',
       describe: () => ({ title: 'Deploy a service', description: 'Places one of this machine\'s services at a version: fetches, builds, switches one symlink, checks. Answers started <deployId>; the report says what happened.' }),
       handle: async (params) => {
@@ -271,7 +288,7 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
         }
       },
     },
-    'x-ahpd/deploy/report': {
+    report: {
       grant: 'deploy:read',
       describe: () => ({ title: 'Read a deploy report', description: 'The release current points at, the deploy still running if one is, and the last journal line - which is the outcome of the last deploy, with its steps, exit codes and timings.' }),
       handle: async (params) => {
@@ -305,39 +322,91 @@ export interface HandedRequest {
   readonly declaration: DeployDeclaration;
 }
 
+/** An old method's answer: refused, naming what replaced it and in which release, never a bare method-not-found. */
+const retiredMethod = (method: string, why: string): DeployMethod => ({
+  grant: 'deploy:read',
+  describe: () => ({ title: `${method} (replaced)`, description: `Replaced by ${RETIRED[method]} in ${REPLACED_IN}.` }),
+  handle: async () => {
+    throw Object.assign(new Error(`${method} was replaced by ${RETIRED[method]} in ${REPLACED_IN}; update the caller to a release that uses it`), {
+      name: 'RpcError',
+      code: -32601,
+      data: { replacedBy: RETIRED[method], release: REPLACED_IN, why },
+    });
+  },
+});
+
 export const apply = (host: DeployHost, options: Record<string, unknown>): void => {
   host.registerGrants('deploy', {
     title: 'Deploy',
-    description: 'Placing this machine\'s services at a version, and reading what the last deploy did.',
-    operations: ['run', 'read'],
+    description: 'Placing this machine\'s services at a version, and reading what each deploy did.',
+    operations: ['deploy', 'read'],
   });
+  const stateDir = typeof options['stateDir'] === 'string' ? options['stateDir'] : host.configDir;
+  const layout = (service: string): DeployLayout => ({ stateDir, service });
   const read = machineOf(host.configDir, options);
+
   if (typeof read === 'string') {
-    // Loud and in place, as the services plugin does: the plugin's page says what is wrong.
+    // Loud and in place, as the services plugin does: the plugin's page says what is wrong, and the channel still
+    // answers with that sentence rather than vanishing.
     host.alert({ level: 'error', text: read, ref: 'deploy-options' });
-    for (const method of METHODS) {
-      host.registerMethod(method, { grant: 'deploy:read', describe: () => ({ title: method }), handle: async () => refused('NOT_CONFIGURED', read) });
-    }
+    const why = read;
+    const context = {
+      machine: 'this machine',
+      services: (): readonly string[] => [],
+      layout,
+      state: () => ({ machine: 'this machine', runs: [], operations: [OPERATION], error: why }),
+      deploy: async (): Promise<unknown> => { throw refusalError(refused('NOT_CONFIGURED', why)); },
+    };
+    host.registerChannel(SCHEME, deploysChannel(context));
+    host.registerResourceProvider(READS_SCHEME, deploysProvider(context));
+    for (const method of METHODS) host.registerMethod(method, retiredMethod(method, why));
     return;
   }
+
   const { machine } = read;
-  const stateDir = typeof options['stateDir'] === 'string' ? options['stateDir'] : host.configDir;
+  const servicesNow = (): readonly string[] => {
+    const listing = listServices(machine);
+    // A listing that cannot be read is a refusal with its own sentence, never an empty list that reads as "none".
+    if (!listing.ok) throw new Error(listing.message);
+    return listing.services.map((one) => one.name);
+  };
+  let handle: DeployChannelHandle | undefined;
+  // A state that cannot be published is said out loud, once per failure: a quiet channel is the failure this exists for.
+  const publishState = (): void => {
+    try {
+      handle?.publish(CHANNEL, { type: CHANGED, ...deploysState(machine.name, servicesNow(), layout) });
+    } catch (error) {
+      host.alert({ level: 'warning', text: `the deploy channel could not publish its new state: ${error instanceof Error ? error.message : String(error)}`, ref: 'deploy-publish' });
+    }
+  };
+
   const methods = deployMethods({
     stateDir,
     switches: () => machineSwitches(host.configDir),
-    services: () => {
-      const listing = listServices(machine);
-      // A listing that cannot be read is a refusal with its own sentence, never an empty list that reads as "none".
-      if (!listing.ok) throw new Error(listing.message);
-      return listing.services.map((one) => one.name);
+    services: servicesNow,
+    start: (request) => {
+      const started = startChild(machine, stateDir, request);
+      // The child's end is the next honest state: the row goes from running to whatever its journal says last.
+      void started.whenExited?.then(() => { publishState(); });
+      return started;
     },
-    start: (request) => startChild(machine, stateDir, request),
   });
-  for (const method of METHODS) {
-    const found = methods[method];
-    if (found === undefined) continue;
-    host.registerMethod(method, found);
-  }
+
+  const context = {
+    machine: machine.name,
+    services: servicesNow,
+    layout,
+    state: () => deploysState(machine.name, servicesNow(), layout),
+    deploy: async (input: Record<string, unknown>, caller: { readonly client: string; readonly owner?: string }): Promise<unknown> => {
+      const answer = await methods.run.handle(input, undefined, caller.client, caller.owner) as Record<string, unknown> & { ok?: boolean; code?: string; message?: string };
+      if (answer['ok'] === false) throw refusalError({ code: String(answer['code'] ?? 'DRIVER_FAILED'), message: String(answer['message'] ?? 'the deploy was refused') });
+      publishState();
+      return answer;
+    },
+  };
+  handle = host.registerChannel(SCHEME, deploysChannel(context));
+  host.registerResourceProvider(READS_SCHEME, deploysProvider(context));
+  for (const method of METHODS) host.registerMethod(method, retiredMethod(method, 'the deploy channel replaced it'));
 };
 
 /**
