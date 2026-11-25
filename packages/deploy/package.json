@@ -6,7 +6,7 @@
     "linux",
     "darwin"
   ],
-  "description": "Git deploy driver for ahpd: one call places service S on machine M at version X in a release folder and switches a current symlink, or says loudly why it did not. Served as x-ahpd/deploy/run and x-ahpd/deploy/report.",
+  "description": "Git deploy driver for ahpd: one call places service S on machine M at version X in a release folder and switches a current symlink, or says loudly why it did not. Served as the x-hh-deploys:// channel (operation deploy) with each run's journal at hh-deploys://<deployId>/log.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -40,12 +40,21 @@
   "ahpd": {
     "entry": "./dist/index.js",
     "title": "Deploy",
-    "description": "This machine's services at a version: fetches into a release folder, builds, switches one symlink, checks. run starts and answers at once; report reads what the last deploy did.",
+    "description": "This machine's deploys as the x-hh-deploys:// channel: run one deploy of a service at a version, and read what each run did from its journal.",
     "categories": [],
     "contracts": {
       "methods": [
         "x-ahpd/deploy/run",
         "x-ahpd/deploy/report"
+      ],
+      "channels": [
+        "x-hh-deploys"
+      ],
+      "resourceProviders": [
+        "hh-deploys"
+      ],
+      "grants": [
+        "deploy"
       ]
     },
     "optionsSchema": {

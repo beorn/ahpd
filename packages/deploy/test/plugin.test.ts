@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { apply, deployMethods, METHODS } from '../src/index.js';
+import { REPLACED_IN, apply, deployMethods, METHODS } from '../src/index.js';
 import { gitSync } from '../../../tools/git.ts';
 import type { DeployHost, DeployMethod, DeployRefusal, DeployRequest } from '../src/index.js';
 
@@ -36,7 +36,7 @@ const methods = (
     const one = found[method] as DeployMethod;
     return await one.handle(params, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
   };
-  return { run: (params: Record<string, unknown>) => call('x-ahpd/deploy/run', params), report: (params: Record<string, unknown>) => call('x-ahpd/deploy/report', params), started };
+  return { run: (params: Record<string, unknown>) => call('run', params), report: (params: Record<string, unknown>) => call('report', params), started };
 };
 
 /** A repo the driver can actually resolve against: one commit on main. */
@@ -104,7 +104,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
       const lock = { deployId: 'late', step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: '' };
       writeFileSync(join(root, 'deploy.lock'), JSON.stringify(lock) + '\n');
     }, 400);
-    const run = (found['x-ahpd/deploy/run'] as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Promise<Record<string, unknown> & Partial<DeployRefusal>>;
+    const run = (found.run as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Promise<Record<string, unknown> & Partial<DeployRefusal>>;
     const answer = await run;
     expect(answer['code']).toBe('DRIVER_FAILED');
     expect(String(answer['message'])).toContain('killed after 120 ms');
@@ -137,7 +137,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
         },
       }),
     });
-    const answer = await (found['x-ahpd/deploy/run'] as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
+    const answer = await (found.run as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
     expect(answer['code']).toBe('DRIVER_FAILED');
     expect(String(answer['message'])).toContain('after taking the lock at step resolve');
     expect(String(answer['message'])).toContain('the next deploy clears it');
@@ -205,34 +205,43 @@ describe('the deploy plugin (#38276 slice 2)', () => {
 describe('the deploy plugin as ahpd loads it', () => {
   const host = () => {
     const registered = new Map<string, DeployMethod>();
+    const channels: string[] = [];
+    const providers: string[] = [];
+    const published: { uri: string; type: string }[] = [];
     const alerts: string[] = [];
     const one: DeployHost = {
       configDir: machine(),
       registerMethod: (name, method) => registered.set(name, method),
       registerGrants: () => {},
+      registerChannel: (scheme) => {
+        channels.push(scheme);
+        return { publish: (uri, action) => published.push({ uri, type: action.type }) };
+      },
+      registerResourceProvider: (scheme) => { providers.push(scheme); },
       alert: (alert) => alerts.push(alert.text),
     };
-    return { one, registered, alerts };
+    return { one, registered, channels, providers, published, alerts };
   };
 
-  it('says what is missing, by name, instead of registering methods that would run a command', async () => {
+  it('registers the channel and the reads, and refuses the retired methods by name', async () => {
     const { one, registered, alerts } = host();
     apply(one, {});
     expect([...registered.keys()].sort()).toEqual([...METHODS].sort());
     expect(alerts[0]).toContain('files');
     for (const method of METHODS) {
-      const answer = await (registered.get(method) as DeployMethod).handle({ service: 'web', version: 'main', repo: '/src/web' }, undefined, 'test-client');
-      expect(answer).toMatchObject({ ok: false, code: 'NOT_CONFIGURED' });
+      const refused = registered.get(method)?.handle({ service: 'web', version: 'main', repo: '/src/web' }, undefined, 'test-client') as Promise<unknown>;
+      await expect(refused).rejects.toMatchObject({ code: -32601, data: { release: REPLACED_IN } });
     }
   });
 
-  it('with the machine\'s own files and socket, registers both methods under their grants', () => {
-    const { one, registered, alerts } = host();
+  it('with the machine\'s own files and socket, serves x-hh-deploys:// and hh-deploys:// under the deploy grant', () => {
+    const { one, registered, channels, providers, alerts } = host();
     apply(one, { files: [join(one.configDir, 'base.yaml'), join(one.configDir, 'machine.yaml')], socket: join(one.configDir, 'pc.sock') });
-    expect([...registered.keys()].sort()).toEqual([...METHODS].sort());
+    expect(channels).toEqual(['x-hh-deploys']);
+    expect(providers).toEqual(['hh-deploys']);
     expect(alerts).toHaveLength(0);
-    expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:run');
-    expect(registered.get('x-ahpd/deploy/report')?.grant).toBe('deploy:read');
+    // The retired names still exist, so a caller on the old grants is told what replaced them.
+    expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:read');
   });
 });
 
@@ -258,7 +267,7 @@ describe('two runs of the same service at once', () => {
       },
     });
     const run = (params: Record<string, unknown>) =>
-      (found['x-ahpd/deploy/run'] as DeployMethod).handle(params, undefined, 'test-client') as Promise<Record<string, unknown>>;
+      (found.run as DeployMethod).handle(params, undefined, 'test-client') as Promise<Record<string, unknown>>;
     const [one, two] = await Promise.all([run(runOf('web', 'main', { repo })), run(runOf('web', 'main', { repo }))]);
     const kinds = [one['state'] ?? one['code'], two['state'] ?? two['code']];
     expect(kinds.filter((kind) => kind === 'started')).toHaveLength(1);

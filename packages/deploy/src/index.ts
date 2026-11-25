@@ -689,8 +689,9 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
 };
 
 // #38276 slice 2: the package is also an ahpd plugin, `x-ahpd/deploy/run` and `x-ahpd/deploy/report` (plugin.ts).
-export { apply, deployMethods, METHODS, name, title, startChild, REQUEST_FILE } from './plugin.js';
-export type { DeployHost, DeployMethod, DeployRefusal, DeployRefusalCode, DeployMethodsOptions, DeployRequest, HandedRequest } from './plugin.js';
+export { apply, deployMethods, METHODS, REPLACED_IN, RETIRED, name, title, startChild, REQUEST_FILE } from './plugin.js';
+export type { DeployChannelHandle, DeployHost, DeployMethod, DeployRefusal, DeployRefusalCode, DeployMethodsOptions, DeployRequest, HandedRequest } from './plugin.js';
+export * from './channel.js';
 
 /** One line added to a service's journal by a caller that has no deploy running: the method's own record. */
 export const writeJournalEntry = (layout: DeployLayout, entry: Readonly<Record<string, unknown>>): void => journal(layout, entry);
