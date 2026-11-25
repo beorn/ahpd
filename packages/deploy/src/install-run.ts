@@ -19,8 +19,9 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { activateRelease, DEFAULT_KEEP, releasesToPrune, type DeployLayout, type InstallManifest, type InstallPin } from './index.js';
+import { unpackArchive } from './untar.js';
 
 export interface RunResult {
   readonly code: number;
@@ -41,6 +42,11 @@ export interface InstallIo {
   readonly fetchTo: (source: string, path: string) => Promise<void>;
   /** Moves verified bytes into place: a binary never travels through a decoded string. */
   readonly move: (from: string, to: string) => void;
+  /**
+   * Unpacks a verified release archive into `into`, keeping the modes and refusing any unsafe entry as a whole; the
+   * top directory must be named `topDir` (@cto 2026-11-25). It throws with the entry it refused.
+   */
+  readonly unpack: (archive: string, into: string, topDir: string) => void;
   /** Removes a file, or an empty directory; a path that is already gone is not an error. */
   readonly remove: (path: string) => void;
   /** Every path under a directory, for the list `--purge` prints before it deletes. */
@@ -66,6 +72,9 @@ export const nodeInstallIo = (): InstallIo => ({
     writeFileSync(path, Buffer.from(await answered.arrayBuffer()));
   },
   move: (from, to) => renameSync(from, to),
+  unpack: (archive, into, topDir) => {
+    unpackArchive(archive, into, topDir);
+  },
   // A directory needs its own call: rmSync without `recursive` refuses one, and saying "removed" after a refusal is
   // the silent error this row exists to prevent.
   remove: (path) => {
@@ -141,7 +150,7 @@ interface DownloadEntry {
 /** Every entry the manifest fills from a pin, in creation order. */
 export const downloadEntries = (manifest: InstallManifest): readonly DownloadEntry[] =>
   manifest.entries.flatMap((entry) =>
-    entry.kind === 'file' && entry.from?.startsWith('download:') === true
+    (entry.kind === 'file' || entry.kind === 'archive') && entry.from?.startsWith('download:') === true
       ? [{ path: entry.path, name: entry.from.slice('download:'.length) as keyof InstallManifest['pins'] }]
       : [],
   );
@@ -369,6 +378,37 @@ export const applyInstall = async (
         await attempt('remove staged download', staging, () => io.remove(staging));
         return { ok: false, wrote, pruned: [], keptReleases: [], refusal: { kind: 'checksum-mismatch', download: name, expected: expectedDigest(pin), actual } };
       }
+      // The daemon arrives as one archive of a whole tree: unpack it in staging, then one rename onto the release
+      // folder. `current` never points at a tree that was not checked first (@cto 2026-11-25).
+      if (entry.kind === 'archive') {
+        const topDir = basename(pin.source).replace(/\.tar\.gz$/u, '');
+        if (topDir === '' || topDir === basename(pin.source)) {
+          await attempt('remove staged download', staging, () => io.remove(staging));
+          return {
+            ok: false,
+            wrote,
+            pruned: [],
+            keptReleases: [],
+            refusal: { kind: 'step-failed', step: 'unpack archive', path: entry.path, output: `the pinned source ${pin.source} does not name a .tar.gz archive` },
+          };
+        }
+        const tree = `${entry.path}.staging`;
+        const unpacked = await attempt('unpack archive', entry.path, () => io.unpack(staging, tree, topDir));
+        if (!unpacked.ok) {
+          await attempt('remove staged download', staging, () => io.remove(staging));
+          await attempt('remove unpacked tree', tree, () => io.removeTree(tree));
+          return { ok: false, wrote, pruned: [], keptReleases: [], refusal: unpacked.refusal };
+        }
+        const placedTree = await attempt('place release tree', entry.path, () => io.move(tree, entry.path));
+        if (!placedTree.ok) {
+          await attempt('remove staged download', staging, () => io.remove(staging));
+          await attempt('remove unpacked tree', tree, () => io.removeTree(tree));
+          return { ok: false, wrote, pruned: [], keptReleases: [], refusal: placedTree.refusal };
+        }
+        await attempt('remove downloaded archive', staging, () => io.remove(staging));
+        wrote.push(entry.path);
+        continue;
+      }
       // Verified bytes, made executable, then placed: what runs is what was checked.
       const placed = await attempt('place download', entry.path, () => {
         io.chmod(staging, EXECUTABLE_MODE);
@@ -554,6 +594,22 @@ export const uninstallInstall = (
     // A file that is already gone is a fact to say, not a failure: uninstall can be run twice.
     if (!io.exists(entry.path)) {
       removed.push(`${entry.path} (already gone)`);
+      continue;
+    }
+    // A release is our tree, extracted from a pinned archive: it goes whole, and nothing in it was written by the
+    // daemon (sessions and records live in `state/`, which this install never removes by default).
+    if (entry.kind === 'archive') {
+      try {
+        io.removeTree(entry.path);
+      } catch (error) {
+        return {
+          ok: false,
+          removed,
+          kept,
+          refusal: { kind: 'step-failed', step: 'remove release tree', path: entry.path, output: message(error) },
+        };
+      }
+      removed.push(entry.path);
       continue;
     }
     if (entry.kind === 'dir') {

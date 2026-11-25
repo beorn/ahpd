@@ -133,6 +133,21 @@ deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared w
 ordering differs — commit time there, version order here, with `0.10.0` above `0.9.0` and a release above its
 release candidate.
 
+## The daemon is one archive, and running it means unpacking it
+
+`pins.ahpd` is a single `ahpd-<version>-<platform>-<arch>.tar.gz` built with its whole resolved tree inside (server plus
+`node_modules`, native modules built for that machine), the way node and VS Code server ship (@cto 2026-11-25). Nothing
+resolves from npm at install time and no package manager runs on the customer's machine.
+
+The archive is read twice. First every entry is listed and checked: one absolute path, one `..`, one device or fifo, one
+entry outside the single top directory named after the archive, or one link that points outside the release refuses the
+whole archive and names the entry that did it. Only then is it written, into `<release>.staging`, with modes preserved
+so `bin` entries and native `.node` files keep their exec bits, and ownership never touched. One rename puts the
+verified tree at `releases/<version>`; `current` moves after that, never onto a tree that was not checked.
+
+A pin that names another platform or arch is refused before anything is downloaded, with
+`pins built for <platform>-<arch>, this machine is <platform>-<arch>`.
+
 The record says `installed` before the prune runs, because a release that is running and recorded is installed whether
 or not the tidy-up worked. A prune that then fails comes back as `pruneFailed {path, output}` on an otherwise good
 result, and the command prints it as a warning and exits 0 — a full disk is never reported as a failed install. One

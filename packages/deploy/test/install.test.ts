@@ -37,6 +37,7 @@ const PINS: InstallPins = {
 const manifestFor = (platform: 'darwin' | 'linux', overrides: Partial<InstallPins> = {}) => {
   const built = customerInstallManifest({
     platform,
+    arch: platform === 'darwin' ? 'arm64' : 'x64',
     home: '/home/customer',
     configHome: '/home/customer/.config',
     version: '0.15.0-rc.4',
@@ -89,7 +90,7 @@ describe('customer host install manifest (#38280)', () => {
   // @level l3 @consumer the refusal a customer sees when a publisher has not published a checksum yet.
   it('refuses a download with no checksum, by name, instead of fetching it unchecked', () => {
     const built = customerInstallManifest({
-      platform: 'darwin',
+      platform: 'darwin', arch: 'arm64',
       home: '/home/customer',
       version: '0.15.0-rc.4',
       pins: { ...PINS, runtime: { ...PINS.runtime, checksum: null } },
@@ -103,7 +104,7 @@ describe('customer host install manifest (#38280)', () => {
   // @level l3 @consumer a floating version is refused before a plan exists, so nothing fetches "latest".
   it('refuses a version that is not exact', () => {
     const built = customerInstallManifest({
-      platform: 'linux',
+      platform: 'linux', arch: 'x64',
       home: '/home/customer',
       version: '0.15.0-rc.4',
       pins: { ...PINS, ahpd: { ...PINS.ahpd, version: 'latest' } },
@@ -116,7 +117,7 @@ describe('customer host install manifest (#38280)', () => {
   // @level l3 @consumer $AHPD_HOME moves the one folder, and nothing else moves with it.
   it('honours an explicit root and keeps the boot item where the platform puts it', () => {
     const built = customerInstallManifest({
-      platform: 'linux',
+      platform: 'linux', arch: 'x64',
       home: '/home/customer',
       root: '/data/ahpd',
       version: '0.15.0-rc.4',
@@ -132,7 +133,7 @@ describe('customer host install manifest (#38280)', () => {
   // @level l3 @consumer a checksum that is not sha256:<64 hex> is refused, never trusted as "some checksum".
   it('refuses a malformed checksum by name', () => {
     const built = customerInstallManifest({
-      platform: 'darwin',
+      platform: 'darwin', arch: 'arm64',
       home: '/home/customer',
       version: '0.15.0-rc.4',
       pins: { ...PINS, hostPlugin: { ...PINS.hostPlugin, checksum: 'sha512-cccc' } },
@@ -141,20 +142,29 @@ describe('customer host install manifest (#38280)', () => {
     if (built.ok) throw new Error('unreachable');
     expect(built.refusals).toEqual([{ kind: 'malformed-checksum', download: 'hostPlugin', checksum: 'sha512-cccc' }]);
     expect(describeRefusal(built.refusals[0]!)).toContain('is not sha256:<64 hex> or sha512-');
+
+    // A release archive built for another machine is refused by name, before anything is downloaded.
+    const wrong = customerInstallManifest({
+      platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0-rc.4',
+      pins: { ...PINS, ahpd: { ...PINS.ahpd, platform: 'darwin', arch: 'arm64' } },
+    });
+    expect(wrong.ok).toBe(false);
+    if (wrong.ok) throw new Error('expected refusals');
+    expect(describeRefusal(wrong.refusals[0]!)).toContain('pins built for darwin-arm64, this machine is linux-x64');
   });
 
   // @level l3 @consumer npm's own integrity form is accepted whole, and a truncated one is not.
   it('accepts a full sha512 integrity and refuses a truncated one', () => {
     const full = 'sha512-' + 'A'.repeat(86) + '==';
     const passing = customerInstallManifest({
-      platform: 'darwin',
+      platform: 'darwin', arch: 'arm64',
       home: '/home/customer',
       version: '0.15.0-rc.4',
       pins: { ...PINS, ahpd: { ...PINS.ahpd, checksum: full } },
     });
     expect(passing.ok).toBe(true);
     const truncated = customerInstallManifest({
-      platform: 'darwin',
+      platform: 'darwin', arch: 'arm64',
       home: '/home/customer',
       version: '0.15.0-rc.4',
       pins: { ...PINS, ahpd: { ...PINS.ahpd, checksum: full.slice(0, 40) } },
@@ -168,7 +178,7 @@ describe('customer host install manifest (#38280)', () => {
   it('refuses a source that is not https, by name', () => {
     for (const source of ['http://example.invalid/ahpd.tgz', 'file:///tmp/ahpd.tgz']) {
       const built = customerInstallManifest({
-        platform: 'linux',
+        platform: 'linux', arch: 'x64',
         home: '/home/customer',
         version: '0.15.0-rc.4',
         pins: { ...PINS, ahpd: { ...PINS.ahpd, source } },
@@ -193,7 +203,7 @@ describe('activateRelease is the one switch, and it journals (#38276, #38280)', 
   // @level l3 @consumer the install calls the deploy driver's switch, so the journal has every move of `current`.
   it('points current at the release the install placed and writes the line that says so', () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'ahpd-install-')));
-    const built = customerInstallManifest({ platform: 'linux', home, version: '0.15.0-rc.4', pins: PINS });
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home, version: '0.15.0-rc.4', pins: PINS });
     if (!built.ok) throw new Error('expected a manifest, got ' + JSON.stringify(built.refusals));
     const manifest = built.manifest;
     const currentEntry = manifest.entries.find((entry) => entry.kind === 'symlink');

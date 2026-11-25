@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -21,13 +22,29 @@ import {
 const sha = (letter: string) => `sha256:${letter.repeat(64)}`;
 const PINS: InstallPins = {
   runtime: { version: '1.3.13', source: 'https://bun.invalid/1.3.13', checksum: sha('a') },
-  ahpd: { version: '0.15.0-rc.4', source: 'https://registry.invalid/ahpd-0.15.0-rc.4.tgz', checksum: sha('b') },
+  ahpd: { version: '0.15.0-rc.4', source: 'https://registry.invalid/ahpd-0.15.0-rc.4-linux-x64.tar.gz', checksum: sha('b') },
   hostPlugin: { version: '0.1.0', source: 'https://registry.invalid/host-0.1.0.tgz', checksum: sha('c') },
   supervisor: { version: '1.34.1', source: 'https://releases.invalid/supervisor-1.34.1.gz', checksum: sha('d') },
 };
 
 const bytesOf = (source: string) => `bytes:${source}`;
 const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex');
+
+/**
+ * A real archive for the daemon pin, in the shape the installer accepts: one top-level directory named after the
+ * file, with the tree inside. The unpacker is exercised for real on it, not faked.
+ */
+const daemonArchive = (source: string): Buffer => {
+  const top = source.split('/').pop()!.replace(/\.tar\.gz$/u, '');
+  const dir = mkdtempSync(join(tmpdir(), 'ahpd-archive-'));
+  mkdirSync(join(dir, top, 'node_modules', '@ahpd', 'server'), { recursive: true });
+  writeFileSync(join(dir, top, 'package.json'), JSON.stringify({ name: 'ahpd-server' }));
+  writeFileSync(join(dir, top, 'node_modules', '@ahpd', 'server', 'index.js'), 'export const started = true\n');
+  const out = join(dir, 'archive.tgz');
+  const tarred = spawnSync('tar', ['-czf', out, '-C', dir, top], { encoding: 'utf8' });
+  if (tarred.status !== 0) throw new Error(`tar failed: ${tarred.stderr}`);
+  return readFileSync(out);
+};
 
 /** Every pin correct for what the fake fetch returns, so a case fails only where it means to. */
 const HONEST: InstallPins = {
@@ -38,7 +55,7 @@ const HONEST: InstallPins = {
 };
 
 const manifestWith = (pins: InstallPins = HONEST) => {
-  const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.15.0-rc.4', pins });
+  const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0-rc.4', pins });
   if (!built.ok) throw new Error('expected a manifest: ' + JSON.stringify(built.refusals));
   return built.manifest;
 };
@@ -92,12 +109,18 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
     move: (from, to) => {
       paths.delete(from);
       paths.add(to);
+      if (dirs.delete(from)) dirs.add(to);
       const bytes = content.get(from);
       content.delete(from);
       if (bytes !== undefined) content.set(to, bytes);
       const mode = modes.get(from);
       modes.delete(from);
       if (mode !== undefined) modes.set(to, mode);
+    },
+    // The real reader's refusals are tested against real archives; here the tree simply exists after unpacking.
+    unpack: (_archive, into) => {
+      paths.add(into);
+      dirs.add(into);
     },
     remove: (path) => {
       paths.delete(path);
@@ -156,17 +179,20 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     for (const path of result.wrote) expect(plan).toContain(path);
     expect(switches).toEqual([{ layout: installDeployLayout(manifest), version: '0.15.0-rc.4', reason: 'customer host install' }]);
     expect(io.commands).toEqual([manifest.bootItem.enable]);
-    // What runs is what was checked: all four pinned artifacts, each 0755 at its final path.
-    for (const name of ['runtime', 'ahpd', 'hostPlugin', 'supervisor'] as const) {
+    // What runs is what was checked: the three single-file artifacts are 0755 at their final path, and the daemon is
+    // a tree unpacked from its archive rather than one executable.
+    for (const name of ['runtime', 'hostPlugin', 'supervisor'] as const) {
       const entry = manifest.entries.find((one) => one.from === `download:${name}`)!;
       expect(io.modes.get(entry.path)).toBe(0o755);
     }
+    const archive = manifest.entries.find((one) => one.kind === 'archive')!;
+    expect(io.dirs.has(archive.path)).toBe(true);
     expect([...io.paths].some((path) => path.endsWith('.download'))).toBe(false);
   });
 
   // @level l3 @consumer the boot item on disk starts `current` and escapes the root for XML.
   it('writes a plist that escapes the root and a unit with WantedBy alone', async () => {
-    const macBuilt = customerInstallManifest({ platform: 'darwin', home: '/home/customer', version: '0.15.0-rc.4', pins: HONEST });
+    const macBuilt = customerInstallManifest({ platform: 'darwin', arch: 'arm64', home: '/home/customer', version: '0.15.0-rc.4', pins: HONEST });
     if (!macBuilt.ok) throw new Error('expected a manifest');
     const mac = macBuilt.manifest;
     const macIo = fakeIo();
@@ -175,7 +201,7 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     expect(plist).toContain('dev.hallohuman.ahpd');
     expect(plist).toContain('current/supervisor');
 
-    const built = customerInstallManifest({ platform: 'darwin', home: '/home/c&d"x', version: '0.15.0-rc.4', pins: HONEST });
+    const built = customerInstallManifest({ platform: 'darwin', arch: 'arm64', home: '/home/c&d"x', version: '0.15.0-rc.4', pins: HONEST });
     if (!built.ok) throw new Error('expected a manifest');
     const io = fakeIo();
     await applyInstall(built.manifest, io, () => undefined);
@@ -239,7 +265,7 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
 
   // @level l3 @consumer a null checksum at apply time is refused, never defaulted to sha256.
   it('refuses a pin with no checksum at apply time', async () => {
-    const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.15.0-rc.4', pins: HONEST });
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0-rc.4', pins: HONEST });
     if (!built.ok) throw new Error('expected a manifest');
     const manifest = { ...built.manifest, pins: { ...built.manifest.pins, ahpd: { ...built.manifest.pins.ahpd, checksum: null } } };
     const io = fakeIo();
@@ -279,7 +305,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
       switched.push(version);
     };
     for (const version of ['0.13.0', '0.14.0', '0.15.0', '0.16.0']) {
-      const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version, pins: HONEST });
+      const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version, pins: HONEST });
       if (!built.ok) throw new Error('expected a manifest');
       const result = await applyInstall(built.manifest, io, switchTo);
       expect(result.ok).toBe(true);
@@ -316,17 +342,17 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     const switchTo = (_layout: unknown, version: string) => {
       switched.push(version);
     };
-    const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.13.0', pins: HONEST });
     if (!first.ok) throw new Error('expected a manifest');
     expect((await applyInstall(first.manifest, io, switchTo)).ok).toBe(true);
     // Four releases first, so a prune would have something to remove if it ran at the wrong moment.
     for (const version of ['0.14.0', '0.15.0']) {
-      const next = customerInstallManifest({ platform: 'linux', home: '/home/customer', version, pins: HONEST });
+      const next = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version, pins: HONEST });
       if (!next.ok) throw new Error('expected a manifest');
       expect((await applyInstall(next.manifest, io, switchTo)).ok).toBe(true);
     }
     io.failRun();
-    const failing = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    const failing = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.16.0', pins: HONEST });
     if (!failing.ok) throw new Error('expected a manifest');
     const result = await applyInstall(failing.manifest, io, switchTo);
     expect(result.ok).toBe(false);
@@ -350,7 +376,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     const switchTo = (_layout: unknown, version: string) => {
       switched.push(version);
     };
-    const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.15.0', pins: HONEST });
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0', pins: HONEST });
     if (!first.ok) throw new Error('expected a manifest');
     expect((await applyInstall(first.manifest, io, switchTo)).ok).toBe(true);
     // Exactly one enable fails - the new release's - and the switch back's own start succeeds.
@@ -365,7 +391,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
         return io.run(command);
       },
     };
-    const failing = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    const failing = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.16.0', pins: HONEST });
     if (!failing.ok) throw new Error('expected a manifest');
     const result = await applyInstall(failing.manifest, oneBadStart, switchTo);
     expect(result.ok).toBe(false);
@@ -383,7 +409,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     const switchTo = (_layout: unknown, version: string) => {
       switched.push(version);
     };
-    const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.13.0', pins: HONEST });
     if (!first.ok) throw new Error('expected a manifest');
     expect((await applyInstall(first.manifest, io, switchTo)).ok).toBe(true);
     const releases = '/home/customer/.ahpd/state/deploy/ahpd/releases';
@@ -394,7 +420,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
         return io.list(path);
       },
     };
-    const next = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.14.0', pins: HONEST });
+    const next = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.14.0', pins: HONEST });
     if (!next.ok) throw new Error('expected a manifest');
     const result = await applyInstall(next.manifest, cannotList, switchTo);
     expect(result.ok).toBe(true);
@@ -419,7 +445,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
       },
     };
     for (const version of ['0.13.0', '0.14.0', '0.15.0', '0.16.0', '0.17.0']) {
-      const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version, pins: HONEST });
+      const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version, pins: HONEST });
       if (!built.ok) throw new Error('expected a manifest');
       expect((await applyInstall(built.manifest, blind, switchTo)).ok).toBe(true);
     }
@@ -431,7 +457,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
         io.removeTree(path);
       },
     };
-    const next = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.18.0', pins: HONEST });
+    const next = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.18.0', pins: HONEST });
     if (!next.ok) throw new Error('expected a manifest');
     const result = await applyInstall(next.manifest, busy, switchTo);
     // A prune that hit a locked folder is a warning on a good install, never an exception or a failed install.
@@ -447,7 +473,7 @@ describe('a version switch places, activates and prunes by one shared rule (#382
 
   // @level l3 @consumer a switch that throws is refused by name, before the boot item is touched.
   it('refuses by name when moving current throws', async () => {
-    const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.13.0', pins: HONEST });
     if (!built.ok) throw new Error('expected a manifest');
     const result = await applyInstall(built.manifest, fakeIo(), () => {
       throw new Error('EXDEV: cross-device link not permitted');
@@ -518,13 +544,15 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
   // @level l3 @consumer the real filesystem: the fake io cannot show that a directory needs its own removal call.
   it('runs on a real tmpdir: keeps the daemon state, removes the rest, and purges only on request', async () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'ahpd-uninstall-')));
-    const built = customerInstallManifest({ platform: 'linux', home, version: '0.15.0-rc.4', pins: HONEST });
+    const archive = daemonArchive(HONEST.ahpd.source);
+    const pins: InstallPins = { ...HONEST, ahpd: { ...HONEST.ahpd, checksum: `sha256:${createHash('sha256').update(archive).digest('hex')}` } };
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home, version: '0.15.0-rc.4', pins });
     if (!built.ok) throw new Error('expected a manifest');
     const manifest = built.manifest;
     const real = nodeInstallIo();
     const io: InstallIo = {
       ...real,
-      fetchTo: async (source, path) => writeFileSync(path, bytesOf(source)),
+      fetchTo: async (source, path) => writeFileSync(path, source === pins.ahpd.source ? archive : bytesOf(source)),
       run: (command) => {
         void command;
         return { code: 0, output: '' };

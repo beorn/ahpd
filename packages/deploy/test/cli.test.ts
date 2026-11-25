@@ -17,7 +17,7 @@ const pinsFile = (overrides: Record<string, unknown> = {}) => {
       platform: 'linux',
       pins: {
         runtime: { version: '1.3.13', source: 'https://bun.invalid/1', checksum: 'sha256:' + 'a'.repeat(64) },
-        ahpd: { version: '0.15.0-rc.4', source: 'https://reg.invalid/a.tgz', checksum: 'sha256:' + 'b'.repeat(64) },
+        ahpd: { version: '0.15.0-rc.4', source: 'https://reg.invalid/ahpd-0.15.0-rc.4-linux-x64.tar.gz', checksum: 'sha256:' + 'b'.repeat(64) },
         hostPlugin: { version: '0.1.0', source: 'https://reg.invalid/h.tgz', checksum: 'sha256:' + 'c'.repeat(64) },
         supervisor: { version: '1.34.1', source: 'https://rel.invalid/s.gz', checksum: 'sha256:' + 'd'.repeat(64) },
       },
@@ -40,11 +40,23 @@ const honestPinsFile = () => {
   return pinsFile({
     pins: {
       runtime: fetchable('1.3.13', 'https://bun.invalid/1'),
-      ahpd: fetchable('0.15.0-rc.4', 'https://reg.invalid/a.tgz'),
+      ahpd: fetchable('0.15.0-rc.4', 'https://reg.invalid/ahpd-0.15.0-rc.4-linux-x64.tar.gz'),
       hostPlugin: fetchable('0.1.0', 'https://reg.invalid/h.tgz'),
       supervisor: fetchable('1.34.1', 'https://rel.invalid/s.gz'),
     },
   });
+};
+
+/** A real archive in the shape the installer accepts, so the apply reaches its prune step for the right reason. */
+const daemonArchive = (source: string): Buffer => {
+  const top = source.split('/').pop()!.replace(/\.tar\.gz$/u, '');
+  const dir = mkdtempSync(join(tmpdir(), 'ahpd-cli-archive-'));
+  mkdirSync(join(dir, top), { recursive: true });
+  writeFileSync(join(dir, top, 'package.json'), JSON.stringify({ name: 'ahpd-server' }));
+  const out = join(dir, 'archive.tgz');
+  const tarred = spawnSync('tar', ['-czf', out, '-C', dir, top], { encoding: 'utf8' });
+  if (tarred.status !== 0) throw new Error(`tar failed: ${tarred.stderr}`);
+  return readFileSync(out);
 };
 
 const noopIo = () =>
@@ -109,7 +121,7 @@ describe('ahpd-host-install, the command the bootstrap runs (#38280)', () => {
     const file = pinsFile({
       pins: {
         runtime: { version: '1.3.13', source: 'https://bun.invalid/1', checksum: null },
-        ahpd: { version: '0.15.0-rc.4', source: 'https://reg.invalid/a.tgz', checksum: 'sha256:' + 'b'.repeat(64) },
+        ahpd: { version: '0.15.0-rc.4', source: 'https://reg.invalid/ahpd-0.15.0-rc.4-linux-x64.tar.gz', checksum: 'sha256:' + 'b'.repeat(64) },
         hostPlugin: { version: '0.1.0', source: 'https://reg.invalid/h.tgz', checksum: 'sha256:' + 'c'.repeat(64) },
         supervisor: { version: '1.34.1', source: 'https://rel.invalid/s.gz', checksum: 'sha256:' + 'd'.repeat(64) },
       },
@@ -178,7 +190,7 @@ describe('ahpd-host-install, the command the bootstrap runs (#38280)', () => {
     const file = pinsFile({
       pins: {
         runtime: { version: '1.3.13', source: 'https://bun.invalid/1', checksum: 'sha256:' + 'a'.repeat(64) },
-        ahpd: { version: '0.15.0-rc.4', source: 'https://reg.invalid/a.tgz', checksum: 'sha256:' + 'b'.repeat(64) },
+        ahpd: { version: '0.15.0-rc.4', source: 'https://reg.invalid/ahpd-0.15.0-rc.4-linux-x64.tar.gz', checksum: 'sha256:' + 'b'.repeat(64) },
         hostPlugin: { version: '0.1.0', source: 'https://reg.invalid/h.tgz', checksum: 'sha256:' + 'c'.repeat(64) },
       },
     });
@@ -190,10 +202,15 @@ describe('ahpd-host-install, the command the bootstrap runs (#38280)', () => {
   // @level l3 @consumer a prune that fails after a good install is a warning, and the command still exits 0.
   it('prints a prune failure as a warning on a successful install', async () => {
     const home = mkdtempSync(join(tmpdir(), 'ahpd-cli-home-'));
+    const file = honestPinsFile();
+    const pinned = JSON.parse(readFileSync(file, 'utf8')) as { pins: { ahpd: { source: string; checksum: string } } };
+    const archive = daemonArchive(pinned.pins.ahpd.source);
+    pinned.pins.ahpd.checksum = `sha256:${createHash('sha256').update(archive).digest('hex')}`;
+    writeFileSync(file, JSON.stringify(pinned));
     const io: InstallIo = {
       ...nodeInstallIo(),
       fetchTo: async (source, path) => {
-        writeFileSync(path, bytesOf(source));
+        writeFileSync(path, source === pinned.pins.ahpd.source ? archive : bytesOf(source));
       },
       run: () => ({ code: 0, output: '' }),
       list: (path) => {
@@ -201,7 +218,7 @@ describe('ahpd-host-install, the command the bootstrap runs (#38280)', () => {
       },
     };
     const sink = collect();
-    const code = await run(['--apply', '--pins', honestPinsFile(), '--home', home], io, sink.out, sink.err);
+    const code = await run(['--apply', '--pins', file, '--home', home], io, sink.out, sink.err);
     expect(code).toBe(0);
     const text = sink.lines.join('\n');
     expect(text).toContain('wrote ');
