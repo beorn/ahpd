@@ -112,8 +112,32 @@ them. A directory is removed only when it is empty; one the daemon has filled (s
 named — `kept <path>: N entries not written by this install; remove by hand or run uninstall --purge` — so customer
 data never goes without `--purge`, which prints exactly what it deletes first.
 
-A version switch (later slice) reuses the same layout and `activateRelease`, and pruning keeps `DEFAULT_KEEP` releases
-and says what it removed.
+### Switching version
+
+Running the same one command with a newer version is a switch, not a second install: the new release folder is placed
+and verified the same way, `current` moves through `activateRelease`, the boot item is stopped and started again so it
+picks up the new release, and only a started release is pruned for.
+
+A start that fails does not leave a dead host pointing at a release nobody started: `current` goes back through
+`activateRelease` with the reason "switching back after a failed start", the old release is started again, the record
+goes back to the release that is running, and the refusal reports both halves of the attempt plus the switch back.
+Nothing is pruned on that path.
+
+A record that will not parse is refused — `install record at <path> is unreadable: <why>; nothing changed` — never read
+as a fresh install, because it is the only statement of what that folder owns. A folder in `releases/` whose name is not
+a version is never pruned and is named (`kept <name>: not a version`); a failure to list the release folders at all is
+reported, not a silent "nothing to prune".
+
+Pruning keeps `current` plus the newest `keep - 1` releases (`DEFAULT_KEEP` is 3), and the result names every folder it
+deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared with the git deploy driver; only the
+ordering differs — commit time there, version order here, with `0.10.0` above `0.9.0` and a release above its
+release candidate.
+
+The record says `installed` before the prune runs, because a release that is running and recorded is installed whether
+or not the tidy-up worked. A prune that then fails comes back as `pruneFailed {path, output}` on an otherwise good
+result, and the command prints it as a warning and exits 0 — a full disk is never reported as a failed install. One
+folder that will not delete (`EBUSY`, `EACCES`) stops the prune and is named, and the folders already removed are
+listed with it, so a partly pruned disk is never reported as an unpruned one.
 
 ## Still open
 

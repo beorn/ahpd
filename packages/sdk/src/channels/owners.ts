@@ -568,7 +568,9 @@ export interface MoveSecretsOptions {
  * the same: a record that changed hands takes none of its old secrets with it.
  * A field sent empty keeps the secret it already had, because a client is never
  * given one to send back; a field left out drops its secret, which is what a
- * record written whole does.
+ * record written whole does. A row is the record itself, so saving one back
+ * untouched sends each reference it shows: a reference this record already
+ * holds at the same path is read as empty too.
  */
 export const moveSecrets = async (options: MoveSecretsOptions): Promise<Record<string, unknown>> => {
   const { rules, fields, config, held, owner, id, vault, problem } = options;
@@ -584,6 +586,19 @@ export const moveSecrets = async (options: MoveSecretsOptions): Promise<Record<s
     }
     const named = secretRef(value);
     if (named !== undefined) {
+      /*
+       * A row is the record itself, so a form that draws one and saves it back
+       * untouched sends each reference it was shown. A reference this record
+       * already holds at the same path is that untouched row: nothing moved, so
+       * nothing is written and nothing is taken out. Any other reference is
+       * refused below, because a client is never given another secret's name.
+       */
+      if (mine && named === was) {
+        if (rules.nested && !sameEntry(config, held, field)) {
+          throw new RpcError(INVALID_PARAMS, `${rules.words.possessive} ${field} sits in an entry that changed: send its value again`);
+        }
+        continue;
+      }
       /*
        * A host's agent may name a host secret, as it may name a variable of the
        * daemon: both are the host's own. Anyone else could name a secret that

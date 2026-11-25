@@ -2093,6 +2093,18 @@ to be that person. `agent:all` is the one grant that widens the rule: it reads
 every agent and removes any, whoever owns it, which is what an operator's role
 is given.
 
+Every row also carries `revision`: the number of writes the record has taken. The host writes it and never a caller, and it goes up by one on every write - `put`, `remove`'s record removal excepted, and each of `enable`, `pause` and `disable`. A record written before the host counted reads as `0`, so its first edit is revision 1.
+
+`put`, `remove`, `enable`, `pause` and `disable` take an optional `ifRevision`: the number the caller read. Omitted is last-writer-wins, which is what a caller written before the count was does. A number that disagrees with the record is refused, and the refusal carries what a form needs to draw again:
+
+```json
+{ "code": -32602,
+  "message": "alpha is at revision 4, not 2: re-read the agent and try again",
+  "data": { "staleRevision": 4, "row": { "id": "alpha", "revision": 4, "...": "the row as the channel lists it" } } }
+```
+
+A record that is not there refuses with `staleRevision: 0` and no `row`, so a client branches on one value: 0 means nothing holds the id, anything else comes with the current row beside it. `ifRevision: 0` on a `put` is therefore create-or-fail - it succeeds only where no record holds the id - and on a `remove` it can never succeed.
+
 An agent's id is unique across every owner, because a client names an agent by
 its id alone: a put never takes an id another record holds, and it never takes
 the id of a backend the daemon or a plugin already serves. A put under a new
