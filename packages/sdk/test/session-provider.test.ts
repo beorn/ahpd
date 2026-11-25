@@ -397,6 +397,16 @@ function harness(provider: string, ids: string[], started: string[]): Agent {
   };
 }
 
+/**
+ * A plugin's own connection, as the host makes one: since #38446 it is held to the grants its entry names even with
+ * no users directory, so the principal carries them. These are the ones these steps use, each named by the refusal
+ * that asked for it: list and read the catalogue, show external sessions (`root/configChanged`), send a turn and see
+ * its state.
+ */
+const PLUGIN_GRANTS: readonly string[] = ['session:list', 'session:read', 'config:change', 'chat:send', 'session:state'];
+const pluginWho = (id: string, plugin: string): Principal =>
+  ({ id, roles: [] as string[], plugin, can: (grant: string) => PLUGIN_GRANTS.includes(grant) }) as unknown as Principal;
+
 /** The catalogue a client was handed, as the resources it names them by. */
 async function catalogue(client: ReturnType<typeof serving>['client']): Promise<string[]> {
   const listed = await client.handle({ method: 'listSessions', params: { channel: ROOT } }) as {
@@ -487,7 +497,7 @@ describe('a row two harnesses both list', () => {
     const one: string[] = [];
     const two: string[] = [];
     const store = counting();
-    const seat = { id: 'plugin:hab', roles: [] as string[], plugin: 'hab-plugin-ag' } as unknown as Principal;
+    const seat = pluginWho('plugin:hab', 'hab-plugin-ag');
     const refusals: unknown[] = [];
     const { client } = serving(store, [
       harness('one', ['unrecorded'], one),
@@ -547,7 +557,7 @@ describe('a row two harnesses both list', () => {
     };
     const { host, client } = serving(store, [refusing, harness('two', ['unrecorded'], two)], peer(), {
       starts: { one: { by: 'wrong-plugin' }, two: { by: 'hab-plugin-ag' } },
-      who: { id: 'plugin:wrong', roles: [] as string[], plugin: 'wrong-plugin' } as unknown as Principal,
+      who: pluginWho('plugin:wrong', 'wrong-plugin'),
     });
     await settle();
     await showExternal(client);
@@ -567,7 +577,7 @@ describe('a row two harnesses both list', () => {
     };
     expect(seen.snapshot.state.provider).toBe('');
 
-    const right = host.accept(peer(), { id: 'plugin:hab', roles: [] as string[], plugin: 'hab-plugin-ag' } as unknown as Principal);
+    const right = host.accept(peer(), pluginWho('plugin:hab', 'hab-plugin-ag'));
     void right.handle({
       method: 'initialize',
       params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: [ROOT] },
