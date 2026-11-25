@@ -27,6 +27,7 @@ import {
   type AcknowledgeParams, type Answer, type Caller, type Listing, type Machine, type PutParams, type Refusal,
 } from './compose.js';
 import { DRIFT_REF, type DriftAlert, type DriftFacts } from './drift.js';
+import { CUT_COMMAND_REF, GAVE_UP_REF } from './watch.js';
 import type { ServiceRecord } from './record.js';
 
 /** The channel's scheme, and its one URI. */
@@ -152,7 +153,7 @@ export interface ServicesState {
   readonly error?: string;
 }
 
-const NAMED = [`${DRIFT_REF}not-loaded:`, `${DRIFT_REF}not-in-files:`];
+const NAMED = [`${DRIFT_REF}not-loaded:`, `${DRIFT_REF}not-in-files:`, GAVE_UP_REF, CUT_COMMAND_REF];
 
 /** The service a drift alert is about, or nothing for one about the machine. */
 const aboutService = (alert: DriftAlert): string | undefined => {
