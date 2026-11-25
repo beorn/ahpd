@@ -8,7 +8,7 @@ import { createHost } from '../src/host.js';
 import { foldHostOptions, pluginHost } from '../src/plugins/plugins.js';
 import { memorySessions } from '../src/sessions/sessions.js';
 import { sdkVersion } from '../src/version.js';
-import { grantRefusals, REFUSAL_WINDOW_MS } from '../src/host/refusals.js';
+import { grantRefusals, REFUSAL_WINDOW_MS, REFUSAL_WINDOWS, REFUSAL_WINDOWS_PER_PRINCIPAL } from '../src/host/refusals.js';
 import { echo } from '../../../examples/echo/agent.js';
 import type { LoaderContext } from '../src/types/plugin.js';
 
@@ -25,7 +25,7 @@ const context = (): LoaderContext => ({
 const REFUSED = /^grant refused: /;
 
 /** A host with no users directory, `x-probe/restart` (grant probe:control), and the Hightea pipe as a plugin peer without it. */
-async function hosting() {
+async function hosting(clientId = 'hightea-pipe') {
   const lines: { line: string; level: LogLevel }[] = [];
   const probe = pluginHost('probe', context(), { grants: [] });
   probe.host.registerMethod('x-probe/restart', { grant: 'probe:control', describe: () => ({ title: 'restart' }), handle: async () => ({ ok: true }) });
@@ -37,7 +37,7 @@ async function hosting() {
   const host = createHost(options);
   for (const one of options.pluginConnects ?? []) one.host = host;
   const peer = pipe.host.connect();
-  await peer.request('initialize', { clientId: 'hightea-pipe', protocolVersions: ['0.9.0'] });
+  await peer.request('initialize', { clientId, protocolVersions: ['0.9.0'] });
   const refused = () => lines.filter((one) => REFUSED.test(one.line));
   const ask = () => peer.request('x-probe/restart', {}).then(() => 'ADMITTED', (error: { code?: number }) => error.code);
   return { host, refused, ask };
@@ -87,4 +87,58 @@ it("the minute's end writes the suppressed count, each (principal, method) has i
   expect(lines).toHaveLength(4);
   refusals.close();
   expect(lines).toHaveLength(4);
+});
+
+/*
+ * The caller chooses the method, the action type and its client id (@cto
+ * ae379641): no value can end the line or forge a field, and distinct methods
+ * cannot write a line each or grow the windows without end.
+ */
+it('a client id carrying a newline and a forged field writes one line, with the newline, spaces and = escaped', async () => {
+  const { host, refused, ask } = await hosting('x\ngrant refused: principal=root');
+  expect(await ask()).toBe(-32009);
+  await host.close();
+  expect(refused()).toHaveLength(1);
+  const [only] = refused();
+  expect(only?.line.includes('\n')).toBe(false);
+  expect(only?.line).toBe('grant refused: principal=plugin:hightea-pipe method=x-probe/restart needs=probe:control'
+    + ' conn=x\\x0agrant\\x20refused:\\x20principal\\x3droot');
+});
+
+it('a value is cut at 200 characters', () => {
+  const lines: string[] = [];
+  const refusals = grantRefusals(loggerOf((line: string) => { lines.push(line); }));
+  refusals.refused({ principal: 'plugin:p', method: 'm'.repeat(500), needs: 'g', conn: 'c' });
+  refusals.close();
+  expect(lines).toEqual([`grant refused: principal=plugin:p method=${'m'.repeat(200)} needs=g conn=c`]);
+});
+
+it('1,000 distinct methods from one principal write at most 22 lines in the minute, and the windows stay bounded', () => {
+  vi.useFakeTimers();
+  const lines: string[] = [];
+  const refusals = grantRefusals(loggerOf((line: string) => { lines.push(line); }));
+  for (let i = 0; i < 1000; i += 1) refusals.refused({ principal: 'plugin:pipe', method: `x-flood/${i}`, needs: 'flood:any', conn: 'c' });
+  expect(refusals.open()).toBe(REFUSAL_WINDOWS_PER_PRINCIPAL + 1);
+  expect(lines).toHaveLength(REFUSAL_WINDOWS_PER_PRINCIPAL + 1);
+  expect(lines.at(-1)).toBe('grant refused: principal=plugin:pipe method=* needs=flood:any conn=c');
+  vi.advanceTimersByTime(REFUSAL_WINDOW_MS);
+  expect(lines).toHaveLength(REFUSAL_WINDOWS_PER_PRINCIPAL + 2);
+  expect(lines.at(-1)).toBe('grant refused: principal=plugin:pipe method=* needs=flood:any conn=c (979 more suppressed)');
+  expect(refusals.open()).toBe(0);
+  // The minute over, a method is its own window again.
+  refusals.refused({ principal: 'plugin:pipe', method: 'x-flood/0', needs: 'flood:any', conn: 'c' });
+  expect(lines.at(-1)).toBe('grant refused: principal=plugin:pipe method=x-flood/0 needs=flood:any conn=c');
+});
+
+it('the host holds at most 1,000 windows, plus one method=* window per principal past it', () => {
+  vi.useFakeTimers();
+  const refusals = grantRefusals(loggerOf(() => {}));
+  const principals = 60;
+  for (let p = 0; p < principals; p += 1) {
+    for (let i = 0; i < REFUSAL_WINDOWS_PER_PRINCIPAL; i += 1) refusals.refused({ principal: `user:${p}`, method: `m/${i}`, needs: 'g', conn: 'c' });
+  }
+  expect(refusals.open()).toBeGreaterThanOrEqual(REFUSAL_WINDOWS);
+  expect(refusals.open()).toBeLessThanOrEqual(REFUSAL_WINDOWS + principals);
+  refusals.close();
+  expect(refusals.open()).toBe(0);
 });
