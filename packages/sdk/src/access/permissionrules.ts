@@ -180,6 +180,25 @@ export const isExactAbsolutePathRule = (rule: string): boolean => {
 };
 
 /** A rule's tool and specifier: the first `(` and the closing `)` delimit the specifier. */
+/**
+ * Why a rule can name no request at all, or nothing where it is read as
+ * none: one that does not parse, and a bare name with a wildcard, which is
+ * compared with a tool's whole name and so matches no tool, since only a
+ * specifier reads a wildcard. `matchesPermissionRule` answers either with a
+ * plain no, so the host says this once by name instead.
+ */
+export const permissionRuleProblem = (rule: string): string | undefined => {
+  const parsed = parseRule(rule);
+  if (parsed === undefined) {
+    return `permission rule ${JSON.stringify(rule)} is not a rule and matches nothing: write a tool name, or Tool(specifier) with balanced parentheses`;
+  }
+  if (parsed.specifier !== undefined || !/[*?]/.test(parsed.tool)) return undefined;
+  const server = /^mcp__(.+?)__/.exec(parsed.tool)?.[1];
+  return server !== undefined
+    ? `permission rule ${JSON.stringify(rule)} matches no tool, since a wildcard is read only inside a specifier: write Mcp(${server}) for every tool of that MCP server, or Mcp(${server}/<tool>) for one`
+    : `permission rule ${JSON.stringify(rule)} matches no tool, since a wildcard is read only inside a specifier, as in Shell(npm run *)`;
+};
+
 const parseRule = (rule: string): ParsedRule | undefined => {
   const value = rule.trim();
   const opening = value.indexOf('(');
