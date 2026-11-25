@@ -98,6 +98,22 @@ describe('customer host install manifest (#38280)', () => {
     expect(built.refusals).toEqual([{ kind: 'unpinned-version', download: 'ahpd', version: 'latest' }]);
   });
 
+  // @level l3 @consumer $AHPD_HOME moves the one folder, and nothing else moves with it.
+  it('honours an explicit root and keeps the boot item where the platform puts it', () => {
+    const built = customerInstallManifest({
+      platform: 'linux',
+      home: '/home/customer',
+      root: '/data/ahpd',
+      version: '0.15.0-rc.4',
+      pins: PINS,
+    });
+    if (!built.ok) throw new Error('expected a manifest');
+    expect(built.manifest.root).toBe('/data/ahpd');
+    expect(built.manifest.bootItem.path).toBe('/home/customer/.config/systemd/user/ahpd.service');
+    for (const entry of built.manifest.entries.filter((one) => one.kind !== 'boot-item'))
+      expect(entry.path.startsWith('/data/ahpd')).toBe(true);
+  });
+
   // @level l3 @consumer install and uninstall read one list: removal is the creation list backwards, nothing else.
   it('derives removal from the same entries, in reverse', () => {
     const manifest = manifestFor('darwin');

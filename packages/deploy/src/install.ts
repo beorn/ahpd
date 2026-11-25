@@ -77,6 +77,8 @@ export interface InstallOptions {
   readonly platform: InstallPlatform
   /** The user's home directory, passed in rather than read, so a plan is a pure function of its inputs. */
   readonly home: string
+  /** An explicit install root (`$AHPD_HOME`); the bootstrap resolves the variable and passes it. */
+  readonly root?: string
   /** The ahpd version this install places; also the release folder's name. */
   readonly version: string
   readonly pins: InstallPins
@@ -133,7 +135,7 @@ export const customerInstallManifest = (
   const refusals = installRefusals(options.pins)
   if (refusals.length) return { ok: false, refusals }
 
-  const root = `${options.home}/${INSTALL_ROOT_NAME}`
+  const root = options.root ?? `${options.home}/${INSTALL_ROOT_NAME}`
   const configHome = options.configHome ?? `${options.home}/.config`
   const bootItem = bootItemFor(options.platform, options.home, configHome)
 
