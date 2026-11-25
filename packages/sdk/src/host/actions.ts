@@ -155,7 +155,8 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
       no(`${type} is a chat's action, and ${asked} is not a chat`);
       return;
     }
-    if (options.users !== undefined && connection.root !== true) {
+    // A plugin's own connection is gated with or without a user directory (#38446, @cto 89be3ef1).
+    if (connection.root !== true && (options.users !== undefined || connection.principal?.plugin !== undefined)) {
       /*
        * What the action is, what the channel is spelt as and what it
        * resolves to, both because the handler below acts on the resolved

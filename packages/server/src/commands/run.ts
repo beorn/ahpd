@@ -418,7 +418,8 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
    * One port answers two doors: `createHost` asks whether a command may proceed,
    * and `listen` asks whose a connection token is. One instance, so a token is
    * asked one question and there is no second opinion about who somebody is.
-   * Absent, the host advertises no sign-in resource and every gate is inert.
+   * Absent, the host advertises no sign-in resource and every gate is inert,
+   * except that a plugin's own connection is still held to its entry's grants.
    *
    * The path is read once here: the directory itself re-reads the file on every
    * question, so the directory stays current even though the record is built

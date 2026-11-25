@@ -38,6 +38,13 @@ const SPEC = './packages/server/test/fixtures/plugin-connect';
 const SESSION = 'ahp-session:/connect';
 /** The plugin's own id, which is what it calls its connection and its log lines. */
 const BY = 'plugin-connect';
+/*
+ * What the fixture does on its own connection: start a session of the daemon's
+ * backend, read it, and send its first turn. A plugin's connection is held to
+ * its entry's grants even on a daemon with no users directory (#38446), so the
+ * entry grants it those.
+ */
+const GRANTED: PluginSpec = { name: SPEC, grants: ['session:write', 'session:read'] };
 
 /** A client that keeps what the host said, so a test can read it back. */
 const peer = (): Peer & { notes: { method: string; params: unknown }[] } => {
@@ -177,7 +184,7 @@ const TURN = ['chat/turnStarted', 'chat/responsePart', 'chat/delta'];
 const turnOf = (types: string[]): string[] => types.filter((type) => TURN.includes(type));
 
 it('serves a plugin that connects to its own host, and a watching client sees the turn', async () => {
-  const { host, lines, problems } = await started();
+  const { host, lines, problems } = await started(GRANTED);
   expect(problems).toEqual([]);
 
   // Which client the plugin is, said by the plugin: it introduced itself over
@@ -225,7 +232,7 @@ it('tells a plugin that connects while apply runs, rather than handing it nothin
 });
 
 it('closes every connection a plugin opened when the daemon stops', async () => {
-  const { host, lines, options } = await started();
+  const { host, lines, options } = await started(GRANTED);
   await until(() => lines.includes(`${BY} opened ${SESSION}`), 'the plugin to open its session');
 
   const said = peer();

@@ -42,7 +42,7 @@ In the configuration file, with every option set:
 
 No option is required. A daemon that names none still pushes, without an access token.
 
-On a daemon where people sign in, the plugin's entry grants `session:list`, which is how the plugin reads the sessions the daemon already holds when it starts. Without it, the plugin says once in the log that the list could not be read, and tells only the sessions made after the daemon started. A daemon where nobody signs in gates nothing, and needs no grant.
+The plugin's entry grants `session:list`, which is how the plugin reads the sessions the daemon already holds when it starts. Without it, the plugin says once in the log that the list could not be read, and tells only the sessions made after the daemon started. This holds on a daemon where nobody signs in too: a plugin's own connection is held to its entry's grants either way (#38446).
 
 | Option | Default | What it does |
 | --- | --- | --- |
