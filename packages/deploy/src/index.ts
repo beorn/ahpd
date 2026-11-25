@@ -378,37 +378,42 @@ export const activateRelease = (
   journal(layout, { event: 'switched', to: version, reason, ...detail });
 };
 
+/**
+ * Which release folders to remove: `current` plus the newest `keep - 1` others, never one fewer when the current
+ * release is also the newest. The rule is here, once, so a git deploy and a customer install prune the same way; only
+ * the ordering differs (commit time there, version order for an install).
+ */
+export const releasesToPrune = (
+  orderedNewestFirst: readonly string[],
+  current: string | null,
+  keep = DEFAULT_KEEP,
+): readonly string[] => {
+  const others = orderedNewestFirst.filter((name) => name !== current);
+  const keeping = new Set([...(current === null ? [] : [current]), ...others.slice(0, Math.max(keep - 1, 0))]);
+  return orderedNewestFirst.filter((name) => !keeping.has(name));
+};
+
 /** Keep `current` plus the newest `keep - 1` releases; every other release folder is removed by name. */
 export const pruneReleases = (layout: DeployLayout, keep = DEFAULT_KEEP): readonly string[] => {
   const releases = paths(layout).releases;
   if (!existsSync(releases)) return [];
   const current = currentRelease(layout);
-  const all = readdirSync(releases, { withFileTypes: true })
+  const ordered = readdirSync(releases, { withFileTypes: true })
     .filter((one) => one.isDirectory())
-    .map((one) => ({ name: one.name, at: 0 }));
-  const ordered = all
     .map((one) => {
       const stat = git(['-C', join(releases, one.name), 'show', '-s', '--format=%ct', 'HEAD']);
       const at = Number.parseInt(stat.stdout.trim(), 10);
       return { name: one.name, at: Number.isNaN(at) ? 0 : at };
     })
-    .sort((left, right) => right.at - left.at || right.name.localeCompare(left.name));
-  // `keep` counts releases on disk, so the current one plus the newest `keep - 1` others — never one fewer
-  // when the current release is also the newest.
-  const others = ordered.filter((one) => one.name !== current);
-  const keepNames = new Set([
-    ...(current === null ? [] : [current]),
-    ...others.slice(0, Math.max(keep - 1, 0)).map((one) => one.name),
-  ]);
-  const removed: string[] = [];
-  for (const one of ordered) {
-    if (keepNames.has(one.name)) continue;
-    rmSync(join(releases, one.name), { recursive: true, force: true });
+    .sort((left, right) => right.at - left.at || right.name.localeCompare(left.name))
+    .map((one) => one.name);
+  const removed = releasesToPrune(ordered, current, keep);
+  for (const name of removed) {
+    rmSync(join(releases, name), { recursive: true, force: true });
     const objects = paths(layout).objects;
     if (existsSync(objects)) {
       for (const store of readdirSync(objects)) git(['-C', join(objects, store), 'worktree', 'prune']);
     }
-    removed.push(one.name);
   }
   return removed;
 };
