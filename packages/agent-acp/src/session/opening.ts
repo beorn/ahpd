@@ -1,6 +1,6 @@
 import { RequestError } from '@agentclientprotocol/sdk';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
-import { machineAsked, machinePathOf } from '@ahpd/sdk';
+import { machineAsked, machinePathOf, mcpServerCustomization } from '@ahpd/sdk';
 import type { Spawn, Start, ToolsEndpoint } from '@ahpd/sdk';
 import { heardCapabilities, isNoRollout, watchSession } from '../catalog.js';
 import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
@@ -10,7 +10,7 @@ import { messageOf } from './common.js';
 import { admitCustody } from './custody.js';
 import type { Custody, CustodyIdentity } from './custody.js';
 import type { SessionContext } from './context.js';
-import type { LogLevel } from '@ahpd/sdk';
+import type { Bag, LogLevel } from '@ahpd/sdk';
 
 /** Spawning the server, signing in and opening the one session on it. */
 export interface Opening {
@@ -120,6 +120,22 @@ const addressOf = (url: string): string => {
 };
 
 /**
+ * Publish the configured MCP servers as this session's customizations and say
+ * so to every client watching. A server's id comes from its name alone, so it
+ * stays the same across reloads and a targeted token stays aimed. `stateOf`
+ * is handed the server's state as it stood, `starting` for one not yet said.
+ */
+const publishServers = (ctx: SessionContext, names: readonly string[], stateOf: (name: string, was: Bag) => Bag): void => {
+  const before = new Map(ctx.servers.map((one) => [String(one.name), (one.state ?? { kind: 'starting' }) as Bag]));
+  ctx.servers = names.map((name) => mcpServerCustomization(
+    `acp-internal:/mcp/${encodeURIComponent(name)}`,
+    name,
+    stateOf(name, before.get(name) ?? { kind: 'starting' }),
+  ));
+  ctx.emit('session', { type: 'session/customizationsChanged', customizations: ctx.published() });
+};
+
+/**
  * The MCP servers a session is opened with, in ACP's shape.
  *
  * The host's own map, less whatever the handshake says this server cannot take,
@@ -135,6 +151,7 @@ const serversFor = async (
   hostTools: boolean,
   machine: string | undefined,
   say: (line: string) => void,
+  leftOut: (name: string, why: string) => void = () => {},
 ): Promise<AcpMcpServer[]> => {
   const taken: AcpMcpServer[] = [];
   const mcp = capabilities?.mcpCapabilities;
@@ -145,6 +162,7 @@ const serversFor = async (
     if (one.type === 'http') {
       if (mcp?.http !== true) {
         say(`${name}: this ACP server takes no MCP server over HTTP, so it was left out`);
+        leftOut(name, 'This ACP server takes no MCP server over HTTP.');
         continue;
       }
       taken.push({
@@ -633,6 +651,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * HTTP server unless the deployment turned that off or the machine the
        * session runs in cannot reach them.
        */
+      const left = new Map<string, string>();
       const servers = await serversFor(
         start,
         toolsServer,
@@ -640,7 +659,17 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         options.hostTools !== false,
         moved === undefined ? undefined : machineIdOf(start),
         (line: string, level?: LogLevel) => options.log?.(line, level),
+        (name, why) => left.set(name, why),
       );
+      /*
+       * The configured servers as customizations, so a targeted token can name
+       * one (the host looks a target up among them). `starting` until the
+       * server answers the open, `error` for one this server could not take.
+       * The host's own tools are not among them: their token is the host's.
+       */
+      publishServers(ctx, Object.keys(start.mcpServers ?? {}), (name) => left.has(name)
+        ? { kind: 'error', error: { errorType: 'mcpServerFailed', message: left.get(name) } }
+        : { kind: 'starting' });
       /*
        * The conversation to continue: the one this session already had when
        * its server died, or else the one a resume named. Both go through the
@@ -754,6 +783,12 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * agent-pi do. Without this a client is never offered a model.
        */
       assertCurrent();
+      /*
+       * Opened with every server it was handed, which is the last thing ACP
+       * says about them: `ready` now is the truthful moment, and nothing
+       * later moves it.
+       */
+      publishServers(ctx, ctx.servers.map((one) => String(one.name)), (name, was) => was.kind === 'starting' ? { kind: 'ready' } : was);
       ctx.start.onHandshake?.();
       /*
        * The catalogue's record starts here, where the server has named the

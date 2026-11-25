@@ -466,6 +466,61 @@ describe('the MCP servers a session is opened with', () => {
     ]);
   });
 
+  /** The MCP servers a session publishes, by name, with their state. */
+  const published = (session: Session): Record<string, Bag> => Object.fromEntries(session.customizations()
+    .filter((one) => one.type === 'mcpServer')
+    .map((one) => [String(one.name), one]));
+
+  /** The states each `customizationsChanged` said a server was in, in order. */
+  const statesSaid = (watch: Watcher, name: string): string[] => watch.actions
+    .filter((one) => one.action.type === 'session/customizationsChanged')
+    .map((one) => (one.action.customizations as Bag[]).find((c) => c.type === 'mcpServer' && c.name === name))
+    .filter((one): one is Bag => one !== undefined)
+    .map((one) => String((one.state as Bag).kind));
+
+  it('publishes each configured server as a customization, starting until the open answers and ready after', async () => {
+    const { agent } = withLog();
+    const { session, watch } = await start(agent, 'published', { mcpServers: servers, toolsServer: () => hostTools });
+    await runTurn(session, watch, 't1', 'hi');
+
+    // What a targeted token names: the id the host looks a target up by.
+    expect(published(session)).toEqual({
+      files: { type: 'mcpServer', id: 'acp-internal:/mcp/files#mcp=files', name: 'files', uri: 'acp-internal:/mcp/files', state: { kind: 'ready' } },
+      api: { type: 'mcpServer', id: 'acp-internal:/mcp/api#mcp=api', name: 'api', uri: 'acp-internal:/mcp/api', state: { kind: 'ready' } },
+    });
+    // The host's own tools are not a server a client signs in to.
+    expect(Object.keys(published(session))).not.toContain('host');
+    // Collapsed, because a commands update says the whole list again unchanged.
+    expect(statesSaid(watch, 'api').filter((kind, at, all) => all[at - 1] !== kind)).toEqual(['starting', 'ready']);
+  });
+
+  it('publishes a server this ACP server could not take as an error that says why', async () => {
+    const { agent } = withLog({}, ['--no-http-mcp']);
+    const { session, watch } = await start(agent, 'published-nohttp', { mcpServers: servers });
+    await runTurn(session, watch, 't1', 'hi');
+
+    expect(published(session)['api']?.state).toEqual({
+      kind: 'error',
+      error: { errorType: 'mcpServerFailed', message: 'This ACP server takes no MCP server over HTTP.' },
+    });
+    expect(published(session)['files']?.state).toEqual({ kind: 'ready' });
+  });
+
+  it('keeps each server\'s id across a server that died and a load, so a targeted token stays aimed', async () => {
+    const { agent } = withLog();
+    const first = await start(agent, 'stable', { mcpServers: servers });
+    await runTurn(first.session, first.watch, 't1', 'hi');
+    const ids = Object.values(published(first.session)).map((one) => one.id);
+    await runTurn(first.session, first.watch, 't2', 'die now');
+    await runTurn(first.session, first.watch, 't3', 'hi again');
+    expect(Object.values(published(first.session)).map((one) => one.id)).toEqual(ids);
+    expect(Object.values(published(first.session)).map((one) => (one.state as Bag).kind)).toEqual(['ready', 'ready']);
+
+    const loaded = await start(agent, 'stable-loaded', { mcpServers: servers, resume: 'old-one' });
+    await runTurn(loaded.session, loaded.watch, 't1', 'hi');
+    expect(Object.values(published(loaded.session)).map((one) => one.id)).toEqual(ids);
+  });
+
   /*
    * A session in a machine, through a port that spawns on this host as a
    * machine's `docker exec` would, so the handshake is the fixture's own and

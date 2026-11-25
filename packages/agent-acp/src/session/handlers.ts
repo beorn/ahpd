@@ -253,7 +253,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
     }
     if (update.sessionUpdate === 'available_commands_update') {
       ctx.commands = commandsIn(update.availableCommands.map(commandLeaf));
-      emit('session', { type: 'session/customizationsChanged', customizations: [...seeds, ...ctx.commands] });
+      emit('session', { type: 'session/customizationsChanged', customizations: ctx.published() });
       return;
     }
 
