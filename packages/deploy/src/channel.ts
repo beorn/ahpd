@@ -233,8 +233,16 @@ export function deploysChannel(context: ChannelContext): DeploysChannel {
     describe: () => ({ title: 'Deploys', description: `This machine's deploys: what is running, how the last one went, and the journal of each.` }),
     operations: {
       operations: () => [OPERATION],
-      // One service is one deploy at a time, and only a service this machine runs is a target.
-      offers: (target, operationId) => operationId === OPERATION.id && context.services().includes(target),
+      // One service is one deploy at a time, and only a service this machine runs is a target. A listing that cannot
+      // be read is not evidence the target is missing: the run is let through to answer that sentence by name.
+      offers: (target, operationId) => {
+        if (operationId !== OPERATION.id) return false;
+        try {
+          return context.services().includes(target);
+        } catch {
+          return true;
+        }
+      },
       run: async (asked, target, input, reader, caller) => {
         if (asked.id !== OPERATION.id) throw new Error(`No operation called ${asked.id} on ${CHANNEL}; this channel has ${OPERATION.id}`);
         const given = input ?? {};
