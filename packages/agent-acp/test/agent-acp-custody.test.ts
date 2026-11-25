@@ -408,6 +408,26 @@ it.skipIf(!linux)('stamps spawnedAt once and the turn that opened a respawn, kep
   expect(readCustody(prefix)).toMatchObject({ opening: respawned.opening, spawnedAt: respawned.spawnedAt, spawningTurnId: 'turn-38456' });
 });
 
+// #38456: a second turn that arrives while the first turn's respawn is still opening waits on that same opening, so the
+// record keeps the first turn's id and spawnedAt and no third child is spawned.
+it.skipIf(!linux)('a second turn waits on the same opening and leaves its spawnedAt and spawning turn alone (#38456)', async () => {
+  const { session, prefix, log, options } = await start([]);
+  const created = readCustody(prefix);
+  options.env = { ...options.env, REFRESHED: 'yes' };
+  session.sendMessage('turn-first', 'respawn for this turn');
+  session.sendMessage('turn-second', 'arrives while the respawn is opening');
+  await until(() => initializes(log).length === 2 && readCustody(prefix).opening !== created.opening
+    && readCustody(prefix).state === 'running');
+  const respawned = readCustody(prefix);
+  expect(respawned.spawningTurnId).toBe('turn-first');
+  await new Promise((resolve) => { setTimeout(resolve, 500); });
+  expect(initializes(log)).toHaveLength(2);
+  expect(readCustody(prefix)).toMatchObject({ opening: respawned.opening, spawnedAt: respawned.spawnedAt, spawningTurnId: 'turn-first' });
+  await session.close();
+  await until(() => readCustody(prefix).state === 'ended');
+  expect(readCustody(prefix)).toMatchObject({ opening: respawned.opening, spawnedAt: respawned.spawnedAt, spawningTurnId: 'turn-first' });
+});
+
 it('reads spawnedAt and spawningTurnId, and refuses a malformed pair (#38456)', () => {
   const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-38456-'));
   folders.push(folder);
