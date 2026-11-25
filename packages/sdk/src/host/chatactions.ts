@@ -17,6 +17,7 @@ import type { Session } from '../types/session.js';
 import type { ClientCallAnswer } from '../tools/clientcalls.js';
 import type { Origin } from './state.js';
 import type { ConnectionContext, HostContext } from './context.js';
+import { refusalsOf } from './refusals.js';
 
 /**
  * Set or clear one of a session's own two bits, and say so.
@@ -2274,6 +2275,7 @@ export function chatAction(
         break;
       }
       if (allowsAll && ctx.options.users !== undefined && connection.root !== true && connection.principal?.can('session:configure') !== true) {
+        refusalsOf(ctx.log).refused({ principal: connection.principal?.id ?? '-', method: String(action.type), needs: 'session:configure', conn: connection.clientId || '-' });
         no(`${connection.principal?.id ?? 'This connection'} may not session:configure here`);
         break;
       }

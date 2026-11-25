@@ -4,6 +4,7 @@ import { isRootChannel, methodIn, parseResourceWatchChannelUri, schemeOf, served
 import { NEEDS, UNGATED, channelRead, ownAgentExcused, ownIn, refusalReason } from './gate.js';
 import type { Grant, Principal } from '../types/users.js';
 import type { ConnectionContext, HostContext } from './context.js';
+import { refusalsOf } from './refusals.js';
 
 /** What one connection's gate answers for a command. */
 export interface Admission {
@@ -331,9 +332,11 @@ export function createAdmission(ctx: HostContext, conn: ConnectionContext): Admi
    * whatever asked rather than returned, so a caller that does not await is
    * refused exactly as one that does.
    */
-  const denied = (who: Principal, needed: readonly Grant[], excused: ReadonlySet<Grant>): void => {
+  const denied = (who: Principal, needed: readonly Grant[], excused: ReadonlySet<Grant>, method: string): void => {
     const missing = needed.find((one) => excused.has(one) !== true && !who.can(one));
     if (missing === undefined) return;
+    // The host's own line, so a refusal is not seen only by the caller (@cto ab54193c).
+    refusalsOf(ctx.log).refused({ principal: who.id, method, needs: missing, conn: connection.clientId || '-' });
     // No `request` key: a role is not something a client can negotiate,
     // and the protocol says that field is omitted when no grant would
     // resolve the denial. Its absence is what tells a client to stop
@@ -387,8 +390,8 @@ export function createAdmission(ctx: HostContext, conn: ConnectionContext): Admi
     const excused = ownRecord(method, params, who)
       ? new Set<Grant>(['user:get'])
       : excusedBy(method, params, who);
-    if (excused instanceof Promise) return excused.then((held) => { denied(who, needed, new Set([...held, ...own])); });
-    denied(who, needed, new Set([...excused, ...own]));
+    if (excused instanceof Promise) return excused.then((held) => { denied(who, needed, new Set([...held, ...own]), method); });
+    denied(who, needed, new Set([...excused, ...own]), method);
   };
 
   return { admit };

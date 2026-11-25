@@ -1181,6 +1181,7 @@ host.on('listening', async () => {
 The connection is served as the principal `plugin:<name>`, and it may do what its configuration entry's `grants` say and nothing else.
 This holds on a host with no user directory too: such a host trusts its other connections with everything, but a plugin's own connection is still held to its entry's `grants` (#38446).
 Grants bound what a plugin's connection can do on behalf of the callers it relays; they are not a sandbox for the plugin's own code, which runs in the daemon's process with the daemon's reach.
+A refused grant is also said in the host's log, as a warn line `grant refused: principal=<id> method=<method or action> needs=<grant> conn=<client id>`; per principal and method the first is written at once and the rest of that minute as one line ending `(N more suppressed)`.
 A session of an agent your plugin registered is your plugin's own, so its `session:` and `chat:` grants are not asked there: the bot plugin reads and writes its talks with no grant. A session of any other agent needs the grant, and so does a machine, a file or a terminal.
 What the host says reaches the plugin through `onMessage`, and what the plugin asks for settles a promise, so the connection is used exactly as a client's socket is.
 

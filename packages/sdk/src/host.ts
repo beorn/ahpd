@@ -114,6 +114,7 @@ import { gitSettled, onSlowGit } from './repo/hardened.js';
 import type { ConnectionContext, DetachedWorktree, HostContext } from './host/context.js';
 import { HOST_CATALOGS } from './i18n.js';
 import type { Catalogs } from './i18n.js';
+import { refusalsOf } from './host/refusals.js';
 export { GATE, refusalReason } from './host/gate.js';
 
 /**
@@ -2244,6 +2245,8 @@ export function createHost(options: HostOptions): Host {
         ctx.disposeSessionLifecycle();
         ctx.closed = true;
         ctx.stopLapses();
+        // Refusals still being counted are written now, and their minute ends with the host.
+        refusalsOf(ctx.log).close();
         unwatchProbes(true);
         /*
          * And no wait outlives the host it was begun in. What a client that

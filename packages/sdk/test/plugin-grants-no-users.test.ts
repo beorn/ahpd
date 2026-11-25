@@ -93,7 +93,8 @@ it('with no user directory the root connection is still trusted with everything,
  * same no-directory shortcut: a plugin peer could type into a terminal.
  */
 it('with no user directory a plugin peer without terminal:write cannot type into a terminal; root still can', async () => {
-  const made = gateHost({ terminals: shellTerminals() });
+  const logged: string[] = [];
+  const made = gateHost({ terminals: shellTerminals(), onEvent: (line: string) => { logged.push(line); } });
   const owner = watching();
   const rootClient = made.accept(owner, undefined, true);
   await hello(rootClient, 'root');
@@ -115,6 +116,8 @@ it('with no user directory a plugin peer without terminal:write cannot type into
   expect(after).not.toContain('PLUGIN-RAN-THIS');
   const rejected = quiet.seen.filter((one) => one.method === 'action' && typeof one.params.rejectionReason === 'string');
   expect(String(rejected[0]?.params.rejectionReason)).toMatch(/plugin:pipe may not terminal:/);
+  // The host says it too (@cto ab54193c), not only the refused peer.
+  expect(logged.filter((line) => line.startsWith('grant refused: '))).toEqual([expect.stringMatching(/^grant refused: principal=plugin:pipe method=terminal\/input needs=terminal:\S+ conn=pipe$/)]);
 });
 
 /*
