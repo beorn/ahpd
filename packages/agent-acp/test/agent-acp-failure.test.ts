@@ -137,6 +137,8 @@ it.each(['new', 'load', 'resume', 'fork'].flatMap((method) => ['refresh', 'dispo
     values: {}, replay: [], turns: method === 'fork' ? [{ id: 'cut' }] : [], title: 'Fixture', startedWith: '', keeping: Promise.resolve(),
     syncConfig: () => {}, learnModes: learned, learnConfigOptions: () => {}, learnModels: () => {},
     sendAsked: async () => {},
+    // What an open publishes its configured MCP servers through (#38500 fix 4).
+    servers: [], published: () => [], emit: () => {},
     start: { uri: 'ahp-session:/late-native', chatUri: 'ahp-chat:/selected', settings: {}, onHandshake: handshake,
       ...(method === 'new' ? {} : { resume: 'kept-native' }), ...(method === 'fork' ? { forkAt: 'cut' } : {}),
     },

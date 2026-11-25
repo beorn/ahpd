@@ -121,6 +121,14 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   /** The commands the server last advertised, as the built-in skills container a client draws. */
   commands: Bag[];
   /**
+   * The MCP servers the host configured for this session, as the customizations
+   * a client reads, so a targeted token can name one. Their state is what this
+   * bridge knows: ACP reports nothing about a server once a session opened.
+   */
+  servers: Bag[];
+  /** Everything this session publishes as its customizations: seeds, servers, then commands. */
+  published: () => Bag[];
+  /**
    * The modes the server named, once it has.
    *
    * ACP only names them on `session/new` and `session/load`, so a session that

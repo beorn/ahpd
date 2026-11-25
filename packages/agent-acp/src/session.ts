@@ -182,6 +182,8 @@ export function acpSession(
     turns: [...(start.seed ?? [])],
     seeds: [...(start.seedCustomizations ?? [])],
     commands: [],
+    servers: [],
+    published: (): Bag[] => [...ctx.seeds, ...ctx.servers, ...ctx.commands],
     modes: undefined,
     active: undefined,
     pendingTurns: [],
@@ -248,7 +250,7 @@ export function acpSession(
     resumable: () => ctx.loads || ctx.resumes,
     // A terminal the server opened whose process still runs is work the host cannot see.
     busy: () => [...terminals.values()].some((one) => one.exited !== true),
-    customizations: () => [...seeds, ...ctx.commands],
+    customizations: () => ctx.published(),
     allTurns: () => turns,
     /*
      * What a fork copies through, which is the turn's own end.
@@ -329,7 +331,7 @@ export function acpSession(
         defaultChat: start.chatUri,
         chats: [{ resource: start.chatUri, title: ctx.title }],
         workingDirectories: [uriOf(cwd)],
-        customizations: [...seeds, ...ctx.commands],
+        customizations: ctx.published(),
         ...(needed.length > 0 ? { inputNeeded: needed } : {}),
         // The schema *and* what is in force: a client reads
         // `config.schema.properties` for the controls and `config.values` for
