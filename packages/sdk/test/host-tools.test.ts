@@ -2215,6 +2215,10 @@ describe('tools a client contributes', () => {
     const { client, uri, chatUri } = await providing();
     await calling(client, chatUri);
 
+    // Once the CLI runs its handler, and not by the report.
+    expect((await watched(client, uri)).inputNeeded ?? []).toEqual([]);
+    const answering = offered().find((tool) => tool.name === 'probe__openFile')?.handler({ path: '/a.txt' });
+    await settle();
     const entry = (await watched(client, uri)).inputNeeded?.find((one) => one.kind === 'toolClientExecution');
     expect(entry).toMatchObject({
       kind: 'toolClientExecution',
@@ -2232,8 +2236,6 @@ describe('tools a client contributes', () => {
       },
     });
 
-    const answering = offered().find((tool) => tool.name === 'probe__openFile')?.handler({ path: '/a.txt' });
-    await settle();
     answers(client, chatUri, { success: true, content: [{ type: 'text', text: 'opened /a.txt' }] });
     expect((await answering)?.content[0]?.text).toBe('opened /a.txt');
 
@@ -2360,6 +2362,37 @@ describe('tools a client contributes', () => {
   });
 
   /*
+   * A result's MCP `_meta`, from AHP 1.1.0: kept as `resultMetadata` on the
+   * completed call, and still there once a client confirms the result, as
+   * VS Code's host keeps it for a restored MCP App card.
+   * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/node/agentSideEffects.ts#L1666-L1674
+   */
+  it('keeps a result\'s resultMetadata on the call, before and after its confirmation', async () => {
+    const { client, chatUri } = await providing();
+    await calling(client, chatUri);
+    void offered().find((tool) => tool.name === 'probe__openFile')?.handler({ path: '/a.txt' });
+    await settle();
+    const resultMetadata = { ui: { resourceUri: 'ui://probe/card' } };
+    client.handle({
+      method: 'dispatchAction',
+      params: {
+        channel: chatUri,
+        clientSeq: 15,
+        action: { type: 'chat/toolCallComplete', turnId: 't1', toolCallId: 'call-1', requiresResultConfirmation: true, result: { success: true, content: [{ type: 'text', text: 'opened /a.txt' }], resultMetadata } },
+      },
+    });
+    await settle();
+    const seen = async () => JSON.stringify((await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as { snapshot: unknown }).snapshot);
+    expect(await seen()).toContain('ui://probe/card');
+    client.handle({
+      method: 'dispatchAction',
+      params: { channel: chatUri, clientSeq: 16, action: { type: 'chat/toolCallResultConfirmed', turnId: 't1', toolCallId: 'call-1', approved: true } },
+    });
+    await settle();
+    expect(await seen()).toContain('ui://probe/card');
+  });
+
+  /*
    * A second result for one call is said as the first is, as VS Code's host
    * says every completion; the backend, handed the first, logs the second.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L13654-L13679
@@ -2396,22 +2429,6 @@ describe('tools a client contributes', () => {
     expect(answers(9)).toEqual([['chat/toolCallComplete', 'said']]);
     expect(answers(10)).toEqual([['chat/toolCallComplete', 'said']]);
     expect(answer?.content[0]?.text).toBe('opened /a.txt');
-  });
-
-  it('keeps an answer that arrives before the CLI runs the tool', async () => {
-    const { client, chatUri } = await providing();
-    await calling(client, chatUri);
-    /*
-     * The call is reported running before the harness runs the tool, so the
-     * owner's answer can land in the gap between the two. It used to be
-     * refused as a call nobody was waiting on, which lost the answer.
-     */
-    answers(client, chatUri, { success: true, content: [{ type: 'text', text: 'early' }] });
-    await settle();
-
-    const answer = await offered().find((tool) => tool.name === 'probe__openFile')?.handler({ path: '/a.txt' });
-    expect(answer?.isError).toBeUndefined();
-    expect(answer?.content[0]?.text).toBe('early');
   });
 
   it('fails a call nobody answers, in the time the host allows', async () => {
@@ -2640,39 +2657,32 @@ describe('tools a client contributes', () => {
     expect(await askedToRun(client, uri)).toEqual([]);
   });
 
-  it('takes a reported call\'s entry down while the person is asked about it', async () => {
+  it('asks no client to run a reported call while the person is asked about it', async () => {
     const { client, uri, chatUri } = await providing();
     await intoTurn(client, chatUri);
-    /*
-     * The frame first, so the call is reported running and the client is asked
-     * to run it - and the CLI then asks a person about it, which is a question
-     * the client should not have been asked to act on at all.
-     */
+    // The frame first, then the question the CLI puts about the call.
     await emit({
       type: 'assistant',
       uuid: 'reply-1',
       message: { id: 'm1', content: [used('call-1')] },
     });
-    expect(await askedToRun(client, uri)).toHaveLength(1);
-
-    sdk.toolUseIds.push('call-1');
-    const answering = tool()?.handler({ path: '/a.txt' });
-    await settle();
+    expect(await askedToRun(client, uri)).toEqual([]);
     const gate = sdk.canUseTool?.('mcp__client__probe__openFile', { path: '/a.txt' }, { toolUseID: 'call-1' });
     await settle();
-    // The question takes it back: while a person decides, no client is being
-    // asked to run the tool.
     expect(await askedToRun(client, uri)).toEqual([]);
 
     decided(client, chatUri, true);
     await settle();
-    // Allowed, so it is the client's to run once more - one entry, not two.
+    // Allowed, so it is the client's to run: one entry.
     expect(await gate).toMatchObject({ behavior: 'allow' });
     expect(await askedToRun(client, uri)).toHaveLength(1);
 
+    // Answered before the CLI runs the handler, which still gets the answer.
     answers(client, chatUri, { success: true, content: [{ type: 'text', text: 'opened /a.txt' }] });
-    expect((await answering)?.content[0]?.text).toBe('opened /a.txt');
     await settle();
+    expect(await askedToRun(client, uri)).toEqual([]);
+    sdk.toolUseIds.push('call-1');
+    expect((await tool()?.handler({ path: '/a.txt' }))?.content[0]?.text).toBe('opened /a.txt');
     expect(await askedToRun(client, uri)).toEqual([]);
   });
 

@@ -7,6 +7,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { contextOf, dockerfileOf, ensureJoined, ensurePart, JOINED_BASE, joinedDockerfile, lockOf, readParts, registryOf, tagOf } from '../src/parts.js';
 import { dockerRuntime } from '../src/runtime.js';
 import type { Part } from '../src/parts.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A part image, pulled the first time something asks for it from where the

@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 Disposable machines for the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon. A client or an agent makes a `computer`, runs commands and sessions inside it, and destroys it.
 
@@ -57,7 +59,7 @@ Every option below is a key under `options` in the plugin's entry, and the daemo
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `runtime` | `docker` | Which runtime to use. `docker` is the only one |
+| `runtime` | `docker` | How machines are provided: `docker` makes them, and `ssh` only lists the boxes in `ssh` |
 | `command` | `docker` | The program to run |
 | `args` | none | Arguments before its own, for a wrapper or a context |
 | `env` | none | Environment variables merged over the daemon's for that program |
@@ -150,7 +152,7 @@ A machine made for an agent carries what the agent's `machine()` declares. Each 
 
 ## The sandbox
 
-The plugin declares VS Code's root `sandbox` property, so a VS Code window forwards its sandbox settings to the host. A chat whose sandbox is on has the commands its agent runs, and its MCP servers while `sandboxMcpServers` is on, started inside [`@vscode/sandbox-runtime`](https://www.npmjs.com/package/@vscode/sandbox-runtime) through `Start.computers.sandboxed`, wherever its session runs. On this host the runtime is this package's own dependency; inside a machine it is the `srt` on the machine's `PATH`. Each kind of machine says whether it can host the runtime, and a machine made for a session whose sandbox is on is made to host it. See [The sandbox](https://github.com/ahpio/ahpd/blob/main/docs/plugins/COMPUTERS.md#the-sandbox).
+The plugin declares VS Code's root `sandbox` property, so a VS Code window forwards its sandbox settings to the host. A chat whose sandbox is on has the commands its agent runs, and its MCP servers while `sandboxMcpServers` is on, started inside [`@ahpio/sandbox-runtime`](https://www.npmjs.com/package/@ahpio/sandbox-runtime), ahpio's fork of the runtime VS Code runs, through `Start.computers.sandboxed`, wherever its session runs. On this host the runtime is this package's own dependency; inside a machine it is the `srt` on the machine's `PATH`. Each kind of machine says whether it can host the runtime, and a machine made for a session whose sandbox is on is made to host it. See [The sandbox](https://github.com/ahpio/ahpd/blob/main/docs/plugins/COMPUTERS.md#the-sandbox).
 
 ## The tools
 

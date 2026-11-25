@@ -1,6 +1,6 @@
 ---
 title: An agent places a session a client creates
-status: implemented
+status: done
 depends: []
 layer: "sdk host"
 refs:

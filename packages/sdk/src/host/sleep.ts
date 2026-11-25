@@ -2,7 +2,7 @@ import { AhpErrorCodes } from '@microsoft/agent-host-protocol';
 import { idOf, Status } from '../sessions/catalog.js';
 import { localPath } from '../resources/fileuri.js';
 import { RpcError } from '../rpc.js';
-import { ANNOTATIONS_PATH_SEGMENT, chatIdFor, chatOfCanvas, chatUriFor, ownerUriOf, spaceOf } from './channels.js';
+import { sessionOfAnnotations, chatIdFor, chatOfCanvas, chatUriFor, ownerUriOf, spaceOf } from './channels.js';
 import { CLOSING, ENDINGS, turnedOff } from './common.js';
 import type { Bag } from '../types/common.js';
 import type { Agent } from '../types/agent.js';
@@ -129,7 +129,7 @@ export function createSleep(ctx: HostContext): Sleep {
    * https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/common/agentHostSubscriptionService.ts#L42-L62
    */
   const residentOf = (channel: string): string | undefined => {
-    if (channel.endsWith(ANNOTATIONS_PATH_SEGMENT)) return undefined;
+    if (sessionOfAnnotations(channel) !== undefined) return undefined;
     const owner = chatOfCanvas(channel) ?? ownerUriOf(channel);
     return sessionHolding(owner) ?? (spaceOf(owner) === 'chat' ? sessionFor(owner) : owner);
   };
@@ -232,6 +232,9 @@ export function createSleep(ctx: HostContext): Sleep {
      * new one. Disposing here would put the transcript out of its reach.
      */
     const row = getOverlaySessionSummaries().find((one) => one.resource === uri);
+    // The tokens its chats' processes held go with them, and a prompt still
+    // waiting ends, while the chats are here to be recognised.
+    ctx.shellAuth.forgetSession(uri);
     const stoppingChats: Promise<void>[] = [];
     for (const [chatUri, chat] of held.chats) {
       stoppingChats.push(Promise.resolve(chat.close('stopping')).catch(() => {}));

@@ -231,6 +231,23 @@ it('tells the backend who decided: the host\'s rules, or the client in its own w
 });
 
 /*
+ * `host_policy` is the host's own answer, so a client that names it as the
+ * source of a person's answer has the backend told no source at all.
+ */
+it('tells the backend no source where a client names the host\'s policy as its own', async () => {
+  const said: (string | undefined)[] = [];
+  const { host, dispatch, turn } = await serving(asking([], 'bash', undefined, {}, [], said));
+  await turn('t1');
+  await dispatch(CHAT, {
+    type: 'chat/toolCallConfirmed', turnId: 't1', toolCallId: 'call-t1', approved: true, confirmed: 'user-action', selectedOptionId: 'allow-once',
+    _meta: { 'agentHost.permissionDecisionSource': 'host_policy' },
+  });
+  await until(() => said.length > 0, 'the answer');
+  expect(said).toEqual([undefined]);
+  await host.close();
+});
+
+/*
  * The rule is the daemon's setting alone: VS Code's host takes the setting's
  * policy value and declares no root config key for it, so a client's push of
  * one is kept as any key nobody declares is and asks about nothing.
@@ -423,9 +440,10 @@ const people = (): Users => ({
  */
 const whoseTurn = async (over: Partial<HostOptions> = {}, { command = 'ls', owner = 'ana' }: { command?: string; owner?: string } = {}) => {
   const answers: Answer[] = [];
+  const starts: Start[] = [];
   const host = createHost({
     path: dir, resources: fileResources(), users: people(),
-    agents: [asking(answers, 'bash', undefined, { permissionKind: 'shell', shellCommand: command, shellLanguage: 'bash' })],
+    agents: [asking(answers, 'bash', undefined, { permissionKind: 'shell', shellCommand: command, shellLanguage: 'bash' }, starts)],
     ...over,
   });
   const signedIn = async (token: string) => {
@@ -464,7 +482,7 @@ const whoseTurn = async (over: Partial<HostOptions> = {}, { command = 'ls', owne
     });
     await settle();
   };
-  return { host, ana, bo, cy, ask, answer, answers, chat };
+  return { host, ana, bo, cy, ask, answer, answers, chat, starts };
 };
 
 it('asks about a command the terminal rules approve in a turn somebody other than the session\'s owner sent', async () => {
@@ -555,6 +573,54 @@ it('answers a command by the rules the session\'s owner pushed, and by no other 
   await pushing(member.cy, { terminalAutoApproveRules: { 'make build': true } });
   expect((await member.ask(member.cy, 't1'))?.confirmed).toBe('not-needed');
   await member.host.close();
+});
+
+/*
+ * The auto-approval restriction a window pushes from its policy is its
+ * person's own on a host with users, as the three keys before it are: it holds
+ * in the sessions they own, no other person's push lifts it, and a session
+ * whose owner keeps none reads the host's.
+ */
+it('holds a person\'s own auto-approval restriction in their sessions, whatever another person pushes', async () => {
+  const kept = join(dir, 'permissions');
+  /** A push of root config keys from one window. */
+  const pushing = async (who: { client: { handle: (request: { method: string; params: Bag }) => Promise<unknown> } }, config: Bag, replace = false): Promise<void> => {
+    await who.client.handle({ method: 'dispatchAction', params: { channel: ROOT, action: { type: 'root/configChanged', config, ...(replace ? { replace: true } : {}) } } });
+    await settle();
+  };
+  /** The session's `autoApprove` turned on by its owner's Allow All on turn `t0`, once that turn ends. */
+  const approving = async (one: Awaited<ReturnType<typeof whoseTurn>>, who: Awaited<ReturnType<typeof whoseTurn>>['ana']): Promise<void> => {
+    await one.ask(who, 't0');
+    await one.answer(who, 't0', 'allow-all-session');
+    await until(() => who.p.heard.some((heard) => heard.action.type === 'chat/turnComplete' && heard.action.turnId === 't0'), 'the first turn');
+  };
+  const ana = await whoseTurn({ personPermissionsDir: kept }, { command: 'make build' });
+  await approving(ana, ana.ana);
+  expect((await ana.ask(ana.ana, 't1'))?.confirmed).toBe('not-needed');
+  await until(() => ana.ana.p.heard.some((heard) => heard.action.type === 'chat/turnComplete' && heard.action.turnId === 't1'), 'the second turn');
+  await pushing(ana.ana, { autoApprovePolicyRestricted: true });
+  expect((await ana.ask(ana.ana, 't2'))?.confirmed).toBeUndefined();
+  await pushing(ana.bo, { autoApprovePolicyRestricted: false });
+  await ana.answer(ana.ana, 't2', 'skip');
+  await until(() => ana.ana.p.heard.some((heard) => heard.action.type === 'chat/turnComplete' && heard.action.turnId === 't2'), 'the third turn');
+  expect((await ana.ask(ana.ana, 't3'))?.confirmed).toBeUndefined();
+  expect(filePersonRules(kept).settings('bo')).toEqual({ autoApprovePolicyRestricted: false });
+  await ana.host.close();
+
+  const bo = await whoseTurn({ personPermissionsDir: kept }, { command: 'make build', owner: 'bo' });
+  await approving(bo, bo.bo);
+  expect((await bo.ask(bo.bo, 't1'))?.confirmed).toBe('not-needed');
+  expect(bo.starts.at(-1)?.autoApprovePolicyRestricted).toBeUndefined();
+  await bo.host.close();
+
+  const again = await whoseTurn({ personPermissionsDir: kept }, { command: 'make build' });
+  expect(again.starts.at(-1)?.autoApprovePolicyRestricted).toBe(true);
+  await again.host.close();
+
+  const host = await whoseTurn({ personPermissionsDir: kept }, { command: 'make build', owner: 'cy' });
+  await pushing(host.ana, { autoApprovePolicyRestricted: true }, true);
+  expect(((await host.ask(host.cy, 't1'))?.options as Bag[]).map((one) => one.id)).not.toContain('allow-all-session');
+  await host.host.close();
 });
 
 it('asks every command in a session whose owner turned the table off, though the host\'s is on', async () => {

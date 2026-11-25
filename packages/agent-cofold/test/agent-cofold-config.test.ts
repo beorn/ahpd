@@ -13,13 +13,13 @@ import { cofoldAgent, harnessConfig, harnessConfigPath, modelOf, resourceOf } fr
  * of reading it is that a key does not have to be lent or repeated: a daemon
  * whose bridge names no model still runs on the provider the harness was
  * pointed at. Every case here owns its own `XDG_CONFIG_HOME` and starts with
- * no `COPAPO_CONFIG`, so nothing reads the real one.
+ * no `COFOLD_CONFIG`, so nothing reads the real one.
  */
 
 let home: string;
-/** The variables the harness reads on top of its files, copapo's own and the family's. */
+/** The variables the harness reads on top of its files, and copapo's old ones a case sets to show they are not read. */
 const VARIABLES = [
-  'COPAPO_CONFIG', 'COPAPO_BASE_URL', 'COPAPO_API_KEY', 'COPAPO_MODEL', 'COFOLD_BASE_URL', 'COFOLD_API_KEY', 'COFOLD_MODEL',
+  'COFOLD_CONFIG', 'COFOLD_BASE_URL', 'COFOLD_API_KEY', 'COFOLD_MODEL', 'COPAPO_CONFIG', 'COPAPO_BASE_URL', 'COPAPO_API_KEY', 'COPAPO_MODEL',
 ];
 let had: string | undefined;
 
@@ -46,20 +46,20 @@ const CONFIG = {
 };
 
 const put = (value: unknown): void => {
-  mkdirSync(join(home, 'copapo'), { recursive: true });
-  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify(value));
+  mkdirSync(join(home, 'cofold'), { recursive: true });
+  writeFileSync(join(home, 'cofold', 'config.json'), JSON.stringify(value));
 };
 
 it('reads the file the harness reads, and only the parts a backend needs', () => {
   put(CONFIG);
   const found = harnessConfig();
-  expect(found.path).toBe(join(home, 'copapo', 'config.json'));
+  expect(found.path).toBe(join(home, 'cofold', 'config.json'));
   expect(found.providers).toEqual([{ id: 'open_router', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k' }]);
   expect(found.model).toBe('open_router/~deepseek/deepseek-flash-latest');
   expect(found.instructions).toBe('Be careful.');
 });
 
-it('takes the file COPAPO_CONFIG names before the folder the harness itself would use', () => {
+it('takes the file COFOLD_CONFIG names before the folder the harness itself would use', () => {
   // What a machine sets: the configuration is mounted at a fixed target and
   // the variable points at that file, so it is read wherever the image's user
   // would otherwise look.
@@ -67,26 +67,26 @@ it('takes the file COPAPO_CONFIG names before the folder the harness itself woul
   mkdirSync(join(home, 'elsewhere'), { recursive: true });
   writeFileSync(elsewhere, JSON.stringify({ model: 'open_router/named' }));
   put(CONFIG);
-  process.env.COPAPO_CONFIG = elsewhere;
+  process.env.COFOLD_CONFIG = elsewhere;
   expect(harnessConfigPath()).toBe(elsewhere);
   expect(harnessConfig().model).toBe('open_router/named');
 
-  delete process.env.COPAPO_CONFIG;
-  expect(harnessConfigPath()).toBe(join(home, 'copapo', 'config.json'));
+  delete process.env.COFOLD_CONFIG;
+  expect(harnessConfigPath()).toBe(join(home, 'cofold', 'config.json'));
 });
 
 /*
- * copapo's layers, read with cofold's own resolver under copapo's name: the
- * person's file, then the nearest `.copapo.json` at or above the folder, each
+ * copapo's layers, read with cofold's own resolver under cofold's name: the
+ * person's file, then the nearest `.cofold.json` at or above the folder, each
  * merging over the one before.
- * https://github.com/softov/cofold/blob/ee4819644696b88e83e63c56ed7bdf426d32cfb9/packages/papo/src/config.ts#L83-L124
+ * https://github.com/softov/cofold/blob/97e05d0/packages/copapo/src/config.ts#L87-L128
  */
-it('reads a project\'s .copapo.json over the person\'s file, as copapo does in that folder', () => {
+it('reads a project\'s .cofold.json over the person\'s file, as copapo does in that folder', () => {
   put(CONFIG);
   const project = join(home, 'project');
   const nested = join(project, 'src', 'deep');
   mkdirSync(nested, { recursive: true });
-  writeFileSync(join(project, '.copapo.json'), JSON.stringify({ model: 'open_router/project-model', instructions: 'Project rules.' }));
+  writeFileSync(join(project, '.cofold.json'), JSON.stringify({ model: 'open_router/project-model', instructions: 'Project rules.' }));
   const found = harnessConfig(process.env, home, nested);
   expect(found.model).toBe('open_router/project-model');
   expect(found.instructions).toBe('Project rules.');
@@ -96,17 +96,21 @@ it('reads a project\'s .copapo.json over the person\'s file, as copapo does in t
   expect(harnessConfig(process.env, home, home).model).toBe('open_router/~deepseek/deepseek-flash-latest');
 });
 
-it('reads copapo\'s own variables over the family\'s', () => {
-  process.env.COFOLD_BASE_URL = 'https://family.example/v1';
+it('reads none of copapo\'s old names: its file, its project file and its variables', () => {
+  // copapo 0.3.0 reads the cofold names alone, and this reads what copapo reads.
+  mkdirSync(join(home, 'copapo'), { recursive: true });
+  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify(CONFIG));
+  const project = join(home, 'project');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, '.copapo.json'), JSON.stringify({ model: 'open_router/project-model' }));
+  process.env.COPAPO_CONFIG = join(home, 'copapo', 'config.json');
   process.env.COPAPO_BASE_URL = 'https://copapo.example/v1';
-  process.env.COFOLD_API_KEY = 'family-key';
   process.env.COPAPO_API_KEY = 'copapo-key';
-  process.env.COFOLD_MODEL = 'family-model';
   process.env.COPAPO_MODEL = 'copapo-model';
-  expect(harnessConfig()).toMatchObject({
-    providers: [{ id: 'default', baseUrl: 'https://copapo.example/v1', apiKey: 'copapo-key' }],
-    model: 'default/copapo-model',
-  });
+  const found = harnessConfig(process.env, home, project);
+  expect(found.providers).toEqual([]);
+  expect(found.model).toBeUndefined();
+  expect(harnessConfigPath()).toBe(join(home, 'cofold', 'config.json'));
 });
 
 it('answers nothing rather than failing when the file is absent or partly wrong', () => {
@@ -186,11 +190,11 @@ it('advertises the endpoint the harness named, and runs on its model without a s
   expect(modelOf({}).modelId).toBe('~deepseek/deepseek-flash-latest');
 });
 
-it('runs a session in a project on that project\'s .copapo.json', async () => {
+it('runs a session in a project on that project\'s .cofold.json', async () => {
   put(CONFIG);
   const project = join(home, 'project');
   mkdirSync(project, { recursive: true });
-  writeFileSync(join(project, '.copapo.json'), JSON.stringify({
+  writeFileSync(join(project, '.cofold.json'), JSON.stringify({
     providers: [{ id: 'local', baseUrl: 'https://local.example/v1', apiKey: 'k-local' }],
     model: 'local/project-model',
   }));

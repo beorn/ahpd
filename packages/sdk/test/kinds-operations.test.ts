@@ -17,8 +17,13 @@ const URI = 'x-ahpd-fake://';
 
 type Bag = Record<string, any>;
 
-/** The subset of JSON Schema the fake operation uses: a type and the required fields. */
+/** The subset of JSON Schema the fake operations use: a type, a pattern and the required fields. */
 const check = (value: unknown, schema: Bag, label: string): void => {
+  if (schema['type'] === 'string') {
+    if (typeof value !== 'string') throw new Error(`${label} must be text`);
+    if (schema['pattern'] !== undefined && !new RegExp(schema['pattern']).test(value)) throw new Error(`${label} must be text matching ${schema['pattern']}`);
+    return;
+  }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`);
   const given = value as Bag;
   const properties = (schema['properties'] ?? {}) as Bag;
@@ -28,6 +33,7 @@ const check = (value: unknown, schema: Bag, label: string): void => {
   for (const [name, one] of Object.entries(properties) as [string, Bag][]) {
     if (given[name] === undefined) continue;
     if (one['type'] === 'integer' && !Number.isInteger(given[name])) throw new Error(`${label}.${name} must be a whole number`);
+    if (one['type'] === 'string') check(given[name], one, `${label}.${name}`);
   }
 };
 
@@ -61,6 +67,24 @@ function fake(fail?: string) {
     },
     { id: 'fake/restart', kind: 'fake', label: 'Restart', scopes: ['tunnel'], grant: 'tunnel:restart', status: 'idle' },
     { id: 'fake/drop', kind: 'fake', label: 'Drop', scopes: ['client'], grant: 'client:drop', status: 'idle' },
+    {
+      id: 'fake/update',
+      kind: 'fake',
+      label: 'Edit',
+      scopes: ['tunnel'],
+      grant: 'tunnel:put',
+      status: 'idle',
+      input: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', pattern: '.+' },
+          person: { type: 'string', pattern: '^user:.+$' },
+          note: { type: 'string' },
+          key: { type: 'string', pattern: '.+', secret: true },
+        },
+        required: ['name'],
+      },
+    },
   ];
   const channel: OperationChannel = {
     uri: URI,
@@ -132,6 +156,34 @@ it('refuses an input its schema refuses', async () => {
   await expect(call(one, 'fake/create', { input: { port: 'eighty' } }))
     .rejects.toThrow('fake/create\'s input.port must be a whole number');
   expect(one.ran).toEqual([]);
+});
+
+it('leaves out an emptied optional field its schema refuses as empty', async () => {
+  const one = fake();
+  const input = { name: 'web', person: '' };
+  expect(await call(one, 'fake/update', { target: { id: 't1' }, input })).toEqual({ done: 'fake/update' });
+  expect(one.ran).toEqual([{ id: 'fake/update', target: 't1', input: { name: 'web' } }]);
+  // The caller's own input is not changed.
+  expect(input).toEqual({ name: 'web', person: '' });
+});
+
+it('still refuses a required field sent empty', async () => {
+  const one = fake();
+  await expect(call(one, 'fake/update', { target: { id: 't1' }, input: { name: '' } }))
+    .rejects.toThrow('fake/update\'s input.name must be text matching .+');
+  expect(one.ran).toEqual([]);
+});
+
+it('keeps an emptied optional field its schema takes', async () => {
+  const one = fake();
+  expect(await call(one, 'fake/update', { target: { id: 't1' }, input: { name: 'web', note: '' } })).toEqual({ done: 'fake/update' });
+  expect(one.ran).toEqual([{ id: 'fake/update', target: 't1', input: { name: 'web', note: '' } }]);
+});
+
+it('keeps a blank secret, which means the stored one stays', async () => {
+  const one = fake();
+  await expect(call(one, 'fake/update', { target: { id: 't1' }, input: { name: 'web', key: '' } }))
+    .rejects.toThrow('fake/update\'s input.key must be text matching .+');
 });
 
 it('refuses a caller without the operation\'s grant, and admits one with it', async () => {

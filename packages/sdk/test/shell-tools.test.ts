@@ -110,9 +110,10 @@ describe('the agent terminal tool', () => {
   it('is not offered until the root config turns it on', async () => {
     const off = await hosted(false);
     expect(off.names.filter((name) => SHELL_TOOL_NAMES.includes(name))).toEqual([]);
-    // Claude keeps its own shell while the host offers none.
+    // Claude keeps its own shell while the host offers none, and a call in
+    // lower case reaches it.
     expect(off.options().disallowedTools).toBeUndefined();
-    expect(off.options().toolAliases).toBeUndefined();
+    expect(off.options().toolAliases).toEqual({ bash: 'Bash' });
   });
 
   // The reference never turns the tool on under Windows, and neither does this host.
@@ -122,13 +123,13 @@ describe('the agent terminal tool', () => {
       'bash', 'read_bash', 'write_bash', 'bash_shutdown', 'list_bash', 'powershell',
     ]);
     expect(on.options().disallowedTools).toEqual(['Bash']);
-    expect(on.options().toolAliases).toEqual({ Bash: 'mcp__host__bash' });
+    expect(on.options().toolAliases).toEqual({ Bash: 'mcp__host__bash', bash: 'mcp__host__bash' });
   });
 
   it('is not offered by a host with no shells, whatever the switch says', async () => {
     const bare = await hosted(true, null);
     expect(bare.names.filter((name) => SHELL_TOOL_NAMES.includes(name))).toEqual([]);
-    expect(bare.options().toolAliases).toBeUndefined();
+    expect(bare.options().toolAliases).toEqual({ bash: 'Bash' });
   });
 
   // A shell on pipes reads its commands from a pipe, which a POSIX shell does.

@@ -1238,6 +1238,20 @@ export interface PluginHost extends PluginContext {
    */
   sessionOwner(uri: string): Promise<Owner | undefined>;
   /**
+   * Whether this host can open the session at a URI, under that name: it runs
+   * now, or its catalogue restores it.
+   *
+   * `sessionKept` answers from the store alone, and a row outlives the session
+   * it names: a process that ran no turn leaves nothing on a backend's disk, so
+   * after a restart a subscribe to that URI answers `No agent for session`. A
+   * plugin that hands a session back to a person - a bot answering the talk a
+   * person already has - asks this, so it never offers one that cannot open.
+   *
+   * Read the way `sessionKept` is. With no host built over the plugin, the
+   * store's answer is the whole of what is known.
+   */
+  sessionOpens(uri: string): Promise<boolean>;
+  /**
    * One collection of this plugin's records, in the host's `records` port.
    *
    * The name is a slug, and a name that another plugin opened is refused, so

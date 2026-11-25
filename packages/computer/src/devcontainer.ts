@@ -2,10 +2,28 @@ import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ContainerConnect, ContainerConnectResult, ContainerPort, ContainerSink, PluginSpec } from '@ahpd/sdk';
+import type { ContainerConnect, ContainerConnectResult, ContainerEnvironmentConnect, ContainerPort, ContainerSink, ContainerUserState, Owner, PluginSpec } from '@ahpd/sdk';
 import { byName } from './byname.js';
+import { isSandboxSupported, prepareSandboxOverride, type SandboxOverride } from './containersandbox.js';
+import { authorizeEnvironmentRemoval, prepareEnvironment, removeEnvironment, type PreparedEnvironment } from './environments.js';
+import {
+  buildLinkCommand,
+  ensureStateVolume,
+  findStateMount,
+  isContainerRunning,
+  linkCounts,
+  parseLinkOutput,
+  stageSucceeded,
+  stateMount,
+  stateMountTarget,
+  stateTargetKind,
+  STATE_USER_SCRIPT,
+  type ContainerMount,
+  type StateLinkProgress,
+} from './userstate.js';
 import { sameHostPath } from './hostpath.js';
 import { userLabelOf } from './gitdir.js';
 import { IMAGE_PATH, MACHINE_PARTS, partsSaid, pathWith } from './parts.js';
@@ -635,6 +653,14 @@ export interface DevContainerOptions {
    * published latest.
    */
   version?: string;
+  /**
+   * Where environments' configurations are kept, one folder per environment.
+   *
+   * Each folder is made owner-only. Default a folder under the temporary
+   * directory named for this user, because an environment's configuration is
+   * made again on every connect and is not the daemon's record of anything.
+   */
+  environmentCache?: string;
   /** Lines worth keeping. Nothing is logged without one. */
   log?: (line: string, level?: LogLevel) => void;
 }
@@ -715,6 +741,8 @@ export interface DevContainerConfiguration {
   configPath: string;
   service?: string;
   dockerComposeFile?: string | string[];
+  /** The definition's own fields, as the CLI read them. */
+  configuration: Record<string, unknown>;
 }
 
 /**
@@ -768,6 +796,7 @@ export const readConfiguration = async (
     configPath: fileURLToPath(url),
     ...(service === undefined ? {} : { service }),
     ...(compose === undefined ? {} : { dockerComposeFile: compose as string | string[] }),
+    configuration,
   };
 };
 
@@ -823,7 +852,10 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
   const label = options.label ?? 'ahpd.computer=1';
   const existing = options.existing;
   const adopted = options.adopted;
+  const environmentCache = options.environmentCache;
   const live = new Map<string, ChildProcessWithoutNullStreams>();
+  /** The sandbox overrides a connect wrote, by connection, removed when it ends. */
+  const sandboxOverrides = new Map<string, SandboxOverride>();
   /*
    * The remote workspace each folder's container was made with, for this
    * daemon's life.
@@ -836,6 +868,23 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
    * a second one.
    */
   const remotes = new Map<string, string>();
+  /*
+   * Where an environment's configuration is written, one folder per
+   * environment.
+   *
+   * The CLI is given a `devcontainer.json` per connect and it is written beside
+   * the daemon rather than in the client's workspace, because an environment has
+   * no workspace on this host. The parent is owner-only, as the reference host
+   * makes it, and each environment's folder is made the same way when it is
+   * prepared.
+   */
+  const environmentRoot = environmentCache
+    ?? join(tmpdir(), `ahpd-devcontainer-environments-${String(process.getuid?.() ?? 'user')}`);
+  const environmentDirectory = (environmentId: string): string => join(environmentRoot, environmentId);
+  /** The environments this daemon removed, whose ids are not used again. */
+  const removedEnvironments = new Set<string>();
+  /** The environment each live relay is into, for a removal that closes them all. */
+  const liveEnvironments = new Map<string, string>();
 
   /** The CLI's own environment: this process's, plus whatever the caller named. */
   const where = (): Record<string, string> => ({ ...process.env, ...env }) as Record<string, string>;
@@ -872,12 +921,12 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
   };
 
   /** One command, collected and streamed. */
-  const run = (argv: string[], sink: ContainerSink): Promise<{ code: number; stdout: string; stderr: string }> =>
+  const run = (argv: string[], sink: ContainerSink, environment: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> =>
     new Promise((resolve, reject) => {
       // Echoed first, as the reference does: a person watching a container
       // build should see the command whose output follows.
       sink.output(`$ ${[command, ...argv].map(quote).join(' ')}\n`);
-      const child = spawn(command, argv, { stdio: ['ignore', 'pipe', 'pipe'], env: where(), windowsHide: true });
+      const child = spawn(command, argv, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...where(), ...environment }, windowsHide: true });
       let stdout = '';
       let stderr = '';
       // The CLI echoes the `docker run` it builds at info level, which carries
@@ -950,6 +999,358 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
     });
   };
 
+  /** A caught error's sentence. */
+  const messageOf = (error: unknown): string => error instanceof Error ? error.message : String(error);
+
+  /**
+   * The state volume arguments for a folder's connect.
+   *
+   * A container this connect makes gets a mount for a state volume, made with
+   * the same labels as the container. A container that is already there keeps
+   * its own mounts, because adding one to a Compose container could make it
+   * again. `existing` is whether the caller already found a container, in which
+   * case no listing is needed and that container keeps or loses its folders as
+   * the caller says.
+   */
+  const folderUserState = async (
+    one: ContainerConnect,
+    sink: ContainerSink,
+    existing: boolean | undefined,
+  ): Promise<{ args: string[]; keepExistingFolders: boolean }> => {
+    const labels = [label, `${DEVCONTAINER_FOLDER}=${one.workspaceFolder}`];
+    let target: 'workspaces' | 'volume' | undefined;
+    let reason = 'config';
+    try {
+      const configuration = await readConfiguration((argv) => run([...base, ...argv], sink), one.workspaceFolder);
+      const mountTarget = stateMountTarget(configuration.configuration);
+      target = stateTargetKind(mountTarget);
+      if (existing !== undefined) {
+        sink.userState?.({ stage: 'mount', outcome: 'existingContainer', target });
+        return { args: [], keepExistingFolders: existing };
+      }
+      reason = 'listContainers';
+      const listed = await runCli(docker, [
+        'ps', '-a', '--format', '{{.State}}',
+        ...labels.flatMap((pair) => ['--filter', `label=${pair}`]),
+      ]);
+      if (listed.code !== 0) {
+        throw new Error(`Cannot list Docker containers (exit ${String(listed.code)}): ${listed.stderr.trim()}`);
+      }
+      const states = listed.stdout.split(/\r?\n/).filter((state) => state.trim() !== '');
+      const keepExistingFolders = states.some(isContainerRunning);
+      if (states.length > 0) {
+        sink.userState?.({ stage: 'mount', outcome: 'existingContainer', target });
+        return { args: [], keepExistingFolders };
+      }
+      reason = 'volume';
+      await ensureStateVolume((argv) => runCli(docker, argv), labels);
+      sink.userState?.({ stage: 'mount', outcome: 'added', target });
+      return { args: ['--mount', stateMount(labels, mountTarget)], keepExistingFolders };
+    }
+    catch (error) {
+      sink.userState?.({
+        stage: 'mount',
+        outcome: 'failed',
+        reason,
+        ...(target === undefined ? {} : { target }),
+        errorMessage: messageOf(error),
+      });
+      return { args: [], keepExistingFolders: true };
+    }
+  };
+
+  /**
+   * Link a container's state folders to its state volume, when it has one.
+   *
+   * A container made with the setting on is linked on every later connect, even
+   * with the setting off, because the volume is still there. The user's ids and
+   * home folder are read from the container and the link script runs as root.
+   */
+  const linkUserState = async (
+    sink: ContainerSink,
+    machine: string | undefined,
+    id: string,
+    persistUserState: boolean,
+    keepExistingFolders: boolean,
+  ): Promise<void> => {
+    let reason = 'inspect';
+    let target: 'workspaces' | 'volume' | undefined;
+    let exitCode: number | undefined;
+    let progress: StateLinkProgress | undefined;
+    try {
+      const inspected = await runCli(docker, ['inspect', '--format', '{{json .Mounts}}', id]);
+      if (inspected.code !== 0) {
+        throw new Error(`Cannot inspect the container's mounts (exit ${String(inspected.code)}): ${inspected.stderr.trim()}`);
+      }
+      const mounts: unknown = JSON.parse(inspected.stdout);
+      const mount = findStateMount(Array.isArray(mounts) ? mounts as ContainerMount[] : []);
+      if (mount === undefined) {
+        if (persistUserState) sink.userState?.({ stage: 'link', outcome: 'noMount' });
+        return;
+      }
+      target = stateTargetKind(mount.Destination);
+      reason = 'user';
+      const reached = await reachOfContainer(machine ?? id, id);
+      const uid = await runCli(docker, ['exec', '--user', reached.user, id, 'id', '-u']);
+      exitCode = uid.code;
+      if (uid.code !== 0) {
+        throw new Error(`Cannot read the Dev Container user (exit ${String(uid.code)}): ${uid.stderr.trim()}`);
+      }
+      const gid = await runCli(docker, ['exec', '--user', reached.user, id, 'id', '-g']);
+      exitCode = gid.code;
+      if (gid.code !== 0) {
+        throw new Error(`Cannot read the Dev Container user (exit ${String(gid.code)}): ${gid.stderr.trim()}`);
+      }
+      let home = reached.env.HOME ?? reached.containerEnv.HOME;
+      if (home === undefined || home === '') {
+        const asked = await runCli(docker, ['exec', '--user', reached.user, id, '/bin/sh', '-c', 'printf "%s\\n" "$HOME"']);
+        exitCode = asked.code;
+        home = asked.stdout.trim().split(/\r?\n/)[0];
+        if (asked.code !== 0 || home === undefined || home === '') {
+          throw new Error(`Cannot read the Dev Container user's home folder (exit ${String(asked.code)}): ${asked.stderr.trim()}`);
+        }
+      }
+      reason = 'script';
+      const linked = await runCli(docker, [
+        'exec', '--user', 'root', '-w', '/', id, '/bin/sh', '-c',
+        buildLinkCommand({
+          volumePath: mount.Destination,
+          homeFolder: home,
+          uid: uid.stdout.trim(),
+          gid: gid.stdout.trim(),
+          keepExistingFolders,
+        }),
+      ]);
+      exitCode = linked.code;
+      progress = parseLinkOutput(linked.stdout);
+      if (linked.code !== 0) {
+        throw new Error(`Cannot link user state (exit ${String(linked.code)}): ${linked.stderr.trim() || linked.stdout.trim()}`);
+      }
+      sink.userState?.({
+        stage: 'link',
+        outcome: progress.homeFound ? 'linked' : 'homeNotFound',
+        target,
+        ...linkCounts(progress),
+      });
+    }
+    catch (error) {
+      if (!persistUserState && reason === 'inspect') return;
+      sink.userState?.({
+        stage: 'link',
+        outcome: 'failed',
+        reason,
+        ...(progress?.step === undefined ? {} : { step: progress.step }),
+        ...(exitCode === undefined ? {} : { exitCode }),
+        ...(target === undefined ? {} : { target }),
+        ...linkCounts(progress),
+        errorMessage: messageOf(error),
+      });
+    }
+  };
+
+  /** The CLI's `run-user-commands` for a container, and its notice. */
+  const runUserCommands = async (sink: ContainerSink, id: string): Promise<void> => {
+    const ran = await run([...base, 'run-user-commands', '--log-level', 'debug', '--container-id', id], sink);
+    const succeeded = ran.code === 0 && stageSucceeded(ran.stdout);
+    sink.userState?.(succeeded
+      ? { stage: 'userCommands', outcome: 'succeeded' }
+      : { stage: 'userCommands', outcome: 'failed', reason: ran.code !== 0 ? 'exitCode' : 'result', exitCode: ran.code, errorMessage: ran.stdout.trim() || ran.stderr.trim() });
+    if (!succeeded) {
+      throw new Error(`Dev Container lifecycle commands failed: ${masked(ran.stdout.trim() || ran.stderr.trim())}`);
+    }
+  };
+
+  /** Whether a running container has the options the command sandbox needs, and its notice. */
+  const inspectSandbox = async (sink: ContainerSink, id: string): Promise<boolean> => {
+    const inspected = await runCli(docker, ['inspect', '--format', '{{json .}}', id]);
+    if (inspected.code !== 0) {
+      throw new Error(`Cannot inspect Dev Container sandbox options (exit ${String(inspected.code)}): ${inspected.stderr.trim()}`);
+    }
+    const supported = isSandboxSupported(inspected.stdout);
+    sink.sandboxSupport?.(supported);
+    return supported;
+  };
+
+  /** Take a connect's sandbox override away, when it wrote one. */
+  const discardSandbox = async (connectionId: string): Promise<void> => {
+    const override = sandboxOverrides.get(connectionId);
+    if (override === undefined) return;
+    sandboxOverrides.delete(connectionId);
+    await override.remove();
+  };
+
+  /**
+   * Start a host inside a container this launcher made or found, and relay it.
+   *
+   * Everything after the container exists is the same whether it came from a
+   * folder's `devcontainer.json` or an environment's image: the probe that says
+   * how to reach it, the host and backends installed when the image has none,
+   * the configuration written in there, and the `docker exec` whose pipes are
+   * the relay.
+   *
+   * `machine` is the id a listing and the probe know the computer by, which is
+   * not the container id; `hostWorkspaceFolder` is present only when this host
+   * has a folder to report.
+   */
+  const startHost = async (
+    connectionId: string,
+    sink: ContainerSink,
+    made: { containerId: string; remoteWorkspaceFolder: string },
+    machine?: string,
+    hostWorkspaceFolder?: string,
+  ): Promise<Omit<ContainerConnectResult, 'sandboxSupported'>> => {
+    const remote = made.remoteWorkspaceFolder;
+    /*
+     * How every command below reaches that container.
+     *
+     * Asked once per connect rather than once per command, because the probe
+     * runs the user's login shell and its answer is kept beside the daemon's
+     * configuration: the container this connect is about, not the command, and
+     * under the machine id rather than the container id so the create and
+     * `run_in_computer` read the same entry. A container the CLI made again is
+     * probed again, because the shell that answered last time is not the one
+     * in there now - decision `a-dev-container-is-reached-by-docker-exec`.
+     */
+    const reached = { ...await reachOfContainer(machine ?? made.containerId, made.containerId), id: made.containerId };
+    // The computer's vault-named variables, which no command in there has
+    // unless it is given them.
+    const given = options.named === undefined ? {} : await options.named(machine ?? made.containerId);
+
+    /*
+     * The host inside, put there if the image has not got one.
+     *
+     * Probed rather than assumed: an image built for this already has it,
+     * and installing over it would be a version nobody chose. The version
+     * installed is this build's own, so the two hosts are one build.
+     */
+    if (install !== false) {
+      /*
+       * The program that is actually going to run, not the default's name.
+       *
+       * This asked for `ahpd` however `host` was set, so a deployment that
+       * names a checkout mounted into the container - `node /work/main.js` -
+       * was told its image had no host and watched a package it will never
+       * run being installed. The question is about `host[0]`, because that
+       * is the program the line below starts.
+       */
+      const program = host[0] ?? 'ahpd';
+      const present = await inside(reached, `command -v ${quote(program)}`, sink, given);
+      if (present.code !== 0) {
+        /*
+         * The published server, pinned to the daemon's version where that is
+         * knowable.
+         *
+         * `version` is the daemon's `@ahpd/sdk` version, which the plugin
+         * reads from `PluginContext.version`; the `@ahpd/sdk` this package
+         * imports may be another copy, installed beside it. Where it is not
+         * given, or is `unknown`, `@ahpd/server@unknown` would be a registry
+         * error about a version rather than about the install, so the
+         * published latest is taken instead.
+         */
+        const version = options.version ?? 'unknown';
+        const line = install ?? `npm i -g @ahpd/server${version === 'unknown' ? '' : `@${version}`} --allow-scripts=node-pty`;
+        const installed = await inside(reached, line, sink, given);
+        if (installed.code !== 0) {
+          throw new Error(`The container has no ${program} and could not install one: ${installed.stderr.trim() || `exit ${String(installed.code)}`}. Give the image Node and npm, build it with @ahpd/server in it, or name the host it already has`);
+        }
+      }
+
+      /*
+       * And the backends, put there beside the server.
+       *
+       * The host inside is handed its plugins on the command line, but a
+       * bare name still resolves from the configuration directory *in there*
+       * - so the packages have to be installed into it or the nested host
+       * exits saying they are missing. This runs whether or not the image
+       * already had the server, because an image built with `@ahpd/server`
+       * may still have no backend, and `--no-enable` because the list is
+       * given on the command line rather than read from a file. A package
+       * already in the configuration directory is not asked for, so an image
+       * that has them all never reaches the registry.
+       */
+      const named = plugins.filter(isPackageName).map(sourceOf);
+      if (named.length > 0) {
+        const installed = await inside(reached, pluginInstallLine(host, named), sink, given);
+        if (installed.code !== 0) {
+          throw new Error(`The container has no ${named.join(', ')} and could not install it: ${installed.stderr.trim() || `exit ${String(installed.code)}`}. Build the image with it, or name a path inside the container`);
+        }
+      }
+    }
+
+    /*
+     * The configuration the nested host reads.
+     *
+     * Its own file, written owner-only, and a name nothing chose: the
+     * connection's name is the client's, and a client's string in a shell
+     * command is not a path. No credential goes in here - the relayed client
+     * signs in to the host inside, which is where a credential for the
+     * container's models belongs.
+     */
+    const config = {
+      paths: [remote],
+      sessions: 'memory',
+      automations: 'memory',
+      plugins,
+    };
+    const encoded = Buffer.from(JSON.stringify(config), 'utf8').toString('base64');
+    const at = `/tmp/ahpd-nested-${randomUUID()}.json`;
+    const written = await inside(reached, `printf %s ${encoded} | base64 -d > ${quote(at)} && chmod 600 ${quote(at)}`, sink, given);
+    if (written.code !== 0) {
+      throw new Error(`The container could not be given the host's configuration: ${written.stderr.trim() || `exit ${String(written.code)}`}`);
+    }
+
+    /*
+     * And the host itself, in stdio mode.
+     *
+     * Not a port and not a token: `docker exec` carries this process's pipes
+     * into the container, and the host inside answers on them - decision
+     * `a-nested-host-speaks-stdio`. It is reached as every other command in
+     * there is, and by container id rather than by the folder, which is what
+     * removes the CLI's own lookup by `devcontainer.local_folder` - decision
+     * `a-dev-container-is-reached-by-docker-exec`.
+     */
+    const line = [...host, '--stdio', '--path', remote, '--config-file', at].map(quote).join(' ');
+    const { argv, env: values } = execArgv(reached, ['/bin/sh', '-c', line], given);
+    // Echoed without values: this stream goes to the connecting client, and a
+    // need's value is not the client's to read.
+    sink.output(`$ ${[docker.command, ...shown(argv)].map(quote).join(' ')}\n`);
+    const child = spawn(
+      docker.command,
+      [...docker.args, ...argv],
+      { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...(docker.env ?? {}), ...env, ...values }, windowsHide: true },
+    );
+    live.set(connectionId, child);
+
+    child.stdout.on('data', lines((said) => {
+      if (said.trim() === '') return;
+      // A frame is JSON; anything else is the CLI talking, and a person
+      // watching the startup should see it rather than a parse error.
+      try {
+        const held: unknown = JSON.parse(said);
+        if (typeof held === 'object' && held !== null && !Array.isArray(held)) { sink.message(said); return; }
+      }
+      catch { /* not a frame */ }
+      sink.output(`${said}\n`);
+    }));
+    child.stderr.on('data', (chunk: Buffer) => { sink.output(String(chunk)); });
+    const ended = (why?: string): void => {
+      if (live.get(connectionId) !== child) return;
+      live.delete(connectionId);
+      liveEnvironments.delete(connectionId);
+      void discardSandbox(connectionId);
+      log(`${connectionId} ended${why === undefined ? '' : `: ${why}`}`);
+      sink.close(why);
+    };
+    child.once('error', (error) => { ended(error.message); });
+    child.once('close', (code) => { ended(code === 0 || code === null ? undefined : `exit ${String(code)}`); });
+
+    return {
+      address: `devcontainer:${made.containerId}`,
+      remoteWorkspaceFolder: remote,
+      ...(hostWorkspaceFolder === undefined ? {} : { hostWorkspaceFolder }),
+    };
+  };
+
   return {
     docker: async () => there(docker.command, [...docker.args, '--version']),
 
@@ -996,6 +1397,15 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
       const known = existing === undefined
         ? undefined
         : await existing(one.workspaceFolder).catch(() => undefined);
+      /*
+       * A container that exists and is not up waits for a connect that says it
+       * may be started. `up` starts a stopped container silently, so without
+       * this a client that believed the container was down would find it
+       * running under its feet.
+       */
+      if (known !== undefined && !known.running && one.resume !== true) {
+        throw new Error(`Dev Container for '${one.name}' is stopped.`);
+      }
       let made: { containerId: string; remoteWorkspaceFolder: string };
       /*
        * The id this computer is listed and recorded under, which is not the same
@@ -1025,7 +1435,26 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
       const older = adopted !== undefined && (known === undefined || remembered === undefined)
         ? await adopted(one.workspaceFolder).catch(() => undefined)
         : undefined;
-      if (older !== undefined && (known === undefined || known.id === older.id)) {
+      const adopts = older !== undefined && (known === undefined || known.id === older.id);
+      const reachesKnown = !adopts && known !== undefined && remembered !== undefined && known.running;
+      /*
+       * The state volume, before anything is brought up: a new container gets
+       * its mount on the `up` line, and one that is already there keeps what it
+       * has. With the setting off no volume is added, but a container that has
+       * one is still linked after it is up.
+       */
+      const persistUserState = one.persistUserState === true;
+      let keepExistingFolders = true;
+      let userStateMount: { args: string[]; keepExistingFolders: boolean } = { args: [], keepExistingFolders: true };
+      if (persistUserState) {
+        // A container that is already there keeps its mounts. A running one is
+        // given the existing-folder protection; an adopted one only when the
+        // listing said it was running before it was started here.
+        const existing = adopts ? known?.running === true : reachesKnown ? true : undefined;
+        userStateMount = await folderUserState(one, sink, existing);
+        keepExistingFolders = userStateMount.keepExistingFolders;
+      }
+      if (adopts) {
         // Started here, which is what `up` would have done to it and the only
         // thing between a stopped container and the first command in it. A
         // refusal is refused here rather than carried on into an exec: nothing
@@ -1041,7 +1470,7 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
         made = { containerId: older.id, remoteWorkspaceFolder: older.remoteWorkspaceFolder };
         remotes.set(one.workspaceFolder, older.remoteWorkspaceFolder);
       }
-      else if (known !== undefined && remembered !== undefined && known.running) {
+      else if (reachesKnown && known !== undefined && remembered !== undefined) {
         // Already up, and this daemon knows where in there the folder is: the
         // CLI is not asked to bring anything up a second time.
         made = { containerId: known.id, remoteWorkspaceFolder: remembered };
@@ -1055,17 +1484,50 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
          * made one, reaches the same computer - decision
          * `a-dev-container-is-reached-by-docker-exec`.
          */
+        /*
+         * The sandbox override, beside the definition and for this `up` only.
+         *
+         * A container made with these options keeps them; a later connect reads
+         * what the container really has rather than what it asked for. The
+         * override's folder is this connection's and goes when it ends.
+         */
+        let sandboxArgs: readonly string[] = [];
+        let sandboxEnvironment: Record<string, string> = {};
+        if (one.sandboxEnabled === true) {
+          const configuration = await readConfiguration((argv) => run([...base, ...argv], sink), one.workspaceFolder);
+          const override = await prepareSandboxOverride(configuration, one.workspaceFolder, where());
+          sandboxOverrides.set(one.connectionId, override);
+          sandboxArgs = override.args;
+          sandboxEnvironment = override.environment;
+        }
         const up = await run(
-          [...base, 'up', '--log-level', 'debug', '--workspace-folder', one.workspaceFolder, ...idLabels(label, one.workspaceFolder)],
+          [
+            ...base, 'up', '--log-level', 'debug', '--workspace-folder', one.workspaceFolder, ...idLabels(label, one.workspaceFolder),
+            ...sandboxArgs,
+            ...userStateMount.args,
+            ...(persistUserState ? ['--skip-post-create'] : []),
+          ],
           sink,
+          sandboxEnvironment,
         );
         const fresh = parseUp(up.stdout);
         // A result is taken with the CLI's exit 0 beside it, and anything else
         // is refused in VS Code's words with what the CLI said, its result
         // first (devContainerAgentHostService.ts L316-L319 at 6b68d3fe).
         if (up.code !== 0 || fresh === undefined) {
+          if (persistUserState) {
+            sink.userState?.({
+              stage: 'up',
+              outcome: 'failed',
+              reason: up.code !== 0 ? 'exitCode' : 'result',
+              exitCode: up.code,
+              errorMessage: masked(up.stdout.trim() || up.stderr.trim()),
+            });
+          }
+          await discardSandbox(one.connectionId);
           throw new Error(`Dev Container CLI returned an invalid result: ${masked(up.stdout.trim() || up.stderr.trim())}`);
         }
+        if (persistUserState) sink.userState?.({ stage: 'up', outcome: 'succeeded' });
         made = fresh;
         remotes.set(one.workspaceFolder, fresh.remoteWorkspaceFolder);
         // A container just made was not in the listing `known` was read from, so
@@ -1075,154 +1537,110 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
           machine = (await existing(one.workspaceFolder).catch(() => undefined))?.id;
         }
       }
-      const remote = made.remoteWorkspaceFolder;
-      /*
-       * How every command below reaches that container.
-       *
-       * Asked once per connect rather than once per command, because the probe
-       * runs the user's login shell and its answer is kept beside the daemon's
-       * configuration: the container this connect is about, not the command, and
-       * under the machine id rather than the container id so the create and
-       * `run_in_computer` read the same entry. A container the CLI made again is
-       * probed again, because the shell that answered last time is not the one
-       * in there now - decision `a-dev-container-is-reached-by-docker-exec`.
-       */
-      const reached = { ...await reachOfContainer(machine ?? made.containerId, made.containerId), id: made.containerId };
-      // The computer's vault-named variables, which no command in there has
-      // unless it is given them.
-      const given = options.named === undefined ? {} : await options.named(machine ?? made.containerId);
-
-      /*
-       * The host inside, put there if the image has not got one.
-       *
-       * Probed rather than assumed: an image built for this already has it,
-       * and installing over it would be a version nobody chose. The version
-       * installed is this build's own, so the two hosts are one build.
-       */
-      if (install !== false) {
-        /*
-         * The program that is actually going to run, not the default's name.
-         *
-         * This asked for `ahpd` however `host` was set, so a deployment that
-         * names a checkout mounted into the container - `node /work/main.js` -
-         * was told its image had no host and watched a package it will never
-         * run being installed. The question is about `host[0]`, because that
-         * is the program the line below starts.
-         */
-        const program = host[0] ?? 'ahpd';
-        const present = await inside(reached, `command -v ${quote(program)}`, sink, given);
-        if (present.code !== 0) {
-          /*
-           * The published server, pinned to the daemon's version where that is
-           * knowable.
-           *
-           * `version` is the daemon's `@ahpd/sdk` version, which the plugin
-           * reads from `PluginContext.version`; the `@ahpd/sdk` this package
-           * imports may be another copy, installed beside it. Where it is not
-           * given, or is `unknown`, `@ahpd/server@unknown` would be a registry
-           * error about a version rather than about the install, so the
-           * published latest is taken instead.
-           */
-          const version = options.version ?? 'unknown';
-          const line = install ?? `npm i -g @ahpd/server${version === 'unknown' ? '' : `@${version}`} --allow-scripts=node-pty`;
-          const installed = await inside(reached, line, sink, given);
-          if (installed.code !== 0) {
-            throw new Error(`The container has no ${program} and could not install one: ${installed.stderr.trim() || `exit ${String(installed.code)}`}. Give the image Node and npm, build it with @ahpd/server in it, or name the host it already has`);
-          }
+      try {
+        // A container that was found rather than brought up still reaches the up
+        // stage successfully, which is what a client waiting on the four notices
+        // reads from it.
+        if (persistUserState && (adopts || reachesKnown)) {
+          sink.userState?.({ stage: 'up', outcome: 'succeeded' });
         }
-
-        /*
-         * And the backends, put there beside the server.
-         *
-         * The host inside is handed its plugins on the command line, but a
-         * bare name still resolves from the configuration directory *in there*
-         * - so the packages have to be installed into it or the nested host
-         * exits saying they are missing. This runs whether or not the image
-         * already had the server, because an image built with `@ahpd/server`
-         * may still have no backend, and `--no-enable` because the list is
-         * given on the command line rather than read from a file. A package
-         * already in the configuration directory is not asked for, so an image
-         * that has them all never reaches the registry.
-         */
-        const named = plugins.filter(isPackageName).map(sourceOf);
-        if (named.length > 0) {
-          const installed = await inside(reached, pluginInstallLine(host, named), sink, given);
-          if (installed.code !== 0) {
-            throw new Error(`The container has no ${named.join(', ')} and could not install it: ${installed.stderr.trim() || `exit ${String(installed.code)}`}. Build the image with it, or name a path inside the container`);
-          }
-        }
+        await linkUserState(sink, machine, made.containerId, persistUserState, keepExistingFolders);
+        if (persistUserState) await runUserCommands(sink, made.containerId);
+        const supported = await inspectSandbox(sink, made.containerId);
+        return { ...await startHost(one.connectionId, sink, made, machine, one.workspaceFolder), sandboxSupported: supported };
       }
-
-      /*
-       * The configuration the nested host reads.
-       *
-       * Its own file, written owner-only, and a name nothing chose: the
-       * connection's name is the client's, and a client's string in a shell
-       * command is not a path. No credential goes in here - the relayed client
-       * signs in to the host inside, which is where a credential for the
-       * container's models belongs.
-       */
-      const config = {
-        paths: [remote],
-        sessions: 'memory',
-        automations: 'memory',
-        plugins,
-      };
-      const encoded = Buffer.from(JSON.stringify(config), 'utf8').toString('base64');
-      const at = `/tmp/ahpd-nested-${randomUUID()}.json`;
-      const written = await inside(reached, `printf %s ${encoded} | base64 -d > ${quote(at)} && chmod 600 ${quote(at)}`, sink, given);
-      if (written.code !== 0) {
-        throw new Error(`The container could not be given the host's configuration: ${written.stderr.trim() || `exit ${String(written.code)}`}`);
+      catch (error) {
+        await discardSandbox(one.connectionId);
+        throw error;
       }
+    },
 
+    /*
+     * An environment's container, made from its image and kept in its volume.
+     *
+     * There is no folder on this host to read a definition from, so the image
+     * and the id are the whole of what came from the client. What preparation
+     * does with them - the volume, the folder in it, the ownership of both - is
+     * the reference host's own sequence, and the host inside it is started the
+     * same way a folder's is.
+     */
+    connectEnvironment: async (one: ContainerEnvironmentConnect, sink: ContainerSink): Promise<ContainerConnectResult> => {
+      if (plugins.length === 0) {
+        throw new Error('The host inside the container would have no backend and would not start. Name at least one under the computer plugin\'s devcontainer.plugins - "@ahpd/agent-cofold" runs this way and no other');
+      }
+      // A removed environment's id is not used again, so a connect that still
+      // names it is told it was deleted rather than given a new container.
+      if (removedEnvironments.has(one.environmentId)) {
+        throw new Error(`Dev Container '${one.name}' was deleted.`);
+      }
       /*
-       * And the host itself, in stdio mode.
-       *
-       * Not a port and not a token: `docker exec` carries this process's pipes
-       * into the container, and the host inside answers on them - decision
-       * `a-nested-host-speaks-stdio`. It is reached as every other command in
-       * there is, and by container id rather than by the folder, which is what
-       * removes the CLI's own lookup by `devcontainer.local_folder` - decision
-       * `a-dev-container-is-reached-by-docker-exec`.
+       * The relay is known to a removal before the container is made, so one
+       * that arrives while this connect is still running is closed with the
+       * rest rather than left behind in a container that is about to go.
        */
-      const line = [...host, '--stdio', '--path', remote, '--config-file', at].map(quote).join(' ');
-      const { argv, env: values } = execArgv(reached, ['/bin/sh', '-c', line], given);
-      // Echoed without values: this stream goes to the connecting client, and a
-      // need's value is not the client's to read.
-      sink.output(`$ ${[docker.command, ...shown(argv)].map(quote).join(' ')}\n`);
-      const child = spawn(
-        docker.command,
-        [...docker.args, ...argv],
-        { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...(docker.env ?? {}), ...env, ...values }, windowsHide: true },
-      );
-      live.set(one.connectionId, child);
+      liveEnvironments.set(one.connectionId, one.environmentId);
+      let prepared: PreparedEnvironment;
+      try {
+        prepared = await prepareEnvironment(
+          {
+            environmentId: one.environmentId,
+            image: one.image,
+            name: one.name,
+            ...(one.resume === undefined ? {} : { resume: one.resume }),
+            ...(one.persistUserState === undefined ? {} : { persistUserState: one.persistUserState }),
+            ...(one.sandboxEnabled === undefined ? {} : { sandboxEnabled: one.sandboxEnabled }),
+            ...(one.owner === undefined ? {} : { owner: one.owner }),
+          },
+          environmentDirectory(one.environmentId),
+          {
+            docker: (argv) => runCli(docker, argv),
+            devcontainer: (argv) => run([...base, ...argv], sink),
+            userState: (notice) => { sink.userState?.(notice); },
+          },
+        );
+      }
+      catch (error) {
+        liveEnvironments.delete(one.connectionId);
+        throw error;
+      }
+      try {
+        const supported = await inspectSandbox(sink, prepared.containerId);
+        return { ...await startHost(one.connectionId, sink, prepared), sandboxSupported: supported };
+      }
+      catch (error) {
+        liveEnvironments.delete(one.connectionId);
+        throw error;
+      }
+    },
 
-      child.stdout.on('data', lines((said) => {
-        if (said.trim() === '') return;
-        // A frame is JSON; anything else is the CLI talking, and a person
-        // watching the startup should see it rather than a parse error.
-        try {
-          const held: unknown = JSON.parse(said);
-          if (typeof held === 'object' && held !== null && !Array.isArray(held)) { sink.message(said); return; }
+    /*
+     * An environment removed: every relay into it closed, then its container
+     * and its volumes.
+     *
+     * A removal is the environment's owner's alone, and the owner is the one
+     * its volume names. That is asked before the mark goes on and before any
+     * relay is closed, so another principal's attempt leaves the owner's relay
+     * running. The mark goes on before the relays are closed, so a connect that
+     * arrives while the removal is running is refused, and comes off again when
+     * the removal fails, so a client is not told an environment was deleted
+     * that is still there.
+     */
+    removeEnvironment: async (environmentId: string, owner?: Owner): Promise<boolean> => {
+      await authorizeEnvironmentRemoval(environmentId, (argv) => runCli(docker, argv), owner);
+      removedEnvironments.add(environmentId);
+      try {
+        for (const [connectionId, environment] of [...liveEnvironments]) {
+          if (environment !== environmentId) continue;
+          const child = live.get(connectionId);
+          if (child !== undefined) await stop(child);
         }
-        catch { /* not a frame */ }
-        sink.output(`${said}\n`);
-      }));
-      child.stderr.on('data', (chunk: Buffer) => { sink.output(String(chunk)); });
-      const ended = (why?: string): void => {
-        if (live.get(one.connectionId) !== child) return;
-        live.delete(one.connectionId);
-        log(`${one.connectionId} ended${why === undefined ? '' : `: ${why}`}`);
-        sink.close(why);
-      };
-      child.once('error', (error) => { ended(error.message); });
-      child.once('close', (code) => { ended(code === 0 || code === null ? undefined : `exit ${String(code)}`); });
-
-      return {
-        address: `devcontainer:${made.containerId}`,
-        remoteWorkspaceFolder: remote,
-        hostWorkspaceFolder: one.workspaceFolder,
-      };
+        await removeEnvironment(environmentId, environmentDirectory(environmentId), (argv) => runCli(docker, argv), owner);
+      }
+      catch (error) {
+        removedEnvironments.delete(environmentId);
+        throw error;
+      }
+      return true;
     },
 
     send: (connectionId: string, data: string): void => {
@@ -1231,7 +1649,9 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
       child?.stdin.write(`${data}\n`);
     },
 
-    disconnect: (connectionId: string): void => {
+    disconnect: async (connectionId: string): Promise<void> => {
+      liveEnvironments.delete(connectionId);
+      await discardSandbox(connectionId);
       const child = live.get(connectionId);
       if (child === undefined) return;
       // Asked to stop, and the ending is reported by the same path a crash
@@ -1252,6 +1672,7 @@ export const devContainer = (options: DevContainerOptions = {}): ContainerPort =
      */
     close: async (): Promise<void> => {
       await Promise.all([...live.values()].map((child) => stop(child)));
+      await Promise.all([...sandboxOverrides.keys()].map(discardSandbox));
     },
   };
 };

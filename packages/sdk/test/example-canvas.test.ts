@@ -86,20 +86,20 @@ describe('originsOf', () => {
 
 describe('open_check_canvas', () => {
   /*
-   * A canvas whose source is not there yet is opened without a url, and drawn
+   * A canvas whose source is not there yet is opened without a uri, and drawn
    * again once it is, as VS Code's host does:
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/copilotAgentSession.ts#L5196-L5226
    */
   it('opens without a url before the daemon listens, and draws the url in once it does', async () => {
     const { client, contribution, open } = await made();
-    const answer = JSON.parse(await open() as string) as { resource: string; url?: string };
-    expect(answer.url).toBeUndefined();
+    const answer = JSON.parse(await open() as string) as { resource: string; uri?: string };
+    expect(answer.uri).toBeUndefined();
     const before = await client.handle({ method: 'subscribe', params: { channel: answer.resource } }) as { snapshot: { state: CanvasState } };
     expect(before.snapshot.state).toEqual({ instanceId: 'check', extensionId: 'example-canvas', canvasId: 'check', title: 'Example canvas' });
 
     await raise(contribution.events, { type: 'listening', runtime: 'node', host: '192.168.0.10', port: 9187, guarded: false });
     const after = await client.handle({ method: 'subscribe', params: { channel: answer.resource } }) as { snapshot: { state: CanvasState } };
-    expect(after.snapshot.state.url).toBe('http://192.168.0.10:9187/plugins/example-canvas/');
+    expect(after.snapshot.state.uri).toBe('http://192.168.0.10:9187/plugins/example-canvas/');
   });
 
   it('opens the page at an external address for a daemon bound to every interface', async () => {
@@ -107,16 +107,16 @@ describe('open_check_canvas', () => {
     await raise(contribution.events, { type: 'listening', runtime: 'node', host: '0.0.0.0', port: 9187, guarded: false });
     // The machine's first external IPv4 address, which a window elsewhere on its network opens, else localhost.
     const external = Object.values(networkInterfaces()).flatMap((each) => each ?? []).find((one) => one.family === 'IPv4' && !one.internal);
-    const answer = JSON.parse(await open() as string) as { url: string };
-    expect(answer.url).toBe(`http://${external?.address ?? 'localhost'}:9187/plugins/example-canvas/`);
+    const answer = JSON.parse(await open() as string) as { uri: string };
+    expect(answer.uri).toBe(`http://${external?.address ?? 'localhost'}:9187/plugins/example-canvas/`);
   });
 
   it('opens the page on the calling chat at the bound address', async () => {
     const { client, chat, contribution, open } = await made();
     await raise(contribution.events, { type: 'listening', runtime: 'node', host: '192.168.0.10', port: 9187, guarded: false });
 
-    const answer = JSON.parse(await open() as string) as { resource: string; url: string };
-    expect(answer.url).toBe('http://192.168.0.10:9187/plugins/example-canvas/');
+    const answer = JSON.parse(await open() as string) as { resource: string; uri: string };
+    expect(answer.uri).toBe('http://192.168.0.10:9187/plugins/example-canvas/');
 
     const listed = await client.handle({ method: 'subscribe', params: { channel: chat } }) as {
       snapshot: { state: { canvases?: { resource: string }[] } };
@@ -126,7 +126,7 @@ describe('open_check_canvas', () => {
       snapshot: { state: CanvasState };
     };
     expect(canvas.snapshot.state).toEqual({
-      instanceId: 'check', extensionId: 'example-canvas', canvasId: 'check', title: 'Example canvas', url: answer.url,
+      instanceId: 'check', extensionId: 'example-canvas', canvasId: 'check', title: 'Example canvas', uri: answer.uri, url: answer.uri,
     });
   });
 });
@@ -134,12 +134,12 @@ describe('open_check_canvas', () => {
 describe('the origin option', () => {
   it('starts the URL, before and after the daemon binds', async () => {
     const { contribution, open } = await made({ origin: 'https://ahpd.example.test:8443/ignored/path' });
-    const first = JSON.parse(await open() as string) as { url: string };
-    expect(first.url).toBe('https://ahpd.example.test:8443/plugins/example-canvas/');
+    const first = JSON.parse(await open() as string) as { uri: string };
+    expect(first.uri).toBe('https://ahpd.example.test:8443/plugins/example-canvas/');
 
     await raise(contribution.events, { type: 'listening', runtime: 'node', host: '0.0.0.0', port: 9187, guarded: false });
-    const second = JSON.parse(await open() as string) as { url: string };
-    expect(second.url).toBe(first.url);
+    const second = JSON.parse(await open() as string) as { uri: string };
+    expect(second.uri).toBe(first.uri);
   });
 });
 

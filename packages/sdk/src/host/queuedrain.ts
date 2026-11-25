@@ -17,7 +17,7 @@
 import { holdsTheQueue, idOf } from '../sessions/catalog.js';
 import type { Bag } from '../types/common.js';
 import type { Connection } from '../types/host.js';
-import type { MessageAttachment, MessageFrom } from '../types/session.js';
+import type { Chosen, MessageAttachment, MessageFrom } from '../types/session.js';
 import type { Owner } from '../types/usage.js';
 import type { Origin } from './state.js';
 import type { HostContext } from './context.js';
@@ -41,6 +41,16 @@ interface Kept {
   submitted: Set<string>;
   /** The queued message each turn the drain admitted took up, by the turn's id, until it ends. */
   admitted: Map<string, string>;
+  /** What a message this host queued is told, by the message's id, until it is taken up or withdrawn. */
+  hooks: Map<string, QueuedHooks>;
+}
+
+/** What a message this host queues is told: the turn that takes it up, or that it was withdrawn. */
+export interface QueuedHooks {
+  /** Called as the drain admits the message as `turnId`, before the turn is said. */
+  taken?: (turnId: string) => void;
+  /** Called when the message leaves the queue without a turn. */
+  withdrawn?: () => void;
 }
 
 export interface QueueDrain {
@@ -51,7 +61,13 @@ export interface QueueDrain {
   /** The queue reordered by a client, said already. */
   queueReordered(chat: string): void;
   /** A message this host queues itself, said as the host's, sent by `by` where it names one. */
-  enqueue(chat: string, id: string, text: string, from: MessageFrom | undefined, by?: { owner?: Owner | undefined; connection?: Connection | undefined }): void;
+  enqueue(
+    chat: string, id: string, text: string, from: MessageFrom | undefined,
+    by?: { owner?: Owner | undefined; connection?: Connection | undefined },
+    queued?: QueuedHooks & { model?: Chosen | undefined },
+  ): void;
+  /** Take a message this host queued out of the queue, as withdrawn. */
+  dequeue(chat: string, id: string): void;
   /** The queued message the drain admitted as `turnId`, while that turn runs. */
   takenUp(chat: string, turnId: string): string | undefined;
   /** A chat's active turn ended with `action`, said already. */
@@ -66,7 +82,7 @@ export function createQueueDrain(ctx: HostContext): QueueDrain {
   const { byChat, sessions, dispatch, log } = ctx;
   const chats = new Map<string, Kept>();
   const keptOf = (chat: string): Kept => {
-    const one = chats.get(chat) ?? { senders: new Map<string, Sender>(), submitted: new Set<string>(), admitted: new Map<string, string>() };
+    const one = chats.get(chat) ?? { senders: new Map<string, Sender>(), submitted: new Set<string>(), admitted: new Map<string, string>(), hooks: new Map<string, QueuedHooks>() };
     chats.set(chat, one);
     return one;
   };
@@ -157,6 +173,10 @@ export function createQueueDrain(ctx: HostContext): QueueDrain {
     const turnId = crypto.randomUUID();
     const since = Date.now();
     kept.admitted.set(turnId, id);
+    // The message's own hook, told before the turn is said, so a run it starts is running when the turn begins.
+    const hooks = kept.hooks.get(id);
+    kept.hooks.delete(id);
+    hooks?.taken?.(turnId);
     /*
      * The turn of whoever queued the message: the owner it was queued for, a
      * message of this host's, or the person on the connection that sent it.
@@ -224,6 +244,9 @@ export function createQueueDrain(ctx: HostContext): QueueDrain {
     },
     pendingRemoved: (chat, id, kind) => {
       const kept = keptOf(chat);
+      const hooks = kept.hooks.get(id);
+      kept.hooks.delete(id);
+      hooks?.withdrawn?.();
       if (!pending(chat, id)) kept.senders.delete(id);
       // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/chatContributions/queueDrain/queueDrainContribution.ts#L165-L173
       if (kind === 'steering' && kept.submitted.delete(id)) byChat.get(chat)?.chat.withdrawSteeringMessage?.(id);
@@ -234,11 +257,21 @@ export function createQueueDrain(ctx: HostContext): QueueDrain {
       handSteering(chat);
       tryConsume(chat);
     },
-    enqueue: (chat, id, text, from, by) => {
-      keptOf(chat).senders.set(id, { connection: by?.connection, owner: by?.owner });
-      const action = { type: 'chat/pendingMessageSet', kind: 'queued', id, message: ctx.messageOf(text, undefined, from) };
+    enqueue: (chat, id, text, from, by, queued) => {
+      const kept = keptOf(chat);
+      kept.senders.set(id, { connection: by?.connection, owner: by?.owner });
+      if (queued?.taken !== undefined || queued?.withdrawn !== undefined) kept.hooks.set(id, queued);
+      const action = { type: 'chat/pendingMessageSet', kind: 'queued', id, message: ctx.messageOf(text, queued?.model, from) };
       dispatch(chat, action);
       if (relayed(chat)) byChat.get(chat)?.chat.relay?.('chat', action);
+    },
+    dequeue: (chat, id) => {
+      const kept = chats.get(chat);
+      const hooks = kept?.hooks.get(id);
+      kept?.hooks.delete(id);
+      kept?.senders.delete(id);
+      dispatch(chat, { type: 'chat/pendingMessageRemoved', kind: 'queued', id });
+      hooks?.withdrawn?.();
     },
     takenUp: (chat, turnId) => chats.get(chat)?.admitted.get(turnId),
     /*

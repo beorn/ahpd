@@ -1,6 +1,6 @@
 ---
 title: A tunnel kind's own operations read plain
-status: implemented
+status: done
 depends: [01]
 layer: "sdk, tunnel-devtunnel"
 refs:

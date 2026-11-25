@@ -2338,7 +2338,7 @@ it('lists a nested chat\'s canvases as the host inside does, and serves each fro
   const local = inner.host.accept(watching());
   await local.handle({ method: 'initialize', params: { clientId: 'inside', protocolVersions: ['1.0.0'] } });
   await local.handle({ method: 'dispatchAction', params: { channel: 'ahp-root://', action: { type: 'root/configChanged', config: { canvasesEnabled: true } } } });
-  const state = { instanceId: 'board-1', extensionId: 'com.brbyte.canvas', canvasId: 'board', title: 'Board', url: 'https://canvas.test/board' };
+  const state = { instanceId: 'board-1', extensionId: 'com.brbyte.canvas', canvasId: 'board', title: 'Board', uri: 'https://canvas.test/board' };
   // Opened on the chat the host inside holds for the session, and named out
   // here under the chat the host outside holds, the same canvas id after it.
   const inside = await served.open?.(await mintedChat(local, uri), state) ?? '';

@@ -1,6 +1,6 @@
 ---
 title: A slow git call says so
-status: implemented
+status: done
 depends: []
 layer: "sdk, CI"
 refs:

@@ -1,6 +1,6 @@
 ---
 title: The deny list comes first
-status: implemented
+status: done
 depends: []
 layer: sdk
 refs:

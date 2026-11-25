@@ -66,8 +66,12 @@ export interface PullRequests extends PullRequestWrites {
    * may ask however else it can, or answer none. `cwd` is a directory in the
    * repository, for an implementation that asks a tool which reads its own
    * credentials from there.
+   *
+   * `headOwner` is the owner of the repository the branch was pushed to,
+   * where it is not `repo`'s owner: a fork's branch. Absent, the branch is
+   * `repo`'s own. An implementation that ignores it answers as before.
    */
-  forBranch(repo: { owner: string; repo: string }, branch: string, token: string | undefined, cwd: string): Promise<PullRequest[]>;
+  forBranch(repo: { owner: string; repo: string }, branch: string, token: string | undefined, cwd: string, headOwner?: string): Promise<PullRequest[]>;
   /**
    * One pull request, by its page, or undefined when GitHub has no pull
    * request there.

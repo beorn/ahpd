@@ -34,10 +34,28 @@ interface Held {
   settle(answer: AskedAnswers): void;
 }
 
+/**
+ * What a request carries besides its questions.
+ *
+ * `id` is for a caller that holds the id already, as the shell authentication
+ * does: its prompt reaches the host and the client by the same name. `purpose`
+ * and `meta` are the protocol's own fields for a client that knows what kind
+ * of request it draws, and a client that does not still sees a request with a
+ * question in it.
+ */
+export interface AskOptions {
+  /** The id the request is asked under; one is made when absent. */
+  id?: string;
+  /** What the request is for, as the protocol's `purpose`. */
+  purpose?: string;
+  /** The request's `_meta`, by key. */
+  meta?: Record<string, unknown>;
+}
+
 /** What a host's held questions are, and what ends them. */
 export interface Asking {
   /** Put a request on `chat` and wait for its answer, Cancel at once with no `turn` running. */
-  ask(chat: string, turn: string | undefined, questions: AskedQuestion[]): Promise<AskedAnswers>;
+  ask(chat: string, turn: string | undefined, questions: AskedQuestion[], options?: AskOptions): Promise<AskedAnswers>;
   /**
    * Settle the request `id` with the person's response and answers.
    *
@@ -143,16 +161,26 @@ export function createAsking(options: AskingOptions): Asking {
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/copilotAgentSession.ts#L8715-L8734
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeAgentSession.ts#L1346-L1359
    */
-  const ask = (chat: string, turn: string | undefined, questions: AskedQuestion[]): Promise<AskedAnswers> => {
+  const ask = (
+    chat: string,
+    turn: string | undefined,
+    questions: AskedQuestion[],
+    given?: AskOptions,
+  ): Promise<AskedAnswers> => {
     if (turn === undefined) return Promise.resolve({ response: 'cancel', answers: {} });
     return new Promise<AskedAnswers>((resolve, reject) => {
-      const id = `${HOST_ASK}${crypto.randomUUID()}`;
+      const id = given?.id ?? `${HOST_ASK}${crypto.randomUUID()}`;
       held.set(id, { chat, turn, questions, settle: resolve });
       try {
         options.dispatch(chat, {
           type: 'chat/inputRequested',
           turnId: turn,
-          request: { id, questions: questions.map(questionOf) },
+          request: {
+            id,
+            questions: questions.map(questionOf),
+            ...(given?.purpose === undefined ? {} : { purpose: given.purpose }),
+            ...(given?.meta === undefined ? {} : { _meta: given.meta }),
+          },
         });
       }
       catch (error) {

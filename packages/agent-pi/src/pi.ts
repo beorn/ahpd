@@ -31,6 +31,9 @@ export interface Pi {
   ModelRegistry: typeof PiCodingAgent.ModelRegistry;
   createAgentSessionServices: typeof PiCodingAgent.createAgentSessionServices;
   createAgentSessionFromServices: typeof PiCodingAgent.createAgentSessionFromServices;
+  /** pi's own tool definitions, rebuilt here when a session's shell needs its own environment. */
+  createBashToolDefinition: typeof PiCodingAgent.createBashToolDefinition;
+  createPowerShellToolDefinition: typeof PiCodingAgent.createPowerShellToolDefinition;
   defineTool: typeof PiCodingAgent.defineTool;
   getAgentDir: typeof PiCodingAgent.getAgentDir;
   getSupportedThinkingLevels: typeof PiAi.getSupportedThinkingLevels;
@@ -63,6 +66,8 @@ export function loadPi(): Promise<Pi> {
       ModelRegistry: coding.ModelRegistry,
       createAgentSessionServices: coding.createAgentSessionServices,
       createAgentSessionFromServices: coding.createAgentSessionFromServices,
+      createBashToolDefinition: coding.createBashToolDefinition,
+      createPowerShellToolDefinition: coding.createPowerShellToolDefinition,
       defineTool: coding.defineTool,
       getAgentDir: coding.getAgentDir,
       getSupportedThinkingLevels: ai.getSupportedThinkingLevels,

@@ -1,7 +1,7 @@
 ---
 title: A Claude history reads across its compactions
 domain: claude
-status: planned
+status: built
 priority: high
 created: 2026-11-15
 revalidated: 2026-11-15
@@ -81,8 +81,8 @@ session history after a restart -> claude.ts transcript -> turnsOf -> getSession
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the turns before a compaction read back](task-01-the-turns-before-a-compaction-read-back.md) | implemented | - |
-| [02 - a read-back turn draws its notices](task-02-a-read-back-turn-draws-its-notices.md) | implemented | 01 |
+| [01 - the turns before a compaction read back](task-01-the-turns-before-a-compaction-read-back.md) | done | - |
+| [02 - a read-back turn draws its notices](task-02-a-read-back-turn-draws-its-notices.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -97,7 +97,7 @@ session history after a restart -> claude.ts transcript -> turnsOf -> getSession
 - **Done so far, build:** tasks 01 and 02 implemented, 2026-11-15, not committed. The agent-claude suite passes, 679 of 679. Session `8cf0f145` reads back 13 turns with the branch, and 3 with main.
 - **Merged:** #338, as `9863785ca`, on 2026-11-15, with check and check-windows green on run 43667174169.
 - **Checked by hand:** the test daemon at `9863785ca` serves session `8cf0f145` as 13 turns, each with its prompt, from `b1a85f09`. `Conversation compacted` is on turn `2c3d4ffb`.
-- **Next action:** the plan closes as `built` on Softov's word, after his review.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** a turn before a compaction now has a fork anchor after a restart. A live session already has one for such a turn, so a fork or a rewind there behaves as it does live.
 

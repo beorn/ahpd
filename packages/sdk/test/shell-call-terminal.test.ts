@@ -223,6 +223,11 @@ const changes = (chat: string): Bag[][] => on(chat)
   .filter((one) => one.type === 'chat/toolCallContentChanged' && one.toolCallId === CALL)
   .map((one) => one.content as Bag[]);
 
+/** The move flag each content change of the call carried, in order. */
+const flags = (chat: string): unknown[] => on(chat)
+  .filter((one) => one.type === 'chat/toolCallContentChanged' && one.toolCallId === CALL)
+  .map((one) => (one._meta as Bag | undefined)?.['ahpd.backgroundToolCall']);
+
 /** The call's completion on the wire. */
 const completion = (chat: string): Bag => on(chat).find((one) => one.type === 'chat/toolCallComplete' && one.toolCallId === CALL) as Bag;
 
@@ -233,9 +238,14 @@ describe.skipIf(!posix)('the terminal of an agent terminal tool call', () => {
     expect(terminal).toMatch(/^agenthost-terminal:\/\/shell\//u);
     // The store was handed no pseudoterminal, so the shell runs on pipes.
     const block = { type: 'terminal', resource: terminal, title: 'Terminal', isPty: false };
-    expect(changes(chat)).toEqual([[block]]);
+    // The terminal as it opens, then the same content again as the call is
+    // offered to move to the background, which the flag on it says.
+    expect(changes(chat)).toEqual([[block], [block]]);
+    expect(flags(chat)).toEqual([undefined, true]);
     const result = completion(chat).result as Bag;
     expect(result.success).toBe(true);
+    // A completed call offers nothing.
+    expect((completion(chat)._meta as Bag | undefined)?.['ahpd.backgroundToolCall']).toBeUndefined();
     expect(result.content).toEqual([
       block,
       { type: 'text', text: expect.stringMatching(/^Shell ID: \S+\nExit code: 0\nhello$/u) as unknown },
@@ -258,8 +268,9 @@ describe.skipIf(!posix)('the terminal of an agent terminal tool call', () => {
     const own = [{ type: 'text', text: 'working' }];
     const { chat, terminal } = await ran({ input: { command: 'echo hello' }, own });
     const block = { type: 'terminal', resource: terminal, title: 'Terminal', isPty: false };
-    // The backend's own, then the terminal the host opened for the call.
-    expect(changes(chat)).toEqual([own, [block]]);
+    // The backend's own, then the terminal the host opened for the call, then
+    // the same again with the offer to move it.
+    expect(changes(chat)).toEqual([own, [block], [block]]);
   });
 
   it('keeps the terminal on a command that was still running when its call ended', async () => {

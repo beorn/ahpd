@@ -1,6 +1,6 @@
 ---
 title: The release carries the digests
-status: implemented
+status: done
 depends: [task-01-the-publish-job-writes-the-digests.md]
 layer: "release workflow"
 refs:

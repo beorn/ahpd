@@ -1,6 +1,6 @@
 ---
 title: The fixture reads the last block
-status: implemented
+status: done
 depends: []
 layer: "agent-acp test fixture"
 refs:

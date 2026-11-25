@@ -22,7 +22,7 @@ import type {
 } from '@ahpd/sdk';
 import { deriveConnectionToken, displayLabel, TUNNEL_PORT } from './discovery.js';
 import { carry, gate } from './forward.js';
-import { notFound } from './service.js';
+import { notFound, unauthorized } from './service.js';
 import type { Service, Shown } from './service.js';
 import { sameState, tunnelView } from './view.js';
 import type { TunnelState } from './view.js';
@@ -168,7 +168,7 @@ export interface KindOptions {
   /** The plugin's host: the lines, alerts, page and people the kind keeps there. */
   plugin: Pick<
     PluginHost,
-    'say' | 'log' | 'alert' | 'clearAlert' | 'showView' | 'clearView' | 'hasUsers' | 'personKey' | 'acceptsToken'
+    'say' | 'log' | 'alert' | 'clearAlert' | 'showView' | 'clearView' | 'hasUsers' | 'personKey' | 'acceptsToken' | 'registerClose'
   >;
   /** The service its ports are put on. */
   service: Service;
@@ -192,6 +192,10 @@ export interface KindOptions {
   keep: boolean;
   /** Whether a connector is open now. */
   open(connector: string): boolean;
+  /** Be told the id of each connector that holds a new token. Answers what stops it. */
+  onHold?(listener: (connector: string) => void): () => void;
+  /** The first wait before a start the service refused with 401 is tried again, and the longest. 30 s and 10 min when absent. */
+  retryMs?: { first: number; most: number };
   /** The port the daemon bound, once `listening` has said it. */
   daemonPort(): number | undefined;
   /** Whether the daemon requires a connection token of its own. */
@@ -270,6 +274,50 @@ export function devtunnelKind(options: KindOptions): TunnelKind {
 
   /** The records this daemon has up, by id. */
   const running = new Map<string, Running>();
+
+  /**
+   * The records whose start the service refused with 401, by id: each is
+   * started again when its timer ends, or sooner when its connector holds a
+   * new token. The wait doubles after each refusal, up to `retryMs.most`.
+   */
+  const retrying = new Map<string, { connector: string; delay: number; timer: ReturnType<typeof setTimeout> }>();
+  const firstWait = options.retryMs?.first ?? 30_000;
+  const mostWait = options.retryMs?.most ?? 600_000;
+
+  /** Stop trying one record again. */
+  const forgetRetry = (id: string): void => {
+    const held = retrying.get(id);
+    if (held !== undefined) clearTimeout(held.timer);
+    retrying.delete(id);
+  };
+
+  /** Try one refused record again after the wait in force, and answer that wait. */
+  const retry = (tunnel: Tunnel, report: ReportTunnel, connector: string): number => {
+    const before = retrying.get(tunnel.id);
+    if (before !== undefined) clearTimeout(before.timer);
+    const delay = before === undefined ? firstWait : Math.min(before.delay * 2, mostWait);
+    const timer = setTimeout(() => { void start(tunnel, report); }, delay);
+    timer.unref?.();
+    retrying.set(tunnel.id, { connector, delay, timer });
+    return delay;
+  };
+
+  /** Each record that waits on a connector, started again now that it holds a new token. */
+  const pending = new Map<string, { tunnel: Tunnel; report: ReportTunnel }>();
+  const stopListening = options.onHold?.((connector) => {
+    for (const [id, held] of retrying) {
+      const waiting = pending.get(id);
+      if (held.connector !== connector || waiting === undefined) continue;
+      clearTimeout(held.timer);
+      held.timer = setTimeout(() => { void start(waiting.tunnel, waiting.report); }, 0);
+      held.timer.unref?.();
+    }
+  });
+  plugin.registerClose(() => {
+    stopListening?.();
+    for (const id of [...retrying.keys()]) forgetRetry(id);
+    pending.clear();
+  });
 
   /** The system tunnel's page: what was drawn, and the read behind it. */
   let poll: ReturnType<typeof setInterval> | undefined;
@@ -499,6 +547,8 @@ export function devtunnelKind(options: KindOptions): TunnelKind {
         report,
       });
       plugin.clearAlert(REF);
+      forgetRetry(tunnel.id);
+      pending.delete(tunnel.id);
 
       if (tunnel.purpose === 'system') {
         const shown = displayLabel(served.remote.labels);
@@ -534,12 +584,26 @@ export function devtunnelKind(options: KindOptions): TunnelKind {
       if (tunnel.purpose === 'system' && port === TUNNEL_PORT) {
         plugin.alert({ level: 'error', ref: REF, text: `The tunnel could not use port ${TUNNEL_PORT}: ${message}` });
       }
+      // A refused token may be one not yet refreshed, so the start is tried
+      // again after a wait, and when the connector next holds a token.
+      if (unauthorized(error)) {
+        pending.set(tunnel.id, { tunnel, report });
+        const wait = retry(tunnel, report, connector);
+        const at = new Date(Date.now() + wait).toISOString();
+        report({ status: 'error', error: `${message} It is tried again at ${at}, or when the connector holds a new token.` });
+        return;
+      }
+      // Any other refusal is not one a wait cures, so the record stops waiting.
+      forgetRetry(tunnel.id);
+      pending.delete(tunnel.id);
       report({ status: 'error', error: message });
     }
   };
 
   /** Take one tunnel down, and the Dev Tunnel only when it was the last port. */
   const stop = async (tunnel: Tunnel, report: ReportTunnel): Promise<void> => {
+    forgetRetry(tunnel.id);
+    pending.delete(tunnel.id);
     const one = running.get(tunnel.id);
     if (one === undefined) {
       report({ status: 'stopped' });
@@ -670,6 +734,8 @@ export function devtunnelKind(options: KindOptions): TunnelKind {
     create: start,
 
     remove: async (tunnel) => {
+      forgetRetry(tunnel.id);
+      pending.delete(tunnel.id);
       const one = running.get(tunnel.id);
       running.delete(tunnel.id);
       if (tunnel.purpose === 'system') unwatch();

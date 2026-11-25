@@ -1,7 +1,7 @@
 ---
 title: A cofold model on an explicit endpoint keeps its slashes
 domain: cofold
-status: planned
+status: built
 priority: high
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -63,7 +63,7 @@ record model -> modelReferenceOf -> adapterOptionsOf -> splitModel -> adapter mo
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - An endpoint gets the id it was given](task-01-an-endpoint-gets-the-id-it-was-given.md) | implemented | - |
+| [01 - An endpoint gets the id it was given](task-01-an-endpoint-gets-the-id-it-was-given.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -72,7 +72,7 @@ record model -> modelReferenceOf -> adapterOptionsOf -> splitModel -> adapter mo
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-11; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the backend's own id is `options.provider`, the record's id in the plugin, and `cofold` for an embedder.
 

@@ -18,9 +18,10 @@
  * call and its answer is a conversation read wrong.
  */
 
+import { randomUUID } from 'node:crypto';
 import { textOf } from '@cofold/agents';
-import type { Message, RunEvent, Store, ToolCallPart, ToolResultPart, Usage } from '@cofold/agents';
-import type { Agent, Bag } from '@ahpd/sdk';
+import type { ContentPart, Message, RunEvent, RunStatus, Store, ToolCallPart, ToolResultPart, Usage } from '@cofold/agents';
+import type { Agent, Bag, ImportedConversation } from '@ahpd/sdk';
 import { bag, endedParts, str, withToolCallDuration } from '@ahpd/sdk';
 import { compactionNotification, errorPart, imageRefOf } from './mapping.js';
 import { describe, pastTenseOf, toolInputOf, toolMetaOf } from './tools.js';
@@ -51,6 +52,19 @@ const INTERRUPTED: Bag = {
   kind: 'error',
   error: { errorType: 'executionInterrupted', message: 'The agent was interrupted before this request finished.' },
   resumable: true,
+};
+
+/**
+ * When a part ran, from the times cofold 0.4.1 writes on each part; a
+ * conversation written before has none, and its message's own time is the end
+ * of the reply, which says neither.
+ */
+const timesOf = (part: ContentPart): { startedAt?: string; duration?: number } => {
+  const { startedAt, endedAt } = part as { startedAt?: unknown; endedAt?: unknown };
+  const start = Date.parse(str(startedAt) ?? '');
+  if (!Number.isFinite(start)) return {};
+  const duration = Date.parse(str(endedAt) ?? '') - start;
+  return { startedAt: new Date(start).toISOString(), ...(Number.isFinite(duration) && duration >= 0 ? { duration } : {}) };
 };
 
 /**
@@ -443,7 +457,7 @@ export async function turnsOf(
           // Any text is a part, whitespace included, as it is live.
           if (part.text !== '') live.parts.push({ id, kind: 'markdown', content: part.text });
         } else if (part.type === 'reasoning') {
-          live.parts.push({ id, kind: 'reasoning', content: part.text });
+          live.parts.push({ id, kind: 'reasoning', content: part.text, ...timesOf(part) });
         } else if (part.type === 'toolCall') {
           const held = callPartOf(part, durations.get(part.callId), waiting.get(part.callId), subject.get(part.callId));
           // Registered before the part is pushed, so the result that follows
@@ -482,4 +496,262 @@ export async function turnsOf(
 
   if (open !== undefined) close(open);
   return closed.map(sealed);
+}
+
+/** One conversation a client imported, in the protocol's shape. */
+type ImportedTurns = ImportedConversation['turns'];
+
+/** What a written conversation is called where cofold keeps it. */
+export interface ImportedHistoryAbout {
+  /** The id a session that continues the conversation starts under. */
+  sessionId: string;
+  /** The agent the store records the conversation as run by. */
+  agentId: string;
+  /** The directory the conversation ran in, where the client named one. */
+  workspace?: string;
+  /** The model the conversation was held under, where no turn names one. */
+  model?: string;
+}
+
+/** A number a bag carries, and nothing for anything else. */
+const count = (value: unknown): number | undefined =>
+  (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+
+/**
+ * A tool result's blocks as cofold's one string a `toolResult` part carries.
+ *
+ * cofold keeps a result as text; a block with no frame of its own says what it
+ * refers to, as the live mapping keeps a resource's reference.
+ */
+const resultTextOf = (content: unknown): string => {
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((raw): string => {
+      const block = bag(raw);
+      switch (str(block.type)) {
+        case 'text': return str(block.text) ?? '';
+        case 'embeddedResource': return str(block.data) ?? '';
+        case 'resource': return str(block.uri) ?? '';
+        case 'fileEdit': {
+          const after = bag(block.after);
+          const before = bag(block.before);
+          return str(after.uri) ?? str(before.uri) ?? '';
+        }
+        case 'terminal': {
+          const result = bag(block.result);
+          return [str(block.title) ?? '', str(result.preview) ?? ''].filter((one) => one !== '').join('\n');
+        }
+        case 'subagent': return str(block.title) ?? str(block.description) ?? '';
+        default: return '';
+      }
+    })
+    .filter((one) => one !== '')
+    .join('\n');
+};
+
+/**
+ * A call's input as cofold keeps it: the arguments the model gave, and the
+ * string exactly as it was given.
+ *
+ * The protocol carries the input as the string the tool was handed. cofold
+ * keeps the parsed arguments beside the raw string; a string that parses as a
+ * JSON object is both, and anything else is kept as it came.
+ */
+const callInputOf = (given: unknown): { input: unknown; raw: string } => {
+  if (typeof given !== 'string') return { input: given, raw: given === undefined ? '' : JSON.stringify(given) ?? '' };
+  try {
+    const parsed: unknown = JSON.parse(given);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return { input: parsed, raw: given };
+  }
+  catch { /* not JSON */ }
+  return { input: given, raw: given };
+};
+
+/** A turn's usage as cofold's run record keeps it, and the model it ran on. */
+const usageIn = (given: Bag | undefined, fallback: string | undefined): { usage: Usage; model?: string } => {
+  const meta = bag(given?._meta);
+  const input = count(given?.inputTokens);
+  const output = count(given?.outputTokens);
+  const read = count(given?.cacheReadTokens);
+  const wrote = count(meta['ahpd.cacheWriteTokens']);
+  const thought = count(meta['ahpd.reasoningTokens']);
+  const model = str(given?.model) ?? fallback;
+  return {
+    usage: {
+      // The two counts cofold requires are the ones it would count itself:
+      // nothing was measured where the import named none.
+      inputTokens: input ?? 0,
+      outputTokens: output ?? 0,
+      ...(read === undefined ? {} : { cacheReadTokens: read }),
+      ...(wrote === undefined ? {} : { cacheWriteTokens: wrote }),
+      ...(thought === undefined ? {} : { reasoningTokens: thought }),
+    },
+    ...(model === undefined ? {} : { model }),
+  };
+};
+
+/** The error a turn's last error part carried, as a failed run records it. */
+const failureOf = (parts: readonly Bag[]): { code: string; message: string } | undefined => {
+  const failed = parts.filter((part) => part.kind === 'error').at(-1);
+  if (failed === undefined) return undefined;
+  const error = bag(failed.error);
+  return { code: str(error.errorType) ?? 'error', message: str(error.message) ?? 'The turn failed.' };
+};
+
+/**
+ * Write a conversation's turns into a cofold store.
+ *
+ * A turn becomes a user message, the reply's parts as one assistant message,
+ * and the completed calls' results as one tool message, which is the order
+ * `turnsOf` reads. The run beside them is where the turn's usage, its ending
+ * and its span are kept, so the conversation reads back as the store reads any
+ * other: a session started under the same id continues it.
+ *
+ * The run is written after its messages, because a store advances a message's
+ * run to the time it was appended, and the turn's own span is its started time
+ * plus its duration. The writer claim is taken first and given back after, so
+ * the session is free when the import is done.
+ *
+ * @returns nothing; the store is the record.
+ */
+export async function writeImportedHistory(
+  store: Store,
+  turns: ImportedTurns,
+  about: ImportedHistoryAbout,
+): Promise<void> {
+  await store.sessions.create({
+    sessionId: about.sessionId,
+    agentId: about.agentId,
+    ...(about.workspace === undefined ? {} : { workspace: about.workspace }),
+  });
+  let clock = 0;
+  for (const turn of turns) {
+    const parsed = Date.parse(turn.startedAt ?? '');
+    const start = Number.isFinite(parsed) ? parsed : clock;
+    const duration = typeof turn.duration === 'number' && Number.isFinite(turn.duration) && turn.duration > 0
+      ? turn.duration
+      : 0;
+    const startedAt = new Date(start).toISOString();
+    const endedAt = new Date(start + duration).toISOString();
+    clock = start + duration;
+
+    const message = bag(turn.message);
+    const user: Message = {
+      id: turn.id,
+      role: 'user',
+      source: 'input',
+      parts: [{ type: 'text', text: String(message.text ?? '') }],
+      createdAt: startedAt,
+    };
+    const answer: ContentPart[] = [];
+    const shown: ContentPart[] = [];
+    const results: ToolResultPart[] = [];
+    const read = (turn.responseParts ?? []).map((part) => bag(part));
+
+    for (const part of read) {
+      switch (str(part.kind)) {
+        case 'markdown':
+          answer.push({ type: 'text', text: String(part.content ?? '') });
+          break;
+        case 'reasoning':
+          answer.push({ type: 'reasoning', text: String(part.content ?? '') });
+          break;
+        case 'toolCall': {
+          const call = bag(part.toolCall);
+          const given = callInputOf(call.toolInput);
+          const callId = String(call.toolCallId ?? '');
+          const name = String(call.toolName ?? '');
+          answer.push({ type: 'toolCall', callId, name, input: given.input, raw: given.raw });
+          if (call.status === 'completed') {
+            results.push({
+              type: 'toolResult',
+              callId,
+              name,
+              content: resultTextOf(call.content),
+              isError: call.success !== true || call.error !== undefined,
+            });
+          }
+          break;
+        }
+        /*
+         * A notification, a reference and a question have no part of cofold's
+         * own; they are written as the text they say, as Claude's writer writes
+         * a part Claude has no frame for. They are not the model's words, so
+         * they go in a message of their own with source `notice`, which the
+         * store keeps and a request leaves out.
+         */
+        case 'systemNotification': {
+          const said = typeof part.content === 'string' ? part.content : str(bag(part.content).markdown);
+          shown.push({ type: 'text', text: said ?? '' });
+          break;
+        }
+        case 'contentRef':
+          shown.push({ type: 'text', text: String(part.uri ?? '') });
+          break;
+        case 'inputRequest': {
+          const request = bag(part.request);
+          shown.push({ type: 'text', text: str(request.message) ?? String(request.id ?? '') });
+          break;
+        }
+        // The ending state carries the error, which the failed run records.
+        case 'error':
+        default:
+          break;
+      }
+    }
+
+    const written: Message[] = [user];
+    if (answer.length > 0) {
+      written.push({ id: `${turn.id}:answer`, role: 'assistant', source: 'model', parts: answer, createdAt: startedAt });
+    }
+    if (shown.length > 0) {
+      written.push({ id: `${turn.id}:shown`, role: 'assistant', source: 'notice', parts: shown, createdAt: startedAt });
+    }
+    if (results.length > 0) {
+      written.push({ id: `${turn.id}:results`, role: 'tool', source: 'tool', parts: results, createdAt: startedAt });
+    }
+
+    const { usage, model } = usageIn(turn.usage === undefined ? undefined : bag(turn.usage), about.model);
+    const status: RunStatus = turn.state === 'error' ? 'failed' : turn.state === 'cancelled' ? 'cancelled' : 'completed';
+    const failure = failureOf(read);
+    const runId = randomUUID();
+    const run = {
+      runId,
+      sessionId: about.sessionId,
+      agentId: about.agentId,
+      status,
+      createdAt: startedAt,
+      updatedAt: endedAt,
+      usage,
+      steps: 0,
+      denials: [],
+      // The span a cut keeps the turn by, and the turn's own id: `turnsOf`
+      // reads the turn back from the message the run was opened on.
+      inputMessageId: user.id,
+      lastMessageId: written.at(-1)?.id ?? user.id,
+      ...(model === undefined ? {} : { model }),
+    };
+
+    if (!await store.sessions.claimWriter({ sessionId: about.sessionId, runId })) {
+      throw new Error(`cofold will not write the imported conversation: ${about.sessionId} is held by another run`);
+    }
+    try {
+      await store.sessions.appendMessages({ sessionId: about.sessionId, runId, messages: written });
+      await store.runs.create(run);
+      if (failure !== undefined) {
+        await store.runs.appendEvent({
+          seq: 1,
+          runId,
+          sessionId: about.sessionId,
+          agentId: about.agentId,
+          at: endedAt,
+          type: 'run.finished',
+          outcome: { status: 'failed', error: failure, usage, steps: 0 },
+        });
+      }
+    }
+    finally {
+      await store.sessions.releaseWriter({ sessionId: about.sessionId, runId });
+    }
+  }
 }

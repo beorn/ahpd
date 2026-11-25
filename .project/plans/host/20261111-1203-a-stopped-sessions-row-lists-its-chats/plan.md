@@ -1,7 +1,7 @@
 ---
 title: A stopped session's row lists its chats
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -76,9 +76,9 @@ archive_chat { chat } -> at.chats(session) empty -> the row's chats -> chatFlag(
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A stopped row lists its chats](task-01-a-stopped-row-lists-its-chats.md) | implemented | - |
-| [02 - archive_chat reads the row](task-02-archive-chat-reads-the-row.md) | implemented | 01 |
-| [03 - A link finds its session by id](task-03-a-link-finds-its-session-by-id.md) | implemented | - |
+| [01 - A stopped row lists its chats](task-01-a-stopped-row-lists-its-chats.md) | done | - |
+| [02 - archive_chat reads the row](task-02-archive-chat-reads-the-row.md) | done | 01 |
+| [03 - A link finds its session by id](task-03-a-link-finds-its-session-by-id.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -87,7 +87,7 @@ archive_chat { chat } -> at.chats(session) empty -> the row's chats -> chatFlag(
 ## Resume state
 
 - **Done so far:** tasks 01, 02 and 03 implemented 2026-11-11, on the branch of this plan.
-- **Next action:** Softov's review, then `done` on each task.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the tool's `serializeChats` decides when a row shows `chats`, not the host.
 

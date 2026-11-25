@@ -1,6 +1,6 @@
 ---
 title: The steering after a message with attachments arrives
-status: todo
+status: done
 depends: []
 layer: "@ahpd/sdk host"
 refs:
@@ -37,3 +37,5 @@ Softov has the cause and a proposed fix.
 - After the approved fix, the PR's Windows jobs pass with no rerun.
 
 ## Resume
+
+The cause was found and fixed before this build, by `be174c104` (2026-11-08). The host hands steering only to an active turn. On a busy runner, the steering message's file was still being written when the 60 ms echo turn ended. The steering was queued, and the case waited 15 s. The case now holds its turn until it has taken its steering. The fix is in the test, so no product change went to Softov. `host-attachments.test.ts` passed 50 runs in a row on Linux, and it failed in none of the 26 failed CI runs since 2026-11-06.

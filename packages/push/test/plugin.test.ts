@@ -154,13 +154,36 @@ it('tells a device set to device only the sessions its own client created or ope
     'phone-bo': { token: 'ExponentPushToken[bo]', platform: 'ios', owner: 'user:bo', client: 'app-bo' },
   }, new Map([['echo:/one', 'user:ana'], ['echo:/two', 'user:ana'], ['echo:/three', 'user:carol']]), true);
   await world.fire({ type: 'session_start', session: 'echo:/one', provider: 'echo', client: 'app-ana' });
-  await world.fire({ type: 'session_opened', session: 'echo:/three', client: 'app-bo' });
+  await world.fire({ type: 'session_opened', session: 'echo:/three', client: 'app-bo', owner: 'user:bo' });
   await waiting(world, 'echo:/one');
   await waiting(world, 'echo:/two');
   await waiting(world, 'echo:/three');
   // Ana's device hears the session its client made and not her other one; Bo's
   // hears the one his client opened though it is Carol's.
   expect(world.sent.map((one) => one.to)).toEqual(['ExponentPushToken[ana]', 'ExponentPushToken[bo]']);
+});
+
+/*
+ * A client id is the client's own word, so on a host with people a device
+ * hears a session its client opened only when its own person opened it there.
+ */
+it('tells a device that gave another person\'s client id nothing of that person\'s session', async () => {
+  const world = await up({
+    'phone-bo': { token: 'ExponentPushToken[bo]', platform: 'ios', owner: 'user:bo', client: 'app-ana', audience: 'device' },
+  }, new Map([['echo:/one', 'user:ana']]), true);
+  await world.fire({ type: 'session_start', session: 'echo:/one', provider: 'echo', client: 'app-ana' });
+  await world.fire({ type: 'session_opened', session: 'echo:/one', client: 'app-ana', owner: 'user:ana' });
+  await waiting(world, 'echo:/one');
+  expect(world.sent).toEqual([]);
+});
+
+it('tells an admin\'s device of another person\'s session the admin opened on it', async () => {
+  const world = await up({
+    'phone-ana': { token: 'ExponentPushToken[ana]', platform: 'ios', owner: 'user:ana', client: 'app-ana', audience: 'device' },
+  }, new Map([['echo:/one', 'user:carol']]), true);
+  await world.fire({ type: 'session_opened', session: 'echo:/one', client: 'app-ana', owner: 'user:ana' });
+  await waiting(world, 'echo:/one');
+  expect(world.sent.map((one) => one.to)).toEqual(['ExponentPushToken[ana]']);
 });
 
 it('on a host with no people, tells every device of every session', async () => {

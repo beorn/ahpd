@@ -1,7 +1,7 @@
 ---
 title: Each pull request of a session carries what GitHub says of it
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-16
 revalidated: 2026-11-16
@@ -94,10 +94,10 @@ a client watches the directory -> every 60 s the open ones are read again -> met
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the port reads a pull request's details](task-01-the-port-reads-a-pull-requests-details.md) | implemented | - |
-| [02 - a session sends its pull requests](task-02-a-session-sends-its-pull-requests.md) | implemented | 01 |
-| [03 - an open pull request is read each minute](task-03-an-open-pull-request-is-read-each-minute.md) | implemented | 02 |
-| [04 - the docs name the details](task-04-the-docs-name-the-details.md) | implemented | 02 |
+| [01 - the port reads a pull request's details](task-01-the-port-reads-a-pull-requests-details.md) | done | - |
+| [02 - a session sends its pull requests](task-02-a-session-sends-its-pull-requests.md) | done | 01 |
+| [03 - an open pull request is read each minute](task-03-an-open-pull-request-is-read-each-minute.md) | done | 02 |
+| [04 - the docs name the details](task-04-the-docs-name-the-details.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -108,7 +108,7 @@ a client watches the directory -> every 60 s the open ones are read again -> met
 ## Resume state
 
 - **Done so far:** tasks 01 to 04 built on 2026-11-16 on branch `host/20261116-1714-each-pull-request-carries-githubs-details`, awaiting review.
-- **Next action:** Softov reviews the PR, then the check by hand on the test daemon in *Final verification checklist*.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:**
   - VS Code's `_meta.github` keys and `pullRequestState` stay exactly as they are; the details are a new key beside them.

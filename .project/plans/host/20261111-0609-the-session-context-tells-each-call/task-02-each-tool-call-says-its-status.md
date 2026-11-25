@@ -1,6 +1,6 @@
 ---
 title: Each tool call says its status
-status: implemented
+status: done
 depends: [task-01-the-context-answers-vscodes-fields.md]
 layer: "sdk, docs"
 refs:

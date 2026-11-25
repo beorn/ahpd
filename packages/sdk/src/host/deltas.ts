@@ -66,7 +66,12 @@ const appended = (held: Bag, next: Bag): Bag =>
  */
 const MERGING: Record<string, (held: Bag, next: Bag) => Bag> = {
   'chat/delta': appended,
-  'chat/reasoning': appended,
+  // The times AHP 1.1.0 lets a chunk carry, which the last to say them decides.
+  'chat/reasoning': (held, next) => ({
+    ...appended(held, next),
+    ...(next.startedAt === undefined ? {} : { startedAt: next.startedAt }),
+    ...(next.duration === undefined ? {} : { duration: next.duration }),
+  }),
   'chat/toolCallDelta': (held, next) => (next.invocationMessage === undefined
     ? appended(held, next)
     : { ...appended(held, next), invocationMessage: next.invocationMessage }),

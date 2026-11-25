@@ -388,6 +388,36 @@ it('sends a record its own icon as one icon, and keeps the icon field', async ()
   await close();
 });
 
+it('keeps an agent\'s tags once each, on its row and on the view a session reads', async () => {
+  const { host, users, lists, opened, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', tags: ['work', 'main', 'work'], config: { target: 'a' },
+  });
+  expect((await cy.rows())['mine']?.['tags']).toEqual(['work', 'main']);
+  expect(opened[0]?.tags).toEqual(['work', 'main']);
+  expect(lists.tagsOf('mine')).toEqual(['work', 'main']);
+  expect(lists.tagsOf('nobody')).toEqual([]);
+
+  // An edit reaches the same view, and a put with no tags keeps none.
+  await cy.call('x-ahpd/agents/put', { id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', config: { target: 'a' } });
+  expect(opened).toHaveLength(1);
+  expect(opened[0]?.tags).toEqual([]);
+  expect((await cy.rows())['mine']).not.toHaveProperty('tags');
+  await close();
+});
+
+it('refuses an agent whose tags are not fit to keep', async () => {
+  const { host, users, close } = await served();
+  const cy = await as(host, users, 'cy');
+  const answer = await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', tags: ['a,b'], config: { target: 'a' },
+  });
+  expect(answer).toMatchObject({ message: 'x-ahpd/agents/put takes a tag holds no comma and no control character' });
+  await close();
+});
+
 it("sends a record with no icon its template's icons, matched by command", async () => {
   const { host, users, close } = await served();
   const fa = await as(host, users, 'fa');

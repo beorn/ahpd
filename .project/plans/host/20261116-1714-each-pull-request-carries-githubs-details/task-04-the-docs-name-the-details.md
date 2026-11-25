@@ -1,6 +1,6 @@
 ---
 title: The docs and the spec name a pull request's details
-status: implemented
+status: done
 depends: [task-02-a-session-sends-its-pull-requests.md]
 layer: "docs"
 refs:

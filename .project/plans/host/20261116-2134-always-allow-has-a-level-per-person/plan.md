@@ -1,7 +1,7 @@
 ---
 title: Always Allow has a level for one person
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-16
 revalidated: 2026-11-16
@@ -91,11 +91,11 @@ next question -> rules of the session, then the session owner's person rules, th
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - a person keeps rules of their own](task-01-a-person-keeps-rules-of-their-own.md) | implemented | - |
-| [02 - the host's rules need config:permissions](task-02-the-hosts-rules-need-config-permissions.md) | implemented | 01 |
-| [03 - the deny list comes first](task-03-the-deny-list-comes-first.md) | implemented | - |
-| [04 - the question offers the approved levels](task-04-the-question-offers-the-approved-levels.md) | implemented | 01, 02 |
-| [05 - the docs name the levels and the grant](task-05-the-docs-name-the-levels-and-the-grant.md) | implemented | 02, 04 |
+| [01 - a person keeps rules of their own](task-01-a-person-keeps-rules-of-their-own.md) | done | - |
+| [02 - the host's rules need config:permissions](task-02-the-hosts-rules-need-config-permissions.md) | done | 01 |
+| [03 - the deny list comes first](task-03-the-deny-list-comes-first.md) | done | - |
+| [04 - the question offers the approved levels](task-04-the-question-offers-the-approved-levels.md) | done | 01, 02 |
+| [05 - the docs name the levels and the grant](task-05-the-docs-name-the-levels-and-the-grant.md) | done | 02, 04 |
 
 ## Risks and tradeoffs
 
@@ -104,6 +104,7 @@ next question -> rules of the session, then the session owner's person rules, th
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 to 05 built on 2026-11-16 on branch `host/20261116-2134-always-allow-has-a-level-per-person`, from the branch of host/20261116-2128, awaiting review.
 - **Next action:** Softov reviews the PR, then the checks of *Final verification checklist* on the test daemon.

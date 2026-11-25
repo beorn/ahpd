@@ -1,6 +1,6 @@
 ---
 title: A key is minted with limits
-status: implemented
+status: done
 depends: []
 layer: "sdk, server"
 refs:

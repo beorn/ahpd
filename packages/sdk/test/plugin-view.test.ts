@@ -314,8 +314,8 @@ describe('a canvas', () => {
   it('is still refused a URL that is not absolute http(s)', async () => {
     const canvases = createCanvases({ dispatch: () => {}, holds: () => true, restore: async () => {}, enabled: () => true });
     const state = { instanceId: 'board-1', extensionId: 'com.brbyte.canvas', canvasId: 'board' };
-    await expect(canvases.open('ahp-chat:/c', { ...state, url: 'board/1' }, 'board'))
-      .rejects.toThrow('plugin board: openCanvas needs state.url to be an absolute http(s) URL with a host');
+    await expect(canvases.open('ahp-chat:/c', { ...state, uri: 'board/1' }, 'board'))
+      .rejects.toThrow('plugin board: openCanvas needs state.uri to be an absolute http(s) URL with a host');
     expect(isWebUrl('https://example.test/x')).toBe(true);
     expect(isWebUrl('https://')).toBe(false);
   });

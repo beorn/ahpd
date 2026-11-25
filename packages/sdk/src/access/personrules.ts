@@ -2,15 +2,17 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Bag } from '../types/common.js';
 import type { Owner } from '../types/usage.js';
+import type { HostOptions } from '../types/host.js';
 import { withGrant } from '../host/permissions.js';
 
 /**
  * The root config keys a window pushes that decide what runs or is written
- * without a question. On a host with users each person keeps their own, since
+ * without a question, and the restriction its policy puts on auto-approval.
+ * On a host with users each person keeps their own, since
  * a value for the whole host would let one person's window approve commands
  * in everybody's sessions.
  */
-export const APPROVAL_KEYS: readonly string[] = ['terminalAutoApproveRules', 'terminalAutoApproveEnabled', 'editAutoApprovePatterns'];
+export const APPROVAL_KEYS: readonly string[] = ['terminalAutoApproveRules', 'terminalAutoApproveEnabled', 'editAutoApprovePatterns', 'autoApprovePolicyRestricted'];
 
 /** The schema mark a root config key a person keeps their own value of carries, with the value `person`. */
 export const SCOPE_MARK = 'x-ahpd-scope';
@@ -38,6 +40,17 @@ export interface PersonRules {
 /** The person an owner is, for a person's own rules: a signed-in user, and nobody else. */
 export const personOf = (owner: Owner | undefined): string | undefined =>
   (owner?.startsWith('user:') === true ? owner.slice('user:'.length) : undefined);
+
+/**
+ * One of `APPROVAL_KEYS` as it holds in a session: the owner's own value where
+ * the host has users and the owner keeps one, the host's otherwise.
+ */
+export const approvalSetting = (options: Pick<HostOptions, 'users' | 'personPermissionsDir'>, rootConfig: Bag, owner: Owner | undefined, key: string): unknown => {
+  const folder = options.users === undefined ? undefined : options.personPermissionsDir;
+  const person = personOf(owner);
+  const own = folder === undefined || person === undefined ? {} : filePersonRules(folder).settings(person);
+  return Object.hasOwn(own, key) ? own[key] : rootConfig[key];
+};
 
 /** The file one person's rules are kept in, or nothing for an id that would name a file outside the folder. */
 const fileOf = (folder: string, person: string): string | undefined => {

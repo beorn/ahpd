@@ -1,7 +1,7 @@
 ---
 title: Configure sets up policies and people
 domain: daemon
-status: active
+status: built
 priority: medium
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -77,9 +77,9 @@ The brief that this plan covers held the research; its last commit is the first 
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - configure adds a person](task-01-configure-adds-a-person.md) | implemented | - |
-| [02 - configure turns the policy checks on](task-02-configure-turns-the-policy-checks-on.md) | implemented | 01 |
-| [03 - configure reads paths from its folder](task-03-configure-reads-paths-from-its-folder.md) | implemented | 01 |
+| [01 - configure adds a person](task-01-configure-adds-a-person.md) | done | - |
+| [02 - configure turns the policy checks on](task-02-configure-turns-the-policy-checks-on.md) | done | 01 |
+| [03 - configure reads paths from its folder](task-03-configure-reads-paths-from-its-folder.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -89,6 +89,7 @@ The brief that this plan covers held the research; its last commit is the first 
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 and 02 are `implemented` on 2026-11-17, on the branch `daemon/20261118-0129-configure-sets-up-policies-and-people`.
 - **Next action:** Softov's review. Merged in #372 on 2026-11-18.

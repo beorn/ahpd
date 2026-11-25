@@ -771,16 +771,21 @@ it('waits behind a turn a person is running in the chat it is pinned to', async 
   await client.handle({ method: 'subscribe', params: { channel: pinnedChat } });
   await begins(client, pinnedChat, 'p1');
 
-  // The event arrives while that turn is going, so it waits rather than going
-  // into the chat as a second turn.
+  // The event arrives while that turn is going. Its run is made at once and
+  // waits as a queued message in the chat, `pending`, as AHP 1.2.0 says of a
+  // run that continues a session, rather than going in as a second turn.
   await fails(client, chatUri, 't2', cli);
-  await settle(8);
-  expect(runCount(store)).toBe(1);
+  await until(() => runCount(store) === 2, 'the run that waits');
+  expect(bag(newest(store)['lifecycle'])['status']).toBe('pending');
+  const queued = async (): Promise<number> =>
+    (((await client.handle({ method: 'subscribe', params: { channel: pinnedChat } })) as { snapshot: { state: { queuedMessages?: unknown[] } } }).snapshot.state.queuedMessages ?? []).length;
+  for (let at = 0; at < 50 && await queued() !== 1; at++) await settle(2);
+  expect(await queued()).toBe(1);
 
-  // And the moment the person's turn ends, it goes - in the same chat, with no
-  // session made for it.
+  // And the moment the person's turn ends, the queue takes it up - in the same
+  // chat, with no session made for it.
   await ends(cli + 1);
-  await until(() => runCount(store) === 2, 'the run that waited');
+  await until(() => String(bag(newest(store)['lifecycle'])['status']) !== 'pending', 'the run that waited to start');
   expect(newest(store)['primarySession']).toBe(pin);
   expect(sessionQueries()).toHaveLength(cli + 2);
 });

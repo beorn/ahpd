@@ -1,6 +1,6 @@
 ---
 title: A plugin's own folder is trusted
-status: implemented
+status: done
 depends: []
 layer: "sdk, bot, docs"
 refs:

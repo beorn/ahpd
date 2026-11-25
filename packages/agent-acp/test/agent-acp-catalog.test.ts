@@ -2161,7 +2161,7 @@ it('says how long a call ran at its completion, and reads back with the same num
 });
 
 it('measures a call from the first update about it to the one that finished it', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   mapUpdate(turn, toolCall('c1', 'pending'), 1_000);
   mapUpdate(turn, toolCallUpdate('c1', 'in_progress'), 2_000);
   mapUpdate(turn, toolCallUpdate('c1', 'completed'), 5_000);
@@ -2172,7 +2172,7 @@ it('measures a call from the first update about it to the one that finished it',
 });
 
 it('measures a call whose row a permission question opened from its first update', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   // The row a `session/request_permission` opened, left the way the session
   // leaves it for the mapping to find: a call nobody has heard anything about.
   turn.calls.set('c1', { toolCallId: 'c1', toolName: 'rm', displayName: 'Remove', readied: true, asked: true });
@@ -2193,7 +2193,7 @@ it('measures a call whose row a permission question opened from its first update
 });
 
 it('measures a call that arrives already finished as one moment', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const sent = mapUpdate(turn, toolCall('c1', 'completed'), 7_000);
   const complete = sent.find((one) => one.type === 'chat/toolCallComplete');
   const held = metaOf(turn.parts[0]?.toolCall as Bag);
@@ -2202,7 +2202,7 @@ it('measures a call that arrives already finished as one moment', () => {
 });
 
 it('says a call\'s kind from the kind ACP reports for it, for a client to draw it by', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const kindOf = (id: string, kind: string): unknown => {
     const sent = mapUpdate(turn, { sessionUpdate: 'tool_call', toolCallId: id, title: id, kind, status: 'pending' } as unknown as SessionUpdate, 1_000);
     return (sent.find((one) => one.type === 'chat/toolCallStart')?._meta as Bag | undefined)?.toolKind;
@@ -2217,7 +2217,7 @@ it('says a call\'s kind from the kind ACP reports for it, for a client to draw i
 });
 
 it('stamps nothing for an update a session load replayed', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   // No `at`: the update carries no receive time of its own, and the replay's
   // own clock would time a call by when this process read about it.
   const sent = mapUpdate(turn, toolCall('c1', 'pending'));
@@ -2233,7 +2233,7 @@ it('stamps nothing for an update a session load replayed', () => {
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/copilotToolDisplay.ts#L895-L898
  */
 it('says a failed call failed in its past tense, and a success by its name', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   mapUpdate(turn, toolCall('c1', 'in_progress'));
   mapUpdate(turn, toolCall('c2', 'in_progress'));
   const failed = mapUpdate(turn, toolCallUpdate('c1', 'failed')).find((one) => one.type === 'chat/toolCallComplete');
@@ -2250,7 +2250,7 @@ it('says a failed call failed in its past tense, and a success by its name', () 
  * https://github.com/microsoft/agent-host-protocol/blob/v1.0.0/types/channels-chat/state.ts#L1045-L1053
  */
 it('answers a resource the agent linked or embedded as a content reference part', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const said = (content: unknown): Bag[] =>
     mapUpdate(turn, { sessionUpdate: 'agent_message_chunk', content } as unknown as SessionUpdate);
   said({ type: 'text', text: 'Here: ' });
@@ -2318,7 +2318,7 @@ it('leaves out an image and audio the host keeps nothing of, and names an embedd
 });
 
 it('answers an image that names its source as a content reference part', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const drawn = mapUpdate(turn, {
     sessionUpdate: 'agent_message_chunk',
     content: { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png', uri: 'file:///tmp/chart.png' },
@@ -2340,7 +2340,6 @@ it('titles a call\'s terminal by the call, with how its command ended once it ha
     turnId: 't1',
     parts: [],
     calls: new Map(),
-    opening: [],
     reach: {
       within: () => false,
       changed: () => {},
@@ -2373,7 +2372,7 @@ it('titles a call\'s terminal by the call, with how its command ended once it ha
  * https://agentclientprotocol.com/protocol/schema#contentchunk
  */
 it('opens a new part for a chunk of a new message, and runs on within one', () => {
-  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   const said = (text: string, messageId: string): Bag[] =>
     mapUpdate(turn, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, messageId } as unknown as SessionUpdate);
   said('First ', 'm1');

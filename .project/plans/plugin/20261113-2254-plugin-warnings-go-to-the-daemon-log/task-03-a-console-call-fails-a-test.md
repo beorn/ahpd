@@ -1,6 +1,6 @@
 ---
 title: A console call fails a test
-status: implemented
+status: done
 depends: [01, 02]
 layer: "server tests"
 refs:

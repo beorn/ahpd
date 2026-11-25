@@ -1,6 +1,6 @@
 ---
 title: A person keeps rules of their own
-status: implemented
+status: done
 depends: []
 layer: sdk
 refs:

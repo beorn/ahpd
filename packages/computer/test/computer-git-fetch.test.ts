@@ -3,12 +3,16 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { MACHINE_OBJECTS } from '../src/gitdir.js';
 import { dockerRuntime } from '../src/runtime.js';
 import { computerTools } from '../src/tools.js';
 import type { HostTool, ToolCall } from '../../sdk/src/types/host.js';
 import { gitSync } from '../../../tools/git.ts';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * What a machine with a repository can reach of the host's git directory, on a

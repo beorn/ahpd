@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import TimedSequencer from './tools/shard-sequencer.ts';
 
 /*
  * The packages, as their source rather than their build.
@@ -22,6 +23,8 @@ export default defineConfig({
   },
   test: {
     globalSetup: ['./tools/test-tmpdir.ts'],
+    // Shards by how long each file took, so no shard is given all the slow ones.
+    sequence: { sequencer: TimedSequencer },
     /*
      * Twenty seconds on Windows, five elsewhere.
      *

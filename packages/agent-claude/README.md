@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 Claude Code as a backend for [`@ahpd/sdk`](https://www.npmjs.com/package/@ahpd/sdk), and the plugin that lets the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon run it.
 
@@ -30,7 +32,7 @@ Update, remove and one-run flags such as `--plugin` are in [Plugins](https://git
 ```json
 {
   "plugins": [
-    { "name": "@ahpd/agent-claude", "options": { "paths": ["/work/project"] } }
+    { "name": "@ahpd/agent-claude", "options": { "model": "sonnet" } }
   ]
 }
 ```
@@ -41,13 +43,13 @@ Every option below is a key under `options` in the plugin's entry, and the daemo
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `paths` | the host's directories | The directories it works in; the first is where a session goes when a client names none |
+| `model` | the CLI's default | The model of an agent that names none; an agent's own `model` wins |
+| `hostTools` | `true` | Whether the host's own tools reach each session. A record can turn them off for one agent |
 | `computerExecutable` | `claude` | Where the CLI is *inside a machine* |
 | `computerCli` | `part` | Where the CLI a machine runs comes from |
 | `computerCliFallback` | `refuse` | With `computerCli: "part"`, what a machine gets when the `claude` part cannot be built |
 | `computerConfigDir` | `/ahpd/<id>`, or `/ahpd/claude` for the first record | The configuration directory the CLI reads *inside a machine*; `false` leaves the image's own |
 | `handshakeTimeoutMs` | `120000` | How long the CLI has to answer its handshake, the bound the SDK's `startup` is handed |
-| `hostTools` | `true` | Whether the host's own tools reach each session. A record can turn them off for one agent |
 
 `computerCli` is `part`, the `claude` part this host builds at its pinned version, or `host`, which mounts this host's own installed CLI. `computerCliFallback` is `refuse`, which refuses a Claude session in a machine and names the part, or `host`, which mounts this host's own CLI instead and logs that it did. `handshakeTimeoutMs` is how long a CLI has to take the control request that says it is up: a cold start with several MCP servers is slow, and a machine slower than that is what the option is for. A session starts its CLI through the SDK's `startup`, as VS Code's Claude does, and hands it this bound: a CLI that misses it did not start, the SDK closes it, the turn fails in the SDK's words, and the next send starts a CLI again.
 
@@ -60,16 +62,22 @@ An agent is a record on `x-ahpd-agents`: `{ id, engine, owner, name, description
 | `models` | the CLI's own list | The models that agent offers in the picker, each an `{ "id", "name" }` |
 | `modelSources` | none | Endpoints whose model lists that agent also offers, each `{ "fetch", "match", "key" }` |
 | `keepCliModels` | `false` | With either list, add them to the CLI's list rather than replace it |
-| `sandbox` | `default` | The CLI's own sandbox for shell commands: `default` leaves it to the settings files, `on` and `off` set it. `on` runs a sandboxed Bash command without a prompt |
-| `thinking` | `adaptive` | Extended thinking: `adaptive` lets the agent decide when to think, `disabled` is none |
 | `outputStyle` | none | The name of a style from the CLI's own settings |
+| `thinking` | `adaptive` | Extended thinking: `adaptive` lets the agent decide when to think, `disabled` is none |
+| `hostTools` | `true` | Whether the host's own tools reach this agent's sessions. Off drops them and keeps each client's tools |
+| `hostTasks` | `true` | Whether Claude leaves its own task tools to the host's `task_add`. Off keeps them, and their calls write the session's plan |
+| `enableTasks` | `true` | Whether Claude's own Task tools are on when Claude keeps its task tools; off starts the CLI with `CLAUDE_CODE_ENABLE_TASKS=0`, which gives it `TodoWrite` instead |
 | `env` | none | Variables for the CLI's process, laid over the daemon's own environment on this host, and the whole of it in a machine |
 | `logins` | none | The Claude logins the agent runs on, by the id of a `claude-login` connector, in the order a turn tries them. See [Several logins](#several-logins) |
 | `extraArgs` | none | Arguments the CLI is started with beyond the ones this backend builds. **Host records only** |
-| `hostTasks` | `true` | Whether Claude leaves its own task tools to the host's `task_add`. Off keeps them, and their calls write the session's plan |
-| `hostTools` | `true` | Whether the host's own tools reach this agent's sessions. Off drops them and keeps each client's tools |
-| `enableTasks` | `true` | Whether Claude's own Task tools are on when Claude keeps its task tools; off starts the CLI with `CLAUDE_CODE_ENABLE_TASKS=0`, which gives it `TodoWrite` instead |
+| `sandbox` | `default` | The CLI's own sandbox for shell commands: `default` leaves it to the settings files, `on` and `off` set it |
+| `autoAllowBashIfSandboxed` | none | Whether a sandboxed Bash command runs without a question. With none set the settings files decide, and it asks where they are silent. When it asks, the `dontAsk` mode denies it. Deny and ask rules stop a command either way |
+| `computerConfigDir` | the plugin's | The configuration directory the CLI reads *inside a machine*, over the plugin's; `false` leaves the image's own. **Host records only** |
+| `cliStart` | `open` | When a session starts its CLI: `open` as the session is made, so its account, context and plan limits show before any turn; `send` at its first message, as VS Code's Claude agent makes a session provisional until then |
+| `stopEnds` | `turn` | What a stop ends: `turn` interrupts the turn through the SDK and keeps the CLI, ending only the workers the stopped turn spawned, and a steering message the CLI holds is answered after the stop in a turn of its own; `query` aborts the query as VS Code's agent does, its workers, its tasks and the steering it holds with it |
 | `dontAsk` | `true` | Whether the Approvals control offers the SDK's `dontAsk` beside VS Code's five modes; off offers VS Code's five alone |
+| `portFailures` | `spawn` | How a machine's port that could not start the CLI is said: `spawn` files it as a failure to start, so the turn fails in the SDK's one sentence for that, with no host path; `message` passes on the failure's own message, as VS Code's host shows a failed send's |
+| `subagentsFrom` | `meta` | Where a restored session's worker chats are read from: `meta` reads the CLI's worker files and links each by the call its meta file names, which tells two identical delegations apart; `sdk` reads them through the SDK's `listSubagents` and `getSubagentMessages` and links each as VS Code's agent does, by the `agentId` line of its call's result, else its prompt, else its last answer |
 | `taskOutputFirstWaitMs` | `500` | The first wait between the reads that follow a background shell's output, in milliseconds, as VS Code's output monitor waits |
 | `taskOutputLongestWaitMs` | `10000` | The longest wait between those reads, in milliseconds, each wait twice the last until it |
 | `taskOutputQuietReads` | `2` | How many reads in a row that find nothing new count the shell quiet, so its next output brings the wait back to the first, as VS Code's output monitor counts |
@@ -82,10 +90,6 @@ An agent is a record on `x-ahpd-agents`: `{ id, engine, owner, name, description
 | `fileMostBytes` | `65536` | The most of a customization file, in bytes, read for its frontmatter |
 | `ruleDepth` | `32` | How many folders deep a rules folder is walked |
 | `ruleMost` | `1000` | The most rule files read from one rules folder |
-| `cliStart` | `open` | When a session starts its CLI: `open` as the session is made, so its account, context and plan limits show before any turn; `send` at its first message, as VS Code's Claude agent makes a session provisional until then |
-| `stopEnds` | `turn` | What a stop ends: `turn` interrupts the turn through the SDK and keeps the CLI, ending only the workers the stopped turn spawned, and a steering message the CLI holds is answered after the stop in a turn of its own; `query` aborts the query as VS Code's agent does, its workers, its tasks and the steering it holds with it |
-| `portFailures` | `spawn` | How a machine's port that could not start the CLI is said: `spawn` files it as a failure to start, so the turn fails in the SDK's one sentence for that, with no host path; `message` passes on the failure's own message, as VS Code's host shows a failed send's |
-| `subagentsFrom` | `meta` | Where a restored session's worker chats are read from: `meta` reads the CLI's worker files and links each by the call its meta file names, which tells two identical delegations apart; `sdk` reads them through the SDK's `listSubagents` and `getSubagentMessages` and links each as VS Code's agent does, by the `agentId` line of its call's result, else its prompt, else its last answer |
 
 `extraArgs` is host-only: a team's or a person's record that sets one is refused, because an argument is where a command would come from. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` in `env` are the engine's key variables, so any owner may set them; every other `env` variable is the host's alone, because a free environment can run a program.
 
@@ -203,6 +207,8 @@ The operator's managed settings, `Start.managedSettings`, reach the CLI as Claud
 
 A subagent Claude runs is its own chat. Every `Task` and `Agent` call opens one through the host's `Start.subagent`, read-only and named `ahp-chat://subagent/…`, and the subagent's text, thinking, tool calls and permission asks are drawn there instead of in the turn that spawned it. A stop given in the subagent's chat stops that subagent through the SDK's `stopTask`, and the turn that started it goes on and sees the call end. Before Claude has named the subagent's task, the stop stops nothing else. On a host without `Start.subagent` the subagent's output stays inline. A session read back from disk rebuilds each subagent's chat from the CLI's `subagents/*.meta.json` and `.jsonl` files.
 
+A `Bash` command or a subagent that runs in the foreground can move to the background, as Ctrl+B moves it in Claude Code. When its `task_started` says `is_backgrounded: false`, the session offers the call through `Start.movableCalls`, and `x-ahpd/backgroundToolCall` moves it with the SDK's own `backgroundTasks` and the call's id. The call answers its model at once, its task goes on as the row the session already lists, `shell:<task id>` or `subagent:<task id>`, and the completed call names that row under `_meta['ahpd.backgroundWork']`. A session whose `env` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` offers nothing.
+
 A `Bash` result too large to send shows its whole output in a terminal, as VS Code does. Claude gives the model a notice in place of such an output and saves the output to a file, which the result's `tool_use_result.persistedOutputPath` names. The call keeps the notice as its text, the host keeps the file's text for the call's chat through `Start.terminalOutputs`, and the call's content names the terminal the host rebuilds from it: exited, `isPty: false`, with `exitCode: 0` for a command that worked, Claude's preview and `truncated: true`. It lasts as long as the chat, and goes with its turn, its chat and its session. Claude's transcript holds the notice alone, so a call read back names its terminal again where the host still keeps the output. A file over 10 MB is not read. A subagent's result, a backgrounded command, a session in a machine and a host whose session store keeps no folder get no terminal.
 
 Sessions the host is not running are read from Claude's transcripts, so clients can browse and read them without starting a process. The agent starts when a turn is sent.
@@ -284,7 +290,7 @@ A turn uses the logins as the [model gateway](https://github.com/ahpio/ahpd/blob
 - When no login is left to try, the turn ends with the last failure and the first login back, with when. A turn that starts with every open login resting ends at once the same way.
 - Any other error ends the turn as it always did, with the CLI's words. So do `billing_error`, a 402, and `account_on_hold`, which is no single status. The [API's errors](https://docs.claude.com/en/api/errors) give each status.
 
-Each failure of a login goes to the daemon's log with the CLI's words, and each call of a login, failed or not, is noted on its connector's health, as the model gateway notes an attempt, so its row shows it. The plugin notes as a client of its own host. On a host with a users directory, its configuration entry needs the grants `connector:put` and `connector:host` to note the host's logins. A person's login is never the plugin's to note. A login's check, which counts one prompt's tokens with its token and costs nothing, runs where the host runs a connector's check: at a put, at start and at a client's command.
+Each failure of a login goes to the daemon's log with the CLI's words, and each call of a login, failed or not, is noted on its connector, as the model gateway notes an attempt: a failure raises the row's `call` alert, and a call that works clears it. The plugin notes as a client of its own host. On a host with a users directory, its configuration entry needs the grants `connector:put` and `connector:host` to note the host's logins. A person's login is never the plugin's to note. A login's check, which counts one prompt's tokens with its token and costs nothing, runs where the host runs a connector's check: at a put, at start and at a client's command.
 
 Rests are kept in memory, so a restart clears them, and the next failure names the time again. The CLI keeps its conversations in one configuration folder for every login, so a login resumes what another one wrote. A refused token does not fall back to a sign-in kept in that folder.
 

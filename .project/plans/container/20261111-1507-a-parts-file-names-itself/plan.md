@@ -1,7 +1,7 @@
 ---
 title: A parts file names itself in its errors
 domain: container
-status: planned
+status: built
 priority: low
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -58,7 +58,7 @@ readParts(path) -> entryOf(value, where) -> said(problem) -> Error("<versionsPat
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - An entry error names its file](task-01-an-entry-error-names-its-file.md) | implemented | - |
+| [01 - An entry error names its file](task-01-an-entry-error-names-its-file.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -67,7 +67,7 @@ readParts(path) -> entryOf(value, where) -> said(problem) -> Error("<versionsPat
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-11; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `entryOf` in `gitdir.ts` is another function of the same name.
 

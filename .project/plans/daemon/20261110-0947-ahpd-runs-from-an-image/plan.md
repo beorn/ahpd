@@ -1,7 +1,7 @@
 ---
 title: ahpd runs from an image
 domain: daemon
-status: active
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -100,12 +100,12 @@ docker compose up -> tini -> entrypoint.sh run -> missing plugins installed -> v
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The image builds from the checkout](task-01-the-image-builds-from-the-checkout.md) | implemented | - |
-| [02 - The entrypoint seeds plugins and runs ahpd](task-02-the-entrypoint-seeds-plugins.md) | implemented | 01 |
-| [03 - Compose runs the image](task-03-compose-runs-the-image.md) | implemented | 02 |
-| [04 - CI runs the image checks](task-04-ci-runs-the-image-checks.md) | implemented | 03 |
-| [05 - The docs say how to run it in Docker](task-05-the-docs-say-how-to-run-in-docker.md) | implemented | 03 |
-| [06 - The downgrade check reads versions as semver](task-06-the-downgrade-check-reads-semver.md) | implemented | 02 |
+| [01 - The image builds from the checkout](task-01-the-image-builds-from-the-checkout.md) | done | - |
+| [02 - The entrypoint seeds plugins and runs ahpd](task-02-the-entrypoint-seeds-plugins.md) | done | 01 |
+| [03 - Compose runs the image](task-03-compose-runs-the-image.md) | done | 02 |
+| [04 - CI runs the image checks](task-04-ci-runs-the-image-checks.md) | done | 03 |
+| [05 - The docs say how to run it in Docker](task-05-the-docs-say-how-to-run-in-docker.md) | done | 03 |
+| [06 - The downgrade check reads versions as semver](task-06-the-downgrade-check-reads-semver.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -118,7 +118,7 @@ docker compose up -> tini -> entrypoint.sh run -> missing plugins installed -> v
 ## Resume state
 
 - **Done so far:** tasks 01 to 05 are implemented. The image builds from the checkout, and `docker/entrypoint.sh` seeds and updates the volume's plugins. The two Compose files run it on loopback, and the `image` CI job builds it and runs `docker/test/smoke.sh`. `docs/server/DOCKER.md` says how to install, configure, upgrade, back up and move a host install. `.project/pending/docker-checks.md` holds the two checks CI cannot run. Task 06 is implemented: the downgrade check reads versions as semver, and the smoke test passed on 2026-11-12 with its two new cases.
-- **Next action:** review task 06. Tasks 01 to 05 were reviewed on 2026-11-11 and are closed with task 06, so the plan closes as `built` after that review.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:**
 The pack stage must run pnpm, not npm, or the tarballs carry `workspace:^`.

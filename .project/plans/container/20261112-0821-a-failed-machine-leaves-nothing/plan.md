@@ -1,7 +1,7 @@
 ---
 title: A failed machine leaves nothing
 domain: container
-status: planned
+status: built
 priority: medium
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -64,8 +64,8 @@ start -> adopt -> "left the disposable machine alone"
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A failed run removes its machine](task-01-a-failed-run-removes-its-machine.md) | implemented | - |
-| [02 - Start removes unkept machines](task-02-start-removes-unkept-machines.md) | implemented | - |
+| [01 - A failed run removes its machine](task-01-a-failed-run-removes-its-machine.md) | done | - |
+| [02 - Start removes unkept machines](task-02-start-removes-unkept-machines.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -75,7 +75,7 @@ start -> adopt -> "left the disposable machine alone"
 ## Resume state
 
 - **Done so far:** both tasks are implemented. The run guard and `cleanUpFailed` are in `runtime.ts`, and `adopt` removes this daemon's unkept disposable machine in `plugin.ts`. The tests are written in `computer-cleanup.test.ts` and `computer-disposable.test.ts`. `pnpm exec tsc -p tsconfig.json --noEmit` prints nothing and no vitest was run.
-- **Next action:** review and merge the PR, then the [Windows check](../../../pending/windows-machine-paths-checks.md). The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** a failed `docker run` can still have made the container, in the `Created` state. The dev container's `seedGit` is the seed's second caller, so it has its own cleanup. In `adopt`, `mine` is true when both the machine and the daemon have no host label.
 

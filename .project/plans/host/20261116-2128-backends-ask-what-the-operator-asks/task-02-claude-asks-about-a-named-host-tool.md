@@ -1,6 +1,6 @@
 ---
 title: Claude asks about a named host tool
-status: implemented
+status: done
 depends: [task-01-the-start-carries-the-check.md]
 layer: agent-claude
 refs:

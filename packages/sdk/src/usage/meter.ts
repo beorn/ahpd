@@ -21,6 +21,7 @@
 import type { Bag } from '../types/common.js';
 import type { Scope } from './scopes.js';
 import type { Cost, ModelCall, ModelUse, Owner, Usage } from '../types/usage.js';
+import { joinTags, tagsOf } from '../utils/tags.js';
 
 /** One running turn: when it began, the model it named, and what it last reported. */
 interface Held {
@@ -34,6 +35,8 @@ interface Held {
   billed?: Bag;
   /** Whether the turn has had a record, so only the first of them opens it. */
   opened?: true;
+  /** The connectors the turn's reports named in `ahpd.connectors`, each once, in the order first named. */
+  connectors?: string[];
 }
 
 /** What the meter needs to know about the work it is metering. */
@@ -61,6 +64,14 @@ export interface MeterOptions {
    * more than one and every one of them is charged the same way.
    */
   keysOf?(turn: string): readonly string[] | undefined;
+  /**
+   * The tags a record carries: the agent's, then those of each connector the
+   * turn's reports named, each once.
+   *
+   * Asked as each record is written, so an edit counts from the next record.
+   * Absent, records carry no tags.
+   */
+  tagsOf?(connectors: readonly string[]): readonly string[];
   /** Whose the session's work is, for a turn nobody sent. */
   owner(): Owner | undefined;
   /** The team and project it is charged under, where it was told one. */
@@ -122,6 +133,14 @@ const costOf = (usage: Bag): Cost | undefined => {
     ...(got === undefined ? {} : { output: got }),
   };
 };
+
+/**
+ * The connectors a report says the turn used, in `_meta['ahpd.connectors']`.
+ *
+ * A backend names them by id, such as the login an agent signed in with, and
+ * the host reads their tags; a value that is not a list of ids names none.
+ */
+const connectorsOf = (usage: Bag): string[] => tagsOf(metaOf(usage)['ahpd.connectors']);
 
 /** What one report said it used, without the name of the model, which is the turn's. */
 const usedBy = (usage: Bag): Omit<ModelCall, 'name'> => {
@@ -259,6 +278,7 @@ export const meter = (options: MeterOptions): Meter => {
      */
     const cost = costOf(reported);
     const billed = cost !== undefined && cost.amount === 0 && !usedAny(reported) ? undefined : cost;
+    const tags = joinTags(options.tagsOf?.(held.connectors ?? []));
     /*
      * A turn whose report named no model, and which asked for none either, is
      * written with an empty name rather than left out: `ModelCall.name` is
@@ -280,6 +300,7 @@ export const meter = (options: MeterOptions): Meter => {
       model: { ...usedBy(reported), name: name ?? '' },
       ...(billed === undefined ? {} : { cost: billed, providerCost: billed }),
       pools: poolsOf(owner, scope, options.keysOf?.(turn)),
+      ...(tags.length === 0 ? {} : { tags }),
     };
     held.opened = true;
     void options.usage.record(entry).catch((error: unknown) => {
@@ -309,7 +330,8 @@ export const meter = (options: MeterOptions): Meter => {
          * and from the moment it reported, because nothing said when the turn
          * started.
          */
-        const unannounced: Held = { at: new Date().toISOString(), reported: usage };
+        const named = connectorsOf(usage);
+        const unannounced: Held = { at: new Date().toISOString(), reported: usage, ...(named.length === 0 ? {} : { connectors: named }) };
         running.set(turn, unannounced);
         /*
          * Per report, this report is one like any other and is written as it
@@ -324,6 +346,8 @@ export const meter = (options: MeterOptions): Meter => {
         return;
       }
       held.reported = usage;
+      const named = joinTags(held.connectors, connectorsOf(usage));
+      if (named.length > 0) held.connectors = named;
       if (options.per !== 'report') return;
       write(turn, held, addition(usage, held.billed));
       held.billed = usage;

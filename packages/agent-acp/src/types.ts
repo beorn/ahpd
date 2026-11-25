@@ -179,6 +179,16 @@ export interface AcpOptions {
    */
   stderrTail?: 'sentence' | 'log';
   /**
+   * How a machine that could not start the server or a terminal is said.
+   *
+   * `spawn`, the default, says one short sentence with no host path, and the
+   * port's own message goes to the daemon's log; `message` passes the port's
+   * message on as it is, as VS Code's host shows a failed send's. The port's
+   * message can name a socket path, a registry or an image. Claude's
+   * `portFailures` takes the same two values.
+   */
+  portFailures?: 'spawn' | 'message';
+  /**
    * Where the agent's modes come from: the record's `modes`.
    *
    * `refreshed`, the default, lists the preset's modes until a session hears
@@ -540,6 +550,10 @@ export interface AcpCall {
    * nobody's tool matches carry none.
    */
   contributor?: string;
+  /** Whether the person allowed the call, which is what opened it for its client. */
+  allowed?: boolean;
+  /** Whether a `tools/call` has been found to be for this call. */
+  taken?: boolean;
 }
 
 /**
@@ -626,16 +640,6 @@ export interface AcpTurn {
    * it and no lookup: a call with no owner is one nobody's tool matched.
    */
   clientToolOf?(name: string | undefined, title: string): ClientTool | undefined;
-  /**
-   * The calls this turn has started that somebody is to run, waiting for the
-   * ready that says each is running to go out.
-   *
-   * The entry that asks a client to run a call names a call the chat holds
-   * running, as the reference host raises one for a call in that state, so it
-   * is raised after the ready rather than before it.
-   * https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/chatContributions/sessionInputNeeded/sessionInputNeededContribution.ts#L132-L144
-   */
-  opening: AcpCall[];
 }
 
 /**

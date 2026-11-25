@@ -362,6 +362,78 @@ it('says nothing when the same plugin at the same revision is announced again', 
   expect(after).toHaveLength(before);
 });
 
+/** A session's customizations as a client that subscribes now reads them. */
+const snapshotOf = async (client: { handle(r: { method: string; params: Record<string, unknown> }): Promise<unknown> }) => {
+  const opened = await client.handle({ method: 'subscribe', params: { channel: URI } }) as {
+    snapshot: { state: { customizations?: Record<string, unknown>[] } };
+  };
+  return opened.snapshot.state.customizations ?? [];
+};
+
+it('takes a new decision on a plugin announced again at the same revision', async () => {
+  const { served } = serving();
+  const a = await session(served);
+  const b = await joins(served, 'plugin', TREE);
+  await b.client.handle({ method: 'subscribe', params: { channel: URI } });
+  await announce(b.client, [{ type: 'plugin', uri: PLUGIN, nonce: 'n1', enablement: [{ kind: 'global', enabled: false }] }]);
+  await settle();
+  const before = published(a.peer).length;
+
+  // VS Code announces a plugin again when a person turns it on everywhere,
+  // with the same nonce: the content did not move, the decision did.
+  await announce(b.client, [{ type: 'plugin', uri: PLUGIN, nonce: 'n1', enablement: [{ kind: 'global', enabled: true }] }]);
+  await settle();
+
+  // One entry with the new decision, and no second copy: a copy starts as `loading`.
+  const said = published(a.peer).slice(before);
+  expect(said).toHaveLength(1);
+  expect(said[0]?.load).toEqual({ kind: 'loaded' });
+  expect(said[0]?.enablement).toEqual([{ kind: 'global', enabled: true }]);
+  const listed = await snapshotOf(a.client);
+  expect(listed.find((one) => one.uri === PLUGIN)?.enablement).toEqual([{ kind: 'global', enabled: true }]);
+});
+
+it('takes a new decision on a server of a plugin announced again at the same revision', async () => {
+  const { served } = serving();
+  const a = await session(served);
+  const b = await joins(served, 'plugin', PARTED);
+  await b.client.handle({ method: 'subscribe', params: { channel: URI } });
+  await announce(b.client, [{ type: 'plugin', uri: PLUGIN, nonce: 'n1' }]);
+  await settle();
+
+  await announce(b.client, [{ type: 'plugin', uri: PLUGIN, nonce: 'n1', childEnablement: { two: [{ kind: 'global', enabled: false }] } }]);
+  await settle();
+
+  const children = (await snapshotOf(a.client)).find((one) => one.uri === PLUGIN)?.children as Record<string, unknown>[];
+  expect(children.find((one) => one.name === 'two')?.enablement).toEqual([{ kind: 'global', enabled: false }]);
+  expect(children.find((one) => one.name === 'one')?.enablement).toBeUndefined();
+});
+
+it('keeps the session\'s own decision on a new revision of a plugin', async () => {
+  const { served } = serving();
+  const a = await session(served);
+  const b = await joins(served, 'plugin', { ...TREE, [`${OTHER}/plugin.json`]: '{"name":"two"}' });
+  await b.client.handle({ method: 'subscribe', params: { channel: URI } });
+  await announce(b.client, [{ type: 'plugin', uri: PLUGIN, nonce: 'n1' }]);
+  await settle();
+  await b.client.handle({
+    method: 'dispatchAction',
+    params: {
+      channel: URI,
+      action: { type: 'session/customizationToggled', id: `plugin|${PLUGIN}`, enablement: [{ kind: 'session', enabled: false }] },
+    },
+  });
+  await settle();
+
+  // A new revision of the plugin, and a plugin the session never held.
+  await announce(b.client, [{ type: 'plugin', uri: PLUGIN, nonce: 'n2' }, { type: 'plugin', uri: OTHER, nonce: 'n1' }]);
+  await settle();
+
+  const listed = await snapshotOf(a.client);
+  expect((listed.find((one) => one.uri === PLUGIN)?.enablement as unknown[] | undefined)?.[0]).toEqual({ kind: 'session', enabled: false });
+  expect(listed.find((one) => one.uri === OTHER)?.enablement).toBeUndefined();
+});
+
 it('reports the reason a plugin ends in error rather than a list that never settles', async () => {
   const { served } = serving();
   const a = await session(served);

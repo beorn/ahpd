@@ -1,6 +1,6 @@
 ---
 title: A failed run removes its machine
-status: implemented
+status: done
 depends: []
 layer: "computer"
 refs:

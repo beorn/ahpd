@@ -552,3 +552,35 @@ describe('a file a person edits while the daemon runs', () => {
     expect(textOf('one')).toContain('overlap: parallel');
   });
 });
+
+describe('a deletion is written beside the definitions', () => {
+  it('keeps the deletion running, and what it answered, across a restart', () => {
+    const clock = standing();
+    store = scheduledAutomations({ dir: folder, state, now: clock.now, timer: clock.timer });
+    store.create(ONE, nightly());
+    store.beginDeletion?.(ONE, ['ahp-session:/one'], 'r');
+    store.close?.();
+
+    // The definition is gone by now in a real deletion; what the file has to
+    // hold is the work left before the sessions are.
+    const running = { automation: ONE, sessions: ['ahp-session:/one'], requestIds: ['r'] };
+    expect(JSON.parse(readFileSync(state, 'utf8')).deletions).toEqual([running]);
+
+    store = scheduledAutomations({ dir: folder, state, now: clock.now, timer: clock.timer });
+    expect(store.deletionOf?.(ONE)).toEqual(running);
+
+    store.finishDeletion?.(ONE, ['ahp-session:/one']);
+    store.close?.();
+    const receipt = { requestId: 'r', automation: ONE, sessions: ['ahp-session:/one'] };
+    expect(JSON.parse(readFileSync(state, 'utf8')).deletions).toBeUndefined();
+    expect(JSON.parse(readFileSync(state, 'utf8')).deletionReceipts).toEqual([receipt]);
+
+    // A retry after the restart is answered by the receipt, and the
+    // acknowledgement is what takes it out of the file.
+    store = scheduledAutomations({ dir: folder, state, now: clock.now, timer: clock.timer });
+    expect(store.receiptOf?.('r')).toEqual(receipt);
+    expect(store.acknowledgeDeletion?.('r')).toBe(true);
+    store.close?.();
+    expect(JSON.parse(readFileSync(state, 'utf8')).deletionReceipts).toBeUndefined();
+  });
+});

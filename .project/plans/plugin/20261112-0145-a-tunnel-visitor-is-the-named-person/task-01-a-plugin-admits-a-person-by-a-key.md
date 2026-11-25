@@ -1,6 +1,6 @@
 ---
 title: A plugin admits a person by a key in memory
-status: implemented
+status: done
 depends: []
 layer: "sdk, server"
 refs:

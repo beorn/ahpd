@@ -32,10 +32,9 @@ const flagParam = (command: string, params: Record<string, unknown>, name: strin
  *   `ifMatch` is the `updatedAt` the caller last read.
  * - `remove` `{ id }` deletes it.
  *
- * Each runs the provider's own `write` or `delete`, so a command and a resource
- * call are refused with the same rules and the same sentences, and the
- * catalogue hears both. `put` needs `bot:put` and `remove` needs `bot:delete`,
- * the grants the resource write and delete need. Both answer `{}`.
+ * Each runs the provider's own `write` or `delete`, whose rules are the
+ * plugin's, and the catalogue hears both. `put` needs `bot:put` and `remove`
+ * needs `bot:delete`. Both answer `{}`.
  */
 export const botMethods = (provider: Pick<BotProvider, 'write' | 'delete'>): Record<string, PluginMethod> => ({
   [PUT]: {

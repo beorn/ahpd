@@ -6,11 +6,11 @@ import { filesOf, needsAsyncRewrite, snapshot } from './attachments.js';
 import { chatUriFor, isRootChannel, RELAYED, ROOT, spaceOf, WORKER_ACTIONS } from './channels.js';
 import { HOSTS_OWN, HOSTS_TAKEN } from './common.js';
 import { ALLOW_ALL_SESSION_OPTION_ID, grantOf, withGrant } from './permissions.js';
-import { filePersonRules, personOf } from '../access/personrules.js';
+import { approvalSetting, filePersonRules, personOf } from '../access/personrules.js';
 import { autoApproved, requireTrust, requireWorktreeTrust } from './trust.js';
 import { readAgentPermissionResponseMeta } from '../vscode/agentpermissionresponsemeta.js';
-import { filterChatConfigValues, validateChatConfigWrite } from '../vscode/chatconfig.js';
-import type { ConfigSchema } from '../vscode/chatconfig.js';
+import { filterChatConfigValues, validateChatConfigWrite } from './chatconfig.js';
+import type { ConfigSchema } from './chatconfig.js';
 import type { Bag } from '../types/common.js';
 import type { Connection } from '../types/host.js';
 import type { Session } from '../types/session.js';
@@ -296,6 +296,14 @@ export function chatAction(
     statusOf, subagents, markSummaryDirty, value, unavailableProvider, wake, hold,
   } = ctx;
 
+  /*
+   * A chat a client is giving a workspace to cannot start a turn until the
+   * move is done: the turn would run in the folder the chat is leaving.
+   */
+  if (type === 'chat/turnStarted' && ctx.chatWorkspaceMoves.has(channel)) {
+    no('The chat is being given a workspace.');
+    return;
+  }
   /*
    * A turn's start time and a message's origin the client left out are this
    * host's: every reducer reads them, the protocol requires both, and the
@@ -2270,7 +2278,7 @@ export function chatAction(
        * session's config, and the call keeps asking.
        */
       const allowsAll = action.approved === true && action.selectedOptionId === ALLOW_ALL_SESSION_OPTION_ID;
-      if (allowsAll && (rootConfig.autoApprovePolicyRestricted === true
+      if (allowsAll && (approvalSetting(ctx.options, rootConfig, kept.owner(idOf(session.uri)), 'autoApprovePolicyRestricted') === true
         || ctx.options.managedSettingsPermissions?.disableBypassPermissionsMode === 'disable')) {
         no('Allow All is turned off on this host');
         break;
@@ -2281,13 +2289,16 @@ export function chatAction(
         break;
       }
       // The decision the held state takes, said, and then handed to the
-      // backend with who decided, as the client's `_meta` says it.
+      // backend with who decided, as the client's `_meta` says it. A client
+      // answers for a person, so `host_policy`, the host's own answer, is no
+      // source it may name.
       dispatch(worker ? channel : session.chatUri, action, origin);
+      const source = readAgentPermissionResponseMeta(action as { _meta?: Record<string, unknown> }).decisionSource;
       session.confirm(
         toolCallId,
         action.approved === true,
         typeof action.selectedOptionId === 'string' ? action.selectedOptionId : undefined,
-        readAgentPermissionResponseMeta(action as { _meta?: Record<string, unknown> }).decisionSource,
+        source === 'host_policy' ? undefined : source,
       );
       /*
        * An approval that picked a grant keeps it, as VS Code's host keeps one:
@@ -2431,6 +2442,13 @@ export function chatAction(
        * worst for a backend's request that happened to carry the same id. What
        * the person did goes back to the tool waiting on it.
        */
+      /*
+       * A command's authentication prompt is the host's own request, and the
+       * answer to it is the method's, not this action's: a client that
+       * completes it on the chat - with Cancel, or with anything else - ends
+       * the helper without an answer.
+       */
+      if (ctx.shellAuth.completed(requestId)) break;
       if (ctx.asks.settle(requestId, kind ?? (accepted ? 'accept' : 'decline'), {
         ...(request?.answers ?? {}) as Bag, ...sent,
       })) break;

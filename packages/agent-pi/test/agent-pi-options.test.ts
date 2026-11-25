@@ -45,6 +45,32 @@ const load = (options: Record<string, unknown>) => loadPlugins([{ name: SOURCE, 
   log: () => {},
 });
 
+/*
+ * The options and a record's fields in the order a form draws them, by
+ * purpose: the model, the prompt, the tools, the run, the folders, the
+ * machine, and the tuning last. A new field goes in its group.
+ */
+it('lists its options and a record\'s fields by purpose', async () => {
+  expect(declared()).toEqual([
+    'model',
+    'baseUrl',
+    'apiKey',
+    'hostTools',
+    'projectTrust',
+    'sessionDir',
+  ]);
+  const { options: served, problems } = await load(VALID);
+  expect(problems).toEqual([]);
+  expect(Object.keys(served.engines?.['pi']?.schema.properties ?? {})).toEqual([
+    'baseUrl',
+    'apiKey',
+    'hostTools',
+    'env',
+    'projectTrust',
+    'sessionDir',
+  ]);
+});
+
 it('declares every option its README lists, and no other', () => {
   expect(declared().sort()).toEqual(documented().sort());
 });

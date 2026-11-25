@@ -6,20 +6,35 @@
 [![docs](https://img.shields.io/badge/docs-ahpio.github.io%2Fahpd-0b7285)](https://ahpio.github.io/ahpd/)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=24](https://img.shields.io/badge/node-%3E%3D24-5fa04e)
-![Agent Host Protocol 1.0.0](https://img.shields.io/badge/AHP-1.0.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
 ![runs on Node, Bun, Deno](https://img.shields.io/badge/runs%20on-Node%20%7C%20Bun%20%7C%20Deno-495057)
 
 **Run your AI agents anywhere. Control them from anywhere.**
 
-ahpd is an open-source server that brings your AI agents, tools, and projects together.
+`ahpd` is an open-source, self-hosted platform that brings multiple AI agents together.
 
-Run agents on your computer, a remote server, or in containers. Connect from your browser, desktop, terminal, or phone.
+Run Claude Code SDK, Pi SDK, ACP agents (Codex, Copilot, Gemini, and more), or your own custom harness using supported subscriptions or API keys. Extend their capabilities with plugins, tools, connectors, MCP servers, and integrations.
 
-Your work stays on the server. You can close an app, switch devices, or disconnect without losing your session.
+Schedule tasks or run sessions on your computer, remote servers, or in containers, with full control over your environments and resources.
 
-Built on the [Agent Host Protocol (AHP)](https://microsoft.github.io/agent-host-protocol/). See [AHP compatibility](https://ahpio.github.io/ahpd/sdk/AHP) for what it implements.
+Whether it's for personal use or an organization, manage access, monitor usage, and control budgets from one place.
 
-[Read the documentation](https://ahpio.github.io/ahpd/) · [GitHub](https://github.com/ahpio/ahpd) · [ahpio.com](https://ahpio.com)
+Connect from your browser, desktop, terminal, or phone. Your sessions and work stay in sync across every client. 
+
+> It also has a `shared editing` feature for real-time collaboration.
+>
+> **And this is just the beginning.** ahpd is an extensible platform, built to grow with new agents, integrations, and possibilities.
+
+[Read the documentation](https://ahpio.github.io/ahpd/) · [GitHub](https://github.com/ahpio/ahpd) · [Discord](https://discord.gg/NWvnuqEQxG)
+
+[ahpio.com](https://ahpio.com)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/media/hub-01-light.png">
+    <img src="docs/media/hub-01-dark.png" alt="Run agents on your own infrastructure, controlled from anywhere">
+  </picture>
+</p>
 
 ---
 
@@ -82,45 +97,55 @@ Only expose the host to networks you trust, and protect the token. See the [remo
 
 ## Your agents. Your machines. Your control.
 
+Run the agents you prefer, manage how they work, and stay in control of your infrastructure, access, and spending.
+
 AI agents can help you write code, fix problems, manage files, and automate tasks. But they often depend on the terminal or application where you started them.
 
 ahpd gives your agents a place to run and gives you a way to reach them.
 
-**⏳ Keep work running**
+**⏳ [Keep work running](https://ahpio.github.io/ahpd/sdk/SESSIONS)**
 
 Start a task and leave it running on your host. Your agent can continue its work when you close the client. Return later to review the results.
 
-**📱 Work from any device**
+**📱 [Work from any device](https://ahpio.github.io/ahpd/server/CONNECT)**
 
 Start on your desktop. Check progress from your phone. Open the same session in your browser or terminal. Your work stays in sync.
 
-**🤖 Choose your agents**
+**🤖 [Choose your agents](https://ahpio.github.io/ahpd/server/PLUGINS)**
 
 Use Claude Code, Codex, Copilot, Gemini, pi, and other supported agents. Configure the agents you need and use them through one host.
 
-**🐳 Run work in isolated environments**
+**🔑 [Subscriptions or API keys](https://ahpio.github.io/ahpd/plugins/agent-claude)**
+
+Bring your existing agent subscriptions where supported, or connect model providers using your own API keys. Choose how you access and pay for AI.
+
+**🐳 [Run work in isolated environments](https://ahpio.github.io/ahpd/plugins/COMPUTERS)**
 
 Use Docker containers to give tasks their own environment. Keep work separate when projects need different tools or dependencies.
 
-**⏰ Automate routine tasks**
+**⏰ [Automate routine tasks](https://ahpio.github.io/ahpd/sdk/AUTOMATIONS)**
 
-Schedule agent work or start it from a webhook. Let your host run tasks even when no client is connected.
+Schedule agent work or start it from a webhook. Let your host run tasks even when no client is connected. Turn your agents into continuously available workers.
 
-**🔐 Control access**
+**🔐 [Control access](https://ahpio.github.io/ahpd/server/USERS)**
 
-Control access to your agents and tools. Define who can interact with your host and what actions they can perform.
+Control access to your agents and tools. Define who can interact with your host and what actions they can perform. Define permissions and usage policies for different users and teams.
 
-**📊 Diagnostics**
+**📊 [Diagnostics](https://ahpio.github.io/ahpd/server/RUN#doctor)**
 
 Inspect host status, logs, network information, and telemetry.
 
-**💰 Control spending**
+**💰 [Control spending](https://ahpio.github.io/ahpd/server/USAGE)**
 
 See what each person, team, and project has spent on models. Set daily, weekly, or monthly limits, and the host refuses new work when a limit is reached.
 
-**🔀 Share your models**
+**🔀 [Share your models](https://ahpio.github.io/ahpd/server/GATEWAY)**
 
-Point your agent or a script at your host and call any model with your ahpd token. The host uses the provider's key, applies your policies, and records the cost. [Model gateway](https://ahpio.github.io/ahpd/server/GATEWAY)
+Point your agent or a script at your host and call any model with your ahpd token. The host uses the provider's key, applies your policies, and records the cost. Centralize credentials without distributing provider keys to every client.
+
+**🧩 [Extend with plugins](https://ahpio.github.io/ahpd/plugins/PLUGINS)**
+
+Add new agents, tools, integrations, and capabilities without rebuilding the server. Use existing plugins or build your own with the SDK.
 
 ---
 
@@ -246,7 +271,7 @@ Manage sessions, files, terminals, and host settings from your browser.
 ### 🖥️ Desktop → ahp-desk
 Connect to multiple hosts, manage local installations, and work in dedicated windows.
 
-[GitHub](https://github.com/softov/ahp-desk) · [Download](https://github.com/softov/ahp-desk/releases)
+[GitHub](https://github.com/ahpio/ahp-desk) · [Download](https://github.com/ahpio/ahp-desk/releases)
 
 ### 💻 Terminal → @softov/ahpc
 Work with agents through an interactive terminal, CLI commands, or scripts.
@@ -300,7 +325,7 @@ You can extend your host without changing the server itself.
 Implement the `Agent` interface or contribute host ports, tools, and URI schemes. Load extensions from npm packages, local directories, or manifest-backed files.
 
 ```bash
-# Load plugins for one run, in place of the configured list
+# Load plugins for one run, on top of the configured list
 ahpd --plugin @ahpd/agent-claude --plugin @ahpd/computer
 # A single file, with a plugin.json beside it that names its id and main
 ahpd --plugin ./scratch-agent.mjs
@@ -373,6 +398,8 @@ The full documentation is at [ahpio.github.io/ahpd](https://ahpio.github.io/ahpd
 | [AHP compatibility](docs/sdk/AHP.md) | What this host implements of AHP, command by command |
 
 Every document is listed in [docs/README.md](docs/README.md), one line each.
+
+Built on the [Agent Host Protocol (AHP)](https://microsoft.github.io/agent-host-protocol/). See [AHP compatibility](https://ahpio.github.io/ahpd/sdk/AHP) for what it implements.
 
 ---
 

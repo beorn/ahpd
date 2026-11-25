@@ -1,6 +1,6 @@
 ---
 title: A test git call has a timeout and a slow-git line
-status: implemented
+status: done
 depends: []
 layer: "tools"
 refs:

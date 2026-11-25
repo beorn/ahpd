@@ -1,6 +1,6 @@
 ---
 title: The port reads a pull request's details
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

@@ -1,6 +1,6 @@
 ---
 title: A call charges the scope of its key
-status: implemented
+status: done
 depends: [task-01-a-key-is-minted-with-a-scope.md]
 layer: "sdk, server, docs"
 refs:

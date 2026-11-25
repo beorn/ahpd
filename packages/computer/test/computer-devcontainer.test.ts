@@ -1,4 +1,4 @@
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
 import { posix } from '../../../tools/posix.ts';
 import { machinePathOf } from '@ahpd/sdk';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createHost } from '../../sdk/src/host.js';
 import { sdkVersion } from '../../sdk/src/version.js';
 import { fileResources } from '../../sdk/src/resources/resources.js';
@@ -24,6 +24,9 @@ import type { MachineNeed } from '../../sdk/src/types/machine.js';
 import type { Peer } from '../../sdk/src/types/rpc.js';
 import type { Vault } from '../../sdk/src/types/vault.js';
 import { gitSync } from '../../../tools/git.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A dev container is a computer, made from a folder's `devcontainer.json`.
@@ -2141,6 +2144,36 @@ it('stops the container a folder is, ending the window\'s relay first', async ()
   await answered(dockerState, dockerHeld(dockerState).calls.length);
 });
 
+it('keeps a folder\'s container while a session that named it by computer:// runs in it, and stops it once the session leaves', async () => {
+  const dir = temp();
+  const devState = join(dir, 'dev.json');
+  const dockerState = join(dir, 'docker.json');
+  const configDir = join(dir, 'config');
+  const folder = workspace(dir);
+  mkdirSync(configDir);
+  const { options: loaded } = await load(optionsOf(devState, dockerState), [agentWith()], configDir);
+  await providerOf(loaded).write('computer://box', {
+    data: JSON.stringify({ devcontainer: { folder } }),
+    encoding: 'utf-8',
+  });
+  const state = (): unknown => dockerHeld(dockerState).machines[0]?.state;
+  const running = state();
+
+  // A session placed on the machine by its URI, not by its folder: the host
+  // says it entered, and the folder's stop and remove leave the machine be.
+  await loaded.computers?.enter?.('box', 'ahp-session:/placed');
+  expect(await loaded.containers?.stop?.(folder)).toBe(false);
+  expect(await loaded.containers?.remove?.(folder)).toBe(false);
+  expect(dockerHeld(dockerState).machines).toHaveLength(1);
+  expect(state()).toBe(running);
+
+  // Gone, and the stop is the stop it always was.
+  await loaded.computers?.leave?.('box', 'ahp-session:/placed');
+  expect(await loaded.containers?.stop?.(folder)).toBe(true);
+  expect(state()).toBe('exited');
+  await answered(dockerState, dockerHeld(dockerState).calls.length);
+});
+
 it('removes the container a folder is, and the record beside the configuration with it', async () => {
   const dir = temp();
   const devState = join(dir, 'dev.json');
@@ -2203,7 +2236,14 @@ it('leaves the folder\'s container alone while a session of this host is running
   // the session has gone.
   await session.client.handle({ method: 'disposeSession', params: { channel: 'ahp-session:/one' } });
   await until(() => !existsSync(`${dockerState}.lock`));
-  expect(await view.client.handle({ method: 'vscode/devContainers/stop', params: { workspaceFolder: folder } })).toBe(true);
+  // The host says the session left once its work is brought back, a moment
+  // after the dispose answers; until then the machine is still in use.
+  let stopped = false;
+  for (let tries = 0; tries < 200 && !stopped; tries++) {
+    stopped = await view.client.handle({ method: 'vscode/devContainers/stop', params: { workspaceFolder: folder } }) === true;
+    if (!stopped) await new Promise((r) => { setTimeout(r, 5); });
+  }
+  expect(stopped).toBe(true);
   expect(dockerHeld(dockerState).machines[0]?.state).toBe('exited');
   await answered(dockerState, dockerHeld(dockerState).calls.length);
 });

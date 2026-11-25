@@ -277,14 +277,14 @@ const CLIENT_TOOL: BoundTool = {
 };
 
 /** One record of the loaded engine, its config read each time `open` asks. */
-const recordOf = (id: string, config: () => Bag): AgentView => ({
+const recordOf = (id: string, config: () => Bag, model?: string): AgentView => ({
   id,
   engine: 'claude',
   owner: 'host',
   name: id,
   description: undefined,
   icon: undefined,
-  model: undefined,
+  model,
   get config() { return config(); },
 });
 
@@ -294,18 +294,29 @@ const recordOf = (id: string, config: () => Bag): AgentView => ({
  * `plugin` is the load's options and `config` is the record's, so a case can
  * set one, the other, or both.
  */
-const serversOf = async (plugin: Record<string, unknown>, config: () => Bag): Promise<Bag> => {
-  sdk.reset();
+const serversOf = async (plugin: Record<string, unknown>, config: () => Bag): Promise<Bag> =>
+  ((await builtOf(plugin, config)).built['mcpServers'] ?? {}) as Bag;
+
+/** The claude engine one load of the plugin registered, and what the load logged. */
+const engineOf = async (plugin: Record<string, unknown>) => {
+  const logged: string[] = [];
   const { problems, options: served } = await loadPlugins([{ name: SOURCE, options: plugin }], {
     base: { path: ROOT, agents: [echo({ path: ROOT })] },
     configDir: REPO,
     cwd: REPO,
-    log: () => {},
+    log: (line: string) => { logged.push(line); },
   });
   expect(problems).toEqual([]);
   const engine = served.engines?.['claude'];
   if (engine === undefined) throw new Error('no claude engine was registered');
-  const session = startedNow(engine.open(recordOf('claude-host-tools', config)).create({
+  return { engine, logged };
+};
+
+/** The options the SDK's query was built with, for one session of a record. */
+const builtOf = async (plugin: Record<string, unknown>, config: () => Bag, model?: string): Promise<{ built: Bag; logged: string[] }> => {
+  sdk.reset();
+  const { engine, logged } = await engineOf(plugin);
+  const session = startedNow(engine.open(recordOf('claude-host-tools', config, model)).create({
     uri: 'ahp-session:/host-tools',
     chatUri: 'ahp-chat:/host-tools',
     settings: {},
@@ -314,12 +325,14 @@ const serversOf = async (plugin: Record<string, unknown>, config: () => Bag): Pr
     schema: () => ({ type: 'object', properties: {} }),
     emit: () => {},
     tools: [HOST_TOOL, CLIENT_TOOL],
+    // The models the host already knew this agent to offer.
+    seedModels: [{ id: 'plugin-model', name: 'plugin-model' }, { id: 'record-model', name: 'record-model' }],
   } as Start));
   await settle();
   const built = sdk.options.at(0);
   if (built === undefined) throw new Error('no query was built');
   await session.close();
-  return (built['mcpServers'] ?? {}) as Bag;
+  return { built, logged };
 };
 
 it('offers the host\'s tools on their server, and a client\'s on its own, by default', async () => {
@@ -340,4 +353,37 @@ it('lets a record turn host tools off over a plugin that turns them on', async (
 
   expect(Object.keys(servers)).toContain('client');
   expect(Object.keys(servers)).not.toContain('host');
+});
+
+/*
+ * The plugin's defaults for every agent: the host's paths, a default model, and
+ * a host record's own config folder in a machine.
+ */
+
+it('says in the log that a paths option is not read, and still loads', async () => {
+  const logged: string[] = [];
+  const { loaded, problems } = await loadPlugins([{ name: SOURCE, options: { paths: ['/elsewhere'] } }], {
+    base: { path: ROOT, agents: [echo({ path: ROOT })] },
+    configDir: REPO,
+    cwd: REPO,
+    log: (line: string) => { logged.push(line); },
+  });
+  expect(loaded).toHaveLength(1);
+  expect(problems).toEqual([expect.stringContaining('options.paths is not an option')]);
+  expect(logged.some((line) => line.includes('the paths option is not read'))).toBe(true);
+});
+
+it('starts a record that names no model on the plugin\'s model, and a record\'s own model wins', async () => {
+  // A model starts a session only where the agent offers it, as the host's seed says.
+  const offers = (): Bag => ({});
+  expect((await builtOf({ model: 'plugin-model' }, offers)).built['model']).toBe('plugin-model');
+  expect((await builtOf({ model: 'plugin-model' }, offers, 'record-model')).built['model']).toBe('record-model');
+});
+
+it('lets a host record set its own config folder in a machine, over the plugin\'s', async () => {
+  const { engine } = await engineOf({ computerConfigDir: '/ahpd/from-plugin' });
+  expect(engine.hostOnly).toContain('computerConfigDir');
+  const stateOf = (config: Bag): unknown => ((engine.open(recordOf('claude-config-dir', () => config)).machine?.() as Bag | undefined)?.['claudeState'] as Bag | undefined)?.['state'];
+  expect(stateOf({})).toBe('/ahpd/from-plugin');
+  expect(stateOf({ computerConfigDir: '/ahpd/from-record' })).toBe('/ahpd/from-record');
 });

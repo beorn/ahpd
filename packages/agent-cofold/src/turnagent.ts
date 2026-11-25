@@ -5,7 +5,7 @@ import type { Agent as CofoldAgent, ModelAdapter, PermissionMode, Tool } from '@
 import { resolveWithin } from '@cofold/tools';
 import { workspaceSlug } from '@cofold/store-file';
 import { createClientCalls, str } from '@ahpd/sdk';
-import type { Bag, ClientCallAnswer, Offered, Session } from '@ahpd/sdk';
+import type { Bag, BoundTool, ClientCallAnswer, Offered, Session } from '@ahpd/sdk';
 import { join } from 'node:path';
 import { DEFAULT_TOOLS, capabilitiesOf } from './capabilities.js';
 import { defaultStoreRoot, modelOf, modelReferenceOf } from './agent.js';
@@ -145,6 +145,13 @@ const UNASKED: ModelAdapter = {
  * the memory capability, which is placed per workspace, is not in it, and
  * neither is a prompt command a capability offers for one workspace only.
  */
+/**
+ * Whether the host runs this session's shell commands instead of cofold: a
+ * host `bash` marked as taking the place of the agent's own shell.
+ */
+const hostRunsShell = (offered: readonly BoundTool[]): boolean =>
+  offered.some((one) => one.overridesBuiltInTool === true && one.definition.name === 'bash');
+
 export const commandsOf = async (options: CofoldOptions): Promise<Offered['commands']> => {
   const agent = createAgent({
     id: AGENT_ID,
@@ -376,9 +383,18 @@ export const createTurnAgent = (
        * A tool the host already offers keeps its name, because cofold refuses a
        * run two contributors give one name to.
        */
-      capabilities: capabilitiesOf(options.tools ?? DEFAULT_TOOLS, {
+      /*
+       * cofold's own shell is left out where the host's `bash` takes the
+       * place of the agent's shell, as pi's is: the host's command is the one
+       * a person watches in a terminal and can move to the background, and a
+       * model offered both would run some commands where neither is possible.
+       */
+      capabilities: capabilitiesOf(hostRunsShell(ctx.offered)
+        ? { ...(options.tools ?? DEFAULT_TOOLS), shell: false }
+        : options.tools ?? DEFAULT_TOOLS, {
         workspace: where,
         ...(memoryDir === undefined ? {} : { memoryDir }),
+        ...(start.env === undefined ? {} : { env: start.env }),
       }, taken),
       /*
        * The edits a cofold tool makes, on their way to the changeset.

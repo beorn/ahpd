@@ -590,6 +590,15 @@ it('shows live the parts its transcript rebuilds, in the order the model wrote t
   expect(read.map(idOf)).toEqual(['m1:0', 'c1', 'm2:0', 'm2:1']);
 });
 
+it('says when a restored reasoning part ran, from the times cofold wrote on it', async () => {
+  const times = { startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:00:04.500Z' };
+  const { read } = await played([{
+    deltas: [{ type: 'reasoning.delta', text: 'THINK' }, { type: 'text.delta', text: 'REPLY' }],
+    parts: [{ type: 'reasoning', text: 'THINK', ...times } as Message['parts'][number], { type: 'text', text: 'REPLY' }],
+  }]);
+  expect(read[0]).toMatchObject({ kind: 'reasoning', startedAt: times.startedAt, duration: 4500 });
+});
+
 it('opens a part for text that is only whitespace, live and read back', async () => {
   // Kimi K2.6's shape: a blank text between each thought and its call, which
   // opens a part as any text does, as VS Code's agents open one.
@@ -1180,6 +1189,14 @@ it('runs a new message in place of resuming a paused run, the run let go first',
   expect(after.view.types('chat').at(-1)).toBe('chat/turnComplete');
   const runs = await createFileStore({ root }).runs.list({ sessionId: 'one' });
   expect(runs.map((one) => one.status)).toEqual(['completed', 'cancelled']);
+  /*
+   * And the turn it cut says why when it is read back: cofold writes the
+   * reason ahpd cancelled with into the marker, and the transcript shows the
+   * marker as a notice in that turn, not as a stop the person made.
+   */
+  const read = await turnsOf(createFileStore({ root }), 'one');
+  expect((read[0]?.responseParts as Bag[]).filter((part) => part.kind === 'systemNotification'))
+    .toEqual([{ kind: 'systemNotification', content: '[Request interrupted: a new message took its place]' }]);
 });
 
 it('keeps two chats of one session in two conversations, each with its own turn', async () => {

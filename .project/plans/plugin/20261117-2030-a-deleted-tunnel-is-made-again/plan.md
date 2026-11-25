@@ -1,7 +1,7 @@
 ---
 title: A Dev Tunnel the service deleted is made again
 domain: plugin
-status: planned
+status: built
 priority: high
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -65,9 +65,9 @@ running op or page read -> 404 -> kind: service.forget(connector) -> every recor
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - a missing tunnel is made again at start](task-01-a-missing-tunnel-is-made-again-at-start.md) | implemented | - |
-| [02 - a running tunnel deleted is made again](task-02-a-running-tunnel-deleted-is-made-again.md) | implemented | 01 |
-| [03 - the docs say a deleted tunnel comes back](task-03-the-docs-say-a-deleted-tunnel-comes-back.md) | implemented | 02 |
+| [01 - a missing tunnel is made again at start](task-01-a-missing-tunnel-is-made-again-at-start.md) | done | - |
+| [02 - a running tunnel deleted is made again](task-02-a-running-tunnel-deleted-is-made-again.md) | done | 01 |
+| [03 - the docs say a deleted tunnel comes back](task-03-the-docs-say-a-deleted-tunnel-comes-back.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -76,9 +76,9 @@ running op or page read -> 404 -> kind: service.forget(connector) -> every recor
 
 ## Resume state
 
-- **Checks, 2026-11-18:** the suites passed at `2946984b6`. The checks that need the Dev Tunnel account are in [pending/tunnel-token-checks.md](../../../pending/tunnel-token-checks.md).
+- **Checks, 2026-11-18:** the suites passed at `2946984b6`. The checks that need the Dev Tunnel account passed on 2026-11-18, as [implemented.md](implemented.md) says. git://fe8c59241 is the last commit that holds their file.
 - **Done so far:** tasks 01 to 03 are `implemented` on 2026-11-17, on the branch `plugin/20261117-2030-a-deleted-tunnel-is-made-again`.
-- **Next action:** Softov's review; the dev daemon's restart on main is the first check of *Final verification checklist*.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** the kept id file is written only when the id changes, so a remake rewrites it through `entryOf`.
 

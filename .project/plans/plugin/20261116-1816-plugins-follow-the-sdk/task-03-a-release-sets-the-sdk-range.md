@@ -1,6 +1,6 @@
 ---
 title: A release sets each plugin's sdk range
-status: implemented
+status: done
 depends: []
 layer: scripts
 refs:

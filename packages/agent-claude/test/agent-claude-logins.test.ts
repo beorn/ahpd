@@ -1057,3 +1057,48 @@ describe('the plugin', () => {
     }
   });
 });
+
+/** A turn the CLI answered, with the usage its `result` counted. */
+const answeredWithUsage = (id: string) => answered(id).map((frame) => (frame.type === 'result'
+  ? { ...frame, usage: { input_tokens: 5, output_tokens: 3 } }
+  : frame));
+
+/** Every connector the chat's `chat/usage` actions for one turn named, in order. */
+const connectorsNamed = (chat: Bag[], turnId: string): unknown[] => ofTurn(chat, 'chat/usage', turnId)
+  .flatMap((action) => ((action.usage as Bag | undefined)?._meta as Bag | undefined)?.['ahpd.connectors'] as unknown[] ?? []);
+
+describe("a turn's usage names its login", () => {
+  it('names the login a turn ran on', async () => {
+    const { session, chat } = open({ logins: ['work', 'personal'] }, twoLogins());
+    await settle();
+    session.sendMessage('t1', 'one');
+    await settle();
+    sdk.push(...answeredWithUsage('t1'));
+    await settle();
+    expect(connectorsNamed(chat, 't1')).toContain('work');
+    expect(connectorsNamed(chat, 't1')).not.toContain('personal');
+  });
+
+  it('names the next login on a turn that failed over to it', async () => {
+    const { session, chat } = await answeredOnce(twoLogins());
+    session.sendMessage('t2', 'two');
+    await settle();
+    sdk.push(...failure('rate_limit'));
+    await settle();
+    expect(tokenOf()).toBe('token-personal');
+    sdk.push(...answeredWithUsage('t2'));
+    await settle();
+    expect(connectorsNamed(chat, 't2')).toContain('personal');
+  });
+
+  it('names no login on a session a client pushed a key for', async () => {
+    const { session, chat } = open({ logins: ['work'] }, twoLogins(), { env: { ANTHROPIC_API_KEY: 'pushed' } });
+    await settle();
+    session.sendMessage('t1', 'one');
+    await settle();
+    sdk.push(...answeredWithUsage('t1'));
+    await settle();
+    expect(ofTurn(chat, 'chat/usage', 't1').length).toBeGreaterThan(0);
+    expect(connectorsNamed(chat, 't1')).toEqual([]);
+  });
+});

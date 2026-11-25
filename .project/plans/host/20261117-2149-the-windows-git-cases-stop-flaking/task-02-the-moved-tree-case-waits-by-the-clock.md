@@ -1,6 +1,6 @@
 ---
 title: The moved-tree case waits by the clock
-status: implemented
+status: done
 depends: []
 layer: "sdk tests"
 refs:

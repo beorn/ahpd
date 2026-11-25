@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 The cofold agent runtime as a backend for [`@ahpd/sdk`](https://www.npmjs.com/package/@ahpd/sdk), and a plugin for the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon. It registers the engine `cofold`: each record of that engine is one agent, and every model an OpenAI-compatible endpoint serves is a model inside it.
 
@@ -42,31 +44,31 @@ In the configuration file, with the plugin's own options as the defaults every r
 }
 ```
 
-With no model named anywhere, the providers, keys and model come from the configuration cofold's own app, copapo, reads, through cofold's resolver under copapo's name: `$XDG_CONFIG_HOME/copapo/config.json` or `~/.config/copapo/config.json`, then the nearest `.copapo.json` at or above a session's folder, then the file `$COPAPO_CONFIG` names, each merging over the one before. Inside a machine `COPAPO_CONFIG` is what finds it.
+With no model named anywhere, the providers, keys and model come from the configuration cofold's own app, copapo, reads, through cofold's resolver under cofold's name: `$XDG_CONFIG_HOME/cofold/config.json` or `~/.config/cofold/config.json`, then the nearest `.cofold.json` at or above a session's folder, then the file `$COFOLD_CONFIG` names, each merging over the one before. Inside a machine `COFOLD_CONFIG` is what finds it.
 
-`COPAPO_BASE_URL`, `COPAPO_API_KEY` and `COPAPO_MODEL`, or `COFOLD_BASE_URL`, `COFOLD_API_KEY` and `COFOLD_MODEL` where copapo's own are unset, are read on top of those files, as copapo reads them: the URL adds or replaces a provider called `default` with the key as its key, and a model with no slash is a model of `default`. A model id with a slash of its own, as OpenRouter's are, is written after `default/`, because the first slash ends the provider: `default/deepseek/deepseek-chat`. A machine profile names them as the needs `cofoldBaseUrl`, `cofoldApiKey` and `cofoldModel`, the key from the vault, so a machine on another box gets a provider with no file holding the key.
+`COFOLD_BASE_URL`, `COFOLD_API_KEY` and `COFOLD_MODEL` are read on top of those files, as copapo reads them: the URL adds or replaces a provider called `default` with the key as its key, and a model with no slash is a model of `default`. A model id with a slash of its own, as OpenRouter's are, is written after `default/`, because the first slash ends the provider: `default/deepseek/deepseek-chat`. A machine profile names them as the needs `cofoldBaseUrl`, `cofoldApiKey` and `cofoldModel`, the key from the vault, so a machine on another box gets a provider with no file holding the key.
 
 Every provider in the cofold file is asked for its models, each with its own key. Each id is offered as `<provider id>/<model id>`, such as `open_router/moonshotai/kimi-k3.1-pro`. The backend's own id is the prefix for an explicit `baseUrl`. On an explicit `baseUrl`, a model whose first segment names neither that id nor a provider of the file is the endpoint's own id, and is sent whole, as OpenRouter's `deepseek/deepseek-chat` is. A turn that nothing gives an endpoint, no `baseUrl` and no provider in the file, is refused as a turn that nothing gives a model is.
 
-Every option below is a key under `options` in the plugin's entry, and the daemon checks each value against the schema before `apply` runs. An agent of the engine is a record on the agents channel: it sets any of these except `strictTools` and the keyed search providers, and wins over the plugin for the ones it sets. A record's id, name and description are the record's own, so this plugin has no option for them. There are two more options, `adapter` and `policy`, that only an embedder calling `apply` in code passes: a model adapter is an object of methods and a policy is a function, so neither is in the options schema and a configuration file cannot name them.
+Every option below is a key under `options` in the plugin's entry, and the daemon checks each value against the schema before `apply` runs. An agent of the engine is a record on the agents channel: it sets any of these except `strictTools`, `memory` and the keyed search providers, and wins over the plugin for the ones it sets. A record's id, name and description are the record's own, so this plugin has no option for them. There are two more options, `adapter` and `policy`, that only an embedder calling `apply` in code passes: a model adapter is an object of methods and a policy is a function, so neither is in the options schema and a configuration file cannot name them.
 
 | Option | Default | What it does |
 | --- | --- | --- |
 | `model` | the cofold file's | The model id a record that names none runs on |
 | `baseUrl` | the cofold file's | The OpenAI-compatible endpoint a record that names none uses |
-| `models` | none | What the operator says of `baseUrl`'s models, each by its id on that endpoint: `supportsReasoningEffort`, the thinking levels it accepts, as VS Code's Custom Endpoint models declare it. A model is offered those of cofold's levels (`off`, `low`, `medium`, `high`) this names as its own `thinkingLevel`, else cofold's four where the endpoint's catalogue lists `reasoning` among the model's parameters |
-| `instructions` | the cofold file's, else `You are a helpful assistant.` | The system prompt a record that names none is created with |
-| `computerConfigDir` | `/ahpd/cofold` | The configuration directory the harness reads *inside a machine*: a state volume seeded with its `config.json`, or that file mounted read-only in a profile with `state: "host"`. `false` leaves the image's own |
-| `store` | cofold's home, `$COFOLD_HOME` or `~/.cofold` | The folder cofold's file store lives in, shared by every record, as ahpd's Claude agents on one host share the CLI's store and each lists every session in it. Agents that must not see each other's sessions run in machines of their own, where cofold's home is the machine's |
-| `memory` | `false` | `true` to hold each record's store in memory, for a test |
-| `tools` | all four on | Which capabilities a session runs, and where `web_search` gets its providers |
-| `strictTools` | `true` | `false` holds `tools` to the loose check, so a key cofold does not know is dropped rather than refused |
 | `apiKey` | the cofold file's | The daemon's own key, for a record that names none. `{ "$secret": "host:<name>" }` reads it from the vault; an embedder may pass a function asked once per request |
 | `resource` | the endpoint's origin when it is `https` | The protected resource a client authenticates against |
+| `models` | none | What the operator says of `baseUrl`'s models, each by its id on that endpoint: `supportsReasoningEffort`, the thinking levels it accepts, as VS Code's Custom Endpoint models declare it. A model is offered those of cofold's levels (`off`, `low`, `medium`, `high`) this names as its own `thinkingLevel`, else cofold's four where the endpoint's catalogue lists `reasoning` among the model's parameters |
+| `instructions` | the cofold file's, else `You are a helpful assistant.` | The system prompt a record that names none is created with |
 | `autoCompactTokens` | the `autoCompactAt` share of the model's listed context, or of 32000 | The estimated history size at which a session compacts, never above that share |
 | `autoCompactAt` | `0.8`, copapo's | The share of the model's listed context, or of 32000, a session compacts at when `autoCompactTokens` names no lower point |
-| `catalogueTimeoutMs` | `15000` | How long, in milliseconds, the endpoint is given to publish its catalogue before the configured model stands alone, the time VS Code gives a runtime's model catalogue |
 | `hostTools` | `true` | Whether the host's own tools reach each session. A record can turn them off for one agent |
+| `tools` | all four on | Which capabilities a session runs, and where `web_search` gets its providers |
+| `strictTools` | `true` | `false` holds `tools` to the loose check, so a key cofold does not know is dropped rather than refused |
+| `store` | cofold's home, `$COFOLD_HOME` or `~/.cofold` | The folder cofold's file store lives in, shared by every record, as ahpd's Claude agents on one host share the CLI's store and each lists every session in it. Agents that must not see each other's sessions run in machines of their own, where cofold's home is the machine's |
+| `computerConfigDir` | `/ahpd/cofold` | The configuration directory the harness reads *inside a machine*: a state volume seeded with its `config.json`, or that file mounted read-only in a profile with `state: "host"`. `false` leaves the image's own |
+| `catalogueTimeoutMs` | `15000` | How long, in milliseconds, the endpoint is given to publish its catalogue before the configured model stands alone, the time VS Code gives a runtime's model catalogue |
+| `memory` | `false` | `true` to hold each record's store in memory, for a test |
 
 `ahpd vault set host:<name>` keeps a key that `apiKey` or a search provider's `apiKey` reads with `{ "$secret": "host:<name>" }`, from standard input. See [PLUGINS.md](https://github.com/ahpio/ahpd/blob/main/docs/plugins/PLUGINS.md#naming-a-secret-instead-of-holding-one) for a `$secret`.
 
@@ -95,7 +97,7 @@ The providers `web_search` asks, in the order they are written. A failing one is
 
 An agent is a record on `x-ahpd-agents`: `{ id, engine, owner, name, description?, icon?, model?, config }`. The channel owns `name`, `description`, `icon` and `model`, so `config` holds the cofold fields above, and a new record starts from the engine's one template, which sets nothing and runs on cofold's own configuration file.
 
-`computerConfigDir`, `store` and `memory` are host-only: a team's or a person's record that sets one is refused. `strictTools` is not a field of a record at all, and neither is a keyed search provider, for the reason the `tools.web.search` table gives; `adapter` and `policy` are not options of the schema at all, only values an embedder passes in code. The engine names no key variable: the daemon's own `COFOLD_API_KEY` is the harness's, read with its file, and a record's `apiKey` is a `secret` field of its own, so the channel keeps it in the vault under `host:agent/<id>/apiKey` for a host record, and no client, session or log gets the value.
+`computerConfigDir` and `store` are host-only: a team's or a person's record that sets one is refused. `strictTools` and `memory` are not fields of a record at all, and neither is a keyed search provider, for the reason the `tools.web.search` table gives; `adapter` and `policy` are not options of the schema at all, only values an embedder passes in code. The engine names no key variable: the daemon's own `COFOLD_API_KEY` is the harness's, read with its file, and a record's `apiKey` is a `secret` field of its own, so the channel keeps it in the vault under `host:agent/<id>/apiKey` for a host record, and no client, session or log gets the value.
 
 A record that names its own endpoint and key, with the model the channel owns:
 

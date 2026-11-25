@@ -1,6 +1,6 @@
 ---
 title: The harness reads copapo's names
-status: implemented
+status: done
 depends: []
 layer: "agent-cofold"
 refs:

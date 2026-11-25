@@ -144,12 +144,25 @@ export const isNamed = (spec: PluginSpec, name: string): boolean => sourceOf(spe
 const unimportedId = (spec: PluginSpec, where: Where): string => {
   try {
     const found = locate(resolvePlugin(spec, where), sdkVersion());
-    return 'refused' in found ? sourceOf(spec) : provisionalOf(spec, found);
+    return 'refused' in found ? refusedId(spec) : provisionalOf(spec, found);
   }
   catch {
     // A spec that does not resolve is called what it was written as.
     return sourceOf(spec);
   }
+};
+
+/**
+ * The id of a plugin the daemon refused to load: its package name without its
+ * version or its scope, which is what a plugin such as `@ahpd/agent-claude`
+ * calls itself once it loads, so the row keeps its id through an update. A
+ * spec that names no package, such as a path or a URL, is called what it was
+ * written as.
+ */
+const refusedId = (spec: PluginSpec): string => {
+  const name = packageNameOf(sourceOf(spec));
+  if (name === undefined) return sourceOf(spec);
+  return name.startsWith('@') ? name.slice(name.indexOf('/') + 1) : name;
 };
 
 /** A fallback id with its scope joined by a dash: `@scope/name` is `scope-name`. */
@@ -2172,7 +2185,7 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
         continue;
       }
       const named = await namePlugin(resolved, version);
-      const id = 'refused' in named ? sourceOf(spec) : named.id;
+      const id = 'refused' in named ? refusedId(spec) : named.id;
       ids.set(sourceOf(spec), id);
       found.push({ spec, id, resolved, named, disabled });
     }

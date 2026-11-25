@@ -28,6 +28,12 @@ it('says a call over AHPD_GIT_SLOW_MS on stderr, with its arguments', () => {
   vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(2);
   const said: string[] = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((line) => { said.push(String(line)); return true; });
+  /*
+   * The call is timed by the clock, not left to how fast this machine is: a
+   * `git --version` on a fast runner takes a millisecond or less, which is
+   * not over the limit, so the call is made to start at 0 and end at 50.
+   */
+  vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(50);
   gitSync(['--version']);
   const slow = said.filter((line) => line.startsWith('slow git: '));
   expect(slow).toHaveLength(1);

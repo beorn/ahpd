@@ -1,9 +1,9 @@
 import { WAIT_MS } from '../../../tools/wait.ts';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync, lstatSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync, lstatSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHost as openHost } from '../src/host.js';
 import { echo } from '../../../examples/echo/agent.js';
 import { gitWorktrees, worktreesOf } from '../src/repo/worktrees.js';
@@ -56,12 +56,33 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
+/*
+ * The repository every case starts from, made once for the file.
+ *
+ * Making one is six git commands, and on Windows a git command is the slow part
+ * of a case, so each case copies this one instead of making its own.
+ */
+let template: string | undefined;
+
 /** A repository with one commit, a branch, and files git was told to ignore. */
 function repository(): string {
   // Two levels, so the `<repo>.worktrees` sibling is inside the served root
   // rather than beside it - which is the arrangement a host has to serve.
   const root = mkdtempSync(join(tmpdir(), 'ahpd-wt-'));
   made.push(root);
+  cpSync(join(templateRepository(), 'project'), join(root, 'project'), { recursive: true });
+  return root;
+}
+
+afterAll(async () => {
+  if (template !== undefined) await rm(template, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  template = undefined;
+});
+
+function templateRepository(): string {
+  if (template !== undefined) return template;
+  const root = mkdtempSync(join(tmpdir(), 'ahpd-wt-template-'));
+  template = root;
   const dir = join(root, 'project');
   mkdirSync(dir);
   const run = (...args: string[]) => gitSync(['-C', dir, ...args]);

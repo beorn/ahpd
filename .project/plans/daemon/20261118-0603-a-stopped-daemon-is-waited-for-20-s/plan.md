@@ -1,7 +1,7 @@
 ---
 title: A stopped daemon is waited for 20 s
 domain: daemon
-status: active
+status: built
 priority: medium
 created: 2026-11-18
 revalidated: 2026-11-18
@@ -51,7 +51,7 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - gone waits 20 s](task-01-gone-waits-20-s.md) | implemented | - |
+| [01 - gone waits 20 s](task-01-gone-waits-20-s.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -60,7 +60,7 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 ## Resume state
 
 - **Done so far:** task 01 is `implemented` on 2026-11-18, on the branch `daemon/20261118-0603-a-stopped-daemon-is-waited-for-20-s`.
-- **Next action:** Softov's review.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** a green run proves little; the case failed only on a busy machine.
 

@@ -1,6 +1,6 @@
 ---
 title: The wake takes the bot's owner on a host with no users
-status: implemented
+status: done
 depends: []
 layer: "bot"
 refs:

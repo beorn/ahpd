@@ -87,7 +87,7 @@ a person edits bots/<slug>.md -> collection watch -> botStore reloads one -> kep
 ## Resume state
 
 - **Done so far:** all three tasks are done, committed as `6d951a8` and `cd1fbb9`, and released in 0.11.0. Softov checked it by hand on 2026-11-04. See [implemented.md](implemented.md).
-- **Next action:** none. The owner of a bot edited by hand stays an open problem: [a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md](../../../problems/a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md).
+- **Next action:** none. The owner of a bot edited by hand stays an open problem: [a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md](../../bots/20261123-0945-a-bot-owner-edited-by-hand-is-logged/plan.md).
 
 ## Final verification checklist
 

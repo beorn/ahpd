@@ -2,7 +2,7 @@
  * The protocol's own conformance cases, run against this host.
  *
  * `packages/sdk/test/fixtures/ahp-test-cases` is a copy of the protocol
- * repository's `types/test-cases`, taken from tag `v1.0.0`. `SOURCE.md` beside
+ * repository's `types/test-cases`, taken from tag `v1.1.0`. `SOURCE.md` beside
  * the cases names the commit, and `tools/ahp-test-cases.mjs` takes a fresh
  * copy from a checkout. What these cases check is therefore not what this
  * suite believes the protocol says. It is what the protocol says.
@@ -380,14 +380,25 @@ const rootConfigPerConnection: (Differs & Broken)[] = [{ start: ['_meta', 'confi
 const DIVERGES: Record<string, (Differs & Broken)[]> = {
   '001-root-agentschanged': rootPerConnection,
   '002-root-activesessionschanged': rootPerConnection,
-  '039-set-steering-message': [{ reduced: ['activeTurn', 'modifiedAt', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
-  '040-replace-existing-steering-message': [{ reduced: ['activeTurn', 'modifiedAt', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
-  '041-update-steering-message-content-via-set-with-same-id': [{ reduced: ['activeTurn', 'modifiedAt', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '039-set-steering-message': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '040-append-steering-message-when-id-is-new': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '041-update-steering-message-content-via-set-with-same-id': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
   '043-remove-steering-message-is-no-op-for-mismatched-id': [{ reduced: ['activeTurn', 'modifiedAt', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
   '046-append-queued-message-when-id-is-new': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages'], ...BROKEN.idleQueue }],
   '048-remove-a-queued-message': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status'], ...BROKEN.idleQueue }],
   '050-remove-queued-message-is-no-op-for-unknown-id': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status'], ...BROKEN.idleQueue }],
-  '052-steering-and-queued-messages-are-independent': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '052-steering-and-queued-messages-share-one-list': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '293-pending-messages-kind-change-clears-legacy-mirror': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages'], ...BROKEN.idleSteering }],
+  '294-pending-messages-legacy-removal-preserves-queued-entry': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status'], ...BROKEN.idleSteering }],
+  '295-pending-messages-mixed-upserts': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '296-pending-messages-preserve-successive-submissions': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '297-pending-messages-queued-removal-preserves-legacy-slot': [{ reduced: ['activeTurn', 'modifiedAt', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '298-pending-messages-removal-preserves-other-legacy-mirror': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '299-pending-messages-remove-last-steering-entry': [{ reduced: ['activeTurn', 'modifiedAt', 'status'], ...BROKEN.idleSteering }],
+  '300-pending-messages-remove-mismatched-kind': [{ reduced: ['activeTurn', 'modifiedAt', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '301-pending-messages-remove-mixed-kinds': [{ reduced: ['activeTurn', 'modifiedAt', 'status'], ...BROKEN.idleSteering }],
+  '302-pending-messages-reorder-mixed-kinds': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status', 'steeringMessage'], ...BROKEN.idleSteering }],
+  '325-non-user-pending-origins-preserved': [{ reduced: ['queuedMessages', 'steeringMessage'], ...BROKEN.idleQueue }],
   '053-reorders-queued-messages': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status'], ...BROKEN.idleQueue }],
   '054-keeps-messages-not-in-order-at-end-in-original-order': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status'], ...BROKEN.idleQueue }],
   '055-ignores-unknown-ids-in-reorder': [{ reduced: ['activeTurn', 'modifiedAt', 'queuedMessages', 'status'], ...BROKEN.idleQueue }],
@@ -427,6 +438,10 @@ const ALLOWED: Record<string, (Differs & { because: string })[]> = {
   '232-chat-turnsloaded-prepends-older-turns': [{ start: ['turnsNextCursor'], because: RETAINED }],
   '233-chat-turnsloaded-dedupes-overlap-and-clears-cursor': [{ start: ['turnsNextCursor'], because: RETAINED }],
   '234-chat-truncated-clears-turns-next-cursor-when-clearing-all': [{ start: ['turnsNextCursor'], because: RETAINED }],
+  '272-chat-changesetschanged-clears-catalogue': [{
+    start: ['changesets'],
+    because: 'types/channels-chat/state.ts, ChatState.changesets: "Catalogue of changesets the server can produce for this chat."; the host says the ones its session\'s folder has once the chat is read',
+  }],
   // A client's announcement is answered with the session's whole list, the
   // backend's own, which replaces the case's.
   '035-session-activeclientset-adds-client': [{ reduced: ['customizations'], because: CUSTOMIZED }],
@@ -531,6 +546,15 @@ const REFUSALS: Record<string, {
   'session/configChanged': [{
     said: (action) => `${Object.keys(action.config as object)[0] ?? ''} is not a config key this backend takes`,
     source: 'types/channels-session/actions.ts, session/configChanged: "Only properties with `sessionMutable: true` in the config schema may be changed."',
+  }],
+  /*
+   * The case's own schema is a state this host did not serve: the session it
+   * drives runs a backend that declares none of the case's keys, so each is a
+   * key no chat may set.
+   */
+  'chat/configChanged': [{
+    said: (action) => `Session configuration '${Object.keys(action.config as object)[0] ?? ''}' cannot be set for a chat.`,
+    source: 'types/channels-chat/state.ts at v1.1.0: "Only `chatMutable` properties can be changed with `chat/configChanged`; hosts reject other keys." VS Code\'s words, sessionConfigProperties.ts validateChatConfigWrite at 6b68d3fe',
   }],
   'root/nonExistentAction': [{ said: (action) => `Server-only action: ${String(action.type)}`, source: MAY_NOT_ORIGINATE }],
   'session/nonExistentAction': [{ said: (action) => `Server-only action: ${String(action.type)}`, source: MAY_NOT_ORIGINATE }],

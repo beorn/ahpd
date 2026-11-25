@@ -90,7 +90,7 @@ export function createSession(options: ClaudeSessionOptions): Session {
     pendingPromptDeferred: undefined as (() => void) | undefined,
     disposed: false,
     additionalDirectories: [...(options.additional ?? [])] as string[],
-    steering: undefined as Bag | undefined,
+    steering: [] as Bag[],
     yielded: new Map<string, PendingSdkMessage>(),
     parentSdkUuid: undefined as string | undefined,
     hostInstructions: undefined as { turn: Bag; said: string[] } | undefined,

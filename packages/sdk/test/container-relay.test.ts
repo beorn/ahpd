@@ -3,12 +3,17 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createHost, ROOT } from '../src/host.js';
 import { echo } from '../../../examples/echo/agent.js';
 import type { ContainerPort, ContainerSink } from '../src/types/containers.js';
 import type { Peer } from '../src/types/rpc.js';
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
+
+// The nested daemon is a process started from source: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
+/** How long the nested daemon may take to answer its first frame, within the case's budget. */
+const NESTED_START_MS = PROCESS_CASE_MS - 5_000;
 
 /*
  * The relay, end to end, with a real host on the other side of it.
@@ -90,7 +95,7 @@ const onAStdin = (): ContainerPort & { children: ChildProcessWithoutNullStreams[
       // What the nested host says outside the protocol is a person's to read.
       child.stderr.on('data', (chunk: Buffer) => { sink.output(String(chunk)); });
       child.once('close', (code) => { live.delete(one.connectionId); sink.close(code === 0 ? undefined : `exit ${String(code)}`); });
-      return { address: 'devcontainer:test', remoteWorkspaceFolder: '/workspaces/Box', hostWorkspaceFolder: root };
+      return { address: 'devcontainer:test', remoteWorkspaceFolder: '/workspaces/Box', hostWorkspaceFolder: root, sandboxSupported: false };
     },
     send: (id, data) => { live.get(id)?.stdin.write(`${data}\n`); },
     disconnect: (id) => { live.get(id)?.kill('SIGTERM'); live.delete(id); },
@@ -147,7 +152,8 @@ it('a session\'s host on the other side of the relay is a real one', async () =>
       data: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientId: 'window', protocolVersions: ['0.9.0'] } }),
     },
   });
-  await until(() => frames(peer, 1).length > 0);
+  // The nested daemon loads the whole server from source before it answers.
+  await until(() => frames(peer, 1).length > 0, NESTED_START_MS);
   const answered = frames(peer, 1)[0];
   expect(answered?.result).toMatchObject({ protocolVersion: '0.9.0' });
   // A different host, answering about itself: this one's serverInfo is the

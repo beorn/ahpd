@@ -9,6 +9,7 @@ import { bag, reason } from '../utils/values.js';
 import { computerId, computersFor } from '../machines/computers.js';
 import { localPath, uriOf } from '../resources/fileuri.js';
 import { deepFreeze, frozenCopy } from '../utils/frozen.js';
+import { joinTags } from '../utils/tags.js';
 import { nestedAgent } from '../sessions/nested.js';
 import type { NestedAsked } from '../sessions/nested.js';
 import { idOf, uriFor, Status } from '../sessions/catalog.js';
@@ -25,16 +26,17 @@ import {
   alwaysAsks, asksForTool, confirmationOptions, getAutoApproval as autoApprovalOf, isDeniedByPermissions, isForbiddenSnapshotWrite, managedDecision,
   permissionRulesOf,
 } from './permissions.js';
+import { mcpServerOf } from './permissions.js';
 import type { ToolApproval } from './permissions.js';
 import { vscodeRootProperties } from '../vscoderootconfig.js';
 import { PENDING_CONFIRMATION_FIELDS } from '../types/agent.js';
 import type { PendingConfirmation } from '../types/agent.js';
 import { sameFolder, trusted } from './trust.js';
 import { isWorktreeUnderRepository } from '../repo/worktrees.js';
-import { filePersonRules, personOf } from '../access/personrules.js';
+import { approvalSetting, filePersonRules, personOf } from '../access/personrules.js';
 import { BASELINE_TURN } from '../types/changes.js';
 import type { Bag } from '../types/common.js';
-import type { Agent, BoundTool, Start } from '../types/agent.js';
+import type { Agent, BoundTool, SchemaPolicy, Start } from '../types/agent.js';
 import type { TurnEndEvent, TurnEndReason } from '../types/events.js';
 import type { RunEnding } from '../types/automations.js';
 import type { Owner } from '../types/usage.js';
@@ -156,6 +158,12 @@ export interface Spawn {
   /** Complete the Plan call the host drew in a chat's turn, before that turn's end is said. */
   completePlan(chat: string, turn: string): void;
 }
+
+/** The operator's policy with the auto-approval restriction a session holds, which is its owner's own on a host with users. */
+const restrictedAt = (policy: SchemaPolicy, restricted: boolean): SchemaPolicy => {
+  const { autoApprovePolicyRestricted: _host, ...rest } = policy;
+  return restricted ? { ...rest, autoApprovePolicyRestricted: true } : rest;
+};
 
 /**
  * Whether an action is one the protocol's chat reducer clears a chat's read
@@ -618,10 +626,21 @@ export function createSpawn(ctx: HostContext): Spawn {
     const attachments = kept.attachmentsDir?.(idOf(session));
     const messages = [...(Array.isArray(ctx.stateOf(chat)?.turns) ? ctx.stateOf(chat)?.turns as Bag[] : []), ...(turn === undefined ? [] : [turn])]
       .map((one) => one.message as Bag | undefined);
+    /*
+     * The MCP server the call's tool belongs to and the tool's own name on
+     * it, which an `Mcp(<server>/<tool>)` rule reads. An MCP client names a
+     * server's tool `mcp__<server>__<tool>`, so the tool is what ends the name
+     * after its last `__`.
+     */
+    const mcpServerName = mcpServerOf(contributor, ctx.stateOf(session)?.customizations);
+    const mcpToolName = mcpServerName === undefined || toolName === undefined ? undefined
+      : toolName.includes('__') ? toolName.slice(toolName.lastIndexOf('__') + 2) : toolName;
     const approval: ToolApproval = {
       request: {
         kind: signal.permissionKind,
         toolName: toolName ?? '',
+        ...(mcpServerName === undefined ? {} : { mcpServerName }),
+        ...(mcpToolName === undefined ? {} : { mcpToolName }),
         ...(signal.shellLanguage === undefined ? {} : { shellLanguage: signal.shellLanguage }),
         ...(signal.permissionUrl === undefined ? {} : { url: signal.permissionUrl }),
         ...(signal.permissionPath === undefined ? {} : { path: signal.permissionPath }),
@@ -636,7 +655,7 @@ export function createSpawn(ctx: HostContext): Spawn {
       attached: messages.flatMap((message) => (Array.isArray(message?.attachments) ? message.attachments as Bag[] : []))
         .flatMap((one) => (typeof one.uri === 'string' && one.uri.startsWith('file:') && localPath(one.uri) !== '' ? [localPath(one.uri)] : [])),
       globalAutoApprove: ctx.rootConfig.globalAutoApproveEnabled === true,
-      sessionAutoApprove: ctx.rootConfig.autoApprovePolicyRestricted !== true && owning?.config.autoApprove === 'autoApprove',
+      sessionAutoApprove: setting('autoApprovePolicyRestricted') !== true && owning?.config.autoApprove === 'autoApprove',
       bypassLocked: managedSettings?.disableBypassPermissionsMode === 'disable',
       terminalAutoApprove: setting('terminalAutoApproveEnabled') !== false,
       editPatterns,
@@ -651,7 +670,7 @@ export function createSpawn(ctx: HostContext): Spawn {
       levels: {
         people: options.users !== undefined,
         host: writesHostRules(session),
-        allowAll: ctx.rootConfig.autoApprovePolicyRestricted !== true && managedSettings?.disableBypassPermissionsMode !== 'disable',
+        allowAll: setting('autoApprovePolicyRestricted') !== true && managedSettings?.disableBypassPermissionsMode !== 'disable',
       },
     };
     /*
@@ -704,7 +723,7 @@ export function createSpawn(ctx: HostContext): Spawn {
     const ref = subagents.get(uri);
     if (ref === undefined) return;
     // A question a worker's call puts is answered by the backend that runs the worker, as a client's answer on the worker's chat is.
-    const action = toolReady(ref.session, uri, withMcpContributor(ref.session, withWorkerUri(uri, given)), () => workerLead(uri));
+    const action = toolReady(ref.session, uri, withMcpContributor(ref.session, withWorkerUri(uri, ctx.background.withMeta(uri, given))), () => workerLead(uri));
     if (action === undefined || decidedAlready(uri, action)) return;
     const was = ctx.stateOf(uri)?.status;
     // Whether this ends the turn the worker's chat runs, whose end is then raised as every chat's is.
@@ -1164,6 +1183,14 @@ export function createSpawn(ctx: HostContext): Spawn {
     const machine = computerId(config.computer);
     const offHost = machine !== undefined && options.computers?.remote?.(machine) === true;
     /*
+     * The shell authentication variables this chat's agent process is given.
+     *
+     * Only a chat on this host: the helper reaches a socket here, and a
+     * process in a machine cannot. A host inside a machine gives its own when
+     * its own setting is on.
+     */
+    const helperEnv = machine === undefined ? ctx.shellAuth.envFor(chatUri) : {};
+    /*
      * A machine whose port can hand over a socket, which is a node that dialled
      * this host: the host inside it is reached over that socket instead of a
      * command. The port is asked for every machine, so the answer for one it
@@ -1219,6 +1246,13 @@ export function createSpawn(ctx: HostContext): Spawn {
       // What the turn's check chose, read when each record is written and let
       // go of when the turn ends.
       keysOf,
+      // The agent's tags, then each connector's, read as each record is written.
+      ...(options.usageTags === undefined ? {} : {
+        tagsOf: (connectors: readonly string[]) => joinTags(
+          options.usageTags?.agent(agent.provider),
+          ...connectors.map((id) => options.usageTags?.connector(id)),
+        ),
+      }),
       owner: () => kept.owner(idOf(uri)),
       scope: () => charged.get(uri)?.scope,
     });
@@ -1402,8 +1436,9 @@ export function createSpawn(ctx: HostContext): Spawn {
           contributor, ctx.stateOf(uri)?.customizations),
       }),
       // The operator's policy as it stands at the start: managed settings, and
-      // the auto-approval restriction a window forwarded.
-      ...ctx.schemaPolicy(),
+      // the auto-approval restriction a window forwarded, the owner's own where
+      // they keep one.
+      ...restrictedAt(ctx.schemaPolicy(), approvalSetting(options, ctx.rootConfig, ownerOfSession, 'autoApprovePolicyRestricted') === true),
       ...(userSettings === undefined ? {} : { userSettings }),
       ...(sender?.principal === undefined ? {} : { reader: sender.principal }),
       ...(ownerOfSession === undefined ? {} : { owner: ownerOfSession }),
@@ -1468,6 +1503,11 @@ export function createSpawn(ctx: HostContext): Spawn {
        * never heard of the key, and the answer to either is the same.
        */
       ...(options.shellEnv === undefined ? {} : { shellEnv: frozenCopy(options.shellEnv) }),
+      /*
+       * The helper's variables, on this host only, and only while the setting
+       * is on: `envFor` answers nothing otherwise.
+       */
+      ...(Object.keys(helperEnv).length === 0 ? {} : { env: frozenCopy(helperEnv) }),
       ...(credentials && Object.keys(credentials).length > 0 ? { credentials } : {}),
       ...(workingDirectory !== undefined ? { workingDirectory } : {}),
       ...(additional !== undefined && additional.length > 0 ? { additional: frozenCopy(additional) } : {}),
@@ -1526,6 +1566,7 @@ export function createSpawn(ctx: HostContext): Spawn {
        * emits `chat/backgroundWorkSet` itself has it dropped, by `emit`.
        */
       backgroundTasks: ctx.background.heldTasks(),
+      movableCalls: ctx.background.heldMovable(),
       /*
        * A harness's own task list, raised for whoever is listening.
        *
@@ -1646,7 +1687,7 @@ export function createSpawn(ctx: HostContext): Spawn {
         // A client's decision on a call is said once, as the client's.
         if (channel === 'chat' && decidedAlready(chatUri, action)) return;
         if (channel === 'chat') {
-          const put = toolReady(uri, chatUri, withMcpContributor(uri, action), () => sessions.get(uri)?.chats.get(chatUri));
+          const put = toolReady(uri, chatUri, withMcpContributor(uri, ctx.background.withMeta(chatUri, action)), () => sessions.get(uri)?.chats.get(chatUri));
           if (put === undefined) return;
           action = put;
         }
@@ -1742,6 +1783,8 @@ export function createSpawn(ctx: HostContext): Spawn {
           // read are let go of beside the sender.
           forgetSender(turn);
           forgetKeys(turn);
+          // An edit that never said it ended ends with its turn.
+          for (const path of options.changes?.editsEnded?.(idOf(uri), turn) ?? []) ctx.editingMoved(path);
         }
         // A nested session's record follows the title and the last turn.
         if (action.type === 'session/titleChanged' && typeof action.title === 'string') moveNested(idOf(uri), { title: action.title });
@@ -1940,7 +1983,11 @@ export function createSpawn(ctx: HostContext): Spawn {
       onFileEdit: (turnId, path, phase, text) => {
         const dir = dirOf(uri);
         if (dir === undefined) return;
-        return options.changes?.observe?.(dir, uri, turnId, path, phase, text);
+        const read = Promise.resolve(options.changes?.observe?.(dir, idOf(uri), turnId, path, phase, text));
+        // Marked as it begins; as it ends, once the folder has been read again.
+        if (phase === 'before') ctx.editingMoved(path);
+        else void read.then(() => refreshWatched(dir)).then(() => { ctx.editingMoved(path); }, () => {});
+        return read;
       },
       /*
        * A file a person is being asked about, on its way to the same source.
@@ -1958,16 +2005,16 @@ export function createSpawn(ctx: HostContext): Spawn {
       onEditProposed: (toolCallId, path, apply) => {
         const dir = dirOf(uri);
         if (dir === undefined) return undefined;
-        return options.changes?.propose?.(dir, uri, toolCallId, path, apply);
+        return options.changes?.propose?.(dir, idOf(uri), toolCallId, path, apply);
       },
       onEditSettled: (toolCallId) => {
-        options.changes?.settle?.(uri, toolCallId);
+        options.changes?.settle?.(idOf(uri), toolCallId);
       },
       /*
        * An edit a call made, both sides of which the agent said: held by the
        * same source, which mints the URIs a client reads them from.
        */
-      onEditCompleted: (toolCallId, path, before, after) => options.changes?.complete?.(uri, toolCallId, path, before, after),
+      onEditCompleted: (toolCallId, path, before, after) => options.changes?.complete?.(idOf(uri), toolCallId, path, before, after),
       /*
        * Content a tool result or a part of the agent's message carries inline,
        * kept in the session's folder and answered by the reference a part
@@ -2180,6 +2227,16 @@ export function createSpawn(ctx: HostContext): Spawn {
         .finally(() => { if (ctx.baselineCheckpoints.get(uri) === written) ctx.baselineCheckpoints.delete(uri); });
       ctx.baselineCheckpoints.set(uri, written);
       void written.then(() => refreshSessionChangesSummary(uri));
+      /*
+       * And the folder itself, read once the baseline is down, as a turn's end
+       * reads it after its checkpoint. A worktree the host made after the
+       * daemon started, or any folder no session had worked in, is otherwise
+       * read first when a turn ends: a session that only runs commands in a
+       * long turn would offer no Uncommitted Changes until then. Nothing is
+       * brought back from a machine first: the session has not worked yet.
+       */
+      const folder = held.workingDirectory;
+      void written.then(() => { refreshFacts(folder); });
     }
     /*
      * The name it had before, when it is being created again.

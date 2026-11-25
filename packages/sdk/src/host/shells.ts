@@ -22,9 +22,10 @@ import { ROOT } from './channels.js';
 import { executeShellCommand, parseSentinel, shellText, shellTypeForExecutable } from './shellcommand.js';
 import type { Bag } from '../types/common.js';
 import type { Claim, Terminal } from '../types/terminals.js';
-import type { HeldShell, ManagedShell, ShellClaim, ShellCommandResult, ShellType, Shells } from '../types/shells.js';
+import type { GoingOn, HeldShell, ManagedShell, ShellClaim, ShellCommandResult, ShellType, Shells } from '../types/shells.js';
 import type { HeldShellOptions } from './terminals.js';
 import type { HostContext } from './context.js';
+import type { Owner } from '../types/usage.js';
 
 /**
  * How long a new shell is given to say something before its first command: the
@@ -258,6 +259,13 @@ export function createShells(ctx: HostContext): HostShells {
        * the store puts no integration into a shell whose scripts are not there.
        */
       const machine = machineOf(session);
+      /*
+       * The shell authentication variables this chat's commands run with.
+       *
+       * A shell on this host reaches the host's socket; one in a machine does
+       * not, and the host inside the machine gives its own.
+       */
+      const helperEnv = machine === undefined ? ctx.shellAuth.envFor(claim.chat) : {};
       let asked: HeldShellOptions = {
         uri: ctx.nonPtyShellTerminalUri(session, claim.chat, key),
         cwd: whereOf(session, chat),
@@ -266,6 +274,7 @@ export function createShells(ctx: HostContext): HostShells {
         nonInteractive: true,
         preventShellHistory: true,
         kept: { chat: claim.chat, key, session },
+        ...(Object.keys(helperEnv).length === 0 ? {} : { env: helperEnv }),
         ...(machine === undefined ? {} : { machine }),
       };
       if (machine !== undefined) {
@@ -312,16 +321,53 @@ export function createShells(ctx: HostContext): HostShells {
     };
 
     /**
+     * The person behind a command, read as it starts.
+     *
+     * The turn it was started in is over long before a command in the
+     * background ends, and a sender is let go of when a turn ends, so the
+     * owner the woken turn acts as is read here rather than at the end.
+     */
+    const senderNow = (): Owner | undefined => {
+      const active = (ctx.byChat.get(chat)?.chat.chatState() as { activeTurn?: { id?: unknown } } | undefined)?.activeTurn;
+      return typeof active?.id === 'string' ? ctx.senderOf(active.id) : undefined;
+    };
+
+    /**
+     * Wake the chat with the end of a command its call no longer waited for.
+     *
+     * A shell the host closed is not news for the agent. Closing the chat, the
+     * session or the host ends its shells, and waking the chat then would
+     * bring a closed session back from disk. Only a chat this manager still
+     * serves is woken.
+     */
+    const wakeWith = async (shell: ManagedShell, command: string, result: ShellCommandResult, sender: Owner | undefined): Promise<void> => {
+      if (ctx.closed || sessions.get(session)?.get(chat) !== self || ctx.byChat.get(chat) === undefined) {
+        log(`the command in ${shell.id} ended with its chat closed, so no turn reads it`);
+        return;
+      }
+      try {
+        await ctx.beginWakeTurn(session, chat, endPrompt(command, result), sender);
+      }
+      catch (error) {
+        // The command is over either way, and its row is already down; what
+        // did not happen is the turn that would have read the end.
+        log.error(`could not wake ${session} after the command in ${shell.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+
+    /**
      * Run one command, and answer how it ended.
      *
      * The execution is `shellcommand.ts`; what is here is the shell it runs
      * in: a new shell is given time to say something, and a command that
      * outlives its call says how it ends so the shell stays busy until then.
      */
-    const run = async (shell: ManagedShell, command: string, timeoutMs: number): Promise<ShellCommandResult> => {
+    const run = async (shell: ManagedShell, command: string, timeoutMs: number, going?: GoingOn): Promise<ShellCommandResult> => {
       const entry = entryOf(shell);
       if (entry === undefined) throw new Error(`There is no shell ${shell.id}`);
+      const sender = going?.ended === undefined ? undefined : senderNow();
       await spoken(entry);
+      const ended = going?.ended;
       return await executeShellCommand({
         terminal: entry.terminal,
         shellType: shell.shellType,
@@ -330,6 +376,18 @@ export function createShells(ctx: HostContext): HostShells {
         listen: (onAction) => listen(entry, onAction),
         log,
         stillRunning: (how) => { entry.command = how; },
+        ...(going?.letGo === undefined ? {} : { letGo: going.letGo }),
+        /*
+         * A command its caller can follow goes on being watched after a
+         * `background` answer, and its end is the same end `start` reports:
+         * the caller's row goes, then the chat is woken with it.
+         */
+        ...(ended === undefined ? {} : {
+          afterwards: (result: ShellCommandResult) => {
+            ended();
+            void wakeWith(shell, command, result, sender);
+          },
+        }),
       });
     };
 
@@ -356,8 +414,7 @@ export function createShells(ctx: HostContext): HostShells {
        * a sender is let go of when a turn ends, so the owner the woken turn
        * acts as is read here rather than at the end.
        */
-      const active = (ctx.byChat.get(chat)?.chat.chatState() as { activeTurn?: { id?: unknown } } | undefined)?.activeTurn;
-      const sender = typeof active?.id === 'string' ? ctx.senderOf(active.id) : undefined;
+      const sender = senderNow();
       await spoken(entry);
       const result = await executeShellCommand({
         terminal: entry.terminal,
@@ -368,25 +425,7 @@ export function createShells(ctx: HostContext): HostShells {
         log,
       });
       ended?.();
-      /*
-       * A shell the host closed is not news for the agent.
-       *
-       * Closing the chat, the session or the host ends its shells, and waking
-       * the chat then would bring a closed session back from disk. Only a
-       * chat this manager still serves is woken.
-       */
-      if (ctx.closed || sessions.get(session)?.get(chat) !== self || ctx.byChat.get(chat) === undefined) {
-        log(`the command in ${shell.id} ended with its chat closed, so no turn reads it`);
-        return result;
-      }
-      try {
-        await ctx.beginWakeTurn(session, chat, endPrompt(command, result), sender);
-      }
-      catch (error) {
-        // The command is over either way, and its row is already down; what
-        // did not happen is the turn that would have read the end.
-        log.error(`could not wake ${session} after the command in ${shell.id}: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      await wakeWith(shell, command, result, sender);
       return result;
     };
 

@@ -1,6 +1,6 @@
 ---
 title: The docs say what false means
-status: implemented
+status: done
 depends: [task-02-claude-asks-about-a-named-host-tool.md, task-03-pi-and-cofold-ask-in-every-mode.md]
 layer: docs
 refs:

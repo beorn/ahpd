@@ -1,6 +1,6 @@
 ---
 title: archive_chat reads the row
-status: implemented
+status: done
 depends:
   - task-01-a-stopped-row-lists-its-chats.md
 layer: "sdk"

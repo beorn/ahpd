@@ -19,7 +19,7 @@
 
 import type { RequestHandler } from '@cofold/remote';
 import {
-  chargeFor, checkMeta, countCall, decide, isRecord, keyRowOf, type ConnectorModel, type ConnectorModels, type Cost, type MinuteMeter, type ModelPricing, type ModelUse, type Owner, type PayOrder, type Policies, type ProviderConnector,
+  chargeFor, checkMeta, countCall, decide, isRecord, joinTags, keyRowOf, type ConnectorModel, type ConnectorModels, type Cost, type MinuteMeter, type ModelPricing, type ModelUse, type Owner, type PayOrder, type Policies, type ProviderConnector,
   type ProviderModel, type Scope, type Usage, type Users,
 } from '@ahpd/sdk';
 import { foreign, guarded, isUnder, json, originRefusal, PROXY_PREFIX, type ApiOrigins } from '../http.js';
@@ -101,6 +101,8 @@ export interface ProxyOptions {
    * does: `ok` for a 2xx, and a failure with the status or the error.
    */
   note?(id: string, outcome: { ok: boolean; status?: number; error?: string }): void;
+  /** The tags of one connector, which the record of a call it served carries. Absent, records carry none. */
+  connectorTags?(id: string): readonly string[];
   /** The `fetch` a call goes out through. The global one when absent. */
   fetch?: typeof fetch;
   /** Overrides `HEADERS_TIMEOUT_MS`. */
@@ -1196,6 +1198,7 @@ const record = (options: ProxyOptions, charged: Charged, call: Answered): void =
     ...(call.seconds === undefined ? {} : { seconds: call.seconds }),
   }) ?? provider;
   const session = charged.session;
+  const tags = joinTags(options.connectorTags?.(call.candidate.connector));
   const entry: ModelUse = {
     at: call.at,
     kind: 'model',
@@ -1213,6 +1216,7 @@ const record = (options: ProxyOptions, charged: Charged, call: Answered): void =
     ...(cost === undefined ? {} : { cost }),
     ...(provider === undefined ? {} : { providerCost: provider }),
     pools: poolsOf(charged.owner, charged.scope, call.pools),
+    ...(tags.length === 0 ? {} : { tags }),
   };
   void Promise.resolve()
     .then(() => store.record(entry))

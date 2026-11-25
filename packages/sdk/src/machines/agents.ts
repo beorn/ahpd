@@ -215,10 +215,10 @@ export const knownAgents: Record<string, KnownAgent> = {
     command: 'copapo',
     install: { all: 'npm i -g @cofold/copapo' },
     variables: [
-      { name: 'COPAPO_BASE_URL', description: 'The URL of the endpoint', secret: false },
-      { name: 'COPAPO_API_KEY', description: 'The API key, when the server wants one', secret: true },
-      { name: 'COPAPO_MODEL', description: 'The default model', secret: false },
-      { name: 'COPAPO_CONFIG', description: 'The config file', secret: false },
+      { name: 'COFOLD_BASE_URL', description: 'The URL of the endpoint', secret: false },
+      { name: 'COFOLD_API_KEY', description: 'The API key, when the server wants one', secret: true },
+      { name: 'COFOLD_MODEL', description: 'The default model', secret: false },
+      { name: 'COFOLD_CONFIG', description: 'The config file', secret: false },
     ],
   },
   devin: {

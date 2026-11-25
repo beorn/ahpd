@@ -1,23 +1,23 @@
 ---
-title: A plugin that does not resolve has an id with a slash, and a client cannot change it
+title: A plugin whose URL id has a question mark cannot be changed by a client
 status: open
 date: 2026-10-21
 severity: minor
 refs:
   - "[code://packages/server/src/plugins.ts#L82-L91](../../packages/server/src/plugins.ts#L82-L91) - `unimportedId` falls back to the spec as written"
-  - "[code://packages/server/src/pluginschannel.ts#L165-L171](../../packages/server/src/pluginschannel.ts#L165-L171) - `idParam` refuses an id with `/` or `?`"
+  - "[code://packages/server/src/pluginschannel.ts#L452-L461](../../packages/server/src/pluginschannel.ts#L452-L461) - `idParam`, which since #380 takes an id with `/` that matches a configured spec, and still refuses one with `?`"
 ---
 
 ## Symptom
 
-A configured spec such as `https://example.invalid/p.tgz` or `./plugins/x` that does not resolve is listed in `x-ahpd-plugins` under the spec as its id.
-That id contains `/`.
-`x-ahpd/plugins/enable`, `disable` and `options` refuse an id with `/`, so a client cannot change that plugin.
+A configured spec that does not resolve is listed in `x-ahpd-plugins` under the spec as its id.
+Since #380, `x-ahpd/plugins/enable`, `disable` and `options` take such an id with `/`, when it matches a configured spec.
+A URL spec with a query, such as `https://example.invalid/p.tgz?v=2`, has `?` in its id. The commands still refuse it, so a client cannot change that plugin.
 
 ## Cause
 
 `unimportedId` answers `nameOf(spec)` when a spec does not resolve or its package is refused.
-The commands refuse `/` and `?` in an id, because the id is part of a record URI.
+The commands refuse `?` in an id, because the id is part of a record URI, where `?` starts the query.
 
 ## Impact
 

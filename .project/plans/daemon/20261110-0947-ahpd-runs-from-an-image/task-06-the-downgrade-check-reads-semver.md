@@ -1,6 +1,6 @@
 ---
 title: The downgrade check reads versions as semver
-status: implemented
+status: done
 depends: [task-02-the-entrypoint-seeds-plugins.md]
 layer: "image"
 refs:

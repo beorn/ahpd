@@ -488,7 +488,7 @@ export function createTurns(ctx: SessionContext): Turns {
         ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
       };
       // Held until the CLI reads it, which is when its removal is said.
-      ctx.steering = { id, message };
+      ctx.steering.push({ id, message });
       void push(text, attachments, {
         sdkUuid: UUID.test(id) ? id : crypto.randomUUID(),
         turnId: String(ctx.active.id),
@@ -523,7 +523,7 @@ export function createTurns(ctx: SessionContext): Turns {
           if (cancelled && ctx.query === handle) ctx.yielded.delete(uuid);
         }, () => {});
       }
-      if (str(bag(ctx.steering).id) === id) ctx.steering = undefined;
+      ctx.steering = ctx.steering.filter((one) => str(one.id) !== id);
     },
 
     // The draft the host said, held for the chat's state.
@@ -703,7 +703,7 @@ export function createTurns(ctx: SessionContext): Turns {
       }
       // What the CLI was not handed goes with the stop.
       ctx.toYield.length = 0;
-      ctx.steering = undefined;
+      ctx.steering = [];
       ctx.preparingTurn = undefined;
       const turn = ctx.active;
       if (turn) {

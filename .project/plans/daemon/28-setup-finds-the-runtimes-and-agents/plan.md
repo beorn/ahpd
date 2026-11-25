@@ -64,9 +64,9 @@ ahpd configure -> look up each command on PATH -> list what was found -> one que
 
 | # | Task | Status |
 | --- | --- | --- |
-| 01 | [The sdk lists the known agents](task-01-the-sdk-lists-the-known-agents.md) | implemented |
-| 02 | [Configure finds the runtimes and agents](task-02-configure-finds-the-runtimes-and-agents.md) | implemented |
-| 03 | [The install script prints the runtime lines](task-03-the-install-script-prints-the-runtime-lines.md) | implemented |
+| 01 | [The sdk lists the known agents](task-01-the-sdk-lists-the-known-agents.md) | done |
+| 02 | [Configure finds the runtimes and agents](task-02-configure-finds-the-runtimes-and-agents.md) | done |
+| 03 | [The install script prints the runtime lines](task-03-the-install-script-prints-the-runtime-lines.md) | done |
 
 Task 01 moves from agent-acp to the sdk, because `pnpm boundary` does not let `@ahpd/server` import `@ahpd/agent-acp`.
 

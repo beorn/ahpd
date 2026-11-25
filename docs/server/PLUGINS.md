@@ -13,6 +13,8 @@ Every backend is a plugin, Claude included. Plugins also add tools, ports and UR
 | [`@ahpd/webhook`](../plugins/webhook.md) | Webhooks |
 | [`@ahpd/push`](../plugins/push.md) | Push notifications |
 | [`@ahpd/tunnel-devtunnel`](../plugins/tunnel-devtunnel.md) | A public URL through Dev Tunnels |
+| [`@ahpd/tasks`](../plugins/tasks.md) | One list of tasks and plans for every agent and person |
+| [`@ahpd/activepieces`](../plugins/activepieces.md) | Activepieces connectors as tools |
 | [`@ahpd/web`](https://github.com/ahpio/ahpw) | A web UI, at `/plugins/web/` |
 
 ::: warning
@@ -27,7 +29,7 @@ ahpd plugin list
 ahpd restart
 ```
 
-`install` runs `npm install` in the configuration directory (`~/.config/ahpd`) and adds the name to `plugins` in `config.json`. A change loads at the next restart. The source may be a package name, a path, a tarball URL, `github:<owner>/<repo>` or a `git+ssh:` URL; what `plugins` gets is the name npm wrote for it. A package with no `ahpd` field is refused, and one npm installed from a source is uninstalled again.
+`install` runs `npm install` in the configuration directory (`~/.config/ahpd`) and adds the name to `plugins` in `config.json`. A running daemon loads a change at once when its [HTTP API](REMOTE.md#http-api) is on. The command says to restart when a plugin with a port or a URI scheme is in the way, or when the daemon does not answer. The source may be a package name, a path, a tarball URL, `github:<owner>/<repo>` or a `git+ssh:` URL; what `plugins` gets is the name npm wrote for it. A package with no `ahpd` field is refused, and one npm installed from a source is uninstalled again.
 
 | Command | Does |
 | --- | --- |
@@ -38,6 +40,9 @@ ahpd restart
 | `ahpd plugin enable <name>` | Turn on |
 | `ahpd plugin disable <name>` | Turn off, keep its options |
 | `ahpd plugin list` | Show each plugin and its state |
+| `ahpd plugin available` | Show what the [plugin lists](#plugin-lists) offer, and which you installed |
+| `ahpd plugin apply` | Load what the configuration now names, after you edited `config.json` by hand |
+| `ahpd plugin reload <name>...` | Import a plugin again, because its code changed. The configuration is not read |
 
 A bare name installs the newest version that fits this daemon. `@ahpd/agent-pi@1.2.0` or a tag goes to npm as written.
 
@@ -97,6 +102,15 @@ Put a secret in the [vault](VAULT.md) and name it, so it is not in `config.json`
 ahpd plugin config orders apiKey '{"$secret":"host:stripe"}'
 ```
 :::
+
+## Plugin lists
+
+A plugin list is a URL that serves the plugins a person may install, with their versions and icons. `ahpd plugin available` shows every entry of every list, and which are installed. `ahpd plugin install <source>` takes the source from the first list that has it, or from the list `--marketplace` names. A source no list has installs from npm, or as written.
+
+| Setting | What it does |
+| --- | --- |
+| `pluginMarketplaces` (`--plugin-marketplace`) | The lists, read in the order given. `https://plugins.ahpio.com/v1/plugins.json` by default, and `[]` reads none. Under CI the daemon fetches no list |
+| `pluginCheckHours` (`--plugin-check-hours`) | How many hours a fetched list is kept before the daemon fetches it again. 12 by default |
 
 ## For one run
 

@@ -35,6 +35,31 @@ export interface ContainerConnect {
   /** What the client calls this container on screen. */
   name: string;
   /**
+   * Whether a container that is stopped may be started again.
+   *
+   * A source is suspended when it is stopped, and a connect that does not say
+   * `true` is refused in VS Code's words rather than silently starting a
+   * container the client believed was down. Absent is not `true`.
+   */
+  resume?: boolean;
+  /**
+   * Whether the user's state is kept on a volume beside the workspace.
+   *
+   * The nested host's configuration and the agents' sessions are linked to a
+   * second volume, so a container made again reaches the same state. Absent is
+   * not `true`.
+   */
+  persistUserState?: boolean;
+  /**
+   * Whether the container runs with the options the command sandbox needs.
+   *
+   * The container's seccomp, AppArmor and system paths are unconfined, and
+   * `/dev/net/tun` is a device in it. That weakens the container's own
+   * isolation, so only an explicit `true` asks for it and an absent value does
+   * not.
+   */
+  sandboxEnabled?: boolean;
+  /**
    * Whose the container is, when the connection is somebody's.
    *
    * The client does not send it and is never asked: the host fills it from the
@@ -44,6 +69,101 @@ export interface ContainerConnect {
    * host's own.
    */
   owner?: Owner;
+}
+
+/**
+ * The shape of an environment id.
+ *
+ * An environment is named by the client and never reused, and its id labels
+ * the volume its workspace lives in, so it is held to one lowercase spelling.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/devContainerEnvironments.ts
+ */
+export const DEV_CONTAINER_ENVIRONMENT_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** Whether a string is an environment id this host makes a container for. */
+export const isDevContainerEnvironmentId = (id: string): boolean => DEV_CONTAINER_ENVIRONMENT_ID.test(id);
+
+/**
+ * The images an environment may be made from, which is the reference's list.
+ *
+ * A client sends an image because it chose one, and a host that took any image
+ * would pull whatever a window named.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/devContainerEnvironments.ts
+ */
+export const DEV_CONTAINER_ENVIRONMENT_IMAGES: readonly string[] = ['mcr.microsoft.com/devcontainers/base:ubuntu'];
+
+/**
+ * What a client asks for: one connection to an environment made from an image.
+ *
+ * An environment is not a folder's `devcontainer.json`: its workspace is a
+ * Docker volume this host names, so there is no definition on this host to
+ * read and the image is the whole of what the client chooses.
+ */
+export interface ContainerEnvironmentConnect {
+  /** The client's own name for this connection, as in `ContainerConnect`. */
+  connectionId: string;
+  /** The environment's id, which labels its volume and is never reused. */
+  environmentId: string;
+  /** The image to make it from, one of `DEV_CONTAINER_ENVIRONMENT_IMAGES`. */
+  image: string;
+  /** What the client calls this environment on screen. */
+  name: string;
+  /** Whether a container that is stopped may be started again, as `ContainerConnect`'s is. */
+  resume?: boolean;
+  /** Whether the user's state is kept on a volume, as `ContainerConnect`'s is. */
+  persistUserState?: boolean;
+  /** Whether the container runs with the sandbox's options, as `ContainerConnect`'s is. */
+  sandboxEnabled?: boolean;
+  /** Whose the environment is, filled from the connection as `ContainerConnect`'s is. */
+  owner?: Owner;
+}
+
+/** The point of a connect a user state report is about. */
+export type ContainerUserStateStage = 'mount' | 'up' | 'link' | 'userCommands';
+
+/**
+ * One stage of a connect that keeps the user's state, as the reference reports
+ * it.
+ *
+ * `mount` says whether a state volume was added or the container already had
+ * one; `up` and `userCommands` say whether the CLI stage succeeded; `link` says
+ * what became of the folders and carries their counts. The fields are VS
+ * Code's, so a client reads them the same way.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/agentHostExtensionProtocol.ts
+ */
+export interface ContainerUserState {
+  /** The stage this report is about. */
+  stage: ContainerUserStateStage;
+  /**
+   * What happened at that stage.
+   *
+   * `mount`: `added`, `existingContainer` or `failed`.
+   * `up` and `userCommands`: `succeeded` or `failed`.
+   * `link`: `linked`, `homeNotFound`, `noMount` or `failed`.
+   */
+  outcome: string;
+  /** Which step failed, when the outcome is `failed`. */
+  reason?: string;
+  /** The link script's last step, when it failed. */
+  step?: string;
+  /** The exit code of the stage's command, when it has one. */
+  exitCode?: number;
+  /** Where the state volume is, classed as its mount target. */
+  target?: 'workspaces' | 'volume';
+  /** Folders whose state from an earlier container replaced the container's own folder. */
+  restoredFolders?: number;
+  /** Folders moved from the container to the state volume. */
+  movedFolders?: number;
+  /** Folders made on both sides and linked. */
+  createdFolders?: number;
+  /** Folders that were already linked. */
+  existingFolders?: number;
+  /** Folders that were not linked. */
+  skippedFolders?: number;
+  /** The sorted, comma-separated reasons the folders were not linked. */
+  skipReasons?: string;
+  /** The stage's own sentence, when it failed. */
+  errorMessage?: string;
 }
 
 /** What a client is told once the container is up and a host is running in it. */
@@ -59,6 +179,13 @@ export interface ContainerConnectResult {
   remoteWorkspaceFolder: string;
   /** The same folder as this host knows it, when the launcher knows it. */
   hostWorkspaceFolder?: string;
+  /**
+   * Whether the running container has the options the command sandbox needs.
+   *
+   * Read from the container itself rather than from what the connect asked
+   * for: a container made earlier keeps the settings it was made with.
+   */
+  sandboxSupported: boolean;
 }
 
 /**
@@ -73,6 +200,20 @@ export interface ContainerSink {
   message(text: string): void;
   /** The launcher's or the nested host's own output, for a person watching. */
   output(text: string): void;
+  /**
+   * One stage of a connect that keeps the user's state.
+   *
+   * Optional, because a sink that does not report a connect's stages is not
+   * asked to: the host's own sink forwards it as a notification.
+   */
+  userState?(notice: ContainerUserState): void;
+  /**
+   * Whether the running container has the options the command sandbox needs.
+   *
+   * Optional, as `userState` is: a sink that does not report a connect's facts
+   * is not asked to.
+   */
+  sandboxSupport?(supported: boolean): void;
   /** The relay ended. The reason is absent when it was simply stopped. */
   close(reason?: string): void;
 }
@@ -110,6 +251,34 @@ export interface ContainerPort {
    * is left running when it throws.
    */
   connect(options: ContainerConnect, sink: ContainerSink): Promise<ContainerConnectResult>;
+  /**
+   * Make or find an environment's container, and start a host inside it.
+   *
+   * The environment's workspace is a Docker volume this host names and labels,
+   * so the container outlives it and a second connect reaches the same one.
+   * What is answered and what arrives on `sink` are `connect`'s.
+   *
+   * Optional, because a launcher that knows only folders serves no such
+   * method, and a client that asks is refused the way it is for an absent
+   * launcher.
+   */
+  connectEnvironment?(options: ContainerEnvironmentConnect, sink: ContainerSink): Promise<ContainerConnectResult>;
+  /**
+   * Remove an environment: its containers, its volumes and its cached
+   * configuration, and answer whether it acted.
+   *
+   * `vscode/devContainers/removeEnvironment`. Unlike a folder's `remove`, the
+   * workspace is this host's own volume, so it goes with the container and
+   * nothing of the environment is left behind. The owner is the principal the
+   * removing connection belongs to: on a host with users, only the principal
+   * that made an environment may remove it, and another's attempt is refused
+   * with a sentence rather than answered `false`.
+   *
+   * Optional, because a launcher that knows only folders serves no such
+   * method, and a client that asks is refused the way it is for an absent
+   * launcher.
+   */
+  removeEnvironment?(environmentId: string, owner?: Owner): Promise<boolean>;
   /** Write one frame to the host inside this connection's container. */
   send(connectionId: string, data: string): void | Promise<void>;
   /**

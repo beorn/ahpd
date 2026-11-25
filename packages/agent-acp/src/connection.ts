@@ -280,6 +280,8 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
 
   /** Why the server is gone, once it is; undefined while it runs. */
   let death: Error | undefined;
+  /** Whether the server was told to go. */
+  let closing = false;
   let heardDeath: (why: Error) => void = () => {};
   const ended = new Promise<Error>((resolve) => { heardDeath = resolve; });
   const die = (why: Error): void => {
@@ -475,14 +477,14 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * What the server wrote on stderr, for a failure to say out loud.
    *
    * A dead server's exit can be heard before its last words have been read off
-   * the pipe, so the tail waits for the stream to end, bounded, because a
-   * grandchild that inherited the pipe keeps it open long after the server that
-   * spawned it is gone. A ring that has dropped bytes may have kept the middle
+   * the pipe, and one being closed may have them in it still, so the tail
+   * waits for the stream to end, bounded, because a grandchild that inherited
+   * the pipe keeps it open long after the server that spawned it is gone. A ring that has dropped bytes may have kept the middle
    * of a line, so that line goes; a ring that has dropped nothing keeps every
    * byte it was given.
    */
   const stderrTail = async (): Promise<string> => {
-    if (death !== undefined) {
+    if (death !== undefined || closing) {
       await Promise.race([
         drained,
         new Promise((resolve) => { setTimeout(resolve, exitGraceMs).unref(); }),
@@ -557,6 +559,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       // The stdin end is what a well-behaved server reads as a shutdown; the
       // kill is for one that does not, and it goes to the whole group so what
       // the server started goes with it.
+      closing = true;
       child.stdin.end();
       signal('SIGTERM');
       // Armed only while the server is still there, and disarmed by the wait

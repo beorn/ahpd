@@ -25,6 +25,7 @@
  * record, or `{}` for an operation that removed it.
  */
 
+import { secretFields } from '../channels/owners.js';
 import { refusalReason } from '../host/gate.js';
 import { HOST_CATALOGS, translated, type Catalogs } from '../i18n.js';
 import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
@@ -193,9 +194,46 @@ const inputOf = (
   if (typeof asked !== 'object' || asked === null || Array.isArray(asked)) {
     throw new RpcError(INVALID_PARAMS, `${operation.id} takes input as a JSON object`);
   }
-  const input = asked as Record<string, unknown>;
+  const input = operation.input === undefined
+    ? asked as Record<string, unknown>
+    : withoutEmptied(asked as Record<string, unknown>, operation.input, check);
   if (operation.input !== undefined) check(input, operation.input, `${operation.id}'s input`);
   return input;
+};
+
+/**
+ * The input without each optional top-level field that is `""` where its own
+ * schema refuses `""`: a form sends an emptied field as `""`, and such a field
+ * holds no value then. A required field keeps its `""`, so its refusal stands.
+ * A secret keeps it too: a blank secret means the stored one stays.
+ */
+const withoutEmptied = (
+  input: Record<string, unknown>,
+  schema: Record<string, unknown>,
+  check: InvokeOperationOptions['check'],
+): Record<string, unknown> => {
+  const properties = typeof schema.properties === 'object' && schema.properties !== null
+    ? schema.properties as Record<string, unknown>
+    : {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const secrets = secretFields(schema);
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    const field = properties[key];
+    if (value === '' && !required.includes(key) && !secrets.includes(key) && typeof field === 'object' && field !== null && !takes(field as Record<string, unknown>, check)) continue;
+    kept[key] = value;
+  }
+  return kept;
+};
+
+/** Whether a field's schema takes `""`. */
+const takes = (field: Record<string, unknown>, check: InvokeOperationOptions['check']): boolean => {
+  try {
+    check('', field, 'field');
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 /**

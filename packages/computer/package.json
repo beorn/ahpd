@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/computer",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Disposable machines for agent sessions, on Docker, VMs or ssh boxes. Run it as an ahpd plugin.",
+  "description": "Computers integration. Run ahpd sessions in isolated machines: Docker containers, VMs or ssh boxes.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -64,10 +64,10 @@
     "test": "cd ../.. && vitest run packages/computer/test"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0"
   },
   "dependencies": {
-    "@vscode/sandbox-runtime": "0.0.1",
+    "@ahpio/sandbox-runtime": "0.0.83",
     "jsonc-parser": "3.3.1",
     "yaml": "2.9.0"
   },

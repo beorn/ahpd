@@ -4,20 +4,22 @@ title: What a release needs before its tag
 
 # What a release needs before its tag
 
-`v0.15.0-rc.3` is tagged on `28dd315e0` (#320) on 2026-11-13, and its release run 43394827388 staged the packages under `next`. `v0.15.0-rc.2` is on npm under `next`, and `latest` stays on `0.14.0`. Status at 2026-11-13.
+`v0.15.0` is tagged on `3bf557618` (#394) on 2026-11-20, and npm serves the 13 packages at `latest: 0.15.0`. ahpw `v0.9.0` is on `latest` beside it. Nothing is left for 0.15.0. Status at 2026-11-20.
 
 A pushed `v*` tag runs [release.yml](../../.github/workflows/release.yml) and stages every package. The tag comes last, and only on Softov's word.
 
-## Left
-
-1. *rc.3, after its release run*:
-   - The parts of #318 are on ghcr at their new tags. Softov makes `compclau` again and runs a Claude session in it.
-   - The parts bump is pushed as branch `parts-bump-20261113-2` (`1e071b521`): the ahpd part at `0.15.0-rc.3`, claude 0.107.0, copilot 1.0.111, opencode 2.3.0 and dsh 0.2.2-rc.1. Its PR, "parts: a bump is available", is opened by hand on Softov's word. The merged branch `parts-bump-20261113` of #318 is still on the remote and blocks a run of `parts-bump.yml` on the same day.
-2. *Before 0.15.0*:
-   - A working day on the daemon, and the checks by hand.
-
 ## Done
 
+- **0.15.0 and ahpw 0.9.0.** Softov chose the order on 2026-11-20.
+  - The notes PR #389, the fixes #393 and #396 and the release PR #394 merged on 2026-11-20. Dry run 44842989304 passed `parts`, `release` and `image` on the release branch.
+  - Softov's working day on ahpw and ahpd since 2026-11-19 stood for the checks by hand in *Before 0.15.0*. His words on 2026-11-20: "No, the working day covers it".
+  - `v0.15.0` is on `3bf557618`, pushed on Softov's word. Release run 44846720007 passed `parts`, `release` and `image`, and Softov approved the 13 staged packages. `npm i @ahpd/server@latest` in an empty folder says `0.15.0`, and `ghcr.io/ahpio/ahpd` has `0.15.0`, `0.15` and `latest`.
+  - The ahpw PR #107 set `@ahpd/sdk` to `^0.15.0`, with the peer `>=0.15.0 <0.16.0-0`, and merged as `d968e1f`. `v0.9.0` was pushed on Softov's word, and release run 44852565143 passed. Softov approved the staged package, and `ahpd plugin install @ahpd/web` installs 0.9.0 beside sdk 0.15.0.
+
+- **The check by hand.** Softov made `compclau` again on 2026-11-19. Its first failure was the sign-in, and a session with a connector worked.
+- **The fixes before 0.15.0.** Nine problems were fixed by seven plans, merged on 2026-11-18 as #377 to #383. Each plan is `built`, and its `implemented.md` holds the checks: host/20261118-1043, plugin/20261118-1103, host/20261118-1104, daemon/20261118-1105, plugin/20261118-1106, container/20261118-1107 and container/20261118-1108.
+- **The built plans closed** on 2026-11-18, on Softov's word: the three tunnel plans, daemon/20261118-0603, host/20261118-0603, host/20261116-1714 and plugin/20261116-1816. The tunnel plans' checks by hand passed on 2026-11-18.
+- **The rc.4 release.** #376 sets `0.15.0-rc.4` and holds the notes for #321 to #375. Dry run 44258114344 passed on its branch. Its PR's `image` failed only because npm did not serve `@ahpd/sdk@0.15.0-rc.4` yet. After the update, npm warns of one zod advisory in `@vscode/sandbox-runtime`: its fix is [plans/container/20261121-2250-the-sandbox-runtime-is-ahpios-fork](../plans/container/20261121-2250-the-sandbox-runtime-is-ahpios-fork/plan.md).
 - **After rc.3.** Four PRs merged on 2026-11-13:
   - PR #321 makes a bot talk one session, with a Back chat for each bot and person.
   - PR #322 lets a bot answer on a host with no users.
@@ -65,9 +67,9 @@ A pushed `v*` tag runs [release.yml](../../.github/workflows/release.yml) and st
 
 ## Not in this release
 
+- Six major problems wait for 0.16, by Softov's choice for 0.15.0, and each says so in its *Fix*. `globalAutoApproveEnabled` keeps VS Code's meaning: [global-auto-approve-keeps-vs-codes-meaning.md](../decisions/global-auto-approve-keeps-vs-codes-meaning.md).
 - **AHP 1.1.0.** 0.15.0 speaks AHP 1.0.0, as rc.2 does, and AHP 1.1.0 goes in 0.16 (Softov, 2026-11-13). `@microsoft/agent-host-protocol@1.1.0` is on npm since 2026-11-13. Plan host/117 covers four of its changes and was read against the protocol on 2026-10-22, so 0.16 starts with a new read of it.
-- **The canvas `url`.** AHP 1.1.0 renames the experimental `CanvasState.url` to `uri`, and ahpd's canvases still send `url`. It goes in 0.16 with AHP 1.1.0 (Softov, 2026-11-13).
-- **The ahpd part as the release's own build.** [briefs/the-ahpd-part-is-the-releases-own-build.md](../briefs/the-ahpd-part-is-the-releases-own-build.md) goes in 0.16 (Softov, 2026-11-13).
+- **The ahpd part as the release's own build.** [container/20261125-0130](../plans/container/20261125-0130-the-ahpd-part-is-the-releases-own/plan.md) and [container/20261125-0131](../plans/container/20261125-0131-a-box-with-no-internet-gets-a-copy/plan.md) are planned for 0.16.
 - MayCXC's `host/124-an-agents-shell-is-a-terminal-the-person-sees` is not merged. Main has its features from the four host/20261103-1620 plans.
 - `plans.mjs` lists the `active` and `draft` plans. None is needed for the release.
 

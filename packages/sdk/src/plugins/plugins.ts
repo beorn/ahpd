@@ -1405,6 +1405,42 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
     };
   };
 
+  /*
+   * Whether the host's store keeps the session at this URI, under this name:
+   * the answer `sessionKept` gives, and `sessionOpens` with no host built.
+   *
+   * The store is keyed by id and keeps the name the host holds the session
+   * under, so a machine's recorded URI is compared with that name. `false`
+   * rather than a throw when there is no store, the way `recordUsage` drops:
+   * a host that keeps no sessions has no leftovers of its own to adopt, which
+   * is an answer and not a failure.
+   *
+   * Awaited because a plugin can ask before the host it is being applied to
+   * has named its store, and the answer has to be the same whatever else is
+   * still loading.
+   */
+  const recorded = async (uri: string): Promise<boolean> => {
+    const sessions = await options.sessions?.();
+    if (sessions === undefined || sessions.config(idOf(uri)) === undefined) return false;
+    /*
+     * The URI has to be the name this host holds the session under.
+     *
+     * A session id comes from the client's channel, so a client that opens
+     * `echo:/one` after a session named `acp:/one` has gone writes the same
+     * row, and a leftover labelled for that id would be adopted as though it
+     * were a session of this kind - a machine with another backend's needs
+     * charged to a session that cannot run in it.
+     *
+     * A row written before names were kept has no name, and is compared with
+     * the provider as it was: the scheme was the name then, and a machine
+     * made for that session records it.
+     */
+    const held = sessions.uri?.(idOf(uri));
+    return held === undefined
+      ? sessions.provider(idOf(uri)) === schemeOf(uri)
+      : held === uri;
+  };
+
   const host: PluginHost = {
     ...context,
     ...(options.i18n === undefined ? {} : { i18n: options.i18n }),
@@ -1515,38 +1551,15 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
      */
     personKey: async (person) => await options.personKey?.(person),
     acceptsToken: async (token) => (await options.acceptsToken?.(token)) === true,
+    sessionKept: (uri) => recorded(uri),
     /*
-     * The store is keyed by id and keeps the name the host holds the session
-     * under, so a machine's recorded URI is compared with that name. `false`
-     * rather than a throw when there is no store, the way `recordUsage` drops:
-     * a host that keeps no sessions has no leftovers of its own to adopt, which
-     * is an answer and not a failure.
-     *
-     * Awaited because a plugin can ask before the host it is being applied to
-     * has named its store, and the answer has to be the same whatever else is
-     * still loading.
+     * Whether the host can open the session under this name: it runs now or
+     * its catalogue restores it, the question `opens` asks. A row outlives a
+     * session that ran no turn, which a restart cannot open, so a plugin
+     * reusing a session asks this rather than `sessionKept`. With no host
+     * built over this plugin, the store's answer is all there is.
      */
-    sessionKept: async (uri) => {
-      const sessions = await options.sessions?.();
-      if (sessions === undefined || sessions.config(idOf(uri)) === undefined) return false;
-      /*
-       * The URI has to be the name this host holds the session under.
-       *
-       * A session id comes from the client's channel, so a client that opens
-       * `echo:/one` after a session named `acp:/one` has gone writes the same
-       * row, and a leftover labelled for that id would be adopted as though it
-       * were a session of this kind - a machine with another backend's needs
-       * charged to a session that cannot run in it.
-       *
-       * A row written before names were kept has no name, and is compared with
-       * the provider as it was: the scheme was the name then, and a machine
-       * made for that session records it.
-       */
-      const held = sessions.uri?.(idOf(uri));
-      return held === undefined
-        ? sessions.provider(idOf(uri)) === schemeOf(uri)
-        : held === uri;
-    },
+    sessionOpens: async (uri) => (starts.opens === undefined ? await recorded(uri) : await starts.opens(uri)),
     /*
      * Whose a session is, asked of the same store `sessionKept` reads and
      * awaited for the same reason. Nothing where this host keeps no sessions

@@ -263,7 +263,20 @@ export function gitWorktrees(options: { log?: (line: string, level?: LogLevel) =
       return said.split('\n').some((line) => line.trim() !== '' && !(line.startsWith('?? ') && links.has(line.slice(3))));
     },
 
-    remove: async (repository, path, branch, linked = []) => {
+    list: async (repository) => {
+      const said = await git(repository, ['worktree', 'list', '--porcelain'], 10_000);
+      const entries: { path: string; branch?: string }[] = [];
+      for (const block of said.split(/\n\s*\n/)) {
+        const path = /^worktree (.+)$/m.exec(block)?.[1]?.trim();
+        if (path === undefined || path === '') continue;
+        const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]?.trim();
+        // In this host's own spelling, as `repository` answers: git writes a Windows path with forward slashes.
+        entries.push({ path: resolve(path), ...(branch === undefined ? {} : { branch }) });
+      }
+      // The first is the primary checkout, which is not a linked worktree.
+      return entries.slice(1);
+    },
+    remove: async (repository, path, branch, linked = [], force = false) => {
       /*
        * The host's own links out of the way first, since git refuses a tree
        * with anything untracked in it, and that refusal is still the guard
@@ -283,7 +296,8 @@ export function gitWorktrees(options: { log?: (line: string, level?: LogLevel) =
         links.push({ entry, target: await readlink(join(path, entry)) });
       }
       for (const { entry } of links) await rm(join(path, entry));
-      await git(repository, ['worktree', 'remove', path]).catch(async (error: unknown) => {
+      // `--force` only for a removal a person confirmed: it takes the tree whatever it holds.
+      await git(repository, ['worktree', 'remove', ...(force ? ['--force'] : []), path]).catch(async (error: unknown) => {
         for (const { entry, target } of links) await symlink(target, join(path, entry), linkType).catch(() => undefined);
         throw error;
       });

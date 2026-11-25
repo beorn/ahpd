@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 1.0.0](https://img.shields.io/badge/AHP-1.0.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 Push notifications for the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon. A phone registers its Expo push token, or a browser registers its Web Push subscription. Each hears about a session that needs a person while the app or the tab is closed.
 
@@ -116,7 +118,7 @@ The plugin watches each session's status as VS Code's sessions window reads it: 
 
 ## Which devices are told
 
-Each device chooses with its `audience`. A `person` device, which is one that says nothing, hears every session of its person, as VS Code's window tells its user: on a daemon where people sign in, the sessions whose owner registered it, and on a daemon where nobody signs in, every session, its one person's. A `device` device hears only the sessions its own client created or opened. Every device also hears the sessions its own client created or opened, whoever's they are.
+Each device chooses with its `audience`. A `person` device, which is one that says nothing, hears every session of its person, as VS Code's window tells its user: on a daemon where people sign in, the sessions whose owner registered it, and on a daemon where nobody signs in, every session, its one person's. A `device` device hears only the sessions its own client created or opened. Every device also hears the sessions its own client created or opened, whoever's they are. On a daemon where people sign in, that is a session its own person created or opened through that client: a client id is the client's own word, so a device that gives another person's id hears nothing of that person's sessions.
 
 ## How a notification is sent
 
@@ -145,4 +147,4 @@ A push service sees which host talks to which browser, and when. The message is 
 
 ## License
 
-MIT.
+MIT © Softov

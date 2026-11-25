@@ -16,6 +16,12 @@
  *   node scripts/parts-bump.mjs --dry-run        # print the moves, write nothing
  *   node scripts/parts-bump.mjs --registry <file>
  *   node scripts/parts-bump.mjs --locks          # write every part's lock again, bump nothing
+ *   node scripts/parts-bump.mjs --release <folder>
+ *
+ * `--release` is the release run's: the folder holds the packed packages of the
+ * ahpd part, which npm does not serve yet, and the part's version and locks are
+ * written from them as npm will serve them. It moves no other part, and what it
+ * writes is packed into `@ahpd/computer` and never committed.
  *
  * A part that cannot be resolved is skipped by name and the rest of the file
  * still lands, because one archive that 404s is not thirteen agents down.
@@ -23,8 +29,9 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REGISTRY = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json';
@@ -49,7 +56,11 @@ const argv = process.argv.slice(2);
 const dry = argv.includes('--dry-run');
 const locksOnly = argv.includes('--locks');
 const registryAt = argv.indexOf('--registry');
+const releaseAt = argv.indexOf('--release');
 const source = registryAt === -1 ? undefined : argv[registryAt + 1];
+
+/** The flags npm writes a lock with, resolving and running nothing. */
+const LOCK_FLAGS = ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'];
 
 /**
  * The packages a part's lock pins, by name: each npm package at the part's
@@ -65,20 +76,46 @@ const dependenciesOf = (part) => {
   }));
 };
 
+/** What the ahpd part's plugins are locked as: each at the part's version, with the sdk they peer beside them. */
+const pluginsOf = (part) =>
+  Object.fromEntries(['@ahpd/sdk', ...(part.plugins ?? [])].map((one) => [one, part.version]));
+
+/**
+ * Each lock a part has: its folder under `parts`, the packages it pins, and
+ * npm's own flags for it. The ahpd part's plugins have one of their own, and
+ * check no plugin's peer range against another's, as `ahpd plugin install`
+ * installs into a plugin root.
+ */
+const locksOf = (part) => [
+  { folder: part.id, name: `ahpd-part-${part.id}`, dependencies: dependenciesOf(part), flags: [] },
+  ...(part.kind !== 'ahpd' || part.plugins === undefined ? [] : [{
+    folder: join(part.id, 'plugins'), name: `ahpd-part-${part.id}-plugins`, dependencies: pluginsOf(part), flags: ['--legacy-peer-deps'],
+  }]),
+];
+
+/** npm's lock of `manifest`, written beside it in `dir`. */
+const npmLock = async (dir, manifest, flags) => {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const ran = spawnSync('npm', [...LOCK_FLAGS, ...flags], { cwd: dir, encoding: 'utf8' });
+  if (ran.status !== 0) throw new Error((ran.stderr ?? '').trim().split('\n').at(-1) || `exit ${ran.status}`);
+};
+
 /**
  * One part's `package.json` and `package-lock.json`, in `parts/<id>` beside the
- * parts file: the packages it pins, then npm's lock of the graph they resolve
+ * parts file, and for the ahpd part's plugins the two in `parts/<id>/plugins`: the packages it pins, then npm's lock of the graph they resolve
  * to, made without installing or running anything, as VS Code refreshes an
  * agent SDK's lock.
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/build/agent-sdk/README.md#L88-L94
  */
 const lock = async (part) => {
-  const dir = join(dirname(FILE), 'parts', part.id);
-  await mkdir(dir, { recursive: true });
-  const manifest = { name: `ahpd-part-${part.id}`, private: true, dependencies: dependenciesOf(part) };
-  await writeFile(join(dir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  const ran = spawnSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: dir, encoding: 'utf8' });
-  if (ran.status !== 0) throw new Error(`npm did not lock ${part.id}: ${(ran.stderr ?? '').trim().split('\n').at(-1) ?? `exit ${ran.status}`}`);
+  for (const one of locksOf(part)) {
+    try {
+      await npmLock(join(dirname(FILE), 'parts', one.folder), { name: one.name, private: true, dependencies: one.dependencies }, one.flags);
+    } catch (error) {
+      throw new Error(`npm did not lock ${one.folder}: ${error.message}`);
+    }
+  }
 };
 
 /** Whether a part installs npm packages, which is what has a lock. */
@@ -227,9 +264,9 @@ const bumpOf = async (part, entries) => {
   const entry = entries.get(part.id);
 
   /*
-   * The ahpd part runs the last release npm serves, one release behind the
-   * host: a release cannot pin its own version, which npm serves only after it
-   * is approved, after the tag run. Its `next` counts, unlike any other
+   * The committed ahpd part is what a checkout runs: the last release npm
+   * serves. A release writes its own version over it with `--release`, since
+   * npm serves that only after it is approved, after the tag run. Its `next` counts, unlike any other
    * part's prerelease, because a release candidate of ahpd is a version npm
    * serves and a host on that channel runs.
    */
@@ -320,6 +357,85 @@ const lockAll = async (which) => {
   }
   return locked;
 };
+
+/** The packed tarball of each package the ahpd part pins, by name, every one at the same version. */
+const packedIn = async (folder, part) => {
+  const names = [...new Set(locksOf(part).flatMap((one) => Object.keys(one.dependencies)))];
+  const files = await readdir(folder);
+  const packed = new Map();
+  for (const name of names) {
+    const stem = `${name.slice(1).replace('/', '-')}-`;
+    const found = files.filter((one) => one.startsWith(stem) && one.endsWith('.tgz') && EXACT.test(one.slice(stem.length, -'.tgz'.length)));
+    if (found.length !== 1) throw new Error(`${folder} holds ${found.length === 0 ? 'no' : 'more than one'} tarball of ${name}`);
+    packed.set(name, { file: resolve(folder, found[0]), version: found[0].slice(stem.length, -'.tgz'.length) });
+  }
+  const versions = [...new Set([...packed.values()].map((one) => one.version))];
+  if (versions.length !== 1) throw new Error(`${folder} holds packages of more than one version: ${versions.join(', ')}`);
+  return { version: versions[0], packed };
+};
+
+/**
+ * One lock of the ahpd part, made from the tarballs and written as npm will
+ * serve them: each tarball's `resolved` is its address in the registry, its
+ * integrity stays the hash of the tarball, and the dependencies are versions.
+ * A lock that does not hold a tarball by its own hash, or still names a file,
+ * is refused, since no host could install from it.
+ */
+const releaseLock = async (dir, one, packed) => {
+  const files = Object.fromEntries(Object.keys(one.dependencies).map((name) => [name, `file:${packed.get(name).file}`]));
+  await npmLock(dir, { name: one.name, private: true, dependencies: files }, one.flags);
+  const lock = JSON.parse(await readFile(join(dir, 'package-lock.json'), 'utf8'));
+  for (const [at, held] of Object.entries(lock.packages ?? {})) {
+    if (at === '') held.dependencies = one.dependencies;
+    if (!held.resolved?.startsWith('file:')) continue;
+    const name = at.slice(at.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    held.resolved = `https://registry.npmjs.org/${name}/-/${name.split('/').at(-1)}-${held.version}.tgz`;
+  }
+  for (const name of Object.keys(one.dependencies)) {
+    const integrity = `sha512-${createHash('sha512').update(await readFile(packed.get(name).file)).digest('base64')}`;
+    const held = lock.packages?.[`node_modules/${name}`];
+    if (held?.integrity !== integrity || held?.version !== packed.get(name).version) {
+      throw new Error(`the lock of ${one.folder} does not hold ${packed.get(name).file}`);
+    }
+  }
+  const text = `${JSON.stringify(lock, null, 2)}\n`;
+  if (text.includes('file:')) throw new Error(`the lock of ${one.folder} still names a file`);
+  return { manifest: `${JSON.stringify({ name: one.name, private: true, dependencies: one.dependencies }, null, 2)}\n`, lock: text };
+};
+
+/** The release's version and locks of the ahpd part, written once every lock is made. */
+const release = async (folder) => {
+  const part = parts.find((one) => one.kind === 'ahpd');
+  if (part === undefined) throw new Error(`${FILE} names no ahpd part`);
+  const { version, packed } = await packedIn(folder, part);
+  part.version = version;
+  const scratch = await mkdtemp(join(tmpdir(), 'ahpd-release-'));
+  try {
+    const made = [];
+    for (const one of locksOf(part)) made.push({ folder: one.folder, ...await releaseLock(join(scratch, one.folder), one, packed) });
+    for (const one of made) {
+      const dir = join(dirname(FILE), 'parts', one.folder);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'package.json'), one.manifest);
+      await writeFile(join(dir, 'package-lock.json'), one.lock);
+    }
+    await writeFile(FILE, layout(parts));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+  return version;
+};
+
+if (releaseAt !== -1) {
+  try {
+    if (argv[releaseAt + 1] === undefined) throw new Error('--release takes the folder of the packed packages');
+    console.log(`the ahpd part is ${await release(argv[releaseAt + 1])}`);
+    process.exit(0);
+  } catch (error) {
+    console.log(`not released: ${error.message}`);
+    process.exit(1);
+  }
+}
 
 if (locksOnly) process.exit(await lockAll(parts) ? 0 : 1);
 

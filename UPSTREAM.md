@@ -14,12 +14,22 @@ VS Code main `341e0fa9346` (where 1.143 left main) to the `1.145.2` tag `c4453f8
 
 Each item waits for a published 1.1.0 package or for local types, as per-chat config was built.
 
-- [ ] **Chats with their own agent.** `InitializeResult.multipleChatProviders`, `CreateChatParams.provider`, and `provider` on `ChatState`, `ChatSummary` and `SessionChatSummary`; a chat whose provider differs from its session's has its own `ChatConfigState.schema`. Upstream `8c18263e1c08`. ahpd refuses `provider` in VS Code's words and does not advertise the capability (`packages/sdk/src/host/sessionmethods.ts` `createChat`).
-- [ ] **`chat/moved {session, provider?, schema?}`** after a cross-session `moveChat`, on the moved chat's channel. A moved chat keeps its agent and its `config.values`. `packages/sdk/src/host/sessionmethods.ts` `moveChat`.
+- [x] **The 1.1.0 package.** ahpd installs `@microsoft/agent-host-protocol@1.1.0`, and the per-chat config reads its types. `chat/configChanged` goes to a client on any version, as VS Code's host holds back only `chat/moved` by version. Built in `host/117`.
+- [x] **The canvas `uri`.** A canvas says `uri`, and the old `url` beside it. VS Code main's `withLegacyCanvasState` sends both, since a 1.145 window reads `url`. Built in `host/117`.
+- [x] **`ahp-annotations:/<id>`.** A session's annotations channel takes the 1.1.0 name, and the session says it in `annotations.resource`. The old `<session>/annotations` name stays, since a 1.145 window makes it itself. Built in `host/117`.
+
+- [x] **Chats with their own agent.** `InitializeResult.multipleChatProviders`, `CreateChatParams.provider`, and `provider` on `ChatState`, `ChatSummary` and `SessionChatSummary`; a chat whose provider differs from its session's has its own `ChatConfigState.schema`. Upstream `8c18263e1c08`. Built in `host/20261124-0944`, on by default where VS Code's is off.
+- [x] **`chat/moved {session, provider?, schema?}`** after a cross-session `moveChat`, on the moved chat's channel. A moved chat keeps its agent and its `config.values`. `packages/sdk/src/host/sessionmethods.ts` `moveChat`. Built in `host/20261124-0945`.
 - **A chat's config does not inherit from its session**, in the 1.1.0 text at `d7a5579b`: the host sets a chat's initial `values` when it creates the chat, after that they change only through `chat/configChanged`, and a key missing after a `replace` takes its property's `default`. ahpd differs on purpose: a session's value reaches the chats that set none (`20e812035`, `7f7a74ffe`). Softov, 2026-11-10.
-- [ ] **Reasoning timing**: `startedAt` and `duration` on a reasoning part and on `chat/reasoning`, where an empty `content` updates only the timing. Upstream `2780fc5eac21`, `f4823ef3c687`. `packages/agent-claude/src/session/stream.ts`.
-- [ ] **Changeset file `nonce` and `isEditing`**, and `nonce` on a changeset operation target: a mismatch fails with `Conflict`. `packages/sdk/src/sessions/changes.ts`.
-- [ ] **`ToolCallCompletedState.resultMetadata`**, the MCP `CallToolResult._meta`. Upstream keeps it for restored MCP App cards (`8078df0ea8d8`). `packages/sdk/src/host/spawn.ts`.
+- [x] **Reasoning timing**: `startedAt` and `duration` on a reasoning part and on `chat/reasoning`, where an empty `content` updates only the timing. Upstream `2780fc5eac21`, `f4823ef3c687`. `packages/agent-claude/src/session/stream.ts`. Built in `host/20261124-0930`, in the host for every agent.
+- [x] **Changeset file `nonce` and `isEditing`**, and `nonce` on a changeset operation target: a mismatch fails with `Conflict`. `packages/sdk/src/sessions/changes.ts`. AHP 1.1.0 names the second `status`, a bitset. Built in `host/20261124-0942`.
+- [x] **`ToolCallCompletedState.resultMetadata`**, the MCP `CallToolResult._meta`. Upstream keeps it for restored MCP App cards (`8078df0ea8d8`). A client's result keeps it through its confirmation; a restart loses it, since ahpd rebuilds a chat from its agent's transcript. Built in `host/20261124-0923`.
+- [x] **`InitializeResult.environment.pathStyle`**, the host's path style. Built in `host/20261124-0923`.
+- [x] **A ranged `resourceRead`**: `position`, `length` and the answer's `size`, for a file. Built in `host/20261124-0923`.
+- [x] **`authenticate.accountId`**, checked and kept with the token. Built in `host/20261124-0923`.
+- [x] **A client's message of any origin** in `chat/turnStarted` and `chat/pendingMessageSet`: ahpd checked none. `createChat`'s first message stays a person's, as VS Code's host keeps it.
+- [x] **`EmptyState`**: a telemetry subscribe answers no snapshot, as VS Code's host does.
+- [x] **`McpServerCustomization.children`**, the skills an MCP server serves (SEP-2640). VS Code fills them from Copilot's SDK; ahpd asks a Claude session's servers itself. Built in `claude/20261124-0943`.
 - [x] **`authenticate.target`** sends a token to one MCP server only. Built in `host/20261030-1608`.
 
 ### Session tools
@@ -113,8 +123,8 @@ VS Code `7baac39ec3c` (the `1.141.1` tag) to the `1.143.1` tag `e646868227c` (20
 ### Protocol 1.1.0
 
 - [x] **Per-chat config.** `ChatState.config`, the `chat/configChanged` action with its `replace` flag, and `chatMutable` on a session config property. Upstream marks `permissions`, `sandboxEnabled`, `autoApprove` and `mode` chat-mutable (`common/agentHostSchema.ts`). AHP `dbbd1217`, upstream `e941aa12741`. Waits for the published 1.1.0 package. `packages/sdk/src/host/actions.ts`, `packages/sdk/src/host/chatactions.ts`. Built on the 1.0.0 package with local shapes: a property says `chatMutable`, a client's `chat/configChanged` sets that chat's own values, and a session's value reaches the chats that set none (`7f7a74ffe`, `20e812035`). That last half is Softov's choice, see Pass 8.
-- [ ] **Steering and queued messages share `queuedMessages`**, told apart by `PendingMessage.kind`; `steeringMessage` still mirrors the latest steering for older clients. Upstream `0b4e0632b1f` (`common/agentSessionMessage.ts` `getPendingSteeringMessages`). ahpd holds one steering slot and hands it to `session.steer` (`packages/sdk/src/host/chatactions.ts`). A 1.143 window reads both shapes.
-- [ ] **`SessionModelInfo.vendor`**, optional. `packages/sdk/src/host/catalogue.ts`.
+- [x] **Steering and queued messages share `queuedMessages`**, told apart by `PendingMessage.kind`; `steeringMessage` still mirrors the latest steering for older clients. Upstream `0b4e0632b1f` (`common/agentSessionMessage.ts` `getPendingSteeringMessages`). ahpd holds one steering slot and hands it to `session.steer` (`packages/sdk/src/host/chatactions.ts`). A 1.143 window reads both shapes. Built in `host/117`: agent-claude keeps a list of steering messages.
+- [x] **`SessionModelInfo.vendor`**, optional. `packages/sdk/src/host/catalogue.ts`. Built in `host/117`: the host passes it through, and a changed vendor is a changed list.
 - Windowed delivery (`subscribe.flowControl`, `channel/frame`, `channel/credit`, `channel/snapshot`) and the TCP channel (`createTcpConnection`, `tcp/*`) are experimental, and the window uses neither.
 
 ### Background shells

@@ -1,6 +1,6 @@
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
 import { machinePathOf } from '@ahpd/sdk';
-import { endHolders } from '../../../tools/holders.ts';
+import { endHolders, removeFolder } from '../../../tools/holders.ts';
 import { posix } from '../../../tools/posix.ts';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -23,6 +23,12 @@ import type { HostOptions } from '../../sdk/src/types/host.js';
 import type { MachineNeed } from '../../sdk/src/types/machine.js';
 import type { Peer } from '../../sdk/src/types/rpc.js';
 import { gitSync } from '../../../tools/git.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
+
+/** How long one `advanceUntil` waits by the real clock: less than half of the case's budget. */
+const ADVANCE_MS = PROCESS_CASE_MS * 0.4;
 
 /*
  * A disposable machine: offered as a source, made when a session starts, and
@@ -51,11 +57,18 @@ afterEach(async () => {
   // moment after the close, which failed a removal with ENOTEMPTY, so each one
   // that names the folder is ended first, and each removal tries again.
   await endHolders([loose, state].filter((one): one is string => one !== undefined));
-  if (loose !== undefined) rmSync(loose, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  if (loose !== undefined) removeFolder(loose, lastCalls);
   loose = undefined;
-  if (state !== undefined) rmSync(state, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  if (state !== undefined) removeFolder(state, lastCalls);
   state = undefined;
 });
+
+/** The last calls the fake `docker` recorded in a state file it left, newest last. */
+const lastCalls = (path: string): string | undefined => {
+  if (!path.endsWith('docker.json')) return undefined;
+  const calls = (JSON.parse(readFileSync(path, 'utf8')) as { calls?: unknown[][] }).calls ?? [];
+  return `last calls: ${calls.slice(-3).map((one) => one.slice(0, 3).join(' ')).join('; ') || 'none'}`;
+};
 
 const temp = (): string => {
   loose = mkdtempSync(join(tmpdir(), 'ahpd-disposable-'));
@@ -129,8 +142,14 @@ const settle = async (times = 30): Promise<void> => {
  * then waits for a removal that was never scheduled. The two are spent
  * together instead: real milliseconds for the subprocess, then the clock.
  */
-const advanceUntil = async (check: () => boolean, times = 400): Promise<void> => {
-  for (let i = 0; i < times && !check(); i++) {
+const advanceUntil = async (check: () => boolean): Promise<void> => {
+  // By the real clock, and a failure when it runs out: the removal's docker
+  // calls are processes, which took more than the 2 s that 400 turns of 5 ms
+  // gave them on a loaded machine, and the case then read a removal not yet
+  // made. Two waits fit in the case's budget, each failing in its own words.
+  const limit = Date.now() + ADVANCE_MS;
+  while (!check()) {
+    if (Date.now() > limit) throw new Error(`still waiting after ${String(ADVANCE_MS)} ms`);
     await wait(5);
     await vi.advanceTimersByTimeAsync(1000);
   }
@@ -2868,3 +2887,27 @@ it('refuses a clone of a branch origin does not have, and says bundle brings it 
   // The machine that could not be seeded is not left on the box.
   expect(held(farOf(state)).machines).toEqual([]);
 }, FAR_CASE);
+
+/*
+ * A machine operation reads the machine's record once: plan
+ * `plugin/20261121-1708-a-machine-operation-reads-its-record-once`. Each docker
+ * call is a process, so a call made twice is a process started twice.
+ */
+it('reads a disposable machine\'s record once per operation, from its make to its removal', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const dir = realpathSync(temp());
+  const state = join(dir, 'docker.json');
+  const { repo } = repositoryIn(dir);
+  const lines: string[] = [];
+  const loaded = await withRepository(state, {}, {}, lines);
+  const { open, dispose } = await room(loaded);
+  await open('ahp-session:/one', { computer: 'disposable:claude' }, repo);
+  await dispose('ahp-session:/one');
+  await settle();
+  await advanceUntil(() => lines.some((line) => line.includes('removed the disposable machine')));
+  await settle();
+  const calls = held(state).calls;
+  // The leave's bring-back reads it once, the owner check once, and the removal once.
+  expect(calls.filter((one) => one[0] === 'inspect').length).toBe(3);
+  expect(calls.length).toBe(20);
+});

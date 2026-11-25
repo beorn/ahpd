@@ -46,6 +46,17 @@ export const frontsOf = (slug: string): string => `${BOTS_DIR}/${slug}/fronts`;
 /** The folder one bot's chat logs are kept in. */
 export const logsOf = (configDir: string, slug: string): string => join(configDir, BOTS_DIR, slug, 'logs');
 
+/**
+ * The folder the logs of one session's other chats are kept in.
+ *
+ * A session's default chat keeps `logs/<session>.jsonl`, which is what the
+ * session list reads. Every other chat of the session keeps
+ * `logs/chats/<session>/<chat>.jsonl`, so the list never reads a chat as a
+ * session and two chats of one session never share a log.
+ */
+export const chatLogsOf = (configDir: string, slug: string, session: string): string =>
+  join(logsOf(configDir, slug), 'chats', encodeURIComponent(session));
+
 /** The folder the chat rows were kept in before each bot had a folder of its own. */
 export const LEGACY_CHATS = 'bot-chats';
 

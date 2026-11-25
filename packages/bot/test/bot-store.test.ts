@@ -328,17 +328,40 @@ it('refuses a bot file that comes back after its delete', async () => {
   expect(again.join('\n')).toMatch(/bots\/motion has a tombstone; the name is spent/);
 });
 
-it('leaves a bot alone when a hand edit changes its owner', async () => {
+it('takes a new owner from a hand edit, says it once, and moves the bot\'s time', async () => {
   const { bots, store, provider, problems } = await made();
   await provider.write('bot://motion', said({ name: 'Motion' }));
+  const was = store.get('motion')?.updatedAt;
   const heard = await watching(provider);
 
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
   await bots.put({ ...await held(bots, 'motion'), owner: 'user:somebody-else' });
   await new Promise((resolve) => { setTimeout(resolve, 5); });
 
-  expect(heard).toEqual([]);
-  expect(store.get('motion')).toMatchObject({ owner: 'root:test' });
-  expect(problems.join('\n')).toMatch(/motion changed owner/);
+  // The file is the bot's truth, as a restart reads it, and the daemon says so.
+  expect(store.get('motion')).toMatchObject({ owner: 'user:somebody-else' });
+  expect(problems.filter((line) => line.includes('owner changed'))).toEqual([
+    'bots/motion owner changed from root:test to user:somebody-else by an edit of its file',
+  ]);
+  // The time moved, in the cache and in the record, so a client's etag sees it;
+  // the store's own write of it is not heard as a second edit.
+  expect(store.get('motion')?.updatedAt).not.toBe(was);
+  expect((await held(bots, 'motion'))['updatedAt']).toBe(store.get('motion')?.updatedAt);
+  expect(heard).toHaveLength(1);
+});
+
+it('takes the owner a file says when the store first loads, and says nothing', async () => {
+  const { records, bots, provider } = await made();
+  await provider.write('bot://motion', said({ name: 'Motion' }));
+  await bots.put({ ...await held(bots, 'motion'), owner: 'user:somebody-else' });
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+
+  // A daemon that starts again has no owner to compare with: it reads the file.
+  const again: string[] = [];
+  const next = botStore(await records.collection('bots'), await records.collection('bots-gone'), (line) => again.push(line), { yaml, agents });
+  await next.ready();
+  expect(next.get('motion')).toMatchObject({ owner: 'user:somebody-else' });
+  expect(again.filter((line) => line.includes('owner'))).toEqual([]);
 });
 
 it('leaves a bot alone when a hand edit changes its workspace', async () => {

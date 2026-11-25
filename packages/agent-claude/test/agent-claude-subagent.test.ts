@@ -37,6 +37,8 @@ const sdk = vi.hoisted(() => {
     feed: fresh(),
     /** The task ids `stopTask` was called with, in order. */
     stopped: [] as string[],
+    /** The handler of each tool an in-process server was made with, by its name. */
+    handlers: new Map<string, (input: Bag, extra: unknown) => Promise<unknown>>(),
     /** How many times the query was interrupted. */
     interrupted: 0,
     /** How many times a query was closed, which is how a stop ends the turn. */
@@ -60,7 +62,10 @@ const sdk = vi.hoisted(() => {
 });
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('../../sdk/test/support/warmed.js')).warmed({
-  createSdkMcpServer: (given: Record<string, unknown>) => ({ type: 'sdk', name: given.name, tools: given.tools }),
+  createSdkMcpServer: (given: Record<string, unknown>) => {
+    for (const one of given.tools as { name: string; handler: (input: Bag, extra: unknown) => Promise<unknown> }[]) sdk.handlers.set(one.name, one.handler);
+    return { type: 'sdk', name: given.name, tools: given.tools };
+  },
   query: ({ prompt, options }: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => {
     sdk.canUseTool = options.canUseTool as typeof sdk.canUseTool;
     sdk.prompt = prompt;
@@ -505,6 +510,11 @@ it('asks a client to run a worker\'s call on the worker\'s chat', async () => {
     },
   });
   await settle();
+  // Reported, and not yet run: nobody is asked.
+  expect(worker.actions.some((one) => one.type === 'chat/toolCallReady' && one.toolCallId === 'toolu_open')).toBe(false);
+  void sdk.handlers.get('probe__openFile')?.({ path: '/a.txt' }, { _meta: { 'claudecode/toolUseId': 'toolu_open' } });
+  await settle();
+  expect(worker.actions.filter((one) => one.type === 'chat/toolCallReady' && one.toolCallId === 'toolu_open')).toHaveLength(1);
 
   const raised = main
     .filter((one) => one.channel === 'session' && one.action.type === 'session/inputNeededSet')

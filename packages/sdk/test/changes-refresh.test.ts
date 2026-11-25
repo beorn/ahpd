@@ -10,7 +10,7 @@ import { gitChanges } from '../src/sessions/changes.js';
 import { memorySessions } from '../src/sessions/sessions.js';
 import { gitBranches } from '../src/repo/git.js';
 import { gitWorktrees } from '../src/repo/worktrees.js';
-import { createHost } from '../src/host.js';
+import { createHost as makeHost } from '../src/host.js';
 import { fileResources, uriOf } from '../src/resources/resources.js';
 import { shellTerminals } from '../src/machines/terminals.js';
 import { echo } from '../../../examples/echo/agent.js';
@@ -65,7 +65,19 @@ const mintedChat = async (client: { handle(request: unknown): Promise<unknown> }
   ((await client.handle({ method: 'subscribe', params: { channel: URI } })) as { snapshot: { state: { defaultChat: string } } }).snapshot.state.defaultChat;
 
 let made: string[] = [];
+/** The hosts a case made, closed before its folders are removed. */
+let hosts: ReturnType<typeof makeHost>[] = [];
+/** A host this file's teardown closes. */
+const createHost = (...args: Parameters<typeof makeHost>): ReturnType<typeof makeHost> => {
+  const host = makeHost(...args);
+  hosts.push(host);
+  return host;
+};
 afterEach(async () => {
+  // Each host first: one left open still watches the case's repository, and
+  // Windows refuses to remove a folder that is watched (EBUSY).
+  for (const host of hosts) await host.close();
+  hosts = [];
   // Awaited rather than sync: on Windows a folder stays held until what the
   // test opened there is let go, which happens on the event loop a sync
   // retry blocks.
@@ -975,7 +987,9 @@ it('offers the pull request pair on the first subscribe in a directory outside t
   expect(ids).toContain('create-pr');
   expect(ids).toContain('prepare-pull-request');
   // Asked about the branch before answering, which needs the facts' remote.
-  expect(fake.asked).toEqual(['main']);
+  // And again where the session's start read its folder by then.
+  expect(fake.asked[0]).toBe('main');
+  expect(new Set(fake.asked).size).toBe(1);
 });
 
 it('offers no pull request on the first subscribe when there is no GitHub to ask', async () => {
@@ -1467,4 +1481,82 @@ it('writes no checkpoint for a cancelled turn or one that broke resumably, as VS
   held.emit?.('chat', { type: 'chat/turnComplete', turnId: 't3', duration: 1 });
   await waitFor(() => written.includes('t3') && reads.started > quiet);
   expect(written.filter((one) => one !== BASELINE_TURN)).toEqual(['t3']);
+});
+
+/**
+ * The echo agent serving `path`, each turn of which edits one file the way a
+ * tool does, saying the edit, and writes another the way a shell command does,
+ * saying nothing.
+ */
+const toolAndShellTurns = (path: string, dir: string): Agent => {
+  const base = echo({ path, pace: 5 });
+  return {
+    ...base,
+    create: (start: Start): Session => {
+      const session = base.create(start) as Session;
+      return {
+        ...session,
+        sendMessage: (turnId, ...rest) => {
+          const tool = join(dir, `${turnId}-tool.txt`);
+          void (async () => {
+            await start.onFileEdit?.(turnId, tool, 'before');
+            writeFileSync(tool, 'by a tool\n');
+            await start.onFileEdit?.(turnId, tool, 'after');
+            writeFileSync(join(dir, `${turnId}-shell.txt`), 'by a shell\n');
+            await session.sendMessage(turnId, ...rest);
+          })();
+        },
+      };
+    },
+  };
+};
+
+/** The files a changeset's snapshot holds, by their names. */
+const namesIn = async (client: { handle(request: unknown): Promise<unknown> }, channel: string): Promise<string[]> => {
+  const answer = await client.handle({ method: 'subscribe', params: { channel } }) as { snapshot: { state: { files: { id: string }[] } } };
+  return answer.snapshot.state.files.map((one) => basename(one.id)).sort();
+};
+
+// Skipped in beorn, not deleted, so the next upstream sync shows it again: it needs the per-turn git
+// checkpoints this fork removed (d17130bbf, @cto ruling C 1e5710d0, #35139). A fork patch carried over upstream.
+it.skip('shows a file a shell command wrote in the session\'s own changeset, beside the files its tools wrote: per-turn checkpoints removed in beorn (d17130bbf, @cto ruling C 1e5710d0)', async () => {
+  const dir = repository();
+  const { client } = await open(dir, gitChanges(), toolAndShellTurns(dir, dir), dir);
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: await mintedChat(client), action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { text: 'hi', origin: { kind: 'user' } } } },
+  });
+  // The checkpoint of the turn holds the shell's file, and the tracker the
+  // tool's: the session's changeset reads both under the one session.
+  await waitFor(async () => (await namesIn(client, `${URI}/changeset/session`)).length === 2);
+  expect(await namesIn(client, `${URI}/changeset/session`)).toEqual(['t1-shell.txt', 't1-tool.txt']);
+});
+
+it('counts a session\'s edits in a folder that is not a repository', async () => {
+  const dir = elsewhere();
+  const { client, peer: p } = await open(dir, gitChanges(), writingTurns(dir, dir), dir);
+  const LEAD = await mintedChat(client);
+  const countsOf = (): unknown => channelActions(p, URI)
+    .filter((one) => one.type === 'session/chatUpdated' && one.chat === LEAD && (one.changes as Record<string, unknown>).changes !== undefined)
+    .map((one) => (one.changes as Record<string, unknown>).changes).at(-1);
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: LEAD, action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { text: 'hi', origin: { kind: 'user' } } } },
+  });
+  // No git, so no checkpoint: the edit the tool said is the whole count.
+  await waitFor(() => JSON.stringify(countsOf()) === JSON.stringify({ files: 1, additions: 1, deletions: 0 }));
+});
+
+it('offers a new folder\'s Uncommitted Changes as its session starts, before a turn has ended', async () => {
+  const home = elsewhere();
+  const dir = repository();
+  writeFileSync(join(dir, 'before.txt'), 'already here\n');
+  const host = createHost({ path: home, agents: [echo({ path: home })], resources: fileResources(), terminals: shellTerminals(), changes: gitChanges() });
+  const client = host.accept(peer());
+  await client.handle({ method: 'initialize', params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] } });
+  await client.handle({ method: 'createSession', params: { channel: URI, provider: 'echo', workingDirectories: [uriOf(dir)] } });
+  const offered = async (): Promise<string[]> => ((await client.handle({ method: 'subscribe', params: { channel: URI } })) as {
+    snapshot: { state: { changesets?: { uriTemplate: string }[] } };
+  }).snapshot.state.changesets?.map((one) => one.uriTemplate) ?? [];
+  await waitFor(async () => (await offered()).includes(`${URI}/changeset/uncommitted`));
 });

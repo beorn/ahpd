@@ -1,6 +1,6 @@
 ---
 title: The docs and the spec say a talk is one session
-status: implemented
+status: done
 depends:
   - task-04-a-restart-wakes-the-bot-again.md
   - task-05-the-webhook-picks-its-session-shape.md

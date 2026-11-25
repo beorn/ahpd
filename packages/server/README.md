@@ -1,12 +1,19 @@
-# @ahpd/server
+# <img src="https://raw.githubusercontent.com/ahpio/ahpd/main/docs/public/logo.svg" alt="" height="32"> @ahpd/server
 
 [![npm](https://img.shields.io/npm/v/%40ahpd%2Fserver)](https://www.npmjs.com/package/@ahpd/server)
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=24](https://img.shields.io/badge/node-%3E%3D24-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
 
-A ready-to-run [Agent Host Protocol](https://microsoft.github.io/agent-host-protocol/) server. It installs the `ahpd` command, runs agent sessions, and serves them over a WebSocket, so several clients can watch and drive the same session at once.
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
+
+The `ahpd` daemon: one self-hosted host for your AI agents. It runs Claude Code, Codex, Copilot, Gemini, pi and your own agents as plugins, keeps their sessions running when you disconnect, and serves them over the [Agent Host Protocol](https://microsoft.github.io/agent-host-protocol/), so your browser, desktop, terminal and phone all work on the same session.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ahpio/ahpd/main/docs/media/hub-01-light.png">
+  <img src="https://raw.githubusercontent.com/ahpio/ahpd/main/docs/media/hub-01-dark.png" alt="Run agents on your own infrastructure, controlled from anywhere">
+</picture>
 
 Part of [ahpd](https://github.com/ahpio/ahpd). The source is in [`packages/server`](https://github.com/ahpio/ahpd/tree/main/packages/server), and it is built on [`@ahpd/sdk`](https://www.npmjs.com/package/@ahpd/sdk).
 
@@ -29,13 +36,15 @@ ahpd plugin install @ahpd/agent-claude
 ahpd --plugin @ahpd/agent-claude --path /work/project
 ```
 
+It listens on `ws://127.0.0.1:9187`. Run it with no arguments to serve the directory you are in.
+
 `ahpd plugin install` runs `npm install` in the configuration directory, where a bare plugin name is resolved from, and adds the name to `plugins` in `config.json` so the next run loads it. A bare name is installed at the newest of the package's versions whose `@ahpd/sdk` peer range admits this daemon, and a name that carries a version or a tag goes to npm as written. A plugin installed with `npm i -g` is not seen.
+
+### Update
 
 To upgrade, run `npm i -g @ahpd/server`, then `ahpd plugin update all` to move every installed plugin to the newest of its own versions whose `@ahpd/sdk` range admits this daemon (or `ahpd plugin update <name>...` for only some), then restart the daemon. ahpd installs the daemon's own `@ahpd/sdk` beside the plugins, so one plugin never blocks another, and a plugin whose `@ahpd/sdk` range leaves out the daemon's is refused when the daemon loads it.
 
 npm 12 blocks install scripts unless told otherwise, and `node-pty` needs its script on Linux to build the terminal binding. Without it the daemon still runs, but terminals fall back to pipes (`isPty: false`). Add `--allow-scripts=node-pty` to the daemon's global install, or run `npm config set allow-scripts=node-pty --location=user` once.
-
-It listens on `ws://127.0.0.1:9187`. Run it with no arguments to serve the directory you are in.
 
 This owned fork requires Node 24 or later on Linux/macOS, or Bun 1.3.13 or later on those platforms. It does not claim Windows, Node 22 or Deno support. Native recovery is qualified only where actually tested.
 
@@ -154,7 +163,7 @@ Every verb and every flag is one declaration under [`src/commands`](https://gith
 | `--version`, `-v` | What version this is |
 | `--help`, `-h` | Every command, then the foreground run's flags |
 
-Every flag is also a key in `config.json` under `$XDG_CONFIG_HOME/ahpd`, spelled the same way without the dashes, except `--stdio`, `--config-file`, `--no-plugins`, `--no-cwd` and `--plugin-option`, which mean something only when typed. A flag beats the file. Five keys are set in the file alone and have no flag: `http`, `usage`, `proxy`, `policies` and `mcpServers`. Run `ahpd config` to see the path and the current values.
+Every flag is also a key in `config.json` under `$XDG_CONFIG_HOME/ahpd`, spelled the same way without the dashes, except `--stdio`, `--config-file`, `--no-plugins`, `--no-cwd` and `--plugin-option`, which mean something only when typed. A flag beats the file. These keys are set in the file alone and have no flag: `httpApi`, `modelApi`, `mcpTools`, `routes`, `usage`, `modelGateway`, `policies`, `service`, `mcpServers`, `shellEnv`, `commandParser`, `tunnelHosts`, `onPath`, `daemonRecord` and `stopWaitMs`. Run `ahpd config` to see the path and the current values.
 
 ## Directories
 
@@ -221,6 +230,8 @@ For a host of a different shape, build it from `@ahpd/sdk` and skip this package
 | [src/update.ts](https://github.com/ahpio/ahpd/blob/main/packages/server/src/update.ts) | Asking npm whether a newer version exists, in the background |
 
 ## Documentation
+
+[Read the documentation](https://ahpio.github.io/ahpd/)
 
 | | |
 | --- | --- |

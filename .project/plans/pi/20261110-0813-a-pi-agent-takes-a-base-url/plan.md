@@ -1,7 +1,7 @@
 ---
 title: A pi agent takes a baseUrl and an apiKey
 domain: pi
-status: planned
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -10,7 +10,7 @@ changes: []
 creates: []
 refs:
   - git://7d76d5895 - the commit of ahpd this plan was checked at
-  - "[code://.project/briefs/agent-settings-at-plugin-and-record.md#L95](../../../briefs/agent-settings-at-plugin-and-record.md#L95) - the brief's blue circle for pi's `baseUrl` and `apiKey`, which this plan covers"
+  - "git://8ba783e1c - the agent settings brief, with the blue circle for pi's `baseUrl` and `apiKey` that this plan covers"
   - "[code://packages/agent-pi/package.json#L81](../../../../packages/agent-pi/package.json#L81) - the plugin's options, with no `baseUrl` or `apiKey`"
   - "[code://packages/agent-pi/src/plugin.ts#L87](../../../../packages/agent-pi/src/plugin.ts#L87) - `RECORD_FIELDS`, the record fields a turn runs on"
   - "[code://packages/agent-pi/src/plugin.ts#L124-L136](../../../../packages/agent-pi/src/plugin.ts#L124-L136) - `kindSchema`, the record's form"
@@ -76,8 +76,8 @@ record { baseUrl, apiKey } -> optionsOfRecord -> backend -> session runtime
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A pi turn runs on the record's endpoint](task-01-a-pi-turn-runs-on-the-endpoint.md) | implemented | - |
-| [02 - The probe lists the endpoint's models](task-02-the-probe-lists-the-endpoint.md) | implemented | 01 |
+| [01 - A pi turn runs on the record's endpoint](task-01-a-pi-turn-runs-on-the-endpoint.md) | done | - |
+| [02 - The probe lists the endpoint's models](task-02-the-probe-lists-the-endpoint.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -87,7 +87,7 @@ record { baseUrl, apiKey } -> optionsOfRecord -> backend -> session runtime
 ## Resume state
 
 - **Done so far:** both tasks are implemented: a record with `baseUrl` registers one OpenAI-compatible provider under its id on each session's runtime, a turn on `<id>/<model>` streams through it, and the probe lists the endpoint's models, reading the record again on each probe. A record with no `apiKey` registers a placeholder key, because pi counts a provider configured only with a key. Its endpoint's `/models` and its turns carry no `Authorization` header. The suite is 275 of 276, with `agent-pi-lazy.test.ts` timing out at its own 4 s import budget under the other builds' load.
-- **Next action:** Softov reviews both tasks.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** pi's `useEnv` already sets per-session keys on the runtime; the new provider is not undone by it, because `keyOf` resolves the record's key through the provider's auth. The placeholder key never leaves the process. The session's `ahpd-endpoint` extension sets `Authorization` to `null` in `before_provider_headers`; pi and its OpenAI client both read that as a removal.
 

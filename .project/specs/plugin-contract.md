@@ -115,6 +115,13 @@ A slow listener slows the action it observes, because the host awaits it.
 
 The events are `session_start`, `session_end`, `session_opened`, `turn_start`, `turn_end`, `message`, `tool_call`, `input_needed_set`, `input_needed_removed`, `client_connect`, `client_disconnect`, `authenticated`, `automation_fire`, `resource_write`, `users_changed`, `terminal_open`, `listening`, `stopping` and `log`.
 
+### A plugin hears who opened a session
+
+WHEN a client subscribes to a session, or to a chat of it, for the first time
+THEN `session_opened` names the session and the client id
+AND on a host with users it names `owner`, the person the connection signed in as.
+A client id is the client's own word, so a plugin that ties a client to a person checks `owner` too, as `@ahpd/push` does.
+
 ### A plugin hears that a session needs a person
 
 WHEN a backend's `session/inputNeededSet` passes through the host

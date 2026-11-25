@@ -207,9 +207,14 @@ check_upgrade() {
   fi
 
   # A volume of its own: the older image refuses one a newer image wrote.
+  # The plugin is installed on the released image, and the image under test
+  # starts on the volume it wrote.
+  local tested=$IMAGE
   docker rm -f "$CONTAINER" >/dev/null
   docker volume rm "$VOLUME" >/dev/null
+  IMAGE=$previous
   start_container "$CONTAINER"
+  IMAGE=$tested
   wait_healthy "$CONTAINER"
   docker exec "$CONTAINER" ahpd plugin install @ahpd/webhook >/dev/null
 
@@ -219,10 +224,14 @@ check_upgrade() {
   listed=$(docker exec "$CONTAINER" ahpd plugin list --json)
   printf '%s' "$listed" | node -e '
     const rows = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-    const found = rows.find((row) => row.name === "@ahpd/webhook");
+    const found = rows.find((row) => (row.spec ?? row.name) === "@ahpd/webhook");
     if (found === undefined) { console.error("the installed plugin is gone after the swap"); process.exit(1); }
     if (found.state !== "ready") { console.error(`the installed plugin is ${found.state} after the swap`); process.exit(1); }
   ' || fail 'the installed plugin did not load on the new image'
+  # The default plugin the released image installed is not installed again.
+  if docker logs "$CONTAINER" 2>&1 | grep -q 'Installing @ahpd/web'; then
+    fail 'the new image installed @ahpd/web again, though the volume holds it'
+  fi
 }
 
 # The version ahpd says it is in this image.

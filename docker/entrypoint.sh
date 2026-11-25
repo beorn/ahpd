@@ -69,9 +69,11 @@ listed=$(ahpd plugin list --json) || fail 'ahpd plugin list --json'
 # The names are unquoted on purpose: they are words to split, and a package
 # name holds no character a shell expands.
 # shellcheck disable=SC2086
+# A row names its package in `spec`, as it was configured; `name` is the
+# plugin's short name, `web` for `@ahpd/web`.
 missing=$(printf '%s' "$listed" | node -e '
   const rows = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-  const have = new Set(rows.map((row) => row.name));
+  const have = new Set(rows.map((row) => row.spec ?? row.name));
   for (const name of process.argv.slice(1)) if (!have.has(name)) console.log(name);
 ' $plugins) || fail 'reading the plugin list'
 

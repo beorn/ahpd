@@ -9,8 +9,9 @@
 import { isFlag, optionTable, optionsOf, output, tokenize } from '@cofold/commands';
 import type { Command, OptionTableEntry, Registry } from '@cofold/commands';
 import { globalOptions } from '@cofold/terminal';
-import { here } from '../ask.js';
-import { configPath } from '../config.js';
+import { styleText } from 'node:util';
+import { answering, here, started } from '../ask.js';
+import { configPath, daemonLog } from '../config.js';
 import { start } from '../daemon.js';
 import { checkingUpdates, updateLine } from '../update.js';
 import { manifest } from '../version.js';
@@ -124,6 +125,33 @@ export const declareStart = (registry: Registry<object>): Command => registry.ac
     const rest = forwardedLine(argv, at, table);
     try {
       const begun = await start(rest, process.argv[1] as string, token, undefined, options.readyTimeoutMs);
+      // A person at a terminal gets the block; a script, or --json, keeps the
+      // plain lines it has always had.
+      const payload = context.globals['json'] === true || context.globals['quiet'] === true;
+      if (!payload && answering(here)) {
+        for (const warning of options.warnings) context.write(`${warning}\n`);
+        if (checkingUpdates(options.updateCheck)) context.write(updateLine(manifest()) ?? '');
+        const rows: [string, string][] = [
+          ['listening', begun.url],
+          ['pid', String(begun.pid)],
+          ['sessions', begun.paths.join(', ') || process.cwd()],
+          ['log', daemonLog()],
+          ...(begun.automations === undefined ? [] : [['automations', begun.automations] as [string, string]]),
+          ...(begun.skipped ?? []).map((line): [string, string] => ['skipped', line]),
+        ];
+        const next: [string, string][] = [
+          ['ahpd status', 'Check status and listening addresses'],
+          ['ahpd stop', 'Stop running process'],
+        ];
+        const width = Math.max(...next.map(([command]) => command.length)) + 3;
+        await started(rows, next.map(([command, meaning]) => `${styleText('cyan', command, { stream: process.stdout })}${' '.repeat(width - command.length)}${meaning}`), here);
+        return output({
+          url: begun.url,
+          pid: begun.pid,
+          paths: begun.paths,
+          ...(begun.automations === undefined ? {} : { automations: begun.automations }),
+        }, '');
+      }
       let text = options.warnings.map((warning) => `${warning}\n`).join('');
       // What the daemon started without, before the line that says it started:
       // a plugin that did not load, a preset of one that was dropped, all of it

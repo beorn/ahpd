@@ -1,6 +1,6 @@
 ---
 title: A client reads a listed plugin's details
-status: implemented
+status: done
 depends: [task-02-a-client-reads-the-list.md]
 layer: "server"
 refs:

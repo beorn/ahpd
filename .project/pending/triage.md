@@ -21,6 +21,7 @@ Restart the daemon on main first. Do them from the top down.
 - [plugin-view-checks.md](plugin-view-checks.md) - 10 min, VS Code through the system tunnel, and the network off for a minute.
 - [the-pt-catalogs-read-right.md](the-pt-catalogs-read-right.md) - 30 min.
 - [vscode-checks.md](vscode-checks.md) - 40 min.
+- [vscode-main-parity-checks.md](vscode-main-parity-checks.md) - 60 min, VS Code, ahpw and `rpc`: the VS Code main parity plans of 2026-11-21.
 - [cofold-resume-checks.md](cofold-resume-checks.md) - 30 min, VS Code.
 - [host-108-token-checks.md](host-108-token-checks.md) - 25 min, a second computer that reaches port 37537.
 - [bot-talk-checks.md](bot-talk-checks.md) - 30 min, on the test daemon after the bot talk branch merges: ahpw, VS Code, a second user and a webhook.

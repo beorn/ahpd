@@ -1,7 +1,7 @@
 ---
 title: The model proxy is the model gateway
 domain: proxy
-status: active
+status: built
 priority: high
 created: 2026-11-15
 revalidated: 2026-11-15
@@ -107,9 +107,9 @@ ahpd gateway list | GET /gateway/list -> commands/proxy.ts -> the model names an
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the daemon reads modelGateway](task-01-the-daemon-reads-model-gateway.md) | implemented | - |
-| [02 - grants, policy and usage say gateway](task-02-grants-policy-and-usage-say-gateway.md) | implemented | - |
-| [03 - the docs say model gateway](task-03-the-docs-say-model-gateway.md) | implemented | 01, 02 |
+| [01 - the daemon reads modelGateway](task-01-the-daemon-reads-model-gateway.md) | done | - |
+| [02 - grants, policy and usage say gateway](task-02-grants-policy-and-usage-say-gateway.md) | done | - |
+| [03 - the docs say model gateway](task-03-the-docs-say-model-gateway.md) | done | 01, 02 |
 
 ## Risks and tradeoffs
 
@@ -122,7 +122,7 @@ ahpd gateway list | GET /gateway/list -> commands/proxy.ts -> the model names an
 ## Resume state
 
 - **Done so far:** tasks 01 to 03, 2026-11-15, in one PR that waits for Softov's review.
-- **Next action:** Softov's review of the PR, then [implemented.md](implemented.md) closes the plan, and ahpw's `hosts/20261115-1356` follows.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Departures:** the policy match field and the decision's `Asked` field are `gateway` too, and a refusal says `through gateway <provider>`. The policy form labels the field `Gateway providers`. The daemon log lines of the listener still start with `proxy:`.
 - **Found:** a stored policy row that matches `proxy` is skipped at read, so a deny row of it refuses nothing. The upgrade page and the 0.15 notes say so.

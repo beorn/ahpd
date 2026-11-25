@@ -1,6 +1,6 @@
 ---
 title: The docs say what a record offers
-status: implemented
+status: done
 depends: [task-02-agents-serve-an-operations-list.md, task-03-connectors-serve-an-operations-list.md]
 layer: "docs"
 refs:

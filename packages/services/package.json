@@ -1,6 +1,6 @@
 {
   "name": "@ahpd/services",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
   "description": "A machine's services for ahpd: the process-compose driver, and the machine-local switches only the machine can set.",

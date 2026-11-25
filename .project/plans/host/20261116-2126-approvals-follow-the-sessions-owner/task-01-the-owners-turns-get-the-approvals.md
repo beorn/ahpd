@@ -1,6 +1,6 @@
 ---
 title: The owner's turns get the approvals
-status: implemented
+status: done
 depends: []
 layer: sdk
 refs:

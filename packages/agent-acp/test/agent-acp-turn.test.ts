@@ -453,14 +453,9 @@ it('opens a call the agent reported for a client\'s tool with that client on the
   // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeMapSessionEvents.ts#L626-L638
   expect(starts.map((e) => e.action.toolName)).toEqual(['openFile', 'openFile']);
 
-  // Said again on the ready, which is where the protocol stops taking one: a
-  // contributor that arrives after the start is ignored, so both carry it.
-  const readies = actions(p, chatUri).filter((e) => e.action.type === 'chat/toolCallReady'
-    && e.action.toolCallId === 'call-client-1');
-  expect(readies).toHaveLength(2);
-  for (const one of readies) {
-    expect(one.action.contributor).toEqual({ kind: 'client', clientId: 'a' });
-  }
+  // Reported and never requested, so no client is asked to run it.
+  expect(types(p, chatUri)).not.toContain('chat/toolCallReady');
+  expect(types(p, uri)).not.toContain('session/inputNeededSet');
 
   // And the rows the snapshot draws, which is what a client subscribing now
   // reads.
@@ -539,31 +534,6 @@ it('keeps the contributor through the chat reducer, and the snapshot agrees', as
     .toEqual({ kind: 'client', clientId: 'a' });
 });
 
-it('raises the session entry a client reads when its call starts running', async () => {
-  const { host, client, peer: p, uri, chatUri } = await talking();
-  await providing(host, uri, chatUri, 'a');
-  begin(client, chatUri, 't1', 'report client=mcp__host__a__openFile');
-  await until(() => ended(p, chatUri));
-
-  // A client that runs its tools from the session rather than from the chat
-  // finds the call here, and the entry is what asks it.
-  const sets = actions(p, uri).filter((e) => e.action.type === 'session/inputNeededSet');
-  expect(sets).toHaveLength(1);
-  expect(sets[0]?.action.request).toMatchObject({
-    kind: 'toolClientExecution',
-    chat: chatUri,
-    turnId: 't1',
-    clientId: 'a',
-    toolCall: {
-      toolCallId: 'call-client-1',
-      // The name the client announced, not the one the model was offered.
-      toolName: 'openFile',
-      status: 'running',
-      contributor: { kind: 'client', clientId: 'a' },
-    },
-  });
-});
-
 it('names a client\'s call in its row by the name the client announced', async () => {
   const { host, client, peer: p, uri, chatUri } = await talking();
   await providing(host, uri, chatUri, 'a');
@@ -571,11 +541,9 @@ it('names a client\'s call in its row by the name the client announced', async (
   await until(() => ended(p, chatUri));
 
   // The tool the client has, as VS Code's agents strip their client tool
-  // server's prefix: the row and the entry name the same tool.
+  // server's prefix.
   const start = actions(p, chatUri).find((e) => e.action.type === 'chat/toolCallStart' && e.action.toolCallId === 'call-client-1');
   expect(start?.action).toMatchObject({ toolName: 'openFile', contributor: { kind: 'client', clientId: 'a' } });
-  const set = actions(p, uri).find((e) => e.action.type === 'session/inputNeededSet');
-  expect((set?.action.request as Bag | undefined)?.toolCall).toMatchObject({ toolName: 'openFile', displayName: start?.action.displayName });
 });
 
 it('opens no entry for a call the agent has not started', async () => {
@@ -593,26 +561,17 @@ it('opens no entry for a call the agent has not started', async () => {
   expect(types(p, uri)).not.toContain('session/inputNeededSet');
 });
 
-it('leaves no entry for a call the agent has finished as it announced it', async () => {
+it('asks nobody to run a call the agent has finished as it announced it', async () => {
   const { host, client, peer: p, uri, chatUri } = await talking();
   await providing(host, uri, chatUri, 'a');
   begin(client, chatUri, 't1', 'report client=mcp__host__a__openFile cdone');
   await until(() => ended(p, chatUri));
 
-  /*
-   * The row is drawn, attributed and closed at once, and nothing is left asking
-   * anybody to run it: the entry its ready raised went with its completion, as
-   * VS Code's host syncs a call's entry with each action on the call.
-   * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/chatContributions/sessionInputNeeded/sessionInputNeededContribution.ts#L67-L157
-   */
+  // Never said running, since a client runs a call it reads as running.
   const calls = actions(p, chatUri).filter((e) => String(e.action.type).startsWith('chat/toolCall'));
-  expect(calls.map((e) => e.action.type))
-    .toEqual(['chat/toolCallStart', 'chat/toolCallReady', 'chat/toolCallComplete']);
+  expect(calls.map((e) => e.action.type)).toEqual(['chat/toolCallStart', 'chat/toolCallComplete']);
   expect(calls[0]?.action.contributor).toEqual({ kind: 'client', clientId: 'a' });
-  const raised = actions(p, uri).filter((e) => e.action.type === 'session/inputNeededSet')
-    .map((e) => (e.action.request as Bag).id);
-  const removed = actions(p, uri).filter((e) => e.action.type === 'session/inputNeededRemoved').map((e) => e.action.id);
-  expect(removed).toEqual(raised);
+  expect(types(p, uri)).not.toContain('session/inputNeededSet');
 });
 
 it('asks a client to run the call once the person allows it', async () => {
@@ -735,12 +694,12 @@ it('holds the before side a diff carried, which the file itself no longer has', 
   begin(client, chatUri, 't1', 'paint it');
   await until(() => ended(p, chatUri));
 
-  // The host gave the session the name its client asked for, which is what its
-  // changeset is keyed by. The `after` side is read off the file, so the row is
-  // only whole once that read has landed.
+  // The host keys a session's changes by its id, the name its client asked
+  // for without the scheme. The `after` side is read off the file, so the row
+  // is only whole once that read has landed.
   let row: ChangesetFile | undefined;
   await until(async () => {
-    row = (await changes.state?.(path, 'ahp-session:/one', 'turn/t1'))?.files[0];
+    row = (await changes.state?.(path, 'one', 'turn/t1'))?.files[0];
     return row?.edit.after !== undefined;
   });
   // The file on disk is what the agent left, so the before side can only be

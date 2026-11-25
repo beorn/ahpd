@@ -140,8 +140,9 @@ export function githubPullRequests(): PullRequests {
     return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
   };
 
-  const byApi = async (owner: string, repo: string, branch: string, token: string): Promise<PullRequest[]> => {
-    const head = encodeURIComponent(`${owner}:${branch}`);
+  const byApi = async (owner: string, repo: string, branch: string, token: string, headOwner = owner): Promise<PullRequest[]> => {
+    // GitHub names a head `<owner>:<branch>`, with the owner of the repository the branch is in.
+    const head = encodeURIComponent(`${headOwner}:${branch}`);
     const url = `https://api.github.com/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=updated&direction=desc&per_page=${MOST}`;
     const answer = await fetch(url, {
       headers: {
@@ -162,19 +163,28 @@ export function githubPullRequests(): PullRequests {
       }));
   };
 
-  const byGh = (owner: string, repo: string, branch: string, cwd: string): Promise<PullRequest[]> =>
+  const byGh = (owner: string, repo: string, branch: string, cwd: string, headOwner?: string): Promise<PullRequest[]> =>
     new Promise((answer, refuse) => {
+      /*
+       * `gh pr list --head` takes a branch name alone, whatever repository it
+       * is in, so a fork's owner is checked on the answer.
+       */
       execFile('gh', [
         'pr', 'list', '--repo', `${owner}/${repo}`, '--head', branch, '--state', 'all',
-        '--limit', String(MOST), '--json', GH_FIELDS,
+        '--limit', String(MOST), '--json', `${GH_FIELDS},headRepositoryOwner`,
       ], { cwd, timeout: 10_000, maxBuffer: 1 << 20, windowsHide: true }, (error, out, bad) => {
         if (error) {
           refuse(new Error(bad.toString().trim() || error.message));
           return;
         }
         const items = JSON.parse(out.toString()) as Record<string, unknown>[];
+        const ownedBy = (item: Record<string, unknown>): string | undefined => {
+          const login = (item.headRepositoryOwner as { login?: unknown } | undefined)?.login;
+          return typeof login === 'string' ? login : undefined;
+        };
         answer(items
           .filter((item) => typeof item.url === 'string')
+          .filter((item) => (ownedBy(item) ?? owner).toLowerCase() === (headOwner ?? owner).toLowerCase())
           .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
           .map((item) => ({
             url: item.url as string,
@@ -810,9 +820,9 @@ export function githubPullRequests(): PullRequests {
 
   return {
     resource: RESOURCE,
-    forBranch: async ({ owner, repo }, branch, token, cwd) => {
-      if (token !== undefined) return byApi(owner, repo, branch, token);
-      return byGh(owner, repo, branch, cwd);
+    forBranch: async ({ owner, repo }, branch, token, cwd, headOwner) => {
+      if (token !== undefined) return byApi(owner, repo, branch, token, headOwner);
+      return byGh(owner, repo, branch, cwd, headOwner);
     },
     byUrl: async (url, token, cwd) => {
       if (token !== undefined) return oneByApi(url, token);

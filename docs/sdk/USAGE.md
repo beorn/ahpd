@@ -21,6 +21,8 @@ Two kinds share one base and one port. A **model call** is `kind: 'model'`, writ
 
 Every record carries when it happened, what wrote it, who it belongs to and where it ran: the owner, the team and the project it is charged under, the session, the chat and the turn, the agent provider, and the computer when there was one. The base is the same for both kinds, so a listing by agent or by computer is a filter and never a join. A gateway call also carries `meta`, what the key and the call said about themselves such as `env=prod` or `client=pi`. It carries `token` as well, the id of the key that made it when one did.
 
+A record also carries `tags`, the labels of what the work passed through, each once. An agent record and a connector each take a `tags` list on their put, and a record copies the agent's tags, then each connector's: the login a Claude turn ran on, or the provider connector that served a gateway call. A backend names the connectors a turn used in its usage `_meta['ahpd.connectors']`. The tags are copied when the record is written, so a tag edited later changes no record already kept. A tag is 1 to 64 characters with no comma, and a list holds at most 32.
+
 A model record carries the model's `<maker>/<name>`, the provider it ran on, and the tokens in three parts: `input`, `output`, and `cache` split into what was read from and written to the provider's cache. A pool's `tokens` is all three added together, because those are the tokens that were billed, and the three counts are kept apart as well so a report can say what was sent and what came back. A model record also carries `opens: true` when it is the first record the meter wrote for its turn, which is what a pool's `turns` counts. A turn written once and a turn written per report both open once, so `turns` counts one however many records the turn has, while `calls` counts every record.
 
 ### The two costs
@@ -50,7 +52,7 @@ Through the `usage:` scheme, at the root and one leaf under the pool.
 | `usage://<pool>/day`, `/week`, `/month` | One of those periods on its own |
 | `usage://<pool>/range?from=&until=` | One total between two days |
 | `usage://<pool>/records?from=&until=` | The records charged to it, newest first, at most the newest 200 |
-| `usage://groups?by=&from=&until=` | The records between two days summed by user, team and project, one row per set of key values |
+| `usage://groups?by=&from=&until=&tag=` | The records between two days summed by user, team, project and tag, one row per set of key values |
 | `usage://limits` | Each active policy whose scope holds the reader, with its limits, what each used and when it resets |
 
 A listing is the same for every reader: the pools the store has records for, limited to the pools the reader may read. Root and a member see the same row for the same pool, and a pool nothing was charged to is listed for neither, so a team or project that spent nothing has no row until its first record.
@@ -67,7 +69,7 @@ A pool name holds colons, so it is one encoded path segment: `usage://project%3A
 
 ### Groups
 
-`usage://groups` sums the records of a range by the keys in `by`, a comma-separated list of `user`, `team` and `project`. It answers one row per distinct set of key values:
+`usage://groups` sums the records of a range by the keys in `by`, a comma-separated list of `user`, `team`, `project` and `tag`. It answers one row per distinct set of key values:
 
 ```json
 [
@@ -80,6 +82,8 @@ A pool name holds colons, so it is one encoded path segment: `usage://project%3A
 ```
 
 Each key is spelled as the pool key the record is charged under: `user` is the owner, which is `root:<host>` for a root connection's work, `team` is `team:<team>` and `project` is `project:<team>:<project>`. A key the records had none of is left out of `keys`, so team work grouped by `team,project` is a row with a `team` and no `project`. Each name is the pool's name as above. A `by` naming another key is `-32602`, and no `by` at all is one row for the whole range.
+
+By `tag`, a record is in one row for each of its tags, and a record with no tag is in none; a tag's name is the tag. `tag`, a comma-separated list, keeps only the records that hold every tag in it.
 
 A record counts once in a group, however many pools it is charged to, where a pool row counts it once under each of its pools. A record counts when the reader may read at least one pool it is charged to, so a member grouping by `user` sees their team's spending split by person. The store reads the month files for this, which is slower than a pool total over a long range, and a store plugin answers the same call.
 
@@ -123,7 +127,7 @@ Each read above is also an `x-` command a client sends on its connection, which 
 | `x-ahpd/usage/totals` | `pool` | `usage://<pool>`, as `{ pool, kind, name, day, week, month }` |
 | `x-ahpd/usage/range` | `pool`, `from?`, `until?` | `usage://<pool>/range` |
 | `x-ahpd/usage/records` | `pool`, `from?`, `until?` | `usage://<pool>/records` |
-| `x-ahpd/usage/groups` | `by?`, `from?`, `until?` | `usage://groups` |
+| `x-ahpd/usage/groups` | `by?`, `from?`, `until?`, `tag?` | `usage://groups` |
 
 `pool` is the pool key as written, `user:ana`, not encoded. `from` and `until` are strings with the defaults and the refusals of [a range](#a-range). `by` is a list, `["user", "team"]`, rather than a comma-separated string, and a key that is not one of the three is refused with the sentence the read gives. A param of the wrong type is `-32602`.
 

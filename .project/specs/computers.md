@@ -141,6 +141,12 @@ WHEN either check fails
 THEN the plugin leaves the machine alone with a log line.
 The reason: two daemons on one Docker keep sessions under the same ids, so the session id alone does not say whose a machine is.
 
+### A session nobody resumed is disposed
+
+WHEN a client disposes a session that this process keeps but does not hold, because nobody resumed it after a restart
+THEN the host reads the machine from the session's config before it forgets the row
+AND it tells the plugin the session left that machine, so a disposable machine is removed as after any last session.
+
 ### A session runs in a machine
 
 WHEN a session names `computer://<id>` at create, or a change of its config names one
@@ -212,7 +218,7 @@ The default chat's state is also at the top, where older clients read it.
 ### A command runs inside the sandbox runtime
 
 WHEN a backend asks `Start.computers.sandboxed` for a command and the chat's sandbox is on
-THEN the answer runs the command inside `@vscode/sandbox-runtime` with the chat's settings
+THEN the answer runs the command inside `@ahpio/sandbox-runtime` with the chat's settings
 AND an MCP server runs inside it only while `sandboxMcpServers` is on.
 A person's terminal and a `!` command are left alone.
 

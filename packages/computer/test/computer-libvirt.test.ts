@@ -16,6 +16,10 @@ import type { MachineSpec } from '../src/runtime.js';
 import type { SshReach } from '../src/ssh.js';
 import { partsFromDocker } from '../src/template.js';
 import type { TemplateParts } from '../src/template.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * Virtual machines on a libvirt box, made through a scripted `virsh` and

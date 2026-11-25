@@ -1,7 +1,7 @@
 ---
 title: The daemon reads the plugin list
 domain: plugin
-status: planned
+status: built
 priority: medium
 created: 2026-11-13
 revalidated: 2026-11-15
@@ -110,10 +110,10 @@ client -> x-ahpd/plugins/install {source, marketplace?} -> listed? versions from
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The daemon keeps the list on disk](task-01-the-daemon-keeps-the-list-on-disk.md) | implemented | - |
-| [02 - A client reads the list](task-02-a-client-reads-the-list.md) | implemented | 01 |
-| [03 - An install takes a listed version](task-03-an-install-takes-a-listed-version.md) | implemented | 01 |
-| [04 - A client reads a listed plugin's details](task-04-a-client-reads-a-listed-plugins-details.md) | implemented | 02 |
+| [01 - The daemon keeps the list on disk](task-01-the-daemon-keeps-the-list-on-disk.md) | done | - |
+| [02 - A client reads the list](task-02-a-client-reads-the-list.md) | done | 01 |
+| [03 - An install takes a listed version](task-03-an-install-takes-a-listed-version.md) | done | 01 |
+| [04 - A client reads a listed plugin's details](task-04-a-client-reads-a-listed-plugins-details.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -126,7 +126,7 @@ client -> x-ahpd/plugins/install {source, marketplace?} -> listed? versions from
 ## Resume state
 
 - **Done so far:** tasks 01 to 04 are built on branch `plugin/20261113-2029-the-daemon-reads-the-plugin-list` in `/github/ahpd.worktrees/plugin-list` on 2026-11-15, not committed. Each task's *Resume* says what ran and where the build differs from its steps.
-- **Next action:** Softov tests the branch. The tree is committed and a PR is opened on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Found in Softov's test of 2026-11-15:** `x-ahpd/plugins/remove` gave npm the row's id, such as `web`, in place of the package, `@ahpd/web`. Every `npm uninstall` also ran without `--legacy-peer-deps`, so a root with an older plugin failed with ERESOLVE. Both are fixed on the branch, each with a test.
 - **Found in the build:** the list's ids are not the ids ahpd gives the first-party plugins. None exports a `name`, so ahpd calls `@ahpd/agent-acp` `ahpd-agent-acp`, and the plugins repository's check strips the scope to `agent-acp`. `available` matches by source first for this reason. The check is in the plugins repository, and is not changed here.

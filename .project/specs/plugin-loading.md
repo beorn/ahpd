@@ -104,7 +104,12 @@ AND a scoped name `@scope/name` becomes `scope-name`.
 WHEN the id is not a slug of lowercase letters, digits and dashes, 1 to 40 long, that starts with a letter
 THEN the plugin is skipped with a problem line.
 
-A verb finds a plugin by its id or by its entry as written.
+WHEN the daemon refuses to load a package, such as one built for another sdk
+THEN its id is the package name without its scope or its version: `@ahpd/agent-claude` is `agent-claude`
+AND an entry that names no package, such as a path or a URL, is its own id.
+The reason: the row keeps one id through the update that lets it load, in [decisions/a-refused-plugin-is-named-without-its-scope.md](../decisions/a-refused-plugin-is-named-without-its-scope.md).
+
+A verb finds a plugin by its id or by its entry as written. A command over the protocol also takes a row's own id that holds a `/`.
 This is so that a route, an owner and a root config key hold no `@` or `/`.
 
 ### A plugin loads once

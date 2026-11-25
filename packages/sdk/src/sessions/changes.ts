@@ -1,7 +1,8 @@
 /** What git says a directory has changed, as a host's `ChangesetSource`. */
 
+import { createHash } from 'node:crypto';
 import { watch, type FSWatcher } from 'node:fs';
-import { lstat, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readlink, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
@@ -11,6 +12,7 @@ import type { PullRequests } from '../types/github.js';
 import { commitPrompt, cutDiff, pullRequestPrompt, splitWords } from './changewords.js';
 import { baselineOf, latestOf, removeAll } from './checkpoints.js';
 import { runGit } from '../repo/hardened.js';
+import { githubRemoteOf } from '../repo/git.js';
 import { uriOf } from '../resources/fileuri.js';
 import { INVALID_PARAMS } from '../rpc.js';
 
@@ -57,12 +59,78 @@ const counted = (before: string, after: string): { added: number; removed: numbe
  */
 const quiet = (): NodeJS.ProcessEnv => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0' });
 
+/** The protocol's `ChangesetFileStatus.Editing`. */
+const EDITING = 1;
+
+/** A row's nonce: one short word for everything its two sides are known by. */
+const nonceOf = (...sides: string[]): string =>
+  createHash('sha256').update(JSON.stringify(sides)).digest('hex').slice(0, 16);
+
+/** The largest file whose content is read for a nonce; a larger one is known by its size and time. */
+const NONCE_BYTES = 4 * 1024 * 1024;
+
+/** What a file on disk holds, as one word that changes when it does. */
+const diskMark = async (path: string): Promise<string> => {
+  try {
+    const found = await lstat(path);
+    if (found.isSymbolicLink()) return `link:${await readlink(path)}`;
+    if (!found.isFile() || found.size > NONCE_BYTES) return `stat:${found.size}:${found.mtimeMs}`;
+    return createHash('sha256').update(await readFile(path)).digest('hex');
+  }
+  catch { return 'none'; }
+};
+
+/** Git's rows with their nonces: the `before` by the commit it is read from, the `after` by the file on disk. */
+const withNonces = async (files: ChangesetFile[], commit: string): Promise<ChangesetFile[]> => {
+  const marked: ChangesetFile[] = [];
+  for (const file of files) {
+    marked.push({
+      ...file,
+      nonce: nonceOf(
+        file.edit.before === undefined ? '' : `${commit} ${file.edit.before.uri}`,
+        file.edit.after === undefined ? '' : await diskMark(fileURLToPath(file.edit.after.uri)),
+      ),
+    });
+  }
+  return marked;
+};
+
 /** One `git` run, as text, or nothing when it would not run. */
 const git = (dir: string, args: string[]): Promise<string | undefined> =>
   new Promise((answer) => {
     runGit(dir, args, { timeout: 5000, maxBuffer: 32 * 1024 * 1024, env: quiet(), windowsHide: true },
       (error, out) => answer(error ? undefined : out));
   });
+
+/**
+ * The remote a branch with no upstream is pushed to, as VS Code chooses it:
+ * the branch's configured push remote (`branch.<name>.pushRemote`,
+ * `remote.pushDefault`, then `branch.<name>.remote`), else the remote the
+ * GitHub repository is read from, `origin` first, else `origin`, else the only
+ * remote. A repository whose GitHub remote is named `upstream` is pushed
+ * there, not to an `origin` it does not have.
+ * https://github.com/microsoft/vscode/blob/1808c5c2a55e/src/vs/platform/agentHost/node/agentHostGitService.ts
+ */
+export const pushRemoteOf = async (dir: string, branch: string): Promise<{ name: string; url: string | undefined }> => {
+  const listed = (await git(dir, ['remote', '-v'])) ?? '';
+  const remotes = [...new Map(listed.split('\n').flatMap((line) => {
+    const found = /^(\S+)\s+(\S+)\s+\(fetch\)$/.exec(line.trim());
+    return found ? [[found[1] as string, found[2] as string] as const] : [];
+  })).entries()].map(([name, url]) => ({ name, url }));
+  const named = (name: string | undefined): { name: string; url: string | undefined } | undefined => {
+    const clean = name?.trim();
+    return clean === undefined || clean === '' ? undefined : { name: clean, url: remotes.find((one) => one.name === clean)?.url };
+  };
+  const configured = named(await git(dir, ['config', '--get', `branch.${branch}.pushRemote`]))
+    ?? named(await git(dir, ['config', '--get', 'remote.pushDefault']))
+    ?? named(await git(dir, ['config', '--get', `branch.${branch}.remote`]));
+  if (configured !== undefined) return configured;
+  const origin = remotes.find((one) => one.name === 'origin');
+  const ordered = origin === undefined ? remotes : [origin, ...remotes.filter((one) => one !== origin)];
+  return ordered.find((one) => githubRemoteOf(one.url) !== undefined)
+    ?? origin
+    ?? (remotes.length === 1 ? remotes[0] as { name: string; url: string } : { name: 'origin', url: undefined });
+};
 
 /**
  * One `git` run, with the failure kept.
@@ -109,7 +177,9 @@ const indexHolds = async (dir: string): Promise<boolean> => {
 const treeSignature = (value: { files: ChangesetFile[]; summary: ChangesSummary } | undefined): string =>
   JSON.stringify({
     summary: value?.summary ?? null,
-    staging: (value?.files ?? []).map((one) => [one.id, one._meta?.['ahpd.staged'] === true, one._meta?.['ahpd.unstaged'] === true]),
+    // The nonce too: a line swapped for another moves no count, and a client
+    // left with the old nonce has its operations refused.
+    staging: (value?.files ?? []).map((one) => [one.id, one.nonce, one._meta?.['ahpd.staged'] === true, one._meta?.['ahpd.unstaged'] === true]),
   });
 
 /**
@@ -536,6 +606,23 @@ export function gitChanges(): ChangesetSource {
    * that contains it.
    */
   const reviewed = new Map<string, Set<string>>();
+
+  /** The edits under way on each file, by its row id: which turn of which session is making each. */
+  const editing = new Map<string, Set<string>>();
+  const editKey = (session: string, turnId: string): string => `${session}\u0000${turnId}`;
+  /** One turn's edit of one file is over. */
+  const editOver = (id: string, key: string): boolean => {
+    const by = editing.get(id);
+    if (by === undefined || !by.delete(key)) return false;
+    if (by.size === 0) editing.delete(id);
+    return true;
+  };
+  /** Rows as they are served, with `Editing` on each file an agent is editing now. */
+  const withEditing = (state: ChangesetState | undefined): ChangesetState | undefined =>
+    (state === undefined || editing.size === 0 ? state : {
+      ...state,
+      files: state.files.map((file) => (editing.has(file.id) ? { ...file, status: (file.status ?? 0) | EDITING } : file)),
+    });
   const reviewKey = (session: string, scope: string): string => `${session}\u0000${scope}`;
 
   /**
@@ -700,6 +787,7 @@ export function gitChanges(): ChangesetSource {
           ...(sides.after !== undefined ? { after: { uri, content: { uri: after } } } : {}),
           diff: countsOf(sides),
         },
+        nonce: nonceOf(sides.before ?? '', sides.after ?? ''),
       };
     }));
 
@@ -901,7 +989,8 @@ export function gitChanges(): ChangesetSource {
       summary.additions = (summary.additions ?? 0) + count.added;
       summary.deletions = (summary.deletions ?? 0) + count.removed;
     }
-    return { files, summary };
+    const head = (await git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD']))?.trim() ?? '';
+    return { files: await withNonces(files, head), summary };
   };
 
   /**
@@ -1017,7 +1106,7 @@ export function gitChanges(): ChangesetSource {
       // `lines` counts it that way.
       row(path, undefined, true, { added: await lines(`${dir}/${path}`), removed: 0 });
     }
-    return { files, summary };
+    return { files: await withNonces(files, against), summary };
   };
 
   /**
@@ -1289,14 +1378,22 @@ export function gitChanges(): ChangesetSource {
     const ahead = (await git(dir, ['rev-list', '--count', `${at.base}..${branch}`]))?.trim();
     if (ahead === '0') throw new Error('There are no branch changes to create a pull request for.');
     /*
-     * Pushed where the branch already goes, and to `origin` under its own
-     * name when it goes nowhere yet. `-u` only then: an upstream already
-     * chosen is not this operation's to change.
+     * Pushed where the branch already goes, and under its own name to the
+     * remote VS Code chooses when it goes nowhere yet. `-u` only then: an
+     * upstream already chosen is not this operation's to change.
      */
     const upstream = at.branch === branch ? at.upstream : undefined;
     const [remote, head] = upstream !== undefined && upstream.includes('/')
       ? [upstream.slice(0, upstream.indexOf('/')), upstream.slice(upstream.indexOf('/') + 1)]
-      : ['origin', branch];
+      : [(await pushRemoteOf(dir, branch)).name, branch];
+    /*
+     * The head names the owner of the remote pushed to where it is not the
+     * repository's, as VS Code's head owner follows the push: a fork's branch
+     * is `<owner>:<branch>` to GitHub.
+     */
+    const pushedOwner = githubRemoteOf((await git(dir, ['remote', 'get-url', remote]))?.trim())?.owner;
+    const fork = pushedOwner !== undefined && pushedOwner !== repo.owner ? pushedOwner : undefined;
+    const prHead = fork !== undefined ? `${fork}:${head}` : head;
     const pushed = await run(dir, ['push', ...(upstream === undefined ? ['-u'] : []), remote, `${branch}:${head}`]);
     if (!pushed.ok) throw new Error(`Failed to push branch '${branch}': ${pushed.err}`);
     /*
@@ -1319,7 +1416,8 @@ export function gitChanges(): ChangesetSource {
      */
     if (said.title === '') throw new Error('A pull request title is required.');
     const why = said.fellBack === undefined ? '' : ` - ${said.fellBack}`;
-    const existing = (await github.ask.forBranch(repo, head, github.token, dir)).find((one) => one.state === 'open');
+    // Asked under the owner it was pushed to, so a fork's open request is found and not opened twice.
+    const existing = (await github.ask.forBranch(repo, head, github.token, dir, ...(fork === undefined ? [] : [fork]))).find((one) => one.state === 'open');
     if (existing !== undefined) {
       return {
         message: `Pushed ${branch}; its pull request is ${existing.url}${why}`,
@@ -1338,7 +1436,7 @@ export function gitChanges(): ChangesetSource {
     const opened = await github.ask.create(repo, {
       title: said.title,
       body: said.description,
-      head,
+      head: prHead,
       base: at.base,
       draft: asked?.draft === true,
     }, github.token, dir);
@@ -1383,6 +1481,42 @@ export function gitChanges(): ChangesetSource {
       throw new Error(`Failed to check out '${treeish}': ${out.err}`);
     }
     return { message: { markdown: `Checked out branch \`${treeish}\`.` } };
+  };
+
+  /** The rows behind one scope, before what is being edited is marked on them. */
+  const stateOf = async (dir: string, session: string, scope: string, base?: string): Promise<ChangesetState | undefined> => {
+    if (scope === 'uncommitted') {
+      const found = held.get(dir) ?? await look(dir);
+      if (!found) return undefined;
+      return { status: 'ready', files: found.files };
+    }
+    if (scope === 'branch') {
+      const against = base === undefined ? undefined : await mergeBaseOf(dir, base);
+      const found = against === undefined ? undefined : await branchLook(dir, against);
+      if (found === undefined) return undefined;
+      return { status: 'ready', files: withTicks(session, scope, found.files) };
+    }
+    if (scope === 'session') {
+      const files = await sessionFiles(dir, session);
+      if (files.size === 0) return { status: 'ready', files: [] };
+      return { status: 'ready', files: rowsOf(session, 'session', files) };
+    }
+    if (scope.startsWith('compare/')) {
+      const [from, to] = scope.slice('compare/'.length).split('/');
+      if (!from || !to) return undefined;
+      const files = between(session, from, to);
+      if (!files) return undefined;
+      return { status: 'ready', files: rowsOf(session, `compare/${from}/${to}`, files) };
+    }
+    if (scope.startsWith('turn/')) {
+      const turn = scope.slice('turn/'.length);
+      const files = seen.get(session)?.get(turn);
+      // A turn nobody has heard of is not an empty changeset - it is a
+      // question about something that did not happen.
+      if (!files) return undefined;
+      return { status: 'ready', files: rowsOf(session, turn, files) };
+    }
+    return undefined;
   };
 
   return {
@@ -1451,40 +1585,14 @@ export function gitChanges(): ChangesetSource {
       ];
     },
 
-    state: async (dir, session, scope, base) => {
-      if (scope === 'uncommitted') {
-        const found = held.get(dir) ?? await look(dir);
-        if (!found) return undefined;
-        return { status: 'ready', files: found.files };
-      }
-      if (scope === 'branch') {
-        const against = base === undefined ? undefined : await mergeBaseOf(dir, base);
-        const found = against === undefined ? undefined : await branchLook(dir, against);
-        if (found === undefined) return undefined;
-        return { status: 'ready', files: withTicks(session, scope, found.files) };
-      }
-      if (scope === 'session') {
-        const files = await sessionFiles(dir, session);
-        if (files.size === 0) return { status: 'ready', files: [] };
-        return { status: 'ready', files: rowsOf(session, 'session', files) };
-      }
-      if (scope.startsWith('compare/')) {
-        const [from, to] = scope.slice('compare/'.length).split('/');
-        if (!from || !to) return undefined;
-        const files = between(session, from, to);
-        if (!files) return undefined;
-        return { status: 'ready', files: rowsOf(session, `compare/${from}/${to}`, files) };
-      }
-      if (scope.startsWith('turn/')) {
-        const turn = scope.slice('turn/'.length);
-        const files = seen.get(session)?.get(turn);
-        // A turn nobody has heard of is not an empty changeset - it is a
-        // question about something that did not happen.
-        if (!files) return undefined;
-        return { status: 'ready', files: rowsOf(session, turn, files) };
-      }
-      return undefined;
+    editing: (path) => editing.has(uriOf(path)),
+
+    editsEnded: (session, turnId) => {
+      const key = editKey(session, turnId);
+      return [...editing.keys()].filter((id) => editOver(id, key)).map((id) => fileURLToPath(id));
     },
+
+    state: async (dir, session, scope, base) => withEditing(await stateOf(dir, session, scope, base)),
 
     /*
      * Both sides of a file, captured as the tool runs.
@@ -1495,8 +1603,10 @@ export function gitChanges(): ChangesetSource {
      * because by the time an agent says it changed a file the only copy of
      * what it held is the diff it sent.
      */
-    observe: (dir, session, turnId, path, phase, given) =>
-      (async () => {
+    observe: (dir, session, turnId, path, phase, given) => {
+      const id = uriOf(path);
+      if (phase === 'before') editing.set(id, (editing.get(id) ?? new Set()).add(editKey(session, turnId)));
+      return (async () => {
         const text = given ?? await readFile(path, 'utf8').catch(() => undefined);
         const turns = seen.get(session) ?? new Map<string, Map<string, Captured>>();
         seen.set(session, turns);
@@ -1526,7 +1636,8 @@ export function gitChanges(): ChangesetSource {
             reviewed.get(reviewKey(session, scope))?.delete(uriOf(path));
           }
         }
-      })().catch(() => {}),
+      })().catch(() => {}).finally(() => { if (phase === 'after') editOver(id, editKey(session, turnId)); });
+    },
 
     /*
      * A file a person is being asked to approve, held until they answer.

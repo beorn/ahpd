@@ -1,10 +1,10 @@
 ---
 title: cofold reads the cofold names
 domain: cofold
-status: planned
+status: built
 priority: medium
 created: 2026-11-11
-revalidated: 2026-11-11
+revalidated: 2026-11-21
 requires:
   - file:///github/cofold/.project/plans/cli/20261111-0517-copapo-uses-the-cofold-names
 changes:
@@ -70,7 +70,8 @@ copapo ACP preset -> seed ~/.config/cofold/config.json -> copapo part at the rel
 | The part pins the first `@cofold/copapo` release that reads the cofold names | the cofold plan's `deferred.md`: the image pins copapo 0.1.0 | 01 |
 | This plan is built after that release is on npm | (defaulted: a copapo machine would read the old names until the part moves) | 01 |
 | A machine made before the change is remade by the person; there is no migration | (defaulted: as the papo move answered, Softov 2026-11-10 "The person remakes it") | 02 |
-| The 0.15 release notes go from papo's names to the cofold names in one line | `git tag --contains 7a59a9bd1`: no release read the copapo names | 02 |
+| The 0.15 release notes stay as shipped; the upgrade lines wait for the 0.16 notes, in [deferred.md](deferred.md) | `git tag --contains 7a59a9bd1` on 2026-11-21: `v0.15.0` shipped the copapo names, so the 0.15 notes describe what it shipped | 02 |
+| The copapo part pins `@cofold/copapo` 0.3.0 | npm, 2026-11-21: 0.3.0 is the first release that reads the cofold names | 01 |
 
 ## Proposed architecture
 
@@ -84,8 +85,8 @@ copapo ACP preset -> seed ~/.config/cofold/config.json -> copapo part at the rel
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The harness reads the cofold names](task-01-the-harness-reads-the-cofold-names.md) | todo | - |
-| [02 - The docs say the cofold names](task-02-the-docs-say-the-cofold-names.md) | todo | 01 |
+| [01 - The harness reads the cofold names](task-01-the-harness-reads-the-cofold-names.md) | done | - |
+| [02 - The docs say the cofold names](task-02-the-docs-say-the-cofold-names.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -95,8 +96,8 @@ copapo ACP preset -> seed ~/.config/cofold/config.json -> copapo part at the rel
 
 ## Resume state
 
-- **Done so far:** the plan, 2026-11-11.
-- **Next action:** wait for the `@cofold/copapo` release with the cofold names, then [task-01-the-harness-reads-the-cofold-names.md](task-01-the-harness-reads-the-cofold-names.md).
+- **Done so far:** tasks 01 and 02, 2026-11-21; see [implemented.md](implemented.md).
+- **Next action:** the PR's CI; then the upgrade lines in the 0.16 notes, as [deferred.md](deferred.md) says.
 - **Open questions:** none.
 - **Watch out for:** `COFOLD_HOME` and `COFOLD_TRACE` are already cofold's names and stay. A blind `COPAPO_` to `COFOLD_` replace is safe, but a blind `copapo` replace renames the program.
 

@@ -215,16 +215,26 @@ export interface ClientTools {
   /**
    * The call the CLI has just reported running, held for the client that owns it.
    *
-   * Opened where the running ready goes out, and not where the call is first
-   * announced: a call `canUseTool` asks about is not running until it is
-   * approved, and an entry raised for one would tell a client to run a tool
-   * the person has not allowed yet.
+   * Opened where the call starts running, its handler or its approval, and not
+   * where the call is announced: an entry raised before the permission would
+   * tell a client to run a tool the person has not allowed yet.
    *
    * This is also where a handler waiting on the call's id goes on, whichever
    * of the two arrived first - so it is called from the frame that reports the
    * call and from the approval of one the person was asked about.
    */
   openCall: (toolName: string, turnId: string, id: string, line: StringOrMarkdown, input: string | undefined) => void;
+  /**
+   * The CLI's message has reported a client's call, which its handler has yet to run.
+   *
+   * `ready` says the call running, once: the handler calls it as it starts,
+   * since the CLI runs a handler only after it has settled the permission.
+   */
+  reportCall: (toolName: string, turnId: string, id: string, line: StringOrMarkdown, input: string | undefined, ready: () => void) => void;
+  /** Whether the call is reported and neither run, allowed nor ended. */
+  reportedCall: (id: string) => boolean;
+  /** The reported call ended with no handler: forgotten, and whether it was one. */
+  dropReport: (id: string) => boolean;
   /**
    * A person is being asked about this call, so it is not a client's yet.
    *
@@ -369,6 +379,9 @@ export function createClientTools(ctx: SessionContext): ClientTools {
    */
   const noEntry = new Set<string>();
 
+  /** The client calls a message reported, by the CLI's id, until each is run, allowed or ended. */
+  const reported = new Map<string, () => void>();
+
   /** A call that will not run, in the shape an answer to the model takes. */
   const refusedAnswer = (text: string): ClientCallAnswer => ({ ok: false, text, content: [{ type: 'text', text }] });
 
@@ -416,6 +429,7 @@ export function createClientTools(ctx: SessionContext): ClientTools {
     asked.clear();
     framed.clear();
     noEntry.clear();
+    reported.clear();
   };
 
   const openCall = (toolName: string, turnId: string, id: string, line: StringOrMarkdown, input: string | undefined): void => {
@@ -458,6 +472,23 @@ export function createClientTools(ctx: SessionContext): ClientTools {
     });
   };
 
+  const reportCall: ClientTools['reportCall'] = (toolName, turnId, id, line, input, ready) => {
+    // A refused call is no client's, and its handler never runs.
+    if (noEntry.has(id)) return;
+    reported.set(id, () => {
+      ready();
+      openCall(toolName, turnId, id, line, input);
+      // This handler is the one `openCall` would keep the id for.
+      framed.delete(id);
+    });
+    opened(id);
+  };
+
+  const dropReport = (id: string): boolean => {
+    framed.delete(id);
+    return reported.delete(id);
+  };
+
   const holdCall = (id: string): void => {
     noEntry.add(id);
     calls.hold(id);
@@ -465,11 +496,14 @@ export function createClientTools(ctx: SessionContext): ClientTools {
 
   const allowCall = (toolName: string, turnId: string, id: string, line: StringOrMarkdown, input: string | undefined): void => {
     noEntry.delete(id);
+    // Opened here, so its handler only joins it.
+    reported.delete(id);
     openCall(toolName, turnId, id, line, input);
   };
 
   const refuseCall = (id: string, why: string): void => {
     noEntry.add(id);
+    reported.delete(id);
     const owner = calls.owner(id);
     // The owner was never asked, so this session answers for it: the call ends
     // here rather than being left open for a client that will not run it.
@@ -494,6 +528,12 @@ export function createClientTools(ctx: SessionContext): ClientTools {
      * transport failure and the model is never told what happened.
      */
     if ('refused' in joined) return refusedAnswer(joined.refused);
+    const report = reported.get(joined.id);
+    // The client that provides the tool may have left since the report, which
+    // then stays, for the result to find a call that never ran.
+    if (report !== undefined && clientToolOf(called(tool)) === undefined) return refusedAnswer(`Nothing here offers ${called(tool)}.`);
+    reported.delete(joined.id);
+    report?.();
     return calls.wait(joined.id);
   };
 
@@ -649,7 +689,7 @@ export function createClientTools(ctx: SessionContext): ClientTools {
   };
 
   return {
-    clientToolOf, hostToolOf, openCall, holdCall, allowCall, refuseCall, releaseCalls, ranByClient,
+    clientToolOf, hostToolOf, openCall, reportCall, reportedCall: (id) => reported.has(id), dropReport, holdCall, allowCall, refuseCall, releaseCalls, ranByClient,
     openedTerminals, openedFor, buildClientMcpServers, rebindForClientTools, calls, methods,
   };
 }

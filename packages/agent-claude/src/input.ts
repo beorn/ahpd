@@ -104,7 +104,13 @@ export function questionRequest(input: Bag, id: string): { request: OnWire<ChatI
           ...(description === undefined ? {} : { description }),
         };
       }),
-      allowFreeformInput: question.allowFreeformInput === true,
+      /*
+       * A typed answer unless the question forbids one: the SDK tells the
+       * model an Other choice is provided automatically, where VS Code's
+       * Claude sends `false` for every question.
+       * Decision: A Claude question allows a typed answer, where VS Code's Claude allows none.
+       */
+      allowFreeformInput: question.allowFreeformInput !== false,
     };
     return question.multiSelect === true
       ? { ...carousel, kind: 'multi-select' } satisfies OnWire<ChatInputQuestion>
