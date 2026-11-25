@@ -576,6 +576,20 @@ describe('backup (#38277 slice 3b, @cto c89ade9c: the listing and the change log
       .toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining(machine.changeLog) as unknown });
   });
 
+  // ext4 hands a deleted file's inode number to the next file made, so a log deleted and written again keeps its
+  // device and inode; only its creation time tells it from the old one.
+  it('answers CURSOR_RESET for a log deleted and made again, even where the new file gets the old inode number', () => {
+    appendLines(3);
+    const { cursor } = backup();
+    const before = statSync(machine.changeLog, { bigint: true });
+    rmSync(machine.changeLog);
+    appendFileSync(machine.changeLog, `${JSON.stringify({ op: 'one' })}\n`.repeat(6));
+    const after = statSync(machine.changeLog, { bigint: true });
+    expect(after.birthtimeNs).not.toBe(before.birthtimeNs);
+    expect(backupServices(machine, { after: cursor }))
+      .toMatchObject({ ok: false, code: 'CURSOR_RESET', message: expect.stringContaining(`${machine.changeLog} was replaced`) as unknown });
+  });
+
   it('answers a missing log as no lines and writes nothing; its cursor reads the log from its start once there is one', () => {
     const empty = backup();
     expect([empty.lines, empty.more]).toEqual([[], false]);
@@ -587,13 +601,19 @@ describe('backup (#38277 slice 3b, @cto c89ade9c: the listing and the change log
     expect(readFileSync(machine.changeLog, 'utf8')).toBe(before);
   });
 
-  it('refuses an unreadable log, or a line that is not JSON, by name and without the line\'s text', () => {
+  it('refuses an unreadable log by name', () => {
     mkdirSync(machine.changeLog);
     expect(backupServices(machine, {}))
       .toMatchObject({ ok: false, code: 'FILE_UNREADABLE', message: expect.stringContaining(machine.changeLog) as unknown });
-    rmSync(machine.changeLog, { recursive: true });
-    appendFileSync(machine.changeLog, '{"op":"ok"}\nhunter2\n');
-    expect(backupServices(machine, {}))
-      .toEqual({ ok: false, code: 'FILE_UNREADABLE', message: `the change log ${machine.changeLog} has a line at byte 12 that is not a JSON object` });
+  });
+
+  // @cto f7a8801f: one bad line (a crash mid-append) must not stop every later change being backed up.
+  it('answers a line that is not JSON as a marker with its offset and length, never its text, and goes on past it', () => {
+    appendFileSync(machine.changeLog, '{"op":"ok"}\nhunter2\n{"op":"after"}\n');
+    const answer = backupServices(machine, {});
+    if (!answer.ok) throw new Error(answer.message);
+    expect(answer.lines).toEqual([{ op: 'ok' }, { unreadable: true, offset: 12, bytes: 7 }, { op: 'after' }]);
+    expect(JSON.stringify(answer)).not.toContain('hunter2');
+    expect(answer.more).toBe(false);
   });
 });

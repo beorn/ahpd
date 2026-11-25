@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PluginHost, PluginMethod } from '../../sdk/src/types/plugin.js';
 import type { Caller, Machine, Refusal } from '../src/compose.js';
 import type { DriftAlert } from '../src/drift.js';
-import { METHODS, apply, callerOf, servicesMethods, showDrift, type Driver, type ServicesHost, type ServicesMethod } from '../src/plugin.js';
+import { METHODS, UNREADABLE_REF, apply, callerOf, servicesMethods, showDrift, type Driver, type ServicesHost, type ServicesMethod } from '../src/plugin.js';
 
 /*
  * #38277 slice 2: the driver as ahpd methods (@cto). Each method calls the
@@ -95,6 +95,15 @@ describe('servicesMethods', () => {
     expect(wrote).toEqual([]);
   });
 
+  it('tells the plugin the offset of each unreadable line a backup answered, and nothing for a readable one', async () => {
+    const { driver, answer } = recording();
+    const at: number[] = [];
+    const methods = servicesMethods(machine, driver, () => {}, () => {}, (offset) => { at.push(offset); });
+    answer({ ok: true, listing: {}, lines: [{ op: 'put' }, { unreadable: true, offset: 12, bytes: 7 }], cursor: 'c', more: false });
+    await methods['x-ahpd/services/backup']!.handle({}, undefined, 'c1');
+    expect(at).toEqual([12]);
+  });
+
   it('checks drift again at once after an accepted acknowledge, and not after a refused one', async () => {
     const { driver, answer } = recording();
     let checks = 0;
@@ -162,15 +171,16 @@ describe('apply', () => {
     const alerts: DriftAlert[] = [];
     const grants: Array<[string, string[]]> = [];
     const closers: Array<() => void | Promise<void>> = [];
+    const cleared: string[] = [];
     const served: ServicesHost = {
       configDir: dir,
       registerMethod: (name, method) => { methods.set(name, method); },
       registerGrants: (subject, entry) => { grants.push([subject, entry.operations]); },
       registerClose: (close) => { closers.push(close); },
       alert: (one) => { alerts.push(one); },
-      clearAlert: () => {},
+      clearAlert: (ref) => { cleared.push(ref); },
     };
-    return { served, methods, alerts, grants, closers };
+    return { served, methods, alerts, grants, closers, cleared };
   };
 
   it('registers the methods and grants, and checks drift at once', async () => {
@@ -180,6 +190,24 @@ describe('apply', () => {
     expect(made.grants).toEqual([['services', ['list', 'get', 'put', 'delete', 'control']]]);
     for (let i = 0; i < 50 && made.alerts.length < 2; i += 1) await new Promise((done) => setTimeout(done, 20));
     expect(made.alerts.map((one) => one.ref)).toEqual(['services-drift:not-loaded:web', 'services-drift:not-in-files:other']);
+    for (const close of made.closers) await close();
+  });
+
+  it('raises one alert for an unreadable change-log line a backup met, and clears it once the log is replaced', async () => {
+    const made = host();
+    const log = join(dir, 'changes.jsonl');
+    apply(made.served, { files: [join(dir, 'local.yaml')], socket: join(dir, 'pc.sock'), changeLog: log });
+    writeFileSync(log, '{"op":"ok"}\nhalf-writ\n');
+    await made.methods.get('x-ahpd/services/backup')!.handle({}, undefined, 'c1');
+    expect(made.alerts.filter((one) => one.ref === UNREADABLE_REF))
+      .toEqual([{ level: 'warning', ref: UNREADABLE_REF, text: `services change log has an unreadable line at 12 (${log})` }]);
+    rmSync(log);
+    writeFileSync(log, '{"op":"ok"}\n');
+    // An accepted acknowledge runs the drift check at once; the check clears the alert for a replaced log.
+    const listed = await made.methods.get('x-ahpd/services/list')!.handle({}, undefined, 'c1') as { hashes: Record<string, string> };
+    await made.methods.get('x-ahpd/services/acknowledge')!.handle({ hashes: listed.hashes }, undefined, 'c1');
+    for (let i = 0; i < 50 && !made.cleared.includes(UNREADABLE_REF); i += 1) await new Promise((done) => setTimeout(done, 20));
+    expect(made.cleared).toContain(UNREADABLE_REF);
     for (const close of made.closers) await close();
   });
 

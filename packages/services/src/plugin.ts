@@ -19,11 +19,11 @@
  * few members named below, which the daemon's `PluginHost` has, and a test
  * checks that the shapes agree.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
-  acknowledgeFiles, backupServices, controlService, listServices, putService, removeService, serviceLogs,
+  acknowledgeFiles, backupServices, controlService, isUnreadableLine, listServices, putService, removeService, serviceLogs,
   type AcknowledgeParams, type Answer, type BackupParams, type Caller, type Machine, type PutParams, type Refusal,
 } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert } from './drift.js';
@@ -33,6 +33,9 @@ export const name = 'services';
 
 /** What a listing prints. */
 export const title = 'Services';
+
+/** The alert a backup raises for a change-log line it could not read; one per machine, whatever the line. */
+export const UNREADABLE_REF = 'services-changelog:unreadable';
 
 /** How often drift is checked, after the check at start. */
 export const DRIFT_EVERY_MS = 5 * 60 * 1000;
@@ -102,6 +105,7 @@ const guarded = async (run: () => Promise<unknown> | unknown): Promise<unknown> 
  */
 export function servicesMethods(
   machine: Machine, driver: Driver = DRIVER, wrote: (file: string, hash: string) => void = () => {}, acknowledged: () => void = () => {},
+  unreadable: (offset: number) => void = () => {},
 ): Record<string, ServicesMethod> {
   const written = <T extends Answer<{ ifVersion: string; file: string }>>(answer: T): T => {
     if (answer.ok && (!('changed' in answer) || answer.changed === true)) wrote(answer.file, answer.ifVersion);
@@ -153,7 +157,11 @@ export function servicesMethods(
     'x-ahpd/services/backup': {
       grant: 'services:list',
       describe: () => ({ title: 'Back up services', description: 'What list answers plus the change-log lines after a cursor, at most 200 lines or 256 KB: no program output, vault values, plain env values or file text. Reads only.' }),
-      handle: async (params) => guarded(() => driver.backup(machine, params as BackupParams)),
+      handle: async (params) => guarded(() => {
+        const answer = driver.backup(machine, params as BackupParams);
+        if (answer.ok) for (const line of answer.lines) if (isUnreadableLine(line)) unreadable(line.offset);
+        return answer;
+      }),
     },
   };
 }
@@ -213,6 +221,7 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>): voi
   let raised = new Map<string, string>();
   const check = async (): Promise<void> => {
     try {
+      checkUnreadable();
       raised = showDrift(host, raised, await checkDrift(machine, stateFile));
     }
     catch (error) {
@@ -234,7 +243,32 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>): voi
   catch (error) {
     host.alert({ level: 'error', text: `cannot make the services directory: ${(error as Error).message}`, ref: 'services-options' });
   }
-  for (const [method, served] of Object.entries(servicesMethods(machine, DRIVER, wrote, () => { void check(); }))) host.registerMethod(method, served);
+  /*
+   * A change-log line the backup could not read (@cto f7a8801f): one alert, naming where, until the log is replaced.
+   * The log's identity is kept with the alert, and the drift check clears it once the log is another file or gone.
+   */
+  let unreadableIn: string | undefined;
+  const logIdentity = (): string | undefined => {
+    try {
+      const stat = statSync(machine.changeLog, { bigint: true });
+      // Creation time as well: ext4 gives a replaced log's inode number to the next file made.
+      return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+    }
+    catch {
+      return undefined;
+    }
+  };
+  const unreadableLine = (offset: number): void => {
+    unreadableIn = logIdentity();
+    host.alert({ level: 'warning', text: `services change log has an unreadable line at ${offset} (${machine.changeLog})`, ref: UNREADABLE_REF });
+  };
+  const checkUnreadable = (): void => {
+    if (unreadableIn !== undefined && logIdentity() !== unreadableIn) {
+      unreadableIn = undefined;
+      host.clearAlert(UNREADABLE_REF);
+    }
+  };
+  for (const [method, served] of Object.entries(servicesMethods(machine, DRIVER, wrote, () => { void check(); }, unreadableLine))) host.registerMethod(method, served);
   void check();
   const timer = setInterval(() => { void check(); }, DRIFT_EVERY_MS);
   timer.unref();
