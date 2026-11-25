@@ -38,6 +38,7 @@ import {
 } from './record.js';
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
 import { ROUTES, pcFailure, pcRequest, type PcSocket } from './pc.js';
+import { cutCommand, cutReason } from './watch.js';
 
 /** One machine's process-compose, as the plugin that hosts the driver configures it. */
 export interface Machine {
@@ -223,6 +224,9 @@ function readState(machine: Machine): State {
     const elsewhere = shared.get(name);
     if (elsewhere !== undefined) { readOnly.set(name, `it is also defined in ${elsewhere}; ${where(elsewhere)}`); continue; }
     if (usesAnchors(pair.value)) { readOnly.set(name, `it uses YAML anchors, aliases or merge keys; ${where(file)}`); continue; }
+    // @cto 8f8fafce (5): a command YAML cut at " #" runs less than it says; the driver will not round-trip it.
+    const kept = cutCommand(pair.value, text);
+    if (kept !== undefined) { readOnly.set(name, `${cutReason(kept)}; ${where(file)}`); continue; }
     const native = isMap(pair.value) ? pair.value.toJSON() : pair.value;
     const record = fromNative(name, native);
     if (typeof record === 'string') { readOnly.set(name, `${record}; ${where(file)}`); continue; }
