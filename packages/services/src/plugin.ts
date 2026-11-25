@@ -36,6 +36,7 @@ import {
 } from './channel.js';
 import { isUnreadableLine, type Machine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
+import { watchAlerts } from './watch.js';
 
 export { DRIVER, callerOf, type Driver } from './channel.js';
 
@@ -205,7 +206,9 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
   const check = async (): Promise<void> => {
     try {
       checkUnreadable();
-      alerts = await checkDrift(machine, stateFile, (facts) => { running = facts.running; });
+      const drift = await checkDrift(machine, stateFile, (facts) => { running = facts.running; });
+      // @cto 8f8fafce (2, 5): a program process-compose gave up on, and a command YAML cut short, beside the drift.
+      alerts = [...drift, ...watchAlerts(machine.name, driver.list(machine), running)];
       raised = showDrift(host, raised, alerts);
     }
     catch (error) {
