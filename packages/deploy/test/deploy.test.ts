@@ -6,11 +6,13 @@ import {
   currentRelease,
   DEFAULT_KEEP,
   deploy,
+  lastSwitchFrom,
   pruneReleases,
   readJournal,
   resolveVersion,
   status,
   sweep,
+  writeJournalEntry,
   type DeployDeclaration,
 } from '../src/index.js';
 import { gitSync } from '../../../tools/git.ts';
@@ -286,5 +288,19 @@ describe('deploy driver (#38276)', () => {
     expect(realpathSync(join(stateDir, 'deploy', 'svc', 'current'))).toContain('eeee');
     expect(readFileSync(join(releases, 'eeee', 'release.txt'), 'utf8')).toBe('eeee\n');
     expect(existsSync(join(releases, 'aaaa'))).toBe(false);
+  });
+
+  // @level l3 @consumer the journal is how a prune knows the way back: the release the last switch left is kept.
+  it('keeps the release the last switch left, and names it from the journal', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'ahpd-switch-from-'));
+    const layout = { stateDir, service: 'svc' };
+    expect(lastSwitchFrom(layout)).toBe(null);
+    writeJournalEntry(layout, { event: 'deploy', deployId: 'x' });
+    expect(lastSwitchFrom(layout)).toBe(null);
+    writeJournalEntry(layout, { event: 'switched', to: 'bbbb', from: 'aaaa', reason: 'deploy' });
+    expect(lastSwitchFrom(layout)).toBe('aaaa');
+    // A line that leaves nothing behind is a first install, not a target to invent.
+    writeJournalEntry(layout, { event: 'switched', to: 'cccc', from: null, reason: 'deploy' });
+    expect(lastSwitchFrom(layout)).toBe(null);
   });
 });

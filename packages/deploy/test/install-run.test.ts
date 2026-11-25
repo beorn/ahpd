@@ -271,6 +271,21 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     ]);
   });
 
+  // @level l3 @consumer a successful switch keeps its way back: the release it left survives the prune that follows.
+  it('keeps the release the last switch left, so one switch back is always possible', () => {
+    // keep 2 is current plus exactly one way back: the 0.10.0 that ran is kept and the newest other one goes without it.
+    expect(releasesToPrune(['0.12.0', '0.11.0', '0.10.0'], '0.12.0', 2, '0.10.0')).toEqual(['0.11.0']);
+    expect(releasesToPrune(['0.12.0', '0.11.0', '0.10.0'], '0.12.0', 2)).toEqual(['0.10.0']);
+    // The folder that actually ran outranks a newer one, because it is the one a rollback returns to.
+    expect(releasesToPrune(['0.13.0', '0.12.0', '0.11.0', '0.10.0'], '0.11.0', 2, '0.10.0')).toEqual([
+      '0.13.0',
+      '0.12.0',
+    ]);
+    // keep 1 has no room for a second folder, and a target that is already gone is not invented.
+    expect(releasesToPrune(['0.12.0', '0.11.0'], '0.12.0', 1, '0.11.0')).toEqual(['0.11.0']);
+    expect(releasesToPrune(['0.12.0', '0.11.0'], '0.12.0', 3, '9.9.9')).toEqual([]);
+  });
+
   // @level l3 @consumer switching versions moves current, restarts the boot item and says which folders it deleted.
   it('installs a second version, restarts the boot item, and prunes the oldest past keep', async () => {
     const io = fakeIo();
@@ -306,6 +321,18 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     expect(out.kept).toEqual([{ name: 'junk', why: 'not a version' }]);
     expect(out.removed).toEqual(['0.15.0']);
     expect(io.paths.has(`${releases}/junk`)).toBe(true);
+  });
+
+  // @level l3 @consumer pruning a customer host keeps the release it switched from when keep leaves room for it.
+  it('keeps the release a version switch left when pruning', () => {
+    const releases = '/r/state/deploy/ahpd/releases';
+    const names = ['0.13.0', '0.14.0', '0.15.0'];
+    const io = fakeIo([releases, ...names.map((version) => `${releases}/${version}`)]);
+    for (const name of names) io.dirs.add(`${releases}/${name}`);
+    const out = pruneReleaseFolders(io, { stateDir: '/r/state', service: 'ahpd' }, '0.15.0', 2, '0.14.0');
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error('unreachable');
+    expect(out.removed).toEqual(['0.13.0']);
   });
 
   // @level l3 @consumer a start that fails switches back: current on the old release, the old service running, and

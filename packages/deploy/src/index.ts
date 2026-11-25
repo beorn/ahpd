@@ -374,26 +374,50 @@ export const activateRelease = (
   reason: string,
   detail: Readonly<Record<string, unknown>> = {},
 ): void => {
+  // Read before the rename: the line records what the switch left, which is the release a rollback returns to.
+  const from = currentRelease(layout);
   switchCurrent(layout, version);
-  journal(layout, { event: 'switched', to: version, reason, ...detail });
+  journal(layout, { ...detail, event: 'switched', to: version, from, reason });
+};
+
+/** The release the last switch left, which is the one a rollback returns to; null when nothing switched yet. */
+export const lastSwitchFrom = (layout: DeployLayout): string | null => {
+  const entries = readJournal(layout);
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined || entry['event'] !== 'switched') continue;
+    const from = entry['from'];
+    return typeof from === 'string' && from !== '' ? from : null;
+  }
+  return null;
 };
 
 /**
- * Which release folders to remove: `current` plus the newest `keep - 1` others, never one fewer when the current
- * release is also the newest. The rule is here, once, so a git deploy and a customer install prune the same way; only
- * the ordering differs (commit time there, version order for an install).
+ * Which release folders to remove: `current`, then the release the last switch left (`rollback`), then the newest
+ * others, up to `keep`. Keeping the rollback target is what makes "switch back" possible after a successful switch:
+ * with `keep` 2 that is the current release and exactly one way back (@cto 2026-11-25). The rule is here, once, so a
+ * git deploy and a customer install prune the same way; only the ordering differs (commit time there, version order
+ * for an install).
  */
 export const releasesToPrune = (
   orderedNewestFirst: readonly string[],
   current: string | null,
   keep = DEFAULT_KEEP,
+  rollback: string | null = null,
 ): readonly string[] => {
-  const others = orderedNewestFirst.filter((name) => name !== current);
-  const keeping = new Set([...(current === null ? [] : [current]), ...others.slice(0, Math.max(keep - 1, 0))]);
+  const keeping = new Set<string>();
+  if (current !== null) keeping.add(current);
+  // A rollback target only exists when there is room for it: `keep` 1 is the current release alone.
+  if (rollback !== null && keep >= 2 && rollback !== current && orderedNewestFirst.includes(rollback))
+    keeping.add(rollback);
+  for (const name of orderedNewestFirst) {
+    if (keeping.size >= keep) break;
+    keeping.add(name);
+  }
   return orderedNewestFirst.filter((name) => !keeping.has(name));
 };
 
-/** Keep `current` plus the newest `keep - 1` releases; every other release folder is removed by name. */
+/** Keep `current`, the release the last switch left, and the newest releases up to `keep`; the rest is removed by name. */
 export const pruneReleases = (layout: DeployLayout, keep = DEFAULT_KEEP): readonly string[] => {
   const releases = paths(layout).releases;
   if (!existsSync(releases)) return [];
@@ -407,7 +431,7 @@ export const pruneReleases = (layout: DeployLayout, keep = DEFAULT_KEEP): readon
     })
     .sort((left, right) => right.at - left.at || right.name.localeCompare(left.name))
     .map((one) => one.name);
-  const removed = releasesToPrune(ordered, current, keep);
+  const removed = releasesToPrune(ordered, current, keep, lastSwitchFrom(layout));
   for (const name of removed) {
     rmSync(join(releases, name), { recursive: true, force: true });
     const objects = paths(layout).objects;
