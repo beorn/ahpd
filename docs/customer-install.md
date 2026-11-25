@@ -135,7 +135,9 @@ release candidate.
 
 The record says `installed` before the prune runs, because a release that is running and recorded is installed whether
 or not the tidy-up worked. A prune that then fails comes back as `pruneFailed {path, output}` on an otherwise good
-result, and the command prints it as a warning and exits 0 — a full disk is never reported as a failed install.
+result, and the command prints it as a warning and exits 0 — a full disk is never reported as a failed install. One
+folder that will not delete (`EBUSY`, `EACCES`) stops the prune and is named, and the folders already removed are
+listed with it, so a partly pruned disk is never reported as an unpruned one.
 
 ## Still open
 

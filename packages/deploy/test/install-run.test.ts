@@ -406,6 +406,57 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     expect(existsOf(io, `${releases}/0.13.0`)).toBe(true);
   });
 
+  // @level l3 @consumer one folder that will not delete stops the prune and is named, with what was already gone.
+  it('names the release a prune could not remove, and reports the ones it did', async () => {
+    const io = fakeIo();
+    const switchTo = () => undefined;
+    // Seeded with a list() that cannot see the release folders, so nothing is pruned on the way in and the final
+    // apply has three folders to remove.
+    const blind = {
+      ...io,
+      list: () => {
+        throw new Error('EACCES: permission denied');
+      },
+    };
+    for (const version of ['0.13.0', '0.14.0', '0.15.0', '0.16.0', '0.17.0']) {
+      const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version, pins: HONEST });
+      if (!built.ok) throw new Error('expected a manifest');
+      expect((await applyInstall(built.manifest, blind, switchTo)).ok).toBe(true);
+    }
+    const releases = '/home/customer/.ahpd/state/deploy/ahpd/releases';
+    const busy = {
+      ...io,
+      removeTree: (path: string) => {
+        if (path === `${releases}/0.14.0`) throw new Error('EBUSY: resource busy');
+        io.removeTree(path);
+      },
+    };
+    const next = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.18.0', pins: HONEST });
+    if (!next.ok) throw new Error('expected a manifest');
+    const result = await applyInstall(next.manifest, busy, switchTo);
+    // A prune that hit a locked folder is a warning on a good install, never an exception or a failed install.
+    expect(result.ok).toBe(true);
+    expect(result.refusal).toBeUndefined();
+    expect(result.pruneFailed).toEqual({ path: `${releases}/0.14.0`, output: 'EBUSY: resource busy' });
+    expect(result.pruned).toEqual(['0.15.0']);
+    expect(recordOf(io, next.manifest).state).toBe('installed');
+    expect(existsOf(io, `${releases}/0.15.0`)).toBe(false);
+    expect(existsOf(io, `${releases}/0.14.0`)).toBe(true);
+    expect(existsOf(io, `${releases}/0.13.0`)).toBe(true);
+  });
+
+  // @level l3 @consumer a switch that throws is refused by name, before the boot item is touched.
+  it('refuses by name when moving current throws', async () => {
+    const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
+    if (!built.ok) throw new Error('expected a manifest');
+    const result = await applyInstall(built.manifest, fakeIo(), () => {
+      throw new Error('EXDEV: cross-device link not permitted');
+    });
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'switch release' });
+    expect(describeApplyRefusal(result.refusal!)).toContain('EXDEV');
+  });
+
   // @level l3 @consumer a record that will not parse is refused, never read as a fresh install.
   it('refuses an unreadable install record and changes nothing', async () => {
     const manifest = manifestWith();

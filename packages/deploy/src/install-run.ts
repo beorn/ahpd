@@ -203,7 +203,14 @@ export interface PruneKept {
 
 export type PruneOutcome =
   | { readonly ok: true; readonly removed: readonly string[]; readonly kept: readonly PruneKept[] }
-  | { readonly ok: false; readonly path: string; readonly output: string };
+  | {
+      readonly ok: false;
+      readonly path: string;
+      readonly output: string;
+      /** What was already gone when it stopped, so a partial prune is reported as one, never as nothing. */
+      readonly removed: readonly string[];
+      readonly kept: readonly PruneKept[];
+    };
 
 /**
  * Keep `current` and the newest `keep - 1` releases, by the same rule `pruneReleases` uses; only the ordering is
@@ -212,6 +219,9 @@ export type PruneOutcome =
  * No release folders at all is a fact, not an error. Any other failure to list them is a refusal: silently pruning
  * nothing would report a clean switch while the disk fills. A folder whose name is not a version is never pruned and
  * is named, because it is not ours to guess about.
+ *
+ * Each removal is its own attempt: one folder that cannot be deleted (EBUSY, EACCES) stops the prune with that folder
+ * named and the ones already gone listed. It never escapes the caller as an exception after the install was recorded.
  */
 export const pruneReleaseFolders = (
   io: Pick<InstallIo, 'list' | 'removeTree'>,
@@ -225,15 +235,24 @@ export const pruneReleaseFolders = (
     names = io.list(releases);
   } catch (error) {
     if (isMissingPath(error)) return { ok: true, removed: [], kept: [] };
-    return { ok: false, path: releases, output: message(error) };
+    return { ok: false, path: releases, output: message(error), removed: [], kept: [] };
   }
   const versions = names.filter(isVersion);
   const kept: PruneKept[] = names
     .filter((name) => !isVersion(name))
     .map((name) => ({ name, why: 'not a version' }));
   const removed = releasesToPrune([...versions].sort(compareVersions), current, keep);
-  for (const name of removed) io.removeTree(`${releases}/${name}`);
-  return { ok: true, removed, kept };
+  const done: string[] = [];
+  for (const name of removed) {
+    const folder = `${releases}/${name}`;
+    try {
+      io.removeTree(folder);
+    } catch (error) {
+      return { ok: false, path: folder, output: message(error), removed: done, kept };
+    }
+    done.push(name);
+  }
+  return { ok: true, removed: done, kept };
 };
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -372,14 +391,25 @@ export const applyInstall = async (
   }
 
   const layout = { stateDir: `${manifest.root}/state`, service: 'ahpd' };
-  switchTo(
-    layout,
-    manifest.version,
-    upgrading ? `customer host switch to ${manifest.version}` : 'customer host install',
+  const switched = await attempt('switch release', `${layout.stateDir}/deploy/ahpd/current`, () =>
+    switchTo(
+      layout,
+      manifest.version,
+      upgrading ? `customer host switch to ${manifest.version}` : 'customer host install',
+    ),
   );
+  if (!switched.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: switched.refusal };
 
   // The loaded boot item points at `current`, so a switch needs it restarted; a first install just starts it.
-  const stopped = upgrading ? io.run(manifest.bootItem.disable) : { code: 0, output: '' };
+  const stopped = upgrading
+    ? await attempt('stop the running release', manifest.bootItem.path, () => io.run(manifest.bootItem.disable))
+    : { ok: true as const, value: { code: 0, output: '' } };
+  const stoppedOutput = stopped.ok
+    ? stopped.value.output
+    : stopped.refusal.kind === 'step-failed'
+      ? stopped.refusal.output
+      : '';
+  const stoppedClause = upgrading ? (stoppedOutput === '' ? 'stopping it said nothing' : stoppedOutput) : '';
   const enabled = await attempt('enable boot item', manifest.bootItem.path, () => io.run(manifest.bootItem.enable));
   const started = enabled.ok && enabled.value.code === 0;
   if (!started) {
@@ -387,8 +417,13 @@ export const applyInstall = async (
     // A failed start goes back to the release that was running, so a bad switch never leaves a dead host pointing at
     // a release nobody has started (@cto 2026-11-25).
     if (upgrading && previous !== null) {
-      switchTo(layout, previous.version, 'switching back after a failed start');
-      // Wrapped like every other step: a runner that throws is a named failure, never an escape out of applyInstall.
+      // Wrapped like every other step: a switch or a runner that throws is a named failure, never an escape out of
+      // applyInstall.
+      const switchedBack = await attempt(
+        'switch back to the previous release',
+        `${layout.stateDir}/deploy/${layout.service}/current`,
+        () => switchTo(layout, previous.version, 'switching back after a failed start'),
+      );
       const restarted = await attempt('start the previous release', manifest.bootItem.path, () =>
         io.run(manifest.bootItem.enable),
       );
@@ -406,6 +441,12 @@ export const applyInstall = async (
       // Anything short of "the old release is running again and recorded" is said in its own clause, so "the host is
       // down" can never be read as "the host is back on the old version" (@cto 2026-11-25).
       const backFailed: string[] = [];
+      if (!switchedBack.ok)
+        backFailed.push(
+          `switch-back to ${previous.version} also failed: ${
+            switchedBack.refusal.kind === 'step-failed' ? switchedBack.refusal.output : ''
+          }`.trim(),
+        );
       if (!restarted.ok || restarted.value.code !== 0)
         backFailed.push(`switch-back to ${previous.version} also failed: ${restartedOutput}`.trim());
       if (!restored.ok)
@@ -414,6 +455,12 @@ export const applyInstall = async (
             restored.refusal.kind === 'step-failed' ? restored.refusal.output : ''
           }`.trim(),
         );
+      // The old release's own output is carried once, in the clause above; here only whether `current` moved.
+      const backClause = !switchedBack.ok
+        ? `could not switch back to ${previous.version}`
+        : restarted.ok && restarted.value.code === 0
+          ? `switched back to ${previous.version}: ${restartedOutput}`
+          : `switched back to ${previous.version}, but it did not start`;
       return {
         ok: false,
         wrote,
@@ -424,7 +471,7 @@ export const applyInstall = async (
           step: 'enable boot item',
           path: manifest.bootItem.path,
           // Both halves of the attempt, then the switch back and its own start: nothing is left to guess.
-          output: [stopped.output, `then ${failure}`, `switched back to ${previous.version}: ${restartedOutput}`, ...backFailed]
+          output: [stoppedClause, `then ${failure}`, backClause, ...backFailed]
             .map((line) => line.trim())
             .filter((line) => line !== '')
             .join('; '),
@@ -455,7 +502,14 @@ export const applyInstall = async (
 
   // Only a started release is worth keeping the disk tidy for: a failed switch pruned nothing above.
   const prunedNow = pruneReleaseFolders(io, layout, manifest.version);
-  if (!prunedNow.ok) return { ok: true, wrote, pruned: [], keptReleases: [], pruneFailed: { path: prunedNow.path, output: prunedNow.output } };
+  if (!prunedNow.ok)
+    return {
+      ok: true,
+      wrote,
+      pruned: prunedNow.removed,
+      keptReleases: prunedNow.kept,
+      pruneFailed: { path: prunedNow.path, output: prunedNow.output },
+    };
   return { ok: true, wrote, pruned: prunedNow.removed, keptReleases: prunedNow.kept };
 };
 
