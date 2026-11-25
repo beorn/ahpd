@@ -32,8 +32,13 @@ export const READS_SCHEME = 'hh-deploys';
 export const CHANGED = `${SCHEME}/changed`;
 /** The grant subject every operation and read here names. */
 export const SUBJECT = 'deploy';
-/** The words the subject's grants are made of: one to deploy, one to read a run. */
-export const GRANT_WORDS = ['deploy', 'read'] as const;
+/**
+ * The words the subject's grants are made of: one to deploy, one to read a run's status and journal.
+ * `status`, not `read`: the sdk reserves `read`/`write`/`*` as group names, so an operation may not be called `read`
+ * (`plugin-grants.test.ts`: "refuses an operation that is a group or the wildcard"). The plugin failed to load on
+ * the first host because of exactly that.
+ */
+export const GRANT_WORDS = ['deploy', 'status'] as const;
 
 /** A grant as the sdk spells it. */
 type Grant = `${string}:${string}`;
@@ -217,7 +222,7 @@ export interface DeploysChannel {
 export function deploysChannel(context: ChannelContext): DeploysChannel {
   const state = (): DeploysState => context.state();
   return {
-    grant: `${SUBJECT}:read`,
+    grant: `${SUBJECT}:status`,
     snapshot: (uri) => {
       const asked = runOf(uri);
       if (asked === undefined) return state();
@@ -255,12 +260,12 @@ const journalText = (layout: DeployLayout, deployId: string): string => {
   return lines.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
 };
 
-/** `hh-deploys://<deployId>/log`: one deploy's journal lines, under `deploy:read`. */
+/** `hh-deploys://<deployId>/log`: one deploy's journal lines, under `deploy:status`. */
 export function deploysProvider(context: ChannelContext): DeploysProvider {
   return {
     describe: () => ({ title: 'A deploy', description: `One deploy on ${context.machine}: its journal at ${READS_SCHEME}://<deployId>/log.` }),
     // The journal can carry a service's own text, so a reader needs the grant; nothing here widens it.
-    authorize: async (uri, reader) => reader !== undefined && logOf(uri) !== undefined && reader.can(`${SUBJECT}:read`),
+    authorize: async (uri, reader) => reader !== undefined && logOf(uri) !== undefined && reader.can(`${SUBJECT}:status`),
     read: async (uri) => {
       const deployId = logOf(uri);
       if (deployId === undefined) throw new Error(`${uri} is not a resource this machine serves; ${READS_SCHEME}:// serves <deployId>/log`);

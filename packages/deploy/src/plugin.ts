@@ -250,7 +250,7 @@ export function deployMethods(options: DeployMethodsOptions): { run: DeployMetho
       },
     },
     report: {
-      grant: 'deploy:read',
+      grant: 'deploy:status',
       describe: () => ({ title: 'Read a deploy report', description: 'The release current points at, the deploy still running if one is, and the last journal line - which is the outcome of the last deploy, with its steps, exit codes and timings.' }),
       handle: async (params) => {
         const unknown = Object.keys(params).filter((key) => key !== 'service');
@@ -285,7 +285,7 @@ export interface HandedRequest {
 
 /** An old method's answer: refused, naming what replaced it and in which release, never a bare method-not-found. */
 const retiredMethod = (method: string, why: string): DeployMethod => ({
-  grant: 'deploy:read',
+  grant: 'deploy:status',
   describe: () => ({ title: `${method} (replaced)`, description: `Replaced by ${RETIRED[method]} in ${REPLACED_IN}.` }),
   handle: async () => {
     throw Object.assign(new Error(`${method} was replaced by ${RETIRED[method]} in ${REPLACED_IN}; update the caller to a release that uses it`), {
@@ -300,7 +300,7 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
   host.registerGrants('deploy', {
     title: 'Deploy',
     description: 'Placing this machine\'s services at a version, and reading what each deploy did.',
-    operations: ['deploy', 'read'],
+    operations: ['deploy', 'status'],
   });
   const stateDir = typeof options['stateDir'] === 'string' ? options['stateDir'] : host.configDir;
   const layout = (service: string): DeployLayout => ({ stateDir, service });
