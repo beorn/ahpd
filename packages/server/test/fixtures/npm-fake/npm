@@ -4,7 +4,8 @@
 # caller named. With FAKE_NPM_LOG set it appends a line to that
 # file as it starts and as it ends, so a case can see whether two runs overlapped.
 # With FAKE_NPM_LANDS set to "<name> <version>", an install writes that
-# package's package.json under the --prefix directory's node_modules.
+# package's package.json under the --prefix directory's node_modules, with the
+# `ahpd` field a plugin's has - except for the sdk, which is not a plugin.
 # An install of a plugin names its sources after a `--`; for each one the fake
 # writes a package.json with an `ahpd` field and an `index.mjs` exporting the
 # unscoped name, which is what npm really leaves and what the install path
@@ -18,7 +19,10 @@ if [ "$1" = install ] && [ "$2" = --prefix ]; then
   if [ -n "$FAKE_NPM_LANDS" ]; then
     dir="$3/node_modules/${FAKE_NPM_LANDS% *}"
     mkdir -p "$dir"
-    printf '{"name":"%s","version":"%s"}\n' "${FAKE_NPM_LANDS% *}" "${FAKE_NPM_LANDS#* }" > "$dir/package.json"
+    case "${FAKE_NPM_LANDS% *}" in
+      @ahpd/sdk) printf '{"name":"%s","version":"%s"}\n' "${FAKE_NPM_LANDS% *}" "${FAKE_NPM_LANDS#* }" > "$dir/package.json" ;;
+      *) printf '{"name":"%s","version":"%s","type":"module","main":"./index.mjs","ahpd":{"entry":"./index.mjs"}}\n' "${FAKE_NPM_LANDS% *}" "${FAKE_NPM_LANDS#* }" > "$dir/package.json" ;;
+    esac
   else
     source=''
     for arg do

@@ -74,6 +74,9 @@ const recordedOverride = (argv: readonly string[], plugin: readonly string[], ke
 };
 
 export const declarePlugin = (registry: Registry<object>, served?: ServedFacts): Command[] => {
+  /** The file a command edits: the daemon's own when served, whatever the request names. */
+  const fileOf = (named: string | undefined): string => (served === undefined ? named : served.configFile) ?? configPath();
+
   const list = registry.action({
     id: 'plugin.list',
     summary: 'What the configuration names, and what a run would load',
@@ -364,9 +367,27 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
         moved = await updatePlugins(asked.length === 1 && asked[0] === 'all' ? 'all' : asked, {
           configDir: configDir(), sdk: sdkVersion(), run: runProgram, fetch, say,
           marketplaces: served === undefined ? configuredMarketplaces() : served.options.pluginMarketplaces,
+          configFile: fileOf(undefined),
         });
       }
       catch (error) {
+        /*
+         * A refusal does not undo the packages already moved. They are on disk
+         * and not running, so they are imported again before the refusal ends
+         * the command, exactly as a call that moved them and refused nothing
+         * would have.
+         */
+        const already = (error as { moved?: Moved[] }).moved;
+        if (already !== undefined && already.length > 0) {
+          try {
+            await saidToReload(say, already.map((one) => one.name));
+          }
+          catch (again) {
+            // The refusal is the answer; a daemon that would not load is said
+            // beside it rather than in place of it.
+            say(`The packages above moved, and the daemon could not load them again (${again instanceof Error ? again.message : String(again)}).`);
+          }
+        }
         stop(failure(error));
       }
       /*
@@ -455,9 +476,6 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
       return output({ plugins: names, ...(restart ? { restart: true } : {}) }, '');
     }),
   });
-
-  /** The file a command edits: the daemon's own when served, whatever the request names. */
-  const fileOf = (named: string | undefined): string => (served === undefined ? named : served.configFile) ?? configPath();
 
   /*
    * `plugin config` shows a plugin's options, `plugin config set` writes one

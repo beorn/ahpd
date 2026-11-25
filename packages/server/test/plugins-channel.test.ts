@@ -1434,11 +1434,11 @@ const registryHolding = (packages: Record<string, string[]>): Fetch => async (ur
  * `demo` installed from the registry at 1.0.0 and named in `plugins`, with a
  * runner whose next install lands `next`.
  */
-const installedDemo = async (next: string) => {
+const installedDemo = async (next: string, landed?: Record<string, unknown>) => {
   const manifests: Record<string, Record<string, unknown>> = { demo: { version: '1.0.0' } };
   const { runner, calls } = fakeNpm({ demo: '^1.0.0' }, { esm: true, manifests });
   await runner('npm', ['install', '--prefix', join(home, 'ahpd'), 'demo']);
-  manifests['demo'] = { version: next };
+  manifests['demo'] = { version: next, ...landed };
   calls.length = 0;
   writeFileSync(config, JSON.stringify({ plugins: [...held().plugins, 'demo'] }));
   return { runner, calls };
@@ -1462,6 +1462,51 @@ it('updates a plugin to the version that fits this daemon, and loads it again', 
   expect(calls[0]?.argv.slice(0, 3)).toEqual(['install', '--prefix', join(home, 'ahpd')]);
   expect(calls[0]?.argv.at(-1)).toBe('demo@1.1.0');
   expect((await ana.rows())['demo']).toMatchObject({ version: '1.1.0', loaded: true });
+  await close();
+});
+
+it('puts a version the loader would refuse back, and leaves the plugin it had running', async () => {
+  // npm replaced the package and the new version is one the loader would
+  // refuse, so the version that worked goes back. That is the version the
+  // daemon is already running, so nothing is applied again and nothing is
+  // unloaded: the answer names the refusal and the row is what it was.
+  const marker = join(home, 'applied.log');
+  const module = [
+    "import { appendFileSync } from 'node:fs';",
+    `const mark = ${JSON.stringify(marker)};`,
+    "export const name = 'demo';",
+    "export const apply = () => { appendFileSync(mark, 'one\\n'); };",
+  ].join('\n');
+  const { runner } = await installedDemo('1.1.0', { ahpd: { entry: './index.mjs', grants: 'probe:read' } });
+  // The 1.0.0 npm left at first says which text ran.
+  const folder = join(home, 'ahpd', 'node_modules', 'demo');
+  writeFileSync(join(folder, 'index.mjs'), module);
+  // A put-back lands the version that worked, as npm does.
+  const restoring: Runner = async (program, argv, options) => {
+    const done = await runner(program, argv, options);
+    if (done.code === 0 && argv.includes('demo@1.0.0')) {
+      writeFileSync(join(folder, 'package.json'), JSON.stringify({
+        name: 'demo', version: '1.0.0', type: 'module', exports: { '.': './index.mjs' }, ahpd: { entry: './index.mjs', title: 'demo' },
+      }));
+      writeFileSync(join(folder, 'index.mjs'), module);
+    }
+    return done;
+  };
+  const { host, users, close } = await live({
+    run: restoring,
+    sdk: '0.14.1',
+    fetch: registryHolding({ demo: ['1.0.0 >=0.10', '1.1.0 >=0.14'] }),
+  });
+  const ana = await as(host, users, 'ana');
+  const jo = await as(host, users, 'jo');
+  expect(readFileSync(marker, 'utf8')).toBe('one\n');
+
+  expect(await jo.call('x-ahpd/plugins/update', { id: 'demo' }))
+    .toMatchObject({ message: expect.stringContaining('is not a list of grants') });
+  await wait(50);
+  // The code that worked is what the put-back left, so the daemon keeps it.
+  expect(readFileSync(marker, 'utf8')).toBe('one\n');
+  expect((await ana.rows())['demo']).toMatchObject({ version: '1.0.0', loaded: true });
   await close();
 });
 
