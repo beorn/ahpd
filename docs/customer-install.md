@@ -85,8 +85,10 @@ The installer's entry point is a POSIX shell bootstrap in the **Hightea repo**, 
 asset (@cto 2026-11-25). It must run before any runtime exists, so it lives nowhere else: not in this repo's
 `scripts/`, and not in a new repository.
 
-- The script pins the runtime's version and its `sha256` itself, verifies the download before running anything, and
-  refuses on a mismatch.
+- The pins file names the runtime, its version and its `sha256`; the bootstrap verifies it before running anything and
+  refuses on a mismatch. The runtime pin names a `.tar.gz`, not a `.zip`: a bare Debian or Ubuntu has no `unzip`, and
+  installing it needs root — the one thing this install promises not to need (@dev/5, 2026-11-25). A `.zip` pin on a
+  machine without `unzip` is refused by name rather than failing inside the download.
 - The host guide shows both forms: the download-then-inspect one, and the one-liner.
 - Everything after the runtime exists is this package's `plan`/`apply`, so there is one manifest and one switch.
 
