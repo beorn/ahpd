@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agentsChannel } from '../src/agents/channel.js';
 import { invokeOperation } from '../src/kinds/operations.js';
 import { createHost } from '../src/host.js';
-import { fileUsers } from '../src/access/users.js';
+import { fileUsers, holds } from '../src/access/users.js';
 import { fileResources } from '../src/resources/resources.js';
 import { memoryRecords } from '../src/resources/records.js';
 import { servedRecords } from '../src/resources/recordschannel.js';
@@ -16,6 +16,7 @@ import type { Engine, AgentView, AgentTemplate, ServedEngine } from '../src/type
 import type { ConnectorRef } from '../src/types/connectors.js';
 import type { HostOptions, Users } from '../src/types/index.js';
 import type { PluginView, ViewHandle } from '../src/types/plugin.js';
+import type { Principal } from '../src/types/users.js';
 import type { RecordCollection } from '../src/types/records.js';
 import type { Vault } from '../src/types/vault.js';
 import type { Icon } from '@microsoft/agent-host-protocol';
@@ -314,6 +315,12 @@ async function served(options: { register?: boolean; fold?: (agents: Agent[]) =>
   return { host, users, collection, lists, engines, opened, ended, problems, handles, vault, close: async () => { await host?.close(); } };
 }
 
+/**
+ * What the host answered: the result, or the refusal it named. Both keys are
+ * optional so a case reads whichever it asked for without narrowing first.
+ */
+type Answer = { result?: Bag; code?: number; message?: string; data?: Bag };
+
 /** A client signed in as `id`, whose channel actions are kept. */
 const as = async (host: Host, users: Users, id: string, locale?: string) => {
   const token = await users.mint(id);
@@ -326,9 +333,13 @@ const as = async (host: Host, users: Users, id: string, locale?: string) => {
     method: 'initialize', params: { clientId: id, protocolVersions: ['0.9.0'], initialSubscriptions: [ROOT], ...(locale === undefined ? {} : { locale }) },
   }) as Bag;
   await client.handle({ method: 'authenticate', params: { channel: ROOT, resource: users.resource.resource, token } });
-  const call = async (method: string, params: Bag) => client.handle({ method, params }).then(
+  const call = async (method: string, params: Bag): Promise<Answer> => client.handle({ method, params }).then(
     (result) => ({ result: result as Bag }),
-    (error: { code: number; message: string }) => ({ code: error.code, message: error.message }),
+    (error: { code: number; message: string; data?: Bag }): Answer => ({
+      code: error.code,
+      message: error.message,
+      ...(error.data === undefined ? {} : { data: error.data }),
+    }),
   );
   /** Every row a subscribe to `channel` answered, by id. */
   const rows = async (channel = URI): Promise<Record<string, Bag>> => {
@@ -589,6 +600,59 @@ it('keeps a secret a client sent empty, and never asks it to send one back', asy
     id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', config: { target: 'c' },
   });
   expect(vault.held.has('user:cy/agent/mine/secret')).toBe(false);
+  await close();
+});
+
+it('keeps every secret a row sends back untouched, and refuses one it does not hold', async () => {
+  const { host, users, collection, vault, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine',
+    engine: 'checker',
+    owner: 'user:cy',
+    name: 'Mine',
+    config: { target: 'a', secret: 'sk-agent-1', env: { API_KEY: 'sk-env-2' } },
+  });
+  // A form that draws the row holds the references, and saving it untouched
+  // sends them back: that is the record, so nothing moved.
+  const row = (await cy.rows())['mine'] as Bag;
+  await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine', config: { ...row['config'], target: 'b' },
+  });
+  expect(vault.held.get('user:cy/agent/mine/secret')).toBe('sk-agent-1');
+  expect(vault.held.get('user:cy/agent/mine/env.API_KEY')).toBe('sk-env-2');
+  expect((await collection.get('mine'))?.config).toMatchObject({
+    target: 'b',
+    secret: { $secret: 'user:cy/agent/mine/secret' },
+    env: { API_KEY: { $secret: 'user:cy/agent/mine/env.API_KEY' } },
+  });
+  // A reference to a secret this record does not hold at that path is refused
+  // by name: a client is never given another secret's name.
+  expect(await cy.call('x-ahpd/agents/put', {
+    id: 'mine', engine: 'checker', owner: 'user:cy', name: 'Mine',
+    config: { target: 'b', secret: { $secret: 'user:cy/agent/mine/env.API_KEY' } },
+  })).toMatchObject({ code: -32602, message: "An agent's secret is a secret: send its value, not a reference to it" });
+  expect(vault.held.get('user:cy/agent/mine/secret')).toBe('sk-agent-1');
+  await close();
+});
+
+it('keeps a host agent\'s own secret when the row is saved back', async () => {
+  const { host, users, collection, vault, close } = await served();
+  const root = await as(host, users, 'fa');
+  await root.call('x-ahpd/agents/put', {
+    id: 'ours', engine: 'checker', owner: 'host', name: 'Ours', config: { target: 'a', secret: 'sk-host-1' },
+  });
+  expect(vault.held.get('host:agent/ours/secret')).toBe('sk-host-1');
+  const row = (await root.rows())['ours'] as Bag;
+  await root.call('x-ahpd/agents/put', {
+    id: 'ours', engine: 'checker', owner: 'host', name: 'Ours', config: { ...row['config'], target: 'b' },
+  });
+  // The reference it named is the one it already held, so the vault keeps it.
+  expect(vault.held.get('host:agent/ours/secret')).toBe('sk-host-1');
+  expect((await collection.get('ours'))?.config).toMatchObject({
+    target: 'b',
+    secret: { $secret: 'host:agent/ours/secret' },
+  });
   await close();
 });
 
@@ -1512,3 +1576,242 @@ it('lists its operations in the locale the client sent, and in English for one t
   await close();
 });
 
+
+/*
+ * One record, one revision.
+ *
+ * The host's own record is the version authority - Hightea never is - so a
+ * form that edits an agent says which write it read and is refused by name when
+ * somebody else got there first. The refusal carries the current row, because
+ * redrawing from it is the whole point: a form with the new row does not need a
+ * second read to show what changed.
+ */
+
+/** A record that is a plain put, so a case can say what only it cares about. */
+const PUT_ONE = (id: string, over: Bag = {}): Bag => ({
+  id, engine: 'checker', owner: 'user:cy', name: id, config: { target: 'a' }, ...over,
+});
+
+it('counts every write on the record and says the count on every row', async () => {
+  const { host, users, collection, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  const made = await cy.call('x-ahpd/agents/put', PUT_ONE('mine'));
+  expect((made['result'] as Bag)['revision']).toBe(1);
+  expect((await collection.get('mine'))?.['revision']).toBe(1);
+
+  const edited = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine, renamed' }));
+  expect((edited['result'] as Bag)['revision']).toBe(2);
+
+  // The list says it too, which is what a form reads before it edits.
+  expect((await cy.rows())['mine']?.['revision']).toBe(2);
+
+  // A toggle is a write as well: it changes what a form was reading.
+  const paused = await cy.call('x-ahpd/agents/pause', { id: 'mine' });
+  expect((paused['result'] as Bag)['revision']).toBe(3);
+  await close();
+});
+
+it('refuses a put that read a revision somebody else has moved past, and hands back the row', async () => {
+  const { host, users, collection, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine'));
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Somebody else got here first' }));
+
+  const stale = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine, from the old row', ifRevision: 1 }));
+
+  expect(stale['code']).toBe(-32602);
+  expect(stale['message']).toContain('at revision 2, not 1');
+  expect((stale['data'] as Bag)['staleRevision']).toBe(2);
+  // The row the refusal carries is the current one, so a form redraws from it.
+  expect((stale['data'] as Bag)['row']).toMatchObject({ id: 'mine', name: 'Somebody else got here first', revision: 2 });
+  // And nothing of the refused write landed: not the name, not a revision.
+  expect((await collection.get('mine'))?.['name']).toBe('Somebody else got here first');
+  expect((await collection.get('mine'))?.['revision']).toBe(2);
+
+  // The same write with the number it actually read goes through.
+  const fresh = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine now', ifRevision: 2 }));
+  expect((fresh['result'] as Bag)['revision']).toBe(3);
+  await close();
+});
+
+it('takes ifRevision: 0 as create-or-fail, and says so when the id is taken', async () => {
+  const { host, users, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  const made = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { ifRevision: 0 }));
+  expect((made['result'] as Bag)['revision']).toBe(1);
+
+  const taken = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Second', ifRevision: 0 }));
+  expect(taken['code']).toBe(-32602);
+  expect((taken['data'] as Bag)['staleRevision']).toBe(1);
+  expect((taken['data'] as Bag)['row']).toMatchObject({ id: 'mine', name: 'mine' });
+
+  // And a version about a record that is not there refuses as not there, with
+  // the same field a client already branches on.
+  const gone = await cy.call('x-ahpd/agents/put', PUT_ONE('other', { ifRevision: 3 }));
+  expect(gone['code']).toBe(-32602);
+  expect(gone['message']).toContain('holds no other');
+  expect((gone['data'] as Bag)['staleRevision']).toBe(0);
+  expect((gone['data'] as Bag)['row']).toBeUndefined();
+  await close();
+});
+
+it('refuses a remove that read a revision somebody else has moved past, and keeps the record', async () => {
+  const { host, users, collection, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine'));
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Still here' }));
+
+  const stale = await cy.call('x-ahpd/agents/remove', { id: 'mine', ifRevision: 1 });
+  expect(stale['code']).toBe(-32602);
+  expect((stale['data'] as Bag)['staleRevision']).toBe(2);
+  expect(await collection.get('mine')).toBeDefined();
+
+  const gone = await cy.call('x-ahpd/agents/remove', { id: 'mine', ifRevision: 2 });
+  expect(gone['result']).toEqual({});
+  expect(await collection.get('mine')).toBeUndefined();
+  await close();
+});
+
+it('refuses an ifRevision that is not a whole number of writes, in words naming the command', async () => {
+  const { host, users, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  const bad = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { ifRevision: 1.5 }));
+  expect(bad['code']).toBe(-32602);
+  expect(bad['message']).toContain('takes ifRevision as a whole number of writes');
+  await close();
+});
+
+/*
+ * #38271 / @cto dea0a98b — a plugin may write a person's record only while that
+ * person listed it, and the list is the owner's to write, locally.
+ *
+ * Nothing here goes through the host's gate: a plugin's connection is its own
+ * principal, and the rule being tested is the record's owner rule beside it.
+ */
+const pluginOf = (name: string, grants: Principal['grants'] = ['agent:list', 'agent:put', 'agent:remove']): Principal => ({
+  id: `plugin:${name}`,
+  plugin: name,
+  roles: [],
+  grants,
+  can: (grant) => holds(new Set(grants), grant),
+});
+
+/** One command on a plugin's own connection, answered or refused. */
+const asking = async (lists: Awaited<ReturnType<typeof served>>['lists'], reader: Principal, command: string, params: Bag): Promise<Bag> => {
+  try {
+    return { result: await lists.methods[command]?.handle(params, reader, 'plugin-client') };
+  } catch (error) {
+    const refused = error as { code?: number; message?: string };
+    return { code: refused.code, message: refused.message };
+  }
+};
+
+it("a plugin writes a person's record while its owner lists it, keeping the owner, and says so", async () => {
+  const { host, users, lists, problems, close } = await served();
+  const cy = await as(host, users, 'cy');
+  const listed = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+  expect(listed['result']).toMatchObject({ owner: 'user:cy', delegates: ['hightea-pipe'] });
+
+  const answer = await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'Theirs now' }));
+  expect(answer['result']).toMatchObject({ id: 'mine', owner: 'user:cy', name: 'Theirs now', state: 'ready' });
+  expect(problems).toContain('x-ahpd-agents: delegated write: plugin:hightea-pipe make mine, owned by user:cy');
+  await close();
+});
+
+it('refuses a plugin the owner never listed, and writes nothing', async () => {
+  const { host, users, collection, lists, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+
+  const answer = await asking(lists, pluginOf('other-plugin'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'Not theirs' }));
+  expect(answer['code']).toBe(-32009);
+  expect(answer['message']).toContain('its owner has not delegated mine to plugin:other-plugin');
+  expect((await collection.get('mine'))?.['name']).toBe('mine');
+  await close();
+});
+
+it("revoking the delegation refuses the very next request", async () => {
+  const { host, users, lists, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+  expect((await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine'))).code).toBeUndefined();
+
+  // A put that says nothing about the list keeps it, as an omitted secret does;
+  // the owner empties it as themselves, and that is the whole of revoking.
+  const kept = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Still listed' }));
+  expect(kept['result']).toMatchObject({ delegates: ['hightea-pipe'] });
+  const revoked = await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Back to me', delegates: [] }));
+  expect(revoked['result']).not.toHaveProperty('delegates');
+
+  const after = await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'Too late' }));
+  expect(after['code']).toBe(-32009);
+  await close();
+});
+
+it('refuses a plugin that names the delegates itself, so it cannot add itself', async () => {
+  const { host, users, lists, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+
+  const answer = await asking(
+    lists,
+    pluginOf('hightea-pipe'),
+    'x-ahpd/agents/put',
+    PUT_ONE('mine', { delegates: ['hightea-pipe', 'other-plugin'] }),
+  );
+  expect(answer['code']).toBe(-32602);
+  expect(answer['message']).toContain('only user:cy\'s owner lists the plugins that may write it');
+  await close();
+});
+
+it('lets a listed plugin pause, disable and remove the record, and refuses it after the list is gone', async () => {
+  const { host, users, lists, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+  const plugin = pluginOf('hightea-pipe');
+
+  expect((await asking(lists, plugin, 'x-ahpd/agents/pause', { id: 'mine' }))['result']).toMatchObject({ state: 'paused' });
+  expect((await asking(lists, plugin, 'x-ahpd/agents/disable', { id: 'mine' }))['result']).toMatchObject({ state: 'disabled' });
+  expect((await asking(lists, plugin, 'x-ahpd/agents/enable', { id: 'mine' }))['result']).toMatchObject({ state: 'ready' });
+
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { name: 'Mine again', delegates: [] }));
+  expect((await asking(lists, plugin, 'x-ahpd/agents/disable', { id: 'mine' }))['code']).toBe(-32009);
+  expect((await asking(lists, plugin, 'x-ahpd/agents/remove', { id: 'mine' }))['code']).toBe(-32009);
+  await close();
+});
+
+it('takes no delegates on a host record: only a person delegates', async () => {
+  const { host, users, close } = await served();
+  const gi = await as(host, users, 'gi');
+
+  const answer = await gi.call('x-ahpd/agents/put', {
+    id: 'ours', engine: 'checker', owner: 'host', name: 'Ours', delegates: ['hightea-pipe'], config: { target: 'a' },
+  });
+  expect(answer['code']).toBe(-32602);
+  expect(answer['message']).toContain("takes delegates only for a person's record");
+  await close();
+});
+
+it('a delegated put that is refused for being stale leaves no delegated write line', async () => {
+  const { host, users, lists, problems, close } = await served();
+  const cy = await as(host, users, 'cy');
+  await cy.call('x-ahpd/agents/put', PUT_ONE('mine', { delegates: ['hightea-pipe'] }));
+
+  // The plugin is listed, so the delegation carries it: what refuses this put is
+  // the revision it read, and the log must say nothing about a write that did
+  // not land.
+  const stale = await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'Too late', ifRevision: 9 }));
+  expect(stale['code']).toBeDefined();
+  expect(problems.filter((line) => line.includes('delegated write'))).toEqual([]);
+
+  // The same plugin writing what it read commits, and that one is logged.
+  const fresh = await asking(lists, pluginOf('hightea-pipe'), 'x-ahpd/agents/put', PUT_ONE('mine', { name: 'On time', ifRevision: 1 }));
+  expect(fresh['result']).toMatchObject({ name: 'On time', revision: 2 });
+  expect(problems.filter((line) => line.includes('delegated write'))).toEqual([
+    'x-ahpd-agents: delegated write: plugin:hightea-pipe make mine, owned by user:cy',
+  ]);
+  await close();
+});
