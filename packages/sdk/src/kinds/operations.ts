@@ -31,7 +31,7 @@ import { HOST_CATALOGS, translated, type Catalogs } from '../i18n.js';
 import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
 import type { Operation } from '../types/kinds.js';
 import type { RecordsChannel } from '../resources/recordschannel.js';
-import type { ChannelHandle, PluginMethod } from '../types/plugin.js';
+import type { ChannelHandle, PluginChannel, PluginMethod } from '../types/plugin.js';
 import type { Grant, Principal } from '../types/users.js';
 
 /**
@@ -293,3 +293,39 @@ export const invokeOperation = (options: InvokeOperationOptions): PluginMethod =
     }
   },
 });
+
+/**
+ * The plugin channels that offer operations, as `invokeOperation` reads them.
+ *
+ * Each is served at `<scheme>://`, the URI its snapshot is read at, with the
+ * plugin's own operations side; a channel without one is not listed, so the
+ * command refuses it as a channel with no operations.
+ *
+ * A URI in `taken` is one the daemon serves itself. Its channel keeps it, and
+ * the plugin's is left out and said through `onProblem`, naming both.
+ */
+export const pluginOperationChannels = (
+  channels: Record<string, { by?: string; channel: PluginChannel }> | undefined,
+  taken: readonly string[] = [],
+  onProblem?: (message: string) => void,
+): Record<string, OperationChannel> => {
+  const served: Record<string, OperationChannel> = {};
+  for (const [scheme, one] of Object.entries(channels ?? {})) {
+    const side = one.channel.operations;
+    if (side === undefined) continue;
+    const uri = `${scheme}://`;
+    if (taken.includes(uri)) {
+      onProblem?.(`plugin ${one.by ?? 'unknown'} offers operations at ${uri}, which the daemon's own channel serves; the daemon's is kept and the plugin's operations are not served`);
+      continue;
+    }
+    served[uri] = {
+      uri,
+      operations: () => side.operations(),
+      begin: (operationId, target) => { side.begin(operationId, target); },
+      settle: (operationId, target, error) => { side.settle(operationId, target, error); },
+      ...(side.offers === undefined ? {} : { offers: (target: string, operationId: string) => side.offers!(target, operationId) }),
+      run: (operation, target, input, reader) => side.run(operation, target, input, reader),
+    };
+  }
+  return served;
+};
