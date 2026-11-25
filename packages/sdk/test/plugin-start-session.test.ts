@@ -244,6 +244,25 @@ it('resumes the same reservation after a lost mapping acknowledgment', async () 
   expect(order).toEqual(['spawn']);
 });
 
+it('refuses a resume by a person the reservation does not belong to', async () => {
+  const order: string[] = [];
+  const { plugin, host, sessions } = starting({ soft: ['session:create'], other: ['session:create'] }, { agents: [watched(order)] });
+  await open(host, 'soft');
+  await open(host, 'other');
+  let mapped = '';
+  await expect(plugin.startSession({ owner: 'user:soft', provider: 'watched' }, (uri) => {
+    mapped = uri;
+    throw new Error('mapping acknowledgment lost');
+  })).rejects.toThrow(/lost/);
+
+  // The reservation is soft's, so a second person cannot finish it for them.
+  await expect(plugin.startSession({ owner: 'user:other', resume: mapped }))
+    .rejects.toThrow(/exact owned creation reservation not found/);
+  expect(order).toEqual([]);
+  expect(sessions.owner(idOf(mapped))).toBe('user:soft');
+  expect(sessions.creation(idOf(mapped))?.phase).toBe('reserved');
+});
+
 it('serializes two recoverers behind the original naming callback', async () => {
   const order: string[] = [];
   const { plugin } = await startingWith({ soft: ['session:create'] }, 'soft', { agents: [watched(order)] });
