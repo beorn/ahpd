@@ -744,11 +744,16 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
   const scope = joined === undefined ? undefined
     : createHash('sha256').update(JSON.stringify([joined.hostId, joined.innerId])).digest('hex');
   const requestedDir = scope === undefined ? options.dir : join(options.dir, 'nested', scope);
-  // The scoped writer lock lives beside the directory, so it covers both creating and retiring it.
-  const container = scope === undefined ? requestedDir : dirname(requestedDir);
+  // The writer lock lives beside the directory, so it covers both creating and retiring it. Only the folder
+  // that holds the lock is created here: the store's own directory still appears on its first write, so a
+  // daemon that refused a legacy file and opened over nothing leaves no folder behind (#38634).
+  const container = dirname(requestedDir);
   mkdirSync(container, { recursive: true, mode: 0o700 });
-  const realContainer = realpathSync(container);
-  const dir = scope === undefined ? realContainer : join(realContainer, basename(requestedDir));
+  // Where the directory resolves to, whether or not it exists yet: the identity every write re-proves.
+  const resolvedDir = (): string => existsSync(requestedDir)
+    ? realpathSync(requestedDir)
+    : join(realpathSync(container), basename(requestedDir));
+  const dir = resolvedDir();
   const writer = tryAcquireFlock(`${dir}.lock`, { noFollow: true });
   if (writer === null) throw new Error(`Session store ${dir} already has a writer; close or stop that host before opening another`);
   const inner = memorySessions();
@@ -822,7 +827,7 @@ export function fileSessions(options: FileSessionOptions): SessionStore {
     if (closed || !writer.held) throw new Error(`Cannot mutate closed session store ${dir}`);
     const held = fstatSync(writer.fd, { bigint: true });
     const path = lstatSync(writer.path, { bigint: true });
-    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || realpathSync(requestedDir) !== dir) {
+    if (path.isSymbolicLink() || held.dev !== path.dev || held.ino !== path.ino || resolvedDir() !== dir) {
       throw new Error(`Session store ${dir} writer identity changed; refusing a write outside its ownership`);
     }
   };
