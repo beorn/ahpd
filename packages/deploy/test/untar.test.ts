@@ -247,6 +247,21 @@ describe('a pinned release archive is checked before it is written (#38280)', ()
     expect(existsSync(join(release, 'x', 'y'))).toBe(false);
   });
 
+  // @level l3 @consumer a tree an earlier run left behind is never merged into a release: it is refused by name.
+  it('refuses to unpack into a staging tree that already exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ahpd-good-'));
+    mkdirSync(join(dir, top), { recursive: true });
+    writeFileSync(join(dir, top, 'package.json'), '{}');
+    const out = join(dir, 'archive.tgz');
+    gnuTar(dir, out);
+    const release = into();
+    mkdirSync(release, { recursive: true });
+    writeFileSync(join(release, 'left-from-an-earlier-run.js'), 'stale\n');
+    expect(() => unpackArchive(out, release, top)).toThrow(/already exists from an earlier run/u);
+    // Nothing was written over the leftover: the refusal happens before the first byte.
+    expect(readdirSync(release)).toEqual(['left-from-an-earlier-run.js']);
+  });
+
   // @level l3 @consumer a device or fifo is not a file this installer places, and it is named.
   it('refuses a fifo entry', () => {
     const archive = write(

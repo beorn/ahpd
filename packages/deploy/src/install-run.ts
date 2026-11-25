@@ -394,6 +394,15 @@ export const applyInstall = async (
           };
         }
         const tree = `${entry.path}.staging`;
+        // A tree left by an interrupted run is cleared here, not merged: the unpack refuses an existing target, and a
+        // stuck install has to recover on the next run without an operator (@dev/6 2026-11-25).
+        if (io.exists(tree)) {
+          const cleared = await attempt('remove leftover staging tree', tree, () => io.removeTree(tree));
+          if (!cleared.ok) {
+            await attempt('remove staged download', staging, () => io.remove(staging));
+            return { ok: false, wrote, pruned: [], keptReleases: [], refusal: cleared.refusal };
+          }
+        }
         const unpacked = await attempt('unpack archive', entry.path, () => io.unpack(staging, tree, topDir));
         if (!unpacked.ok) {
           await attempt('remove staged download', staging, () => io.remove(staging));

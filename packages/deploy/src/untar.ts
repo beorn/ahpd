@@ -12,7 +12,7 @@
  * ownership never touched. The caller renames that staging tree into `releases/<version>`, so `current` never points at
  * a tree that was not checked first.
  */
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import * as tarLib from 'tar';
 
 export interface ArchiveEntry {
@@ -101,6 +101,10 @@ export const checkArchive = (entries: readonly ArchiveEntry[], topDir: string): 
  */
 export const unpackArchive = (archive: string, into: string, topDir: string): readonly string[] => {
   const entries = checkArchive(listArchive(archive), topDir);
+  // Writing into a tree that already exists merges it into the release: a folder left by an interrupted install would
+  // become part of the tree `current` points at, unchecked. The caller clears its own staging path first, so a stuck
+  // install recovers on the next run; anything else gets this refusal by name (@dev/6 2026-11-25).
+  if (existsSync(into)) throw new Error('staging tree ' + into + ' already exists from an earlier run; remove it');
   mkdirSync(into, { recursive: true });
   tarLib.x({
     file: archive,

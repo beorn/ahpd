@@ -592,6 +592,37 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     expect(keptRun.removed.every((path) => path.includes('already gone') || existsSync(path) === false)).toBe(true);
   });
 
+  // @level l3 @consumer an interrupted install leaves its staging tree behind; the next run clears it instead of
+  // merging it into the release that `current` will point at.
+  it('clears a leftover staging tree on a real tmpdir, so a stuck install recovers', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'ahpd-staging-')));
+    const archive = daemonArchive(HONEST.ahpd.source);
+    const pins: InstallPins = { ...HONEST, ahpd: { ...HONEST.ahpd, checksum: `sha256:${createHash('sha256').update(archive).digest('hex')}` } };
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home, version: '0.15.0-rc.4', pins });
+    if (!built.ok) throw new Error('expected a manifest');
+    const manifest = built.manifest;
+    const real = nodeInstallIo();
+    const io: InstallIo = {
+      ...real,
+      fetchTo: async (source, path) => writeFileSync(path, source === pins.ahpd.source ? archive : bytesOf(source)),
+      run: (command) => {
+        void command;
+        return { code: 0, output: '' };
+      },
+    };
+    // The state an interrupted run leaves: the root marks itself installing, and a staging tree is half written.
+    mkdirSync(manifest.root, { recursive: true });
+    writeFileSync(join(manifest.root, 'install.json'), JSON.stringify({ state: 'installing', manifest }));
+    const staging = `${manifest.root}/state/deploy/ahpd/releases/0.15.0-rc.4.staging`;
+    mkdirSync(join(staging, 'left', 'from-an-earlier-run'), { recursive: true });
+    writeFileSync(join(staging, 'left', 'from-an-earlier-run', 'stale.js'), 'stale\n');
+
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    const release = `${manifest.root}/state/deploy/ahpd/releases/0.15.0-rc.4`;
+    expect(existsSync(join(release, 'left', 'from-an-earlier-run', 'stale.js'))).toBe(false);
+    expect(existsSync(staging)).toBe(false);
+  });
+
   // @level l3 @consumer a boot item that will not stop is reported with its own words and nothing is removed after it.
   it('stops at a boot item that will not disable', () => {
     const manifest = manifestWith();
