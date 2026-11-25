@@ -1517,7 +1517,9 @@ const namesIn = async (client: { handle(request: unknown): Promise<unknown> }, c
   return answer.snapshot.state.files.map((one) => basename(one.id)).sort();
 };
 
-it('shows a file a shell command wrote in the session\'s own changeset, beside the files its tools wrote', async () => {
+// Skipped in beorn, not deleted, so the next upstream sync shows it again: it needs the per-turn git
+// checkpoints this fork removed (d17130bbf, @cto ruling C 1e5710d0, #35139). A fork patch carried over upstream.
+it.skip('shows a file a shell command wrote in the session\'s own changeset, beside the files its tools wrote: per-turn checkpoints removed in beorn (d17130bbf, @cto ruling C 1e5710d0)', async () => {
   const dir = repository();
   const { client } = await open(dir, gitChanges(), toolAndShellTurns(dir, dir), dir);
   await client.handle({
