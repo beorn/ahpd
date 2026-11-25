@@ -194,8 +194,10 @@ const program: Program = new Program({
   liveHelp: (_command, prefix) => {
     if (prefix.length > 0) return Promise.resolve('');
     const run = registry.find('daemon.run');
-    if (run === undefined) return Promise.resolve('');
-    return Promise.resolve(runHelp(run));
+    // `secrets exec` is read ahead of the program (above), so the program does not list it; named here (@cto 876bcedd).
+    const wrapper = `\nWrapper:\n  secrets exec <service> --env NAME=<scope>:<name> -- '<command>'\n      The services driver's wrapper, which process-compose starts a program through; not for use by hand.\n`;
+    if (run === undefined) return Promise.resolve(wrapper);
+    return Promise.resolve(`${runHelp(run)}${wrapper}`);
   },
   /*
    * Where a command runs, declared with the other options: `--remote` is the
