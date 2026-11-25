@@ -116,7 +116,10 @@ it('says a 401, and a 403 with the scope it named, and keeps the upstream\'s cha
   const forbidden = await asked(endpoint.url, endpoint.token);
 
   expect([unauthorized?.status, forbidden?.status]).toEqual([401, 403]);
-  expect(refusals).toEqual([{ status: 401 }, { status: 403, scope: 'tickets:write' }]);
+  expect(refusals).toEqual([
+    { status: 401, metadataUrl: 'https://up.example/.well-known/oauth-protected-resource' },
+    { status: 403, scope: 'tickets:write' },
+  ]);
   expect(unauthorized?.headers.get('www-authenticate')).toBeNull();
 });
 

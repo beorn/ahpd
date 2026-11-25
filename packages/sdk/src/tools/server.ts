@@ -115,10 +115,14 @@ export interface ProxyEndpoint {
   close(): void;
 }
 
-/** An upstream refusing the token it was sent: 401, or 403 with the scope it named if it named one. */
+/**
+ * An upstream refusing the token it was sent, with what its `WWW-Authenticate`
+ * challenge named: the scope it wants, and where its RFC 9728 metadata is.
+ */
 export interface UpstreamRefusal {
   status: 401 | 403;
   scope?: string;
+  metadataUrl?: string;
 }
 
 /** What one proxy endpoint is opened with. Fixed at open: a request can change none of it. */
@@ -198,8 +202,9 @@ interface Proxied extends ProxyUpstream {
   inflight: Set<AbortController>;
 }
 
-/** The scope a `WWW-Authenticate` challenge names, per RFC 6750 §3. */
-const scopeIn = (challenge: string | null): string | undefined => /\bscope="([^"]*)"/u.exec(challenge ?? '')?.[1];
+/** One parameter of a `WWW-Authenticate` challenge: `scope` (RFC 6750 §3) or `resource_metadata` (RFC 9728 §5.1). */
+const paramIn = (challenge: string | null, name: 'scope' | 'resource_metadata'): string | undefined =>
+  new RegExp(`\\b${name}="([^"]*)"`, 'u').exec(challenge ?? '')?.[1];
 
 /**
  * Forward one request to the endpoint's upstream and stream its answer back.
@@ -240,8 +245,14 @@ const forward = async (request: Request, proxied: Proxied): Promise<Response> =>
     return json(502, failure(null, -32001, `The upstream MCP server answered ${answer.status}, a redirect this proxy does not follow`));
   }
   if (answer.status === 401 || answer.status === 403) {
-    const scope = answer.status === 403 ? scopeIn(answer.headers.get('www-authenticate')) : undefined;
-    proxied.refused?.({ status: answer.status, ...(scope === undefined ? {} : { scope }) });
+    const challenge = answer.headers.get('www-authenticate');
+    const scope = paramIn(challenge, 'scope');
+    const metadataUrl = paramIn(challenge, 'resource_metadata');
+    proxied.refused?.({
+      status: answer.status,
+      ...(scope === undefined ? {} : { scope }),
+      ...(metadataUrl === undefined ? {} : { metadataUrl }),
+    });
   }
   const back = new Headers();
   for (const name of RETURNED) {
