@@ -1,0 +1,14 @@
+{
+  "name": "@ahpd/deploy",
+  "version": "0.15.0-rc.4",
+  "type": "module",
+  "os": ["linux", "darwin"],
+  "description": "Git deploy driver for ahpd: one call places service S on machine M at version X in a release folder and switches a current symlink, or says loudly why it did not.",
+  "keywords": ["ahp","ahpd","deploy","release","git"],
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "development": "./src/index.ts", "default": "./dist/index.js" } },
+  "scripts": { "prepack": "tsc -p .", "test": "cd ../.. && vitest run packages/deploy/test" }
+}
