@@ -13,6 +13,10 @@
  * are read from the daemon's own `config.json`, so the person's command and the
  * daemon's methods always act on the same files, socket and log. A write here
  * is recorded for drift exactly as a method's write is.
+ *
+ * It skips the switch only because its caller already has the file access a
+ * person at the machine has. So no daemon method, plugin hook or pipe path may
+ * call it (@cto ed929bd7): the plugin never imports this file, and a test checks.
  */
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

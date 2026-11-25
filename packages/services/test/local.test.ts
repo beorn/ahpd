@@ -80,3 +80,13 @@ describe('localServices', () => {
     expect(localServices(dir)).toMatch(/"files" must list process-compose's -f files as absolute paths/);
   });
 });
+
+describe('localServices is for callers on the machine only (@cto ed929bd7)', () => {
+  it('is reachable from no daemon method, plugin hook or pipe path: plugin.ts and drift.ts never import local.ts', () => {
+    const src = join(import.meta.dirname, '..', 'src');
+    for (const file of ['plugin.ts', 'drift.ts', 'compose.ts']) {
+      const text = readFileSync(join(src, file), 'utf8');
+      expect(text, file).not.toMatch(/from '\.\/local(\.js)?'|localServices/);
+    }
+  });
+});
