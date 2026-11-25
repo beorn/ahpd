@@ -1,7 +1,7 @@
 import { INVALID_PARAMS, RpcError } from '../rpc.js';
 import { computerSource } from '../machines/computers.js';
 import { isRootChannel, methodIn, parseResourceWatchChannelUri, schemeOf, servedIn } from './channels.js';
-import { NEEDS, UNGATED, channelRead, ownAgentExcused, ownIn, refusalReason } from './gate.js';
+import { NEEDS, UNGATED, channelRead, heldToGrants, ownAgentExcused, ownIn, refusalReason } from './gate.js';
 import type { Grant, Principal } from '../types/users.js';
 import type { ConnectionContext, HostContext } from './context.js';
 
@@ -359,7 +359,7 @@ export function createAdmission(ctx: HostContext, conn: ConnectionContext): Admi
      * names whether or not there is a directory (#38446, @cto 89be3ef1). A
      * Hightea-joined host has no directory, and its Hightea pipe is a plugin.
      */
-    if (ctx.options.users === undefined && connection.principal?.plugin === undefined) return;
+    if (!heldToGrants(connection, ctx.options.users !== undefined)) return;
     // Where to sign in; a plugin peer on a host with no directory always has a principal, so never asks.
     const signIn = (): Record<string, unknown> => (ctx.options.users === undefined ? {} : { resources: [ctx.options.users.resource] });
     spelled(params, 'channel');

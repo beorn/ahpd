@@ -17,6 +17,7 @@ import type { Session } from '../types/session.js';
 import type { ClientCallAnswer } from '../tools/clientcalls.js';
 import type { Origin } from './state.js';
 import type { ConnectionContext, HostContext } from './context.js';
+import { heldToGrants } from './gate.js';
 
 /**
  * Set or clear one of a session's own two bits, and say so.
@@ -2035,7 +2036,7 @@ export function chatAction(
        * people they need what changing the host for everybody needs. A sender
        * without it switches this session alone, as a host with no store does.
        */
-      const keeps = store !== undefined && ((ctx.options.users === undefined && connection.principal?.plugin === undefined) || connection.root === true
+      const keeps = store !== undefined && (!heldToGrants(connection, ctx.options.users !== undefined)
         || connection.principal?.can('config:change') === true);
       const lasting = keeps && key !== undefined;
       /*
@@ -2273,7 +2274,7 @@ export function chatAction(
         no('Allow All is turned off on this host');
         break;
       }
-      if (allowsAll && ctx.options.users !== undefined && connection.root !== true && connection.principal?.can('session:configure') !== true) {
+      if (allowsAll && heldToGrants(connection, ctx.options.users !== undefined) && connection.principal?.can('session:configure') !== true) {
         no(`${connection.principal?.id ?? 'This connection'} may not session:configure here`);
         break;
       }
@@ -2331,7 +2332,7 @@ export function chatAction(
        * grant is kept in this session, as one for the session.
        */
       // A plugin peer is held to its grants even with no user directory (#38446).
-      const writesHost = (ctx.options.users === undefined && connection.principal?.plugin === undefined) || connection.root === true
+      const writesHost = !heldToGrants(connection, ctx.options.users !== undefined)
         || connection.principal?.can('config:permissions') === true;
       if (grant.scope === 'host' && writesHost) {
         const permissions = withGrant(ctx.rootConfig.permissions, grant.rules);
