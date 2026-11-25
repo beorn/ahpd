@@ -7,8 +7,11 @@ import {
   applyInstall,
   customerInstallManifest,
   describeApplyRefusal,
+  compareVersions,
   installDeployLayout,
   nodeInstallIo,
+  pruneReleaseFolders,
+  releasesToPrune,
   renderInstallPlan,
   uninstallInstall,
   type InstallIo,
@@ -69,7 +72,8 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
     content,
     exists: (path) => paths.has(path),
     isDirectory: (path) => dirs.has(path),
-    list: (path) => children(path),
+    // Like readdir: names, not paths. The real io and the fake must answer the same shape.
+    list: (path) => children(path).map((one) => one.slice(path.length + 1)),
     readFile: (path) => content.get(path) ?? '',
     mkdir: (path) => {
       paths.add(path);
@@ -115,6 +119,8 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
     hash: (path) => digest(content.get(path) ?? ''),
   };
 };
+
+const existsOf = (io: Fake, path: string) => io.paths.has(path);
 
 const recordOf = (io: Fake, manifest: ReturnType<typeof manifestWith>) =>
   JSON.parse(io.content.get(`${manifest.root}/install.json`) ?? '{}') as { state?: string };
@@ -237,6 +243,63 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     const result = await applyInstall(manifest, io, () => undefined);
     expect(result.ok).toBe(false);
     expect(result.refusal).toMatchObject({ kind: 'missing-checksum', download: 'ahpd' });
+  });
+});
+
+describe('a version switch places, activates and prunes by one shared rule (#38280)', () => {
+  // @level l3 @consumer the rule lives once in @ahpd/deploy; a git deploy orders by commit time, an install by version.
+  it('keeps current plus the newest keep-1, and orders versions numerically', () => {
+    // The caller supplies the newest-first order; the rule decides what goes.
+    expect(releasesToPrune(['0.11.0', '0.10.0', '0.9.0'], '0.11.0', 3)).toEqual([]);
+    expect(releasesToPrune(['0.12.0', '0.11.0', '0.10.0', '0.9.0'], '0.12.0', 3)).toEqual(['0.9.0']);
+    // `current` is kept even when it is older than everything else: it is what is running, plus the newest other.
+    expect(releasesToPrune(['0.12.0', '0.11.0', '0.10.0'], '0.10.0', 2)).toEqual(['0.11.0']);
+    expect(releasesToPrune(['1.0.0', '1.0.0-rc.1'], '1.0.0', 1)).toEqual(['1.0.0-rc.1']);
+    expect(['0.9.0', '0.10.0', '1.0.0-rc.1', '1.0.0'].sort(compareVersions)).toEqual([
+      '1.0.0',
+      '1.0.0-rc.1',
+      '0.10.0',
+      '0.9.0',
+    ]);
+  });
+
+  // @level l3 @consumer switching versions moves current, restarts the boot item and says which folders it deleted.
+  it('installs a second version, restarts the boot item, and prunes the oldest past keep', async () => {
+    const io = fakeIo();
+    const switched: string[] = [];
+    const switchTo = (_layout: unknown, version: string) => {
+      switched.push(version);
+    };
+    for (const version of ['0.13.0', '0.14.0', '0.15.0', '0.16.0']) {
+      const built = customerInstallManifest({ platform: 'linux', home: '/home/customer', version, pins: HONEST });
+      if (!built.ok) throw new Error('expected a manifest');
+      const result = await applyInstall(built.manifest, io, switchTo);
+      expect(result.ok).toBe(true);
+      expect(result.pruned).toEqual(version === '0.16.0' ? ['0.13.0'] : []);
+      expect(existsOf(io, `${built.manifest.root}/state/deploy/ahpd/releases/${version}`)).toBe(true);
+    }
+    expect(switched).toEqual(['0.13.0', '0.14.0', '0.15.0', '0.16.0']);
+    // Only the first install starts the boot item; each switch stops it first and starts it again.
+    const enables = io.commands.filter((command) => command.includes('enable'));
+    const disables = io.commands.filter((command) => command.includes('disable'));
+    expect(enables).toHaveLength(4);
+    expect(disables).toHaveLength(3);
+    expect(existsOf(io, '/home/customer/.ahpd/state/deploy/ahpd/releases/0.13.0')).toBe(false);
+  });
+
+  // @level l3 @consumer a switch that cannot restart the boot item names the stop it ran and the start that failed.
+  it('reports both halves when the restarted boot item will not start', async () => {
+    const io = fakeIo();
+    const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, () => undefined)).ok).toBe(true);
+    io.failRun();
+    const second = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.14.0', pins: HONEST });
+    if (!second.ok) throw new Error('expected a manifest');
+    const result = await applyInstall(second.manifest, io, () => undefined);
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'enable boot item' });
+    expect(describeApplyRefusal(result.refusal!)).toContain('launchctl: no such service');
   });
 });
 

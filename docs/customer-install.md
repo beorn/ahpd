@@ -112,8 +112,16 @@ them. A directory is removed only when it is empty; one the daemon has filled (s
 named — `kept <path>: N entries not written by this install; remove by hand or run uninstall --purge` — so customer
 data never goes without `--purge`, which prints exactly what it deletes first.
 
-A version switch (later slice) reuses the same layout and `activateRelease`, and pruning keeps `DEFAULT_KEEP` releases
-and says what it removed.
+### Switching version
+
+Running the same one command with a newer version is a switch, not a second install: the new release folder is placed
+and verified the same way, `current` moves through `activateRelease`, the boot item is stopped and started again so it
+picks up the new release, and a failed start names both the stop that ran and the start that failed.
+
+Pruning keeps `current` plus the newest `keep - 1` releases (`DEFAULT_KEEP` is 3), and the result names every folder it
+deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared with the git deploy driver; only the
+ordering differs — commit time there, version order here, with `0.10.0` above `0.9.0` and a release above its
+release candidate.
 
 ## Still open
 
