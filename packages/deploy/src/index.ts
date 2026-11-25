@@ -633,6 +633,9 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
 export { apply, deployMethods, METHODS, name, title, startChild, REQUEST_FILE } from './plugin.js';
 export type { DeployHost, DeployMethod, DeployRefusal, DeployRefusalCode, DeployMethodsOptions, DeployRequest, HandedRequest } from './plugin.js';
 
+/** One line added to a service's journal by a caller that has no deploy running: the method's own record. */
+export const writeJournalEntry = (layout: DeployLayout, entry: Readonly<Record<string, unknown>>): void => journal(layout, entry);
+
 /** The journal, oldest first, for a reader that shows what happened without running anything. */
 export const readJournal = (layout: DeployLayout): readonly Readonly<Record<string, unknown>>[] => {
   const file = paths(layout).journal;

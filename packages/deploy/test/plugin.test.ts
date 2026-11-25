@@ -22,7 +22,15 @@ const methods = (
     stateDir: over.stateDir ?? stateDir,
     switches: () => over.switches ?? ON,
     services: () => over.services ?? ['web', 'api'],
-    start: (request) => { started.push(request); },
+    start: (request) => {
+      started.push(request);
+      // The child takes the lock as `ahpd deploy` does; the answer is not given until it does.
+      const root = join((over.stateDir ?? stateDir), 'deploy', request.service);
+      setTimeout(() => {
+        mkdirSync(root, { recursive: true });
+        writeFileSync(join(root, 'deploy.lock'), JSON.stringify({ deployId: request.deployId, step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: '' }) + '\n');
+      }, 40);
+    },
   });
   const call = async (method: string, params: Record<string, unknown>) => {
     const one = found[method] as DeployMethod;
@@ -58,8 +66,9 @@ describe('the deploy plugin (#38276 slice 2)', () => {
     expect(one.started).toHaveLength(1);
     expect(one.started[0]?.deployId).toBe(answer['deployId']);
     expect(one.started[0]?.version).toBe(answer['sha']);
-    // The child takes the lock; nothing here pretends to hold one.
-    expect(one.report({ service: 'web' })).resolves.toMatchObject({ ok: true, running: null });
+    // The lock that exists is the child's, under the id the answer named - the parent claimed nothing itself.
+    const report = await one.report({ service: 'web' });
+    expect(report).toMatchObject({ ok: true, running: { deployId: answer['deployId'] } });
   });
 
   it('refuses a service this machine does not run, naming the ones it does', async () => {
@@ -155,4 +164,34 @@ describe('the deploy plugin as ahpd loads it', () => {
     expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:run');
     expect(registered.get('x-ahpd/deploy/report')?.grant).toBe('deploy:read');
   });
+});
+
+describe('two runs of the same service at once', () => {
+  it('give exactly one started and one RUNNING, because an answer waits for the lock its child holds', async () => {
+    const stateDir = machine();
+    const repo = repoFixture();
+    const root = join(stateDir, 'deploy', 'web');
+    let first = true;
+    const found = deployMethods({
+      stateDir,
+      switches: () => ON,
+      services: () => ['web'],
+      waitForLockMs: 2_000,
+      start: (request) => {
+        // The child takes the lock a moment after it is spawned, as `ahpd deploy` does; only the first one wins.
+        if (!first) return;
+        first = false;
+        setTimeout(() => {
+          mkdirSync(root, { recursive: true });
+          writeFileSync(join(root, 'deploy.lock'), JSON.stringify({ deployId: request.deployId, step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: '' }) + '\n');
+        }, 60);
+      },
+    });
+    const run = (params: Record<string, unknown>) =>
+      (found['x-ahpd/deploy/run'] as DeployMethod).handle(params, undefined, 'test-client') as Promise<Record<string, unknown>>;
+    const [one, two] = await Promise.all([run(runOf('web', 'main', { repo })), run(runOf('web', 'main', { repo }))]);
+    const kinds = [one['state'] ?? one['code'], two['state'] ?? two['code']];
+    expect(kinds.filter((kind) => kind === 'started')).toHaveLength(1);
+    expect(kinds.filter((kind) => kind === 'RUNNING')).toHaveLength(1);
+  }, 20_000);
 });
