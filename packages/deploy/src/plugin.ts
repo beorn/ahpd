@@ -20,7 +20,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@hallohuman/hightea-services';
 import { readJournal, resolveVersion, status, writeJournalEntry } from './index.js';
-import type { DeployCommand, DeployDeclaration, DeployLayout } from './index.js';
+import type { DeployDeclaration, DeployLayout } from './index.js';
 import { CHANGED, CHANNEL, OPERATION, READS_SCHEME, SCHEME, deploysChannel, deploysProvider, deploysState, refusalError } from './channel.js';
 
 /** The plugin's id. */
@@ -44,6 +44,7 @@ export const METHODS = Object.keys(RETIRED);
 /** Why a call was refused, so a person reads a sentence rather than an empty answer. */
 export type DeployRefusalCode =
   | 'INVALID'
+  | 'NO_DEPLOY_DECLARATION'
   | 'RUNNING'
   | 'UNKNOWN_SERVICE'
   | 'UNREACHABLE'
@@ -104,6 +105,12 @@ export interface DeployMethodsOptions {
   readonly switches: () => MachineSwitches;
   /** Every service this machine runs, by name, for the "unknown service" check. */
   readonly services: () => readonly string[] | Promise<readonly string[]>;
+  /**
+   * One service's deploy declaration, read from its own record (#38549), or the
+   * refusal that says why the record carries none. Never a default: a missing
+   * repository is the machine's answer, not ours.
+   */
+  readonly declaration: (service: string) => DeployDeclaration | DeployRefusal | Promise<DeployDeclaration | DeployRefusal>;
   /** How the steps start once the checks pass; `ahpd deploy` as a detached child by default. */
   readonly start: StartDeploy;
   /** How long to wait for the child to take the lock before answering that it did not. */
@@ -115,64 +122,13 @@ export const WAIT_FOR_LOCK_MS = 5_000;
 
 const refused = (code: DeployRefusalCode, message: string): DeployRefusal => ({ ok: false, code, message });
 
-/** The words a caller may send, and no others: a misspelt key is refused by name rather than ignored. */
-const RUN_KEYS = ['service', 'version', 'repo', 'ref', 'migrations', 'build', 'before_switch', 'check', 'keep'] as const;
-
-const commandOf = (value: unknown, key: string): DeployCommand | DeployRefusal => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return refused('INVALID', `${key} is an object { command, args?, env?, timeoutMs? }, not ${Array.isArray(value) ? 'a list' : typeof value}`);
-  }
-  const fields = value as Record<string, unknown>;
-  const extra = Object.keys(fields).filter((one) => !['command', 'args', 'env', 'timeoutMs'].includes(one));
-  if (extra.length > 0) return refused('INVALID', `${key} has unknown ${extra.join(', ')}`);
-  const command = fields['command'];
-  if (typeof command !== 'string' || command.trim() === '') return refused('INVALID', `${key}.command is a non-empty string`);
-  const args = fields['args'];
-  if (args !== undefined && (!Array.isArray(args) || args.some((one) => typeof one !== 'string'))) return refused('INVALID', `${key}.args is a list of strings`);
-  const timeoutMs = fields['timeoutMs'];
-  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1)) return refused('INVALID', `${key}.timeoutMs is a whole number of milliseconds`);
-  // A value is only ever a reference; a plain value here would put a secret in the protocol and then in a journal.
-  const env = fields['env'];
-  const read: Record<string, { $secret: string }> = {};
-  if (env !== undefined) {
-    if (typeof env !== 'object' || env === null || Array.isArray(env)) return refused('INVALID', `${key}.env is an object of NAME: { $secret: "<scope>:<name>" }`);
-    for (const [variable, held] of Object.entries(env as Record<string, unknown>)) {
-      const reference = typeof held === 'object' && held !== null && !Array.isArray(held) ? (held as Record<string, unknown>)['$secret'] : undefined;
-      if (typeof reference !== 'string' || reference === '' || Object.keys(held as object).length !== 1) {
-        return refused('INVALID', `${key}.env ${variable} must be a secret reference {"$secret":"<scope>:<name>"}; a plain value never crosses this method`);
-      }
-      read[variable] = { $secret: reference };
-    }
-  }
-  return {
-    command,
-    ...(args === undefined ? {} : { args: args as string[] }),
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    ...(env === undefined ? {} : { env: read }),
-  };
-};
-
-/** The declaration a run's params carry, or the refusal that names the first bad field. */
-const declarationOf = (params: Record<string, unknown>): DeployDeclaration | DeployRefusal => {
-  const repo = params['repo'];
-  if (typeof repo !== 'string' || repo.trim() === '') return refused('INVALID', 'repo is the repository the version is fetched from: a path or a URL git can fetch');
-  const ref = params['ref'] ?? 'main';
-  if (typeof ref !== 'string' || ref.trim() === '') return refused('INVALID', 'ref is a non-empty ref name');
-  const migrations = params['migrations'];
-  if (migrations !== undefined && migrations !== 'expand-only') return refused('INVALID', `deploy knows one migration value, expand-only; it was given ${String(migrations)}`);
-  const keep = params['keep'];
-  if (keep !== undefined && (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 2 || keep > 60)) return refused('INVALID', 'keep is a whole number of release folders from 2 to 60: one kept release is a folder with no way back');
-  const declaration: DeployDeclaration = { repo, ref, ...(migrations === undefined ? {} : { migrations: 'expand-only' as const }), ...(keep === undefined ? {} : { keep }) };
-  const commands = { build: 'build', before_switch: 'beforeSwitch', check: 'check' } as const;
-  for (const [key, field] of Object.entries(commands)) {
-    const value = params[key];
-    if (value === undefined) continue;
-    const read = commandOf(value, key);
-    if ('ok' in read) return read;
-    Object.assign(declaration, { [field]: read });
-  }
-  return declaration;
-};
+/**
+ * The words a caller may send, and no others: a misspelt key is refused by name
+ * rather than ignored. #38549 (@cto 2026-11-25): the declaration fields moved
+ * onto the service's own record, so a caller chooses a service and a version
+ * and never a command.
+ */
+const RUN_KEYS = ['service', 'version'] as const;
 
 /**
  * Whether this machine takes a deploy from outside it at all.
@@ -197,7 +153,12 @@ export function deployMethods(options: DeployMethodsOptions): { run: DeployMetho
         if (typeof service !== 'string' || service.trim() === '') return refused('INVALID', 'service is a non-empty name');
         const version = params['version'];
         if (typeof version !== 'string' || version.trim() === '') return refused('INVALID', 'version is a branch, a tag or a commit sha');
-        const declaration = declarationOf(params);
+        let declaration: DeployDeclaration | DeployRefusal;
+        try {
+          declaration = await options.declaration(service);
+        } catch (error) {
+          return refused('NOT_CONFIGURED', `this machine's record of ${service} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+        }
         if ('ok' in declaration) return declaration;
 
         // The machine's own switches first: a throw here is a refusal with its sentence, never read as "off".
@@ -370,6 +331,26 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
     if (!listing.ok) throw new Error(listing.message);
     return listing.services.map((one) => one.name);
   };
+  // #38549: the declaration is the service's own record, mapped from its neutral step names to this package's.
+  const declarationNow = (service: string): DeployDeclaration | DeployRefusal => {
+    const listing = listServices(machine);
+    if (!listing.ok) return refused('NOT_CONFIGURED', `this machine's services could not be read: ${listing.message}`);
+    const record = listing.services.find((one) => one.name === service);
+    if (record === undefined) return refused('UNKNOWN_SERVICE', `this machine runs no service called ${service}`);
+    const held = record.deploy;
+    if (held === undefined) {
+      return refused('NO_DEPLOY_DECLARATION', `${service} carries no deploy declaration: its record must name deploy.repo, deploy.ref and any steps (build, before_switch, check) before it can be deployed from elsewhere`);
+    }
+    return {
+      repo: held.repo,
+      ref: held.ref,
+      ...(held.migrations === undefined ? {} : { migrations: held.migrations }),
+      ...(held.keep === undefined ? {} : { keep: held.keep }),
+      ...(held.build === undefined ? {} : { build: held.build }),
+      ...(held.before_switch === undefined ? {} : { beforeSwitch: held.before_switch }),
+      ...(held.check === undefined ? {} : { check: held.check }),
+    };
+  };
   let handle: DeployChannelHandle | undefined;
   // A state that cannot be published is said out loud, once per failure: a quiet channel is the failure this exists for.
   const publishState = (): void => {
@@ -384,6 +365,7 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
     stateDir,
     switches: () => machineSwitches(host.configDir),
     services: servicesNow,
+    declaration: declarationNow,
     start: (request) => {
       const started = startChild(machine, stateDir, request);
       // The child's end is the next honest state: the row goes from running to whatever its journal says last.

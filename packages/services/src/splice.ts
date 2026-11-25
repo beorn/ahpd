@@ -87,6 +87,13 @@ const renderKey = (key: string): string => (parsesAs(`${key}: 1`, key, 1) ? key 
 
 /** New block text for a key that does not exist yet, at `col`, children at `col + step`. */
 const renderBlock = (key: string, node: Tree, col: number, step: number): string => {
+  // A sequence is written only as a block of items, one per line: the deploy declaration's `args` is the first field
+  // that needs one, and a flow list would reformat whatever style the file already used.
+  if (!node.children && Array.isArray(node.value)) {
+    const items = node.value as readonly string[];
+    if (items.length === 0) return `${spaces(col)}${renderKey(key)}: []\n`;
+    return `${spaces(col)}${renderKey(key)}:\n` + items.map((one) => `${spaces(col + step)}- ${renderValue(one)}\n`).join('');
+  }
   if (!node.children) return `${spaces(col)}${renderKey(key)}: ${renderValue(node.value as NativeValue)}\n`;
   let text = `${spaces(col)}${renderKey(key)}:\n`;
   for (const [child, below] of node.children) if (sets(below)) text += renderBlock(child, below, col + step, step);
@@ -137,6 +144,16 @@ function planMap(text: string, map: YAMLMap, tree: Map<string, Tree>, step: numb
     const value = pair?.value;
     if (!node.children) {
       if (node.value === undefined) continue;
+      if (Array.isArray(node.value)) {
+        needsBlock(`setting ${key}`);
+        if (pair) {
+          const [start, end] = pairLines(text, pair, here);
+          edits.push({ start, end, text: '' });
+          removed += 1;
+        }
+        added += renderBlock(key, node, 0, step);
+        continue;
+      }
       if (node.value === REMOVE) {
         if (!pair) continue;
         needsBlock(`removing ${key}`);

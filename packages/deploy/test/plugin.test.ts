@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { REPLACED_IN, apply, deployMethods, METHODS } from '../src/index.js';
 import { gitSync } from '../../../tools/git.ts';
-import type { DeployHost, DeployMethod, DeployRefusal, DeployRequest } from '../src/index.js';
+import type { DeployDeclaration, DeployHost, DeployMethod, DeployRefusal, DeployRequest } from '../src/index.js';
 
 /** A machine's state folder, and nothing else: the plugin's own paths are the driver's. */
 const machine = () => mkdtempSync(join(tmpdir(), 'ahpd-deploy-plugin-'));
@@ -16,12 +16,13 @@ const OFF = { allowRemoteCommands: false, allowRoomAsks: false };
 const methods = (
   stateDir: string,
   started: DeployRequest[] = [],
-  over: Partial<{ switches: typeof ON; services: readonly string[]; stateDir: string }> = {},
+  over: Partial<{ switches: typeof ON; services: readonly string[]; stateDir: string; declaration: DeployDeclaration | DeployRefusal }> = {},
 ) => {
   const found = deployMethods({
     stateDir: over.stateDir ?? stateDir,
     switches: () => over.switches ?? ON,
     services: () => over.services ?? ['web', 'api'],
+    declaration: () => over.declaration ?? { repo: '/src/web', ref: 'main' },
     start: (request) => {
       started.push(request);
       // The child takes the lock as `ahpd deploy` does; the answer is not given until it does.
@@ -53,14 +54,14 @@ const repoFixture = () => {
   return repo;
 };
 
-const runOf = (service = 'web', version = 'main', extra: Record<string, unknown> = {}) => ({ service, version, repo: '/src/web', ...extra });
+const runOf = (service = 'web', version = 'main') => ({ service, version });
 
 describe('the deploy plugin (#38276 slice 2)', () => {
   it('answers started with the deploy id and the resolved sha, without taking the lock itself', async () => {
     const stateDir = machine();
     const repo = repoFixture();
-    const one = methods(stateDir);
-    const answer = await one.run(runOf('web', 'main', { repo }));
+    const one = methods(stateDir, [], { declaration: { repo, ref: 'main' } });
+    const answer = await one.run(runOf());
     expect(answer).toMatchObject({ ok: true, state: 'started', service: 'web' });
     expect(String(answer['sha'])).toMatch(/^[0-9a-f]{40}$/u);
     expect(one.started).toHaveLength(1);
@@ -89,6 +90,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
       stateDir,
       switches: () => ON,
       services: () => ['web'],
+      declaration: () => ({ repo, ref: 'main' }),
       waitForLockMs: 120,
       start: () => ({
         // Never ends on its own, and would take the lock well after the budget.
@@ -104,7 +106,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
       const lock = { deployId: 'late', step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: '' };
       writeFileSync(join(root, 'deploy.lock'), JSON.stringify(lock) + '\n');
     }, 400);
-    const run = (found.run as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Promise<Record<string, unknown> & Partial<DeployRefusal>>;
+    const run = (found.run as DeployMethod).handle({ service: 'web', version: 'main' }, undefined, 'test-client') as Promise<Record<string, unknown> & Partial<DeployRefusal>>;
     const answer = await run;
     expect(answer['code']).toBe('DRIVER_FAILED');
     expect(String(answer['message'])).toContain('killed after 120 ms');
@@ -126,6 +128,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
       stateDir,
       switches: () => ON,
       services: () => ['web'],
+      declaration: () => ({ repo, ref: 'main' }),
       waitForLockMs: 120,
       start: (request) => ({
         whenExited: new Promise<number | null>(() => {}),
@@ -137,7 +140,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
         },
       }),
     });
-    const answer = await (found.run as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
+    const answer = await (found.run as DeployMethod).handle({ service: 'web', version: 'main' }, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
     expect(answer['code']).toBe('DRIVER_FAILED');
     expect(String(answer['message'])).toContain('after taking the lock at step resolve');
     expect(String(answer['message'])).toContain('the next deploy clears it');
@@ -164,22 +167,26 @@ describe('the deploy plugin (#38276 slice 2)', () => {
   });
 
   it('refuses a version the declared ref cannot reach, before anything starts', async () => {
-    const answer = await methods(machine()).run(runOf('web', 'main', { repo: '/nonexistent/repo' }));
+    const answer = await methods(machine(), [], { declaration: { repo: '/nonexistent/repo', ref: 'main' } }).run(runOf());
     expect(answer).toMatchObject({ ok: false, code: 'UNREACHABLE' });
   });
 
-  it('a misspelt or unknown key, a plain env value, and keep below 2 are each refused by name', async () => {
+  it('takes {service, version} and nothing else, so a caller can never choose a command (#38549)', async () => {
     const one = methods(machine());
-    const typo = await one.run(runOf('web', 'main', { beforeSwitch: { command: 'x' } }));
-    expect(typo).toMatchObject({ ok: false, code: 'INVALID' });
-    expect(String(typo['message'])).toContain('beforeSwitch');
+    for (const extra of [{ repo: '/src/web' }, { beforeSwitch: { command: 'x' } }, { keep: 1 }, { build: { command: 'bun' } }]) {
+      const answer = await one.run({ ...runOf(), ...extra });
+      expect(answer).toMatchObject({ ok: false, code: 'INVALID' });
+      expect(String(answer['message'])).toContain(Object.keys(extra)[0]!);
+    }
+    expect(one.started).toHaveLength(0);
+  });
 
-    const plain = await one.run(runOf('web', 'main', { build: { command: 'bun', env: { TOKEN: 'plain-value' } } }));
-    expect(plain).toMatchObject({ ok: false, code: 'INVALID' });
-    expect(String(plain['message'])).toContain('secret reference');
-
-    const oneKept = await one.run(runOf('web', 'main', { keep: 1 }));
-    expect(oneKept).toMatchObject({ ok: false, code: 'INVALID' });
+  it('refuses a service whose record carries no deploy declaration, naming the fields it must have (#38549)', async () => {
+    const noDeclaration = { ok: false as const, code: 'NO_DEPLOY_DECLARATION' as const, message: 'web carries no deploy declaration: its record must name deploy.repo, deploy.ref and any steps (build, before_switch, check) before it can be deployed from elsewhere' };
+    const one = methods(machine(), [], { declaration: noDeclaration });
+    const answer = await one.run(runOf());
+    expect(answer).toMatchObject({ ok: false, code: 'NO_DEPLOY_DECLARATION' });
+    expect(String(answer['message'])).toContain('deploy.repo');
     expect(one.started).toHaveLength(0);
   });
 
@@ -229,7 +236,7 @@ describe('the deploy plugin as ahpd loads it', () => {
     expect([...registered.keys()].sort()).toEqual([...METHODS].sort());
     expect(alerts[0]).toContain('files');
     for (const method of METHODS) {
-      const refused = registered.get(method)?.handle({ service: 'web', version: 'main', repo: '/src/web' }, undefined, 'test-client') as Promise<unknown>;
+      const refused = registered.get(method)?.handle({ service: 'web', version: 'main' }, undefined, 'test-client') as Promise<unknown>;
       await expect(refused).rejects.toMatchObject({ code: -32601, data: { release: REPLACED_IN } });
     }
   });
@@ -255,6 +262,7 @@ describe('two runs of the same service at once', () => {
       stateDir,
       switches: () => ON,
       services: () => ['web'],
+      declaration: () => ({ repo, ref: 'main' }),
       waitForLockMs: 2_000,
       start: (request) => {
         // The child takes the lock a moment after it is spawned, as `ahpd deploy` does; only the first one wins.
@@ -268,7 +276,7 @@ describe('two runs of the same service at once', () => {
     });
     const run = (params: Record<string, unknown>) =>
       (found.run as DeployMethod).handle(params, undefined, 'test-client') as Promise<Record<string, unknown>>;
-    const [one, two] = await Promise.all([run(runOf('web', 'main', { repo })), run(runOf('web', 'main', { repo }))]);
+    const [one, two] = await Promise.all([run(runOf()), run(runOf())]);
     const kinds = [one['state'] ?? one['code'], two['state'] ?? two['code']];
     expect(kinds.filter((kind) => kind === 'started')).toHaveLength(1);
     expect(kinds.filter((kind) => kind === 'RUNNING')).toHaveLength(1);
