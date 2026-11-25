@@ -1,6 +1,6 @@
 ---
 title: The image builds from the checkout
-status: implemented
+status: done
 depends: []
 layer: "image"
 refs:

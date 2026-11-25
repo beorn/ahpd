@@ -24,6 +24,7 @@ import { gitSync } from '../../../tools/git.ts';
  */
 type Kind = 'grant' | 'identity';
 const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: string])[] = [
+  ['access/personrules.ts', 'const folder = options.users === undefined ? undefined : options.personPermissionsDir;', 'identity', "where a session owner's own approval settings are kept (#463 sync, upstream approvalSetting)"],
   ['host.ts', 'const directory = options.users !== undefined;', 'grant', 'fed to seesConfig/seesAccount, which ask heldToGrants'],
   ['host.ts', '? options.users?.watch?.(() => {', 'identity', 'watches the directory file for sign-in changes'],
   ['host/actions.ts', 'if (heldToGrants(connection, options.users !== undefined)) {', 'grant', 'the action gate, through heldToGrants'],
@@ -37,6 +38,7 @@ const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: 
   ['host/automations.ts', "if (requester !== undefined && options.users !== undefined && owner?.startsWith('user:') === true && person !== undefined && !person.can('session:create')) {", 'grant', "an automation's owner, not a connection (806f0ee5)"],
   ['host/automations.ts', "if (options.users !== undefined && computerSource(config.computer) !== undefined && owner?.startsWith('user:') === true) {", 'grant', "an automation's owner, not a connection (806f0ee5)"],
   ['host/automations.ts', "if (options.users !== undefined && owner?.startsWith('user:') === true) {", 'identity', 'whether an automation has a person as owner'],
+  ['host/automations.ts', 'if (owner === undefined && options.users !== undefined) return [];', 'identity', "whose windows an automation owner's MCP sign-in is asked of; no grant is decided (#463 sync, upstream connectionsOf)"],
   ['host/chatactions.ts', 'const keeps = store !== undefined && (!heldToGrants(connection, ctx.options.users !== undefined)', 'grant', 'keeping a decision, through heldToGrants'],
   ['host/chatactions.ts', "if (allowsAll && heldToGrants(connection, ctx.options.users !== undefined) && connection.principal?.can('session:configure') !== true) {", 'grant', 'Allow All, through heldToGrants'],
   ['host/chatactions.ts', 'if (ctx.options.users === undefined || folder === undefined || person === undefined) break;', 'identity', "where a person's rules are kept"],

@@ -1,7 +1,7 @@
 ---
 title: An anonymous tunnel to the daemon requires an ahpd token
 domain: plugin
-status: planned
+status: built
 priority: high
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -69,9 +69,9 @@ visitor on 31546 -> hop -> signed in: swap the derived token as today
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - an anonymous hop swaps no token](task-01-an-anonymous-hop-swaps-no-token.md) | implemented | - |
-| [02 - anonymous is refused without a token](task-02-anonymous-is-refused-without-a-token.md) | implemented | 01 |
-| [03 - the docs say anonymous needs a token](task-03-the-docs-say-anonymous-needs-a-token.md) | implemented | 02 |
+| [01 - an anonymous hop swaps no token](task-01-an-anonymous-hop-swaps-no-token.md) | done | - |
+| [02 - anonymous is refused without a token](task-02-anonymous-is-refused-without-a-token.md) | done | 01 |
+| [03 - the docs say anonymous needs a token](task-03-the-docs-say-anonymous-needs-a-token.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -80,15 +80,15 @@ visitor on 31546 -> hop -> signed in: swap the derived token as today
 
 ## Resume state
 
-- **Checks, 2026-11-18:** the suites passed at `2946984b6`. The checks that need the Dev Tunnel account are in [pending/tunnel-token-checks.md](../../../pending/tunnel-token-checks.md).
+- **Checks, 2026-11-18:** the suites passed at `2946984b6`. The checks that need the Dev Tunnel account passed on 2026-11-18, as [implemented.md](implemented.md) says. git://fe8c59241 is the last commit that holds their file. On 2026-11-18, Softov's dev daemon refused no token and both derived tokens over the anonymous 31546, and admitted his own token.
 - **Done so far:** tasks 01 to 03 are `implemented` on 2026-11-17, on the branch `plugin/20261117-0701-anonymous-31546-requires-a-token`.
-- **Next action:** Softov's review, then the checks of *Final verification checklist* on the test daemon.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** `guarded` is known only after `listening`, and the system tunnel starts after it. A record started before `listening` has no hop, since `hopFor` needs the daemon's port.
 
 ## Final verification checklist
 
-- [ ] On the test daemon with a token, an anonymous 31546 refuses the derived token and admits `?tkn=<token>`.
+- [x] On the test daemon with a token, an anonymous 31546 refuses the derived token and admits `?tkn=<token>`.
 - [ ] A signed-in 31546 still admits VS Code by the derived token.
 - [ ] On a daemon with no token and no users, the `anonymous` operation is refused, and the row says why.
 - [x] The tunnel-devtunnel and server suites pass.

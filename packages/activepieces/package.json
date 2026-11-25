@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/activepieces",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Activepieces integration for the Agent Host Protocol. Each piece becomes an ahpd connector, and each action a host tool.",
+  "description": "Activepieces integration. Use Activepieces pieces as ahpd connectors, and their actions as tools.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -57,7 +57,7 @@
     "test": "cd ../.. && vitest run packages/activepieces/test"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0"
   },
   "dependencies": {
     "@activepieces/piece-airtable": "0.9.2",

@@ -1,6 +1,6 @@
 ---
 title: Agents serve an operations list
-status: implemented
+status: done
 depends: [task-01-a-record-lists-its-operations.md]
 layer: "sdk"
 refs:

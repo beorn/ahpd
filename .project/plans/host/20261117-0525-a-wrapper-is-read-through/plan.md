@@ -1,7 +1,7 @@
 ---
 title: A wrapper command is read through to the command it runs
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -71,8 +71,8 @@ unapproved inner commands -> suggestAutoApproveRuleKeys -> grant keys, never a w
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the approver reads through a wrapper](task-01-the-approver-reads-through-a-wrapper.md) | implemented | - |
-| [02 - the docs say how a wrapper is read](task-02-the-docs-say-how-a-wrapper-is-read.md) | implemented | 01 |
+| [01 - the approver reads through a wrapper](task-01-the-approver-reads-through-a-wrapper.md) | done | - |
+| [02 - the docs say how a wrapper is read](task-02-the-docs-say-how-a-wrapper-is-read.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -82,6 +82,7 @@ unapproved inner commands -> suggestAutoApproveRuleKeys -> grant keys, never a w
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 and 02 are `implemented` on 2026-11-17, on the branch `host/20261117-0525-a-wrapper-is-read-through`.
 - **Next action:** Softov's review, then the checks of *Final verification checklist* on the test daemon.

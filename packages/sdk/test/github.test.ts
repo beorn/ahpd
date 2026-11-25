@@ -79,7 +79,26 @@ describe('the pull requests of a branch', () => {
     ]);
     const { readFileSync } = await import('node:fs');
     expect(readFileSync(join(dir, 'asked'), 'utf8').trim())
-      .toBe('pr list --repo softov/ahpd --head fix/kqueue --state all --limit 10 --json url,state,title,number,body,isDraft,author,baseRefName,headRefName,createdAt,updatedAt,mergedAt,closedAt');
+      .toBe('pr list --repo softov/ahpd --head fix/kqueue --state all --limit 10 --json url,state,title,number,body,isDraft,author,baseRefName,headRefName,createdAt,updatedAt,mergedAt,closedAt,headRepositoryOwner');
+  });
+
+  it('asks the API for a fork\'s branch under the fork\'s owner', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => { calls.push(url); return { ok: true, status: 200, json: async () => [] }; });
+    await githubPullRequests().forBranch({ owner: 'softov', repo: 'ahpd' }, 'fix/kqueue', 'gho_x', '/tmp', 'beorn');
+    expect(calls[0]).toBe('https://api.github.com/repos/softov/ahpd/pulls?head=beorn%3Afix%2Fkqueue&state=all&sort=updated&direction=desc&per_page=10');
+  });
+
+  // `fakeGh` puts a `#!/bin/sh` script first on `PATH`, and the host runs it.
+  it.skipIf(!posix)('keeps only the requests of the owner the branch is in, since gh names the branch alone', async () => {
+    const dir = fakeGh(JSON.stringify([
+      { url: 'https://github.com/softov/ahpd/pull/7', state: 'OPEN', headRepositoryOwner: { login: 'softov' } },
+      { url: 'https://github.com/softov/ahpd/pull/8', state: 'OPEN', headRepositoryOwner: { login: 'Beorn' } },
+    ]));
+    const own = await githubPullRequests().forBranch({ owner: 'softov', repo: 'ahpd' }, 'fix/kqueue', undefined, dir);
+    expect(own.map((one) => one.url)).toEqual(['https://github.com/softov/ahpd/pull/7']);
+    const forked = await githubPullRequests().forBranch({ owner: 'softov', repo: 'ahpd' }, 'fix/kqueue', undefined, dir, 'beorn');
+    expect(forked.map((one) => one.url)).toEqual(['https://github.com/softov/ahpd/pull/8']);
   });
 
   // `fakeGh` puts a `#!/bin/sh` script first on `PATH`, and the host runs it:

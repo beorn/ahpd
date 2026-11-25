@@ -1,6 +1,6 @@
 ---
 title: A streamed file opens before its body is made
-status: todo
+status: done
 depends: []
 layer: "@ahpd/activepieces"
 refs:
@@ -38,3 +38,5 @@ A streaming attachment is opened before `attachmentOf` returns, so a file that w
 - The PR's `check` job ends with no "Unhandled Errors" section.
 
 ## Resume
+
+`attachmentOf` opens the file with `open()` before it returns. It takes the size and the body from the handle, and a file that will not open is `null`. The streaming case already waited for the body to close. A new case makes `open` refuse once with `ENOENT` and gets `null`. `files.test.ts` passed 24 runs in a row with no unhandled error; `pnpm typecheck` and `pnpm boundary` pass.

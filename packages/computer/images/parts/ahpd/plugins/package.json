@@ -1,0 +1,9 @@
+{
+  "name": "ahpd-part-ahpd-plugins",
+  "private": true,
+  "dependencies": {
+    "@ahpd/sdk": "0.15.0-rc.3",
+    "@ahpd/agent-cofold": "0.15.0-rc.3",
+    "@ahpd/agent-pi": "0.15.0-rc.3"
+  }
+}

@@ -1,6 +1,6 @@
 ---
 title: The harness reads the cofold names
-status: todo
+status: done
 depends: []
 layer: "agent-cofold, sdk, agent-acp, computer"
 refs:
@@ -64,3 +64,4 @@ The copapo profile names the `COFOLD_*` variables, the copapo ACP preset seeds `
 
 ## Resume
 
+Built 2026-11-21 on `@cofold/copapo` 0.3.0. agent-cofold resolves under `cofold`, reads `.cofold.json`, `COFOLD_CONFIG` and `COFOLD_*` alone, and a machine gets `cofold/config.json` with `COFOLD_CONFIG`. The copapo profile and the ACP preset name the cofold variables and folder, and `xdgOf` takes a folder name apart from the part id. The part pins 0.3.0. A case checks that the copapo file, project file and variables are not read.

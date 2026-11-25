@@ -1,7 +1,7 @@
 ---
 title: A plugin follows the sdk the daemon ships
 domain: plugin
-status: planned
+status: built
 priority: high
 created: 2026-11-16
 revalidated: 2026-11-16
@@ -96,10 +96,10 @@ release bump -> node scripts/sdk-range.mjs --write -> CI and release.yml run nod
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the-shipped-sdk-is-the-gate](task-01-the-shipped-sdk-is-the-gate.md) | implemented | - |
-| [02 - a-prerelease-sdk-takes-prereleases](task-02-a-prerelease-sdk-takes-prereleases.md) | implemented | 01 |
-| [03 - a-release-sets-the-sdk-range](task-03-a-release-sets-the-sdk-range.md) | implemented | - |
-| [04 - the-notes-say-how-to-upgrade](task-04-the-notes-say-how-to-upgrade.md) | implemented | 01, 02, 03 |
+| [01 - the-shipped-sdk-is-the-gate](task-01-the-shipped-sdk-is-the-gate.md) | done | - |
+| [02 - a-prerelease-sdk-takes-prereleases](task-02-a-prerelease-sdk-takes-prereleases.md) | done | 01 |
+| [03 - a-release-sets-the-sdk-range](task-03-a-release-sets-the-sdk-range.md) | done | - |
+| [04 - the-notes-say-how-to-upgrade](task-04-the-notes-say-how-to-upgrade.md) | done | 01, 02, 03 |
 
 ## Risks and tradeoffs
 
@@ -112,7 +112,7 @@ release bump -> node scripts/sdk-range.mjs --write -> CI and release.yml run nod
 ## Resume state
 
 - **Done so far:** tasks 01 to 04 built on 2026-11-16 on branch `plugin/20261116-1816-plugins-follow-the-sdk`, awaiting review. The server, sdk and computer suites pass.
-- **Next action:** Softov reviews the PR. The check by hand on the test daemon waits for the ahpio-site deploy and an rc.4 candidate.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** the sdk and the server have one version today, so a test passes with either. Give a test server a version apart from its sdk's.
 

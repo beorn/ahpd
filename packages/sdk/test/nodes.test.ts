@@ -396,6 +396,41 @@ it('takes a node\'s connection away when it is removed or its token is replaced'
   expect(again.registry.joined()).toEqual([]);
 });
 
+/*
+ * A node taken off the hub runs nothing more here: the sockets it dialled for
+ * its sessions close with its control socket, on a removal and on a token that
+ * replaced its own.
+ */
+it('closes the sockets a removed node dialled for its sessions, and a replaced token\'s too', async () => {
+  for (const change of ['remove', 'add'] as const) {
+    const hub = await hubOf();
+    const node = joinNode(hub);
+    await until(() => hub.registry.joined().length === 1);
+    const one = await inNode(hub);
+    await one.say('t1', 'hello node');
+    const socket = node.served[0]?.socket;
+    expect(socket?.readyState).toBe(WebSocket.OPEN);
+
+    if (change === 'remove') await hub.registry.remove(NODE);
+    else await hub.registry.add(NODE);
+    await until(() => socket?.readyState === WebSocket.CLOSED);
+  }
+}, 30_000);
+
+it('leaves a node\'s session sockets open when its control socket closes by itself', async () => {
+  const hub = await hubOf();
+  const node = joinNode(hub);
+  await until(() => hub.registry.joined().length === 1);
+  const one = await inNode(hub);
+  await one.say('t1', 'hello node');
+  const socket = node.served[0]?.socket;
+
+  node.control.close();
+  await until(() => hub.registry.joined().length === 0);
+  await new Promise((done) => { setTimeout(done, 100); });
+  expect(socket?.readyState).toBe(WebSocket.OPEN);
+}, 30_000);
+
 it('a hub started again resumes the session against the node store that kept it', async () => {
   const first = await hubOf();
   const node = joinNode(first);

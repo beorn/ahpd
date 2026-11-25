@@ -1,6 +1,6 @@
 ---
 title: A session sends what GitHub says of each of its pull requests
-status: implemented
+status: done
 depends: [task-01-the-port-reads-a-pull-requests-details.md]
 layer: "sdk"
 refs:

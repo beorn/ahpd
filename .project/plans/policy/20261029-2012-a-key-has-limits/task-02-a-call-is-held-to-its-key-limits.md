@@ -1,6 +1,6 @@
 ---
 title: A call is held to its key's limits
-status: implemented
+status: done
 depends: [task-01-a-key-is-minted-with-limits.md]
 layer: "sdk, server, docs"
 refs:

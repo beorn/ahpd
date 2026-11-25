@@ -298,9 +298,10 @@ it('every chat a turn through a real inner host names is the outer chat', async 
   const updated = served.on(served.uri).filter(({ action }) => action.type === 'session/chatUpdated').map(({ action }) => action.chat);
   expect(updated.length).toBeGreaterThan(0);
   expect(updated.filter((chat) => chat !== served.chatUri)).toEqual([]);
-  // Nothing anywhere names a chat of the inner host's.
+  // Nothing anywhere names a chat of the inner host's. A changeset of the
+  // outer chat hangs off its URI, and is that chat's.
   const chats = JSON.stringify(served.notes).match(/ahp-chat:[^"\\]+/g) ?? [];
-  expect(chats.filter((chat) => chat !== served.chatUri)).toEqual([]);
+  expect(chats.filter((chat) => chat !== served.chatUri && !chat.startsWith(`${served.chatUri}/`))).toEqual([]);
   await served.host.close();
 }, 40_000);
 

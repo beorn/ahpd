@@ -1,7 +1,7 @@
 ---
 title: An operation reads plain, in the client's language
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -83,8 +83,8 @@ subscribe x-ahpd-<list>:// -> snapshot(asked, reader, client) -> { records, oper
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The host's operations read plain, in the reader's language](task-01-the-hosts-operations-read-plain.md) | implemented | - |
-| [02 - A tunnel kind's own operations read plain](task-02-a-tunnel-kinds-operations-read-plain.md) | implemented | 01 |
+| [01 - The host's operations read plain, in the reader's language](task-01-the-hosts-operations-read-plain.md) | done | - |
+| [02 - A tunnel kind's own operations read plain](task-02-a-tunnel-kinds-operations-read-plain.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -95,7 +95,7 @@ subscribe x-ahpd-<list>:// -> snapshot(asked, reader, client) -> { records, oper
 ## Resume state
 
 - **Done so far:** tasks 01 and 02 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the clients snapshot is not a records channel snapshot alone; it adds `operations` itself. The tunnel list's `servedOperations` adds connector choices to `create` and `update`, which must survive the translation.
 

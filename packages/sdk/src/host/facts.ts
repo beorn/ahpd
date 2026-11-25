@@ -9,6 +9,9 @@ import { CREATED_BY_META, MULTI_ROOT_META, REMOTE_ORIGIN_META, SPAWN_DEPTH_META,
 import { reason } from '../utils/values.js';
 import { normalizeScopes } from './auth.js';
 import type { Bag } from '../types/common.js';
+
+/** A session's `_meta` key: it can move under another session. Written only by VS Code hosts, and by this one. */
+export const SESSION_MOVABLE_META = 'vscode.movable';
 import type { PullRequest } from '../types/github.js';
 import type { HostContext } from './context.js';
 
@@ -432,6 +435,17 @@ export function createFacts(ctx: HostContext): Facts {
    * fields both declare belong here - see `changesetsOf` for the one that had
    * to come out.
    */
+  /**
+   * Whether a session can move under another session: moving chats is on, and
+   * its default chat is its only chat, its workers apart.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostChatMovability.ts#L496-L509
+   */
+  const sessionMovable = (uri: string): boolean => {
+    if (ctx.rootConfig['chatMoves.enabled'] !== true) return false;
+    const held = sessions.get(uri);
+    return held !== undefined && [...held.chats.keys()].every((chat) => chat === held.defaultChat);
+  };
+
   const describes = (uri: string): Bag => {
     const dir = dirOf(uri);
     /*
@@ -486,6 +500,8 @@ export function createFacts(ctx: HostContext): Facts {
       // And one working in its own scratch folder, which the window draws as a
       // chat with no workspace.
       ...(isWorkspaceless(uri, dir) ? { [SESSION_META_WORKSPACELESS_KEY]: true } : {}),
+      // And one that can move under another session, as VS Code's host says it.
+      ...(sessionMovable(uri) ? { [SESSION_MOVABLE_META]: true } : {}),
     };
     // The sandbox's floor and each chat's applied state, the host's own keys.
     const sandbox = ctx.sandbox.meta(uri);
@@ -627,6 +643,7 @@ export function createFacts(ctx: HostContext): Facts {
               const changesets = catalogueOf(uri, dir);
               if (!ctx.relaysChangesets(uri) && !isDeepStrictEqual(ctx.stateOf(uri)?.changesets ?? [], changesets))
                 dispatch(uri, { type: 'session/changesetsChanged', changesets });
+              ctx.chatChangesetsMoved(uri);
               ctx.markSummaryDirty(uri);
               await contentMoved(uri);
             }
@@ -878,6 +895,7 @@ export function createFacts(ctx: HostContext): Facts {
         const changesets = catalogueOf(uri, dir);
         if (!ctx.relaysChangesets(uri) && !isDeepStrictEqual(ctx.stateOf(uri)?.changesets ?? [], changesets))
           dispatch(uri, { type: 'session/changesetsChanged', changesets });
+        ctx.chatChangesetsMoved(uri);
         ctx.markSummaryDirty(uri);
       }
       /*

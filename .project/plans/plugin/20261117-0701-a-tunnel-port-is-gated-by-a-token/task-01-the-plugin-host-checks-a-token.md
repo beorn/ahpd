@@ -1,6 +1,6 @@
 ---
 title: The plugin host checks a token
-status: implemented
+status: done
 depends: []
 layer: "sdk, server"
 refs:

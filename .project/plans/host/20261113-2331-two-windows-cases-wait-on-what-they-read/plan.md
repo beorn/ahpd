@@ -1,7 +1,7 @@
 ---
 title: Two Windows cases wait on what they read
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -61,7 +61,7 @@ openInTree -> waitFor(git worktree list) -> git throws on a half-written tree ->
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The two cases wait on what they read](task-01-the-two-cases-wait-on-what-they-read.md) | implemented | - |
+| [01 - The two cases wait on what they read](task-01-the-two-cases-wait-on-what-they-read.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -70,7 +70,7 @@ openInTree -> waitFor(git worktree list) -> git throws on a half-written tree ->
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** review of the PR. The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** none.
 

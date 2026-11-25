@@ -352,13 +352,14 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
    * The fixture holds the checkpoint's own key list - every key its client
    * pushes to a remote host, each with a value of the type the schema declares,
    * upstream's default where it has one - and four keys 1.140 dropped, which a
-   * client older than that still pushes. Nothing in it is copied off anybody's
-   * machine.
+   * client older than that still pushes, and `migrateLegacyCopilotCliEnabled`,
+   * which VS Code main dropped and a 1.145 window still pushes. Nothing in it
+   * is copied off anybody's machine.
    */
   const patch = JSON.parse(
     readFileSync(new URL('./fixtures/vscode-root-config.json', import.meta.url), 'utf8'),
   ) as Record<string, unknown>;
-  const OLD = ['activeAgentTitleGeneration', 'artifactToolsCompactPrompts', 'deferredTitleGeneration', 'vscode.automationMigration'];
+  const OLD = ['activeAgentTitleGeneration', 'artifactToolsCompactPrompts', 'deferredTitleGeneration', 'migrateLegacyCopilotCliEnabled', 'vscode.automationMigration'];
   const declared = Object.keys(patch).filter((key) => !OLD.includes(key));
   const before = wire.length;
   dispatch('ahp-root://', { type: 'root/configChanged', config: patch });
@@ -369,7 +370,7 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
    *
    * One action, one echo, every key in it but the three a person keeps as
    * their own on a host with users: the host applies a root patch whatever
-   * keys it carries, as VS Code's host does, the four 1.140 dropped among
+   * keys it carries, as VS Code's host does, the five VS Code dropped among
    * them. The three are kept for the person and read back in their root.
    */
   const echoed = wire.slice(before)
@@ -377,17 +378,17 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
     .map((one) => (one.params as { action: { config: Record<string, unknown> } }).action.config);
   expect(echoed).toHaveLength(1);
   expect(Object.keys(echoed[0] ?? {}).sort()).toEqual(Object.keys(patch).filter((key) => !APPROVAL_KEYS.includes(key)).sort());
-  expect(declared.length).toBe(43);
+  expect(declared.length).toBe(42);
 
   const rootState = await ask('subscribe', { channel: 'ahp-root://' }) as {
     snapshot: { state: { config: { schema: { properties: Record<string, unknown> }; values: Record<string, unknown> } } };
   };
   const held = rootState.snapshot.state.config;
   // Every value this host holds has a property a client can draw it from but
-  // the four keys VS Code dropped, kept as pushed, which no client draws a
+  // the five keys VS Code dropped, kept as pushed, which no client draws a
   // control for.
   expect(Object.keys(held.values).filter((key) => !(key in held.schema.properties)).sort()).toEqual([...OLD].sort());
-  // The 43 are held, and the four beside them, with the daemon's own keys.
+  // The 42 are held, and the five beside them, with the daemon's own keys.
   expect(declared.filter((key) => !(key in held.values))).toEqual([]);
   expect(OLD.filter((key) => !(key in held.values))).toEqual([]);
   // The chat the host minted for the session, read off its state.
@@ -723,6 +724,7 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
     'vscode/reconcileAgentHostDetachedWorktrees': 'Worktrees the window manages',
     'vscode/removeSessionArtifact': 'Sessions and the catalogue',
     'vscode/stopBackgroundWork': 'What the window asks a host about itself',
+    'x-ahpd/backgroundToolCall': 'What the window asks a host about itself',
     'vscode/getAgentHostSessionStateFile': 'What the window asks a host about itself',
     'vscode/collectAgentHostDebugLogs': 'What the window asks a host about itself',
     'vscode/cancelAgentHostDebugLogs': 'What the window asks a host about itself',
@@ -737,9 +739,6 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
     'vscode/devContainers/output': 'CONTAINERS.md',
     'vscode/devContainers/relayClose': 'CONTAINERS.md',
     'vscode/devContainers/closeConnection': 'CONTAINERS.md',
-    chatMutable: 'SESSIONS.md',
-    config: 'SESSIONS.md',
-    'chat/configChanged': 'SESSIONS.md',
   };
 
   /*
@@ -768,10 +767,6 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
    * field that did not move and an idled row would keep saying what its last
    * tool was doing. The reference host sends `null` for that and its client
    * reads it as cleared, so this one does too.
-   *
-   * A property a chat may set for itself says `chatMutable`, wherever a schema
-   * is served, and a chat's state carries the values it set as `config`: VS
-   * Code's per-chat config, which its window reads.
    */
   const WIDENED: Record<string, string> = {
     // A question's request, marked with its purpose as VS Code's agents mark it,
@@ -782,13 +777,15 @@ it('sends nothing the protocol does not declare, and nothing short of what it re
     'ChatState /activeTurn/responseParts/N/request undeclared key `_meta`': 'Being asked',
     'SessionInputNeededSetAction /request/request undeclared key `_meta`': 'Being asked',
     'SessionState /inputNeeded/N/request undeclared key `_meta`': 'Being asked',
-    'ChatState / undeclared key `config`': 'SESSIONS.md',
-    'ResolveSessionConfigResult /schema/properties/effortLevel undeclared key `chatMutable`': 'SESSIONS.md',
-    'SessionState /config/schema/properties/effortLevel undeclared key `chatMutable`': 'SESSIONS.md',
     // A root config key a person keeps their own value of, on a host with users.
+    'RootState /config/schema/properties/autoApprovePolicyRestricted undeclared key `x-ahpd-scope`': 'USERS.md',
     'RootState /config/schema/properties/editAutoApprovePatterns undeclared key `x-ahpd-scope`': 'USERS.md',
     'RootState /config/schema/properties/terminalAutoApproveEnabled undeclared key `x-ahpd-scope`': 'USERS.md',
     'RootState /config/schema/properties/terminalAutoApproveRules undeclared key `x-ahpd-scope`': 'USERS.md',
+    // AHP 1.2.0's one-time trigger, which the 1.1.0 schema has no key for.
+    'InitializeResult /automations undeclared key `oneTime`': 'AUTOMATIONS.md',
+    // AHP 1.2.0's run targets, which the 1.1.0 schema has no key for either.
+    'InitializeResult /automations undeclared key `targets`': 'AUTOMATIONS.md',
   };
 
   /*

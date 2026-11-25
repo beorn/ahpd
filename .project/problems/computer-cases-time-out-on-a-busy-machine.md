@@ -1,6 +1,6 @@
 ---
 title: Computer cases time out on a busy machine
-status: open
+status: mitigated
 date: 2026-11-13
 severity: minor
 blocks: []
@@ -44,15 +44,13 @@ On 2026-11-17 the adopted container case timed out at 5000 ms twice in full runs
 On 2026-11-18, a computer run at `2946984b6` ran beside a test daemon with Claude turns, at a load average near 12. It timed out on six cases of this file. It also timed out on `computer-uptime.test.ts`: `charges a relay container to whoever connected and metered it from the connect`. The same suite passed alone at a load average near 5.
 The branch was host/20261116-1714, which does not change `packages/computer`.
 
+On 2026-11-18, the adopted container case and `reads a dev container's vault-named need again after a restart` timed out at 5000 ms in a full run on host/20261118-1043. They timed out again with the file run alone, on that branch and on host/20261118-1104, which does not change `packages/computer`. The adopted container case passed alone with a 60 s limit, in 6.7 s.
+
 On 2026-11-16, `computer-plugin.test.ts`: `starts, stops and restarts a machine by writing what it should be` timed out at 5000 ms again in a full run, at a load average near 8.
 The branch was host/20261116-2126 from `fd236e8ec`, which does not change `packages/computer`.
 
 On 2026-11-13 `computer-disposable.test.ts`: `takes the machine's own git volume with it, and asks for none where the profile leaves it open` timed out alone the same way, at `2bf97a6c1`.
 
-
-On 2026-11-16, in CI run 43952762220 for ahpio/ahpd#356, the `processes (1/2)` job failed on one case at 5000 ms: `computer-servercheck.test.ts`: `runs its own script under sh, and reads what this host has`. The same job passed on the run before, and the change does not touch `packages/computer`.
-
-On 2026-11-17, main's CI run 44030269573 at `19ed69394` failed `processes (1/2)` on the same case, at 5000 ms. The run before it was cancelled, and the run after it at `f65b24112` passed.
 
 On 2026-11-16, on Softov's machine with a load average near 17, a full run timed out 15 cases in `packages/computer` and `plugin-load.test.ts`. The 8 files run again alone timed out 4 cases, 2 of them not in the first set.
 
@@ -60,6 +58,16 @@ On 2026-11-17, at `acc5b9b9c` with the wrapper change, both cases timed out at 5
 The load average was near 15, while the dev daemon restarted. The change touches only the sdk's command matching.
 The two files run alone timed out 3 cases at a load average near 5, the adopted container case among them.
 The same 3 timed out on main at `11846b594`, without the change, and CI passed all of them on #363.
+
+On 2026-11-21, CI's `processes (2/2)` on #400 timed out `computer-parts-build.test.ts`: `pulls the joined image by the digest the release pinned for its tag` at 5000 ms. Its cleanup then failed with `ENOTEMPTY` on the build folder. #400 does not change `packages/computer`. The local computer suite passed all 633 cases on its branch.
+
+On 2026-11-21, CI's `windows (4/4)` on #429, run 44942705209, timed out `agent-acp-machine.test.ts`: `reaches a disposable machine: plain values at create, a $secret by name on each command` at 20 s, its `PROCESS_CASE_MS` budget. #429 does not change `packages/agent-acp` or `packages/computer`.
+
+On 2026-11-21, CI's `windows (4/4)` on #426, run 44943835612, timed out the same case at 20 s. #426 does not change `packages/agent-acp` or `packages/computer`.
+On 2026-11-22, CI's `windows (4/4)` on #448, run 45066610106, timed out the same case at 20 s. #448 does not change `packages/agent-acp`. Its host check returns before the runtime on Windows.
+On Windows that case took 15 s to 17 s when it passed, and the next case, with the same machine, took 2.5 s. The difference is the first import of the computer plugin's source, which took 1.3 s locally. Since `test/the-acp-machine-cases-load-the-computer-plugin-first`, the file imports it once in a `beforeAll`, outside the cases' budget.
+
+On 2026-11-22, the local computer suite under the lock, on branch `build/agents/e5cc1506`, timed out `computer-refusal.test.ts`: `refuses a named machine on a host with no computers port` at 5000 ms. The branch does not change `packages/computer`, and the same file passed on that branch an hour before.
 
 ## Cause
 
@@ -72,9 +80,8 @@ The suite is red on a busy machine for no fault in the code.
 
 ## Workaround
 
-None. A second run is not a fix.
+On 2026-11-21, every computer test file that starts the scripted CLIs sets its own budget of `PROCESS_CASE_MS`, 20 s, in [`code://tools/wait.ts`](../../tools/wait.ts). A case that still times out at 20 s is a new sighting here.
 
 ## Fix
 
-- Give the cases that start the fake CLIs a longer timeout of their own.
-- Or start fewer processes in each case.
+- Start fewer processes in each case, so the default 5 s is enough again.

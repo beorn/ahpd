@@ -1,6 +1,6 @@
 ---
 title: The docs say a part is pinned
-status: implemented
+status: done
 depends: [task-02-a-host-pulls-a-part-by-its-digest.md, task-03-the-release-carries-the-digests.md]
 layer: "docs"
 refs:

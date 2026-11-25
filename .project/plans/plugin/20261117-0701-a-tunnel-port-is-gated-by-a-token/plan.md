@@ -1,7 +1,7 @@
 ---
 title: A tunnel port is gated by an ahpd token
 domain: plugin
-status: planned
+status: built
 priority: medium
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -79,9 +79,9 @@ visitor -> relay -> gate: tkn or ahpd-tkn cookie -> plugin.acceptsToken -> daemo
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the plugin host checks a token](task-01-the-plugin-host-checks-a-token.md) | implemented | - |
-| [02 - a gate checks each request](task-02-a-gate-checks-each-request.md) | implemented | 01 |
-| [03 - the docs say what a gate does](task-03-the-docs-say-what-a-gate-does.md) | implemented | 02 |
+| [01 - the plugin host checks a token](task-01-the-plugin-host-checks-a-token.md) | done | - |
+| [02 - a gate checks each request](task-02-a-gate-checks-each-request.md) | done | 01 |
+| [03 - the docs say what a gate does](task-03-the-docs-say-what-a-gate-does.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -91,9 +91,9 @@ visitor -> relay -> gate: tkn or ahpd-tkn cookie -> plugin.acceptsToken -> daemo
 
 ## Resume state
 
-- **Checks, 2026-11-18:** the suites passed at `2946984b6`. The checks that need the Dev Tunnel account are in [pending/tunnel-token-checks.md](../../../pending/tunnel-token-checks.md).
+- **Checks, 2026-11-18:** the suites passed at `2946984b6`. The checks that need the Dev Tunnel account passed on 2026-11-18, as [implemented.md](implemented.md) says. git://fe8c59241 is the last commit that holds their file.
 - **Done so far:** tasks 01 to 03 are `implemented` on 2026-11-17, on the branch `plugin/20261117-0701-a-tunnel-port-is-gated-by-a-token`, stacked on plan 1's branch.
-- **Next action:** Softov's review, then the checks of *Final verification checklist* on the test daemon.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** an sdk host change runs the computer suite too, as HANDOFF *Tests* says.
 

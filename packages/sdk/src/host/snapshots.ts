@@ -3,10 +3,11 @@ import { Status, idOf } from '../sessions/catalog.js';
 import { windowOf } from '../sessions/paging.js';
 import { RpcError } from '../rpc.js';
 import { runState } from './automations.js';
-import { ROOT, isRootChannel, isAutomations, automationOwner, queryOf, ANNOTATIONS_PATH_SEGMENT, chatUriFor, servedIn, schemeOf, spaceOf, toolCallOfSubagentChat } from './channels.js';
+import { ROOT, isRootChannel, isAutomations, automationOwner, queryOf, sessionOfAnnotations, chatUriFor, servedIn, schemeOf, spaceOf, toolCallOfSubagentChat } from './channels.js';
 import { ownerFilter } from '../utils/values.js';
-import { filterChatConfigValues } from '../vscode/chatconfig.js';
-import type { ChatConfigState, ConfigSchema } from '../vscode/chatconfig.js';
+import { filterChatConfigValues } from './chatconfig.js';
+import { annotationsSummaryOf } from './annotationssummary.js';
+import type { ChatConfigState, SessionConfigSchema } from '@microsoft/agent-host-protocol';
 import type { Agent } from '../types/agent.js';
 import type { Bag } from '../types/common.js';
 import type { Connection } from '../types/host.js';
@@ -34,6 +35,8 @@ export interface Snapshots {
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/AGENTS.md#L213
    */
   resolveChatState(session: string, chatUri: string): Bag;
+  /** A chat's own config: its values, and its schema where its agent is not its session's. */
+  chatConfigState(session: string, chatUri: string, foreign: { agent: Agent; config: Record<string, unknown> } | undefined): ChatConfigState;
   /**
    * A running session's held state, opened from `sessionSeed` the first time
    * anything reads it, or nothing for a session this host is not running.
@@ -212,6 +215,9 @@ export function createSnapshots(ctx: HostContext): Snapshots {
       // function both answers call, from the state each chat holds.
       chats: chatCatalogOf(channel, held, restored),
       ...(activity === undefined ? {} : { activity }),
+      // Its annotations channel and counts, which a client reads instead of
+      // making the channel's name itself, as AHP 1.1.0 asks.
+      annotations: annotationsSummaryOf(channel, ctx.marksOf(idOf(channel))),
     };
   };
 
@@ -221,14 +227,14 @@ export function createSnapshots(ctx: HostContext): Snapshots {
    * A chat of another backend runs on nothing of its session's, so it says
    * its own schema beside them, the properties of its backend's a chat may
    * set, and its values are its own config's.
-   * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/common/state/protocol/channels-chat/state.ts#L416-L445
+   * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/channels-chat/state.ts#L430-L462
    */
   const chatConfigState = (
     session: string, chatUri: string, foreign: { agent: Agent; config: Record<string, unknown> } | undefined,
   ): ChatConfigState => {
     if (foreign === undefined) return { values: ctx.getChatOwnConfigValues(session, chatUri) };
-    const schema = sessionSchema(foreign.agent) as ConfigSchema;
-    const properties = Object.fromEntries(Object.entries(schema.properties).filter(([, property]) => property?.chatMutable === true));
+    const schema = sessionSchema(foreign.agent) as unknown as SessionConfigSchema;
+    const properties = Object.fromEntries(Object.entries(schema.properties).filter(([, property]) => property.chatMutable === true));
     return { schema: { ...schema, properties }, values: filterChatConfigValues(schema, foreign.config) };
   };
 
@@ -249,6 +255,8 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     const canvases = talking.chat.channel === undefined ? ctx.canvases.listOf(chatUri) : undefined;
     const state: Bag = {
       ...talking.chat.chatState(),
+      // The chat's own changesets, unless the session's machine serves them.
+      ...(ctx.relaysChangesets(session) ? {} : ctx.chatChangesetsOf(session, chatUri)),
       origin: getChatOrigin(chatUri),
       // How a person may use it, where the plugin that made it said.
       ...(ctx.chatInteractivity.get(chatUri) === undefined ? {} : { interactivity: ctx.chatInteractivity.get(chatUri) }),
@@ -455,8 +463,9 @@ export function createSnapshots(ctx: HostContext): Snapshots {
      * is a failed open, and a client that treats the three as one
      * hydration renders nothing at all.
      */
-    if (channel.endsWith(ANNOTATIONS_PATH_SEGMENT) && sessionChannel(channel)) {
-      const owning = channel.slice(0, -ANNOTATIONS_PATH_SEGMENT.length);
+    const annotated = sessionOfAnnotations(channel);
+    if (annotated !== undefined && sessionChannel(annotated)) {
+      const owning = annotated;
       const id = idOf(owning);
       /*
        * Asked of `restoreSession`, which consults the catalogue itself, rather than of
@@ -519,7 +528,7 @@ export function createSnapshots(ctx: HostContext): Snapshots {
       // Somebody reads this directory's changesets now, so the source watches
       // what only git writes: staging, committing and checking out elsewhere.
       startWatchingDir(at.dir);
-      const state = await options.changes?.state(at.dir, at.owner, at.scope, at.base);
+      const state = await options.changes?.state(at.dir, idOf(at.owner), at.scope, at.base);
       if (!state) throw new RpcError(-32001, `No changeset at ${channel}`);
       /*
        * The verbs, alongside the files. Omitted when there are none, which
@@ -728,11 +737,16 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     const backend = opened?.provider === undefined ? undefined : ctx.agents.get(opened.provider);
     const config = chatConfigState(owning, channel, backend === undefined ? undefined : { agent: backend, config: opened?.config ?? {} });
     if (opened !== undefined && !ctx.ownChat(nameOf(id), opened.uri)) {
-      const own = await ctx.transcriptOf(owner, opened.backendId, ctx.launchWorkingDirectory(id), nameOf(id), opened.uri);
+      // Its own backend's conversation, and no turns where this host does not
+      // serve that backend: another's answer would be somebody else's history.
+      const own = opened.provider !== undefined && backend === undefined ? []
+        : await ctx.transcriptOf(backend ?? owner, opened.backendId, ctx.launchWorkingDirectory(id), nameOf(id), opened.uri);
       return {
         kind: 'chat',
         state: {
           resource: channel,
+          // Its agent, where it is not its session's, as its live state says it.
+          ...(opened.provider === undefined ? {} : { provider: opened.provider }),
           title: opened.uri === leadUri ? leadTitle(besides) : opened.title ?? title,
           status: Status.Idle | kept.chatFlags(id, channel),
           modifiedAt: stamp,
@@ -823,6 +837,7 @@ export function createSnapshots(ctx: HostContext): Snapshots {
         chats: [
           {
             resource: leadUri,
+            ...(lead?.provider === undefined ? {} : { provider: lead.provider }),
             title: leadTitle(besides || workers.length > 0),
             status: Status.Idle | kept.chatFlags(id, leadUri),
             modifiedAt: listedAt,
@@ -841,6 +856,7 @@ export function createSnapshots(ctx: HostContext): Snapshots {
             .filter((one) => one.default !== true)
             .map((one) => ({
               resource: one.uri,
+              ...(one.provider === undefined ? {} : { provider: one.provider }),
               title: one.title ?? title,
               status: Status.Idle | kept.chatFlags(id, one.uri),
               modifiedAt: listedAt,
@@ -890,5 +906,5 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     };
   };
 
-  return { value, snapshotOf, sessionSeed, resolveChatState, sessionStateOf };
+  return { value, snapshotOf, sessionSeed, resolveChatState, chatConfigState, sessionStateOf };
 }

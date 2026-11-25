@@ -59,6 +59,10 @@ export interface PermissionRequest {
   url?: string;
   /** An absolute path, for a read or a write. */
   path?: string;
+  /** The MCP server whose tool the call runs, as the session's customizations name it. */
+  mcpServerName?: string;
+  /** The tool's own name on that server. */
+  mcpToolName?: string;
 }
 
 /** The folder a relative path rule is read against, and the home a `~/` one is. */
@@ -74,13 +78,24 @@ interface ParsedRule {
   specifier?: string;
 }
 
-/** Whether a rule names a whole request: a bare `Shell`, a `WebFetch`, a `Read` or `Edit` path, or a tool's name. */
+/**
+ * Whether a rule names a whole request: a bare `Shell`, a `WebFetch`, a `Read`
+ * or `Edit` path, an `Mcp` server or tool, or a tool's name. `Mcp(<server>)`
+ * and `Mcp(<server>/<tool>)` read the request's server and tool, and a server
+ * whose name has a `/` matches neither, as VS Code's matcher reads them.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/permissionRules.ts#L118-L123
+ */
 export const matchesPermissionRule = (rule: string, request: PermissionRequest, context: PermissionRuleContext): boolean => {
   const parsed = parseRule(rule);
   if (parsed === undefined) return false;
   switch (parsed.tool) {
     case 'Shell':
       return request.kind === 'shell' && parsed.specifier === undefined;
+    case 'Mcp':
+      return request.kind === 'mcp' && (parsed.specifier === undefined
+        || (request.mcpServerName !== undefined && request.mcpServerName !== '' && !request.mcpServerName.includes('/')
+          && (parsed.specifier === request.mcpServerName
+            || (request.mcpToolName !== undefined && parsed.specifier === `${request.mcpServerName}/${request.mcpToolName}`))));
     case 'WebFetch':
       return request.kind === 'url' && (parsed.specifier === undefined || matchesWebFetch(parsed.specifier, request.url));
     case 'Read':

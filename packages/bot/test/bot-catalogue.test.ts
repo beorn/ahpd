@@ -187,7 +187,7 @@ const subscribe = async (reader: Reader): Promise<string[]> => {
 };
 
 const write = async (reader: Reader, slug: string, body: Bag): Promise<void> => {
-  const answer = await call(reader, 'resourceWrite', { uri: `bot://${slug}`, data: JSON.stringify(body) });
+  const answer = await call(reader, 'x-ahpd/bots/put', { id: slug, record: body });
   if (!('result' in answer)) throw new Error(`refused: ${answer.code} ${answer.message}`);
 };
 
@@ -250,7 +250,7 @@ it('sends a make, an edit and a delete to the readers each concerns', async () =
   await write(ana, 'hers', { name: 'Hers two' });
   members.bo = ['crew'];
   await write(ana, 'motion', { name: 'Motion six' });
-  expect(await call(ana, 'resourceDelete', { uri: 'bot://motion' })).toHaveProperty('result');
+  expect(await call(ana, 'x-ahpd/bots/remove', { id: 'motion' })).toHaveProperty('result');
 
   expect(ana.heard()).toEqual([
     'added motion', 'changed motion', 'changed motion', 'changed motion', 'changed motion', 'changed hers', 'changed motion', 'removed motion',
@@ -322,7 +322,7 @@ it('replays to a reader only what it may read', async () => {
   const desk = await as(host, 'bo', 'bo-desk');
   await write(desk, 'new', { name: 'New' });
   await write(desk, 'his', { name: 'His again' });
-  expect(await call(desk, 'resourceDelete', { uri: 'bot://old' })).toHaveProperty('result');
+  expect(await call(desk, 'x-ahpd/bots/remove', { id: 'old' })).toHaveProperty('result');
 
   // Back on a socket that resolved to bo, the way a personal token admits one.
   const person = await users.verify('bo');

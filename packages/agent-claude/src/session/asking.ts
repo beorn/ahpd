@@ -218,7 +218,15 @@ export function createAsking(ctx: SessionContext): Asking {  /**
      */
     const writing = writeOf(toolName, input);
     const shown = writing === undefined ? undefined : await ctx.options.onEditProposed?.(id, writing.path, writing.apply);
-    if (Boolean(signal?.aborted) || ctx.openTurn(scope) !== turn) return { behavior: 'deny', message: NO_TURN };
+    /*
+     * A turn stopped or replaced while the preview was made: the question
+     * would land on a turn that never asked it. The preview the host was
+     * handed is released, as an answered call's is.
+     */
+    if (Boolean(signal?.aborted) || ctx.openTurn(scope) !== turn) {
+      if (shown !== undefined) ctx.options.onEditSettled?.(id);
+      return { behavior: 'deny', message: NO_TURN };
+    }
     const edits: Bag | undefined = shown === undefined ? undefined : { items: [shown] };
     if (edits !== undefined) previews.add(id);
     return await new Promise<Held>((settle) => {

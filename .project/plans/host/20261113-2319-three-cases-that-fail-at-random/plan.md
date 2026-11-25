@@ -1,7 +1,7 @@
 ---
 title: Three cases that fail at random wait on what they mean
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -69,9 +69,9 @@ token minted -> users watch, later -> root/agentsChanged with the same list -> t
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The agents-channel case counts one change](task-01-the-agents-channel-case-counts-one-change.md) | implemented | - |
-| [02 - A teardown waits for its children](task-02-a-teardown-waits-for-its-children.md) | implemented | - |
-| [03 - The gone-CLI case waits on events](task-03-the-gone-cli-case-waits-on-events.md) | implemented | - |
+| [01 - The agents-channel case counts one change](task-01-the-agents-channel-case-counts-one-change.md) | done | - |
+| [02 - A teardown waits for its children](task-02-a-teardown-waits-for-its-children.md) | done | - |
+| [03 - The gone-CLI case waits on events](task-03-the-gone-cli-case-waits-on-events.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -81,7 +81,7 @@ token minted -> users watch, later -> root/agentsChanged with the same list -> t
 ## Resume state
 
 - **Done so far:** tasks 01 to 03 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** review of the PR. The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** none.
 

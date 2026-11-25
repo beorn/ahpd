@@ -1,6 +1,6 @@
 ---
 title: Configure adds a person and prints the next commands
-status: implemented
+status: done
 depends: []
 layer: "server"
 refs:

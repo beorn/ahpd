@@ -25,6 +25,7 @@ import type { HostTool } from '../../sdk/src/types/host.js';
 import { fakePty } from '../../sdk/test/support/pty.js';
 import { callsIn, openedFrom, replayed } from '../../sdk/test/support/replay.js';
 import { undeclaredIn } from '../../sdk/test/support/wire.js';
+import { WAIT_MS } from '../../../tools/wait.ts';
 
 /** The space a command is typed after, which keeps it out of a POSIX shell's history; PowerShell, Windows' shell here, keeps none. */
 const HISTORY_SPACE = process.platform === 'win32' ? '' : ' ';
@@ -51,13 +52,20 @@ function peer(): Peer & { notes: { method: string; params: unknown }[] } {
   };
 }
 
-/** Let the run's zero-delay work finish, up to a point; no wall-clock waiting on a real model. */
-const until = async (check: () => boolean, times = 400): Promise<void> => {
-  for (let i = 0; i < times; i++) {
-    if (check()) return;
-    await new Promise((r) => { setTimeout(r, 0); });
+/*
+ * Let the run's work finish, up to a point; no waiting on a real model.
+ *
+ * Bounded by the clock, not by a count of timer ticks: a resume that drops and
+ * makes a session again writes the file store, which a busy runner can take
+ * longer than a few hundred ticks to do. `performance.now()` is the clock
+ * because one case fakes `Date`.
+ */
+const until = async (check: () => boolean): Promise<void> => {
+  const deadline = performance.now() + WAIT_MS;
+  while (!check()) {
+    if (performance.now() >= deadline) throw new Error(`still waiting after ${WAIT_MS} ms`);
+    await new Promise((r) => { setImmediate(r); });
   }
-  throw new Error(`still waiting after ${times} tries`);
 };
 
 type Note = { channel: string; action: Record<string, unknown> };
@@ -200,8 +208,8 @@ it('runs a turn on the model the turn names, with no model in the session config
   const home = mkdtempSync(join(tmpdir(), 'ahpd-cofold-turn-model-'));
   const was = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = home;
-  mkdirSync(join(home, 'copapo'), { recursive: true });
-  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify({
+  mkdirSync(join(home, 'cofold'), { recursive: true });
+  writeFileSync(join(home, 'cofold', 'config.json'), JSON.stringify({
     providers: [
       { id: 'open_router', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k-open' },
       { id: 'moonshot', baseUrl: 'https://api.moonshot.ai/v1', apiKey: 'k-moon' },
@@ -260,8 +268,8 @@ it('sends the thinking level the turn\'s model selection carries', async () => {
   const home = mkdtempSync(join(tmpdir(), 'ahpd-cofold-turn-level-'));
   const was = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = home;
-  mkdirSync(join(home, 'copapo'), { recursive: true });
-  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify({
+  mkdirSync(join(home, 'cofold'), { recursive: true });
+  writeFileSync(join(home, 'cofold', 'config.json'), JSON.stringify({
     providers: [{ id: 'open_router', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k-open' }],
   }));
   const real = globalThis.fetch;
@@ -962,7 +970,7 @@ it('runs a !command in a shell rather than asking a model', async () => {
 
   begin(client, chatUri, 't1', '!echo cofold-ran-it');
   // A real shell, which can take seconds to start on Windows.
-  await until(() => ended(p, chatUri), 4000);
+  await until(() => ended(p, chatUri));
 
   // The host's shell, not the model: one tool call named `terminal`, completed
   // with what the shell printed, as the host's local command.
@@ -1036,7 +1044,7 @@ it('names a !command\'s terminal while it runs, and holds the call a watching cl
   expect(pty.typed).toEqual([`${HISTORY_SPACE}make preview\r`]);
 
   pty.say('\u001b]633;C\u0007built\r\n\u001b]633;D;0\u0007\u001b]633;A\u0007$ ');
-  await until(() => ended(p, chatUri), 4000);
+  await until(() => ended(p, chatUri));
   const done = actions(p, chatUri).find((e) => e.action.type === 'chat/toolCallComplete');
   expect((done?.action.result as { content: unknown[] }).content).toEqual([
     { ...named, result: { exitCode: 0, preview: 'built' } },
@@ -1070,7 +1078,7 @@ it('fails the turn, and not the daemon, when there is no model to run on', async
     const part = failure()?.action.part as { error?: { errorType?: string; message?: string }; resumable?: unknown };
     const message = String(part?.error?.message);
     expect(message).toContain('add "model"');
-    expect(message).toContain(join(home, 'copapo', 'config.json'));
+    expect(message).toContain(join(home, 'cofold', 'config.json'));
     // Typed by the stage it failed at, as VS Code's host types a send whose
     // model nothing resolves.
     expect(part?.error?.errorType).toBe('modelSelectionFailed');
@@ -1106,7 +1114,7 @@ const statusAtEnd = async (p: ReturnType<typeof peer>, uri: string, chatUri: str
       && idOf((n.params as { session: string }).session) === idOf(uri)
       && (n.params as { changes: { status?: unknown } }).changes.status !== undefined);
   };
-  await until(() => rowAfter() !== undefined, 4000);
+  await until(() => rowAfter() !== undefined);
   const status = (rowAfter()?.params as { changes: { status?: unknown } } | undefined)?.changes.status;
   // Without the read bit, which is the person's and not the turn's.
   return typeof status === 'number' ? status & ~Status.IsRead : status;
@@ -1581,7 +1589,7 @@ it('announces the session idle with the turnComplete that ends a !command', asyn
   expect(await statusAtEnd(p, uri, chatUri, 'chat/turnComplete', 't1')).toBe(Status.Idle);
   const command = 't2';
   begin(client, chatUri, command, '!echo cofold-ran-it');
-  await until(() => types(p, chatUri).filter((type) => type === 'chat/turnComplete').length === 2, 4000);
+  await until(() => types(p, chatUri).filter((type) => type === 'chat/turnComplete').length === 2);
   expect(types(p, chatUri)).toContain('chat/toolCallComplete');
   /*
    * The status a client's list holds once the command's moves were quiet:
@@ -1594,7 +1602,7 @@ it('announces the session idle with the turnComplete that ends a !command', asyn
     || (n.method === 'root/sessionAdded' && idOf((n.params as { summary: { resource: string } }).summary.resource) === idOf(uri)));
   const commandEnd = p.notes.findIndex((n) => n.method === 'action' && (n.params as Note).channel === chatUri
     && (n.params as Note).action.type === 'chat/turnComplete' && (n.params as Note).action.turnId === command);
-  await until(() => p.notes.slice(commandEnd + 1).some((n) => told().includes(n)), 4000);
+  await until(() => p.notes.slice(commandEnd + 1).some((n) => told().includes(n)));
   const held = told()
     .map((n) => (n.params as { summary?: { status?: unknown } }).summary?.status ?? (n.params as { changes?: { status?: unknown } }).changes?.status)
     .filter((status) => typeof status === 'number')

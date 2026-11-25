@@ -35,7 +35,7 @@
  * not checked: the agents open before the connectors do.
  *
  * Six commands serve an agent. `x-ahpd/agents/put` takes
- * `{ id, engine, owner, name, description?, icon?, model?, config }`, checks
+ * `{ id, engine, owner, name, description?, icon?, tags?, model?, config }`, checks
  * `config` against the engine's schema, writes the record, calls the engine's
  * `open` with each secret read back, and folds the new agent list into the
  * running host. `x-ahpd/agents/remove` takes `{ id }`, ends the sessions that
@@ -85,6 +85,7 @@ import { recordsChannel, type RecordsChannel } from '../resources/recordschannel
 import { recordViews } from '../plugins/views.js';
 import { alertList, dropOpenAlerts, raiseOpenAlerts } from '../plugins/alerts.js';
 import { bag, isRecord, reason } from '../utils/values.js';
+import { tagsOf, tagsProblem } from '../utils/tags.js';
 import type { Icon } from '@microsoft/agent-host-protocol';
 import { hostOperationText, withOperations, type OperationChannel } from '../kinds/operations.js';
 import type { Agent } from '../types/agent.js';
@@ -172,6 +173,7 @@ interface OpenView {
   name: string;
   description: string | undefined;
   icon: Icon | undefined;
+  tags: string[];
   model: string | undefined;
   config: Record<string, unknown>;
 }
@@ -223,6 +225,8 @@ export interface AgentsChannel {
    * reads to decide which agents one caller is told about.
    */
   owners(): ReadonlyMap<string, AgentOwner | undefined>;
+  /** The tags of an open agent, read live, so an edit counts from the next record written; empty for any other id. */
+  tagsOf(id: string): readonly string[];
   /**
    * The ids of the stored records whose mode is `disabled`, as the last read
    * of the collection found them.
@@ -478,6 +482,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     name: typeof record.name === 'string' ? record.name : record.id,
     description: typeof record.description === 'string' ? record.description : undefined,
     icon: isRecord(record.icon) ? record.icon as unknown as Icon : undefined,
+    tags: tagsOf(record.tags),
     model: typeof record.model === 'string' ? record.model : undefined,
     config: {},
   });
@@ -496,6 +501,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     view.name = typeof record.name === 'string' ? record.name : record.id;
     view.description = typeof record.description === 'string' ? record.description : undefined;
     view.icon = isRecord(record.icon) ? record.icon as unknown as Icon : undefined;
+    view.tags = tagsOf(record.tags);
     view.model = typeof record.model === 'string' ? record.model : undefined;
     view.config = config;
   };
@@ -572,6 +578,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       name: view.name,
       ...(view.description === undefined ? {} : { description: view.description }),
       ...(view.icon === undefined ? {} : { icon: view.icon }),
+      ...(view.tags.length === 0 ? {} : { tags: [...view.tags] }),
       ...(view.model === undefined ? {} : { model: view.model }),
     };
     return {
@@ -807,6 +814,15 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     return value as unknown as Icon;
   };
 
+  /** The optional tags, each once, refused when one is not fit to keep. */
+  const tagsParam = (params: Record<string, unknown>, command: string): string[] | undefined => {
+    const value = params.tags;
+    if (value === undefined) return undefined;
+    const problem = tagsProblem(value);
+    if (problem !== undefined) throw new RpcError(INVALID_PARAMS, `${command} takes ${problem}`);
+    return tagsOf(value);
+  };
+
   /**
    * Refuse a team's or a person's record that sets a field only the host may.
    *
@@ -933,6 +949,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     const description = optionalString(params, 'description', PUT);
     const model = optionalString(params, 'model', PUT);
     const icon = iconParam(params, PUT);
+    const tags = tagsParam(params, PUT);
     const before = await options.collection.get(id);
     const was = before === undefined ? undefined : asOwner(before.owner);
     /*
@@ -985,6 +1002,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       name,
       ...(description === undefined ? {} : { description }),
       ...(icon === undefined ? {} : { icon }),
+      ...(tags === undefined || tags.length === 0 ? {} : { tags }),
       ...(model === undefined ? {} : { model }),
       ...keptMode(before),
       config: moved,
@@ -1301,6 +1319,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       return channel.refresh();
     },
     owners: ownersFor,
+    tagsOf: (id) => open.get(id)?.view.tags ?? [],
     disabled: () => disabledIds,
     paused: () => pausedIds,
     handed,

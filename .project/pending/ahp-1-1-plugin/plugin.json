@@ -1,0 +1,7 @@
+{
+  "id": "ahp-1-1-check",
+  "name": "AHP 1.1.0 check",
+  "version": "0.1.0",
+  "main": "./index.ts",
+  "description": "Adds two agents that repeat what they are told, for ahp-1-1-checks.mjs."
+}

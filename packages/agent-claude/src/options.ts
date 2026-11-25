@@ -40,9 +40,7 @@ export interface Declaration {
  *
  * `on` and `off` set it and `default` leaves it to the settings files. That
  * is why `default` produces nothing rather than an unset: the layer is absent,
- * so whatever those files say is what runs. `on` also runs a sandboxed Bash
- * command without a prompt, which the SDK stopped doing by default in 0.3.325;
- * deny and ask rules still stop one.
+ * so whatever those files say is what runs.
  */
 export const sandbox: Declaration = {
   schema: {
@@ -50,9 +48,25 @@ export const sandbox: Declaration = {
     enum: ['default', 'on', 'off'],
     description: "The CLI's own sandbox for shell commands. On and off set it; default follows the settings files.",
   },
-  toQuery: (value) => value === 'on' ? { settings: { sandbox: { enabled: true, autoAllowBashIfSandboxed: true } } }
+  toQuery: (value) => value === 'on' ? { settings: { sandbox: { enabled: true } } }
     : value === 'off' ? { settings: { sandbox: { enabled: false } } }
     : {},
+};
+
+/**
+ * Whether a sandboxed Bash command runs without a question.
+ *
+ * The SDK's own setting, under its own name. A record that does not say sends
+ * nothing: the settings files decide, and the SDK asks where they are silent.
+ * Deny and ask rules stop a command either way.
+ * https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md
+ */
+export const autoAllowBashIfSandboxed: Declaration = {
+  schema: {
+    type: 'boolean',
+    description: 'Run a sandboxed Bash command without asking. When off, it asks, and the dontAsk mode denies it.',
+  },
+  toQuery: (value) => (typeof value === 'boolean' ? { settings: { sandbox: { autoAllowBashIfSandboxed: value } } } : {}),
 };
 
 /**
@@ -493,7 +507,7 @@ export const DECLARED: Record<string, Declaration> = {
   sandbox, thinking, hostTasks, hostTools, enableTasks, cliStart, stopEnds, dontAsk, portFailures, subagentsFrom,
   taskOutputFirstWaitMs, taskOutputLongestWaitMs, taskOutputQuietReads, subagentTitleMax, subagentStartTimeoutMs,
   maxShellInitScript, maxTerminalOutputBytes, keepFramed, watchWaitMs, fileMostBytes, ruleDepth, ruleMost,
-  outputStyle, env, logins, extraArgs,
+  outputStyle, env, logins, extraArgs, autoAllowBashIfSandboxed,
 };
 
 /** One model a record writes out: an id, and the name the picker draws. */
@@ -542,6 +556,10 @@ const OF_A_VARIANT: Record<string, Bag> = {
     description: "Endpoints whose model lists this record offers, each filtered by match. key is the bearer token, written as { fromEnv } or { \"$secret\" }.",
   },
   keepCliModels: { type: 'boolean', description: 'With models, add them to the CLI model list rather than replace it.' },
+  computerConfigDir: {
+    anyOf: [{ type: 'string' }, { const: false }],
+    description: "Claude CLI configuration directory inside a computer, over the plugin's. Set to false to keep the computer image's own configuration.",
+  },
 };
 
 /**
@@ -554,18 +572,48 @@ const OF_A_VARIANT: Record<string, Bag> = {
  * `models`, `modelSources` and `keepCliModels` stay, because which models a
  * record offers is this backend's question and not the channel's.
  */
-export const kindSchema = (): Bag => ({
-  type: 'object',
-  properties: {
+export const kindSchema = (): Bag => {
+  const fields: Bag = {
     ...Object.fromEntries(Object.entries(DECLARED).map(([name, one]) => [name, one.schema])),
     ...OF_A_VARIANT,
-  },
-});
+  };
+  // A field FORM_ORDER does not name goes last, so the form never loses it.
+  const named = FORM_ORDER.filter((name) => name in fields);
+  const rest = Object.keys(fields).filter((name) => !FORM_ORDER.includes(name));
+  return { type: 'object', properties: Object.fromEntries([...named, ...rest].map((name) => [name, fields[name]])) };
+};
 
-/** The options of one declaration, gathered into a single bag. */
+/**
+ * The order a record's form draws its fields in, by purpose: the models, the
+ * prompt, the tools, the run, the machine, and the tuning last. `DECLARED`
+ * keeps its own order, which is the order its options are gathered in.
+ */
+const FORM_ORDER: readonly string[] = [
+  'models', 'modelSources', 'keepCliModels',
+  'outputStyle', 'thinking',
+  'hostTools', 'hostTasks', 'enableTasks',
+  'env', 'logins', 'extraArgs', 'sandbox', 'autoAllowBashIfSandboxed',
+  'computerConfigDir',
+  'cliStart', 'stopEnds', 'dontAsk', 'portFailures', 'subagentsFrom',
+  'taskOutputFirstWaitMs', 'taskOutputLongestWaitMs', 'taskOutputQuietReads', 'subagentTitleMax', 'subagentStartTimeoutMs',
+  'maxShellInitScript', 'maxTerminalOutputBytes', 'keepFramed', 'watchWaitMs', 'fileMostBytes', 'ruleDepth', 'ruleMost',
+];
+
+/**
+ * The options of one declaration, gathered into a single bag. Two that say
+ * parts of `settings.sandbox` each keep theirs.
+ */
 const through = (values: Bag, member: 'toQuery' | 'toFlags'): Bag => {
   const out: Bag = {};
-  for (const [name, one] of Object.entries(DECLARED)) Object.assign(out, one[member]?.(values[name]) ?? {});
+  for (const [name, one] of Object.entries(DECLARED)) {
+    const said = one[member]?.(values[name]) ?? {};
+    const was = bag(out.settings);
+    const now = bag(said.settings);
+    Object.assign(out, said);
+    if (said.settings !== undefined) {
+      out.settings = { ...was, ...now, ...(was.sandbox !== undefined || now.sandbox !== undefined ? { sandbox: { ...bag(was.sandbox), ...bag(now.sandbox) } } : {}) };
+    }
+  }
   return out;
 };
 
@@ -579,8 +627,9 @@ export const optionDefaults = (): Bag => Object.fromEntries(
   Object.entries(DECLARED).filter(([, one]) => one.default !== undefined).map(([name, one]) => [name, one.default]),
 );
 
-/** The `query()` options a set of declared values produces. */
-export const queryOptionsOf = (values: Bag): Bag => through(values, 'toQuery');
+/** The `query()` options a set of declared values produces. With the sandbox off no command is sandboxed, so nothing is said of one. */
+export const queryOptionsOf = (values: Bag): Bag =>
+  through(values['sandbox'] === 'off' ? { ...values, autoAllowBashIfSandboxed: undefined } : values, 'toQuery');
 
 /**
  * A variant's own `env`, each `{ fromEnv }` read, and `null` for a variable it

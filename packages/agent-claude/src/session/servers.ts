@@ -10,8 +10,15 @@ import { isHostInjectedMcpServerName } from './clienttools.js';
 import { customizationsOf, pluginIdOf, pluginRootOf } from './customizations.js';
 import { configDirOf, diskBoundsOf, diskOf, managedDirOf } from './disk.js';
 import { createClaudeCustomizationWatcher } from './watch.js';
+import { createMcpSkills } from './mcpskills.js';
+import type { McpSkills } from './mcpskills.js';
+import { sdkVersion } from '@ahpd/sdk';
 import type { Published } from './customizations.js';
 import type { Disk, DiskKind } from './disk.js';
+
+/** How long a connecting server is given before its status is read again, doubled each time up to the most. */
+const CONNECTING_MS = 250;
+const CONNECTING_MOST_MS = 5_000;
 
 /** The servers the CLI reports, less this session's own in-process two. */
 const reportedServers = (answer: unknown): unknown[] => (Array.isArray(answer) ? answer : [])
@@ -43,8 +50,10 @@ export interface Servers {
   reconcileMcpServerEnablement: () => Promise<void>;
   /** The plugins this session switched, by `enabledPlugins` id, as the CLI's `enabledPlugins` setting takes them. */
   enabledPlugins: () => Record<string, boolean>;
-  /** Stop the watch of the Claude folders. */
+  /** Stop the watch of the Claude folders, and let go of the served skills' folder. */
   unwatch: () => void;
+  /** The skills this session's MCP servers serve. */
+  skills: McpSkills;
   methods: {
     setCustomizationEnabled: (id: string, enabled: boolean) => Promise<boolean>;
     startMcpServer: (id: string) => Promise<boolean>;
@@ -154,13 +163,54 @@ export function createServers(ctx: SessionContext): Servers {
    */
   const laid = (plugins: unknown[]): void => {
     const handed = new Set((ctx.options.plugins ?? []).map((one) => one.path));
+    const folder = Object.keys(ctx.mcpServers).length > 0 ? skills.folder() : undefined;
+    if (folder !== undefined) handed.add(folder);
     lastPlugins = plugins.map((raw) => bag(raw));
     const off = [...switched.values()].filter((one) => !one.enabled).map((one) => one.plugin);
     const was = JSON.stringify(ctx.customizations);
-    ctx.customizations = customizationsOf(reported.init, reported.mcp, reported.skills, wanted, plugins, handed, off, diskNow(), stopRequested);
+    // A served skill is listed under its server, and not again as the CLI's own.
+    const own = (given: unknown[]): unknown[] => given.filter((raw) => !skills.mine(str(bag(raw).name) ?? ''));
+    ctx.customizations = customizationsOf(
+      { ...reported.init, ...(Array.isArray(reported.init.commands) ? { commands: own(reported.init.commands) } : {}) },
+      reported.mcp, own(reported.skills), wanted, plugins, handed, off, diskNow(), stopRequested,
+    );
+    skills.lay(ctx.customizations);
     if (JSON.stringify(ctx.customizations) !== was) {
       ctx.emit('session', { type: 'session/customizationsChanged', customizations: ctx.customizations });
     }
+  };
+
+  /** The skills the servers serve, asked of each from this host. */
+  const skills = createMcpSkills({
+    session: ctx.options.uri,
+    cwd: ctx.options.cwd,
+    here: ctx.options.spawn === undefined,
+    env: () => ctx.cliEnv ?? process.env,
+    version: sdkVersion(),
+    warn: (said) => { ctx.options.log?.(said, 'warn'); },
+  });
+
+  /**
+   * Ask the servers that are connected for their skills, and lay them where
+   * that moved anything. Nothing waits for it: a server is asked beside the
+   * CLI, on a connection of this host's own, which closes once it has answered.
+   *
+   * A server the CLI reports connected is one the person let it start, so
+   * nothing is started here that was not.
+   */
+  const refreshSkills = async (found: unknown[]): Promise<void> => {
+    const connected = found.map(bag).filter((one) => str(one.status) === 'connected').map((one) => str(one.name) ?? '');
+    if (!await skills.refresh(connected, ctx.mcpServers).catch(() => false) || ctx.disposed) return;
+    await reload();
+  };
+
+  /** Lay the skills that are on, have the CLI load them, and say the list where it moved. */
+  const reload = async (): Promise<void> => {
+    const was = JSON.stringify(ctx.customizations);
+    skills.lay(ctx.customizations);
+    if (JSON.stringify(ctx.customizations) !== was)
+      ctx.emit('session', { type: 'session/customizationsChanged', customizations: ctx.customizations });
+    await reloadPlugins();
   };
 
   /**
@@ -194,7 +244,9 @@ export function createServers(ctx: SessionContext): Servers {
   const refreshMcp = async (): Promise<void> => {
     const to = ctx.query;
     if (to === undefined) return;
-    const found = await to.mcpServerStatus().then(reportedServers).catch(() => [] as unknown[]);
+    const found = await to.mcpServerStatus().then(reportedServers).catch(() => undefined);
+    // A CLI that does not answer, or was put away meanwhile, says nothing of its servers.
+    if (found === undefined || ctx.disposed || ctx.query !== to) return;
     reported.mcp = found;
     await discover(found);
     const disk = diskNow();
@@ -281,6 +333,31 @@ export function createServers(ctx: SessionContext): Servers {
       ctx.customizations.splice(ctx.customizations.indexOf(entry), 1);
       ctx.emit('session', { type: 'session/customizationRemoved', id: str(entry.id) as string });
     }
+    void refreshSkills(found);
+    askAgainWhileConnecting(found);
+  };
+
+  /** The next read of a connecting server's status, and how long it waits. */
+  let nextRead: ReturnType<typeof setTimeout> | undefined;
+  let nextReadIn = CONNECTING_MS;
+
+  /**
+   * Read the status again while a server is connecting. The CLI answers the
+   * handshake before its servers have connected, and says nothing when they
+   * have, so a status read once is `pending` for as long as the session runs.
+   */
+  const askAgainWhileConnecting = (found: unknown[]): void => {
+    clearTimeout(nextRead);
+    nextRead = undefined;
+    const to = ctx.query;
+    if (ctx.disposed || to === undefined) return;
+    if (!found.some((raw) => str(bag(raw).status) === 'pending')) {
+      nextReadIn = CONNECTING_MS;
+      return;
+    }
+    nextRead = setTimeout(() => { if (!ctx.disposed && ctx.query === to) void refreshMcp(); }, nextReadIn);
+    nextRead.unref?.();
+    nextReadIn = Math.min(nextReadIn * 2, CONNECTING_MOST_MS);
   };
 
   /**
@@ -541,6 +618,8 @@ export function createServers(ctx: SessionContext): Servers {
     await discover(mcp);
     laid(plugins);
     ctx.options.onHandshake?.();
+    void refreshSkills(mcp);
+    askAgainWhileConnecting(mcp);
   };
 
   /**
@@ -605,6 +684,10 @@ export function createServers(ctx: SessionContext): Servers {
      * first CLI is brought to it before the first prompt.
      */
     setCustomizationEnabled: async (id, enabled) => {
+      if (skills.toggle(id, enabled)) {
+        await reload();
+        return true;
+      }
       const server = serverNamed(id);
       if (!server)
         return switchPlugin(id, enabled);
@@ -782,7 +865,10 @@ export function createServers(ctx: SessionContext): Servers {
     unwatch: () => {
       unwatch?.();
       unwatch = undefined;
+      clearTimeout(nextRead);
+      skills.close();
     },
+    skills,
     methods,
   };
 }

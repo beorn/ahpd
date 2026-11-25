@@ -62,7 +62,6 @@ export function turnsOf(session: WatchedSession): TranscriptTurn[] {
       turnId: watched.turnId,
       parts: [],
       calls: new Map(),
-      opening: [],
     };
     for (const { update, at } of watched.updates) mapUpdate(replay, update, at);
     // A call still open when its turn ended is held as the protocol's reducer

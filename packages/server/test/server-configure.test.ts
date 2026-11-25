@@ -11,8 +11,8 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { PassThrough, Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { terminal } from './answers.js';
 import { installLine, knownAgents, type KnownAgent } from '@ahpd/sdk';
 import { askToServe, configure, offerConfigure, under, type Configured } from '../src/commands/configure.js';
 import { optionsFrom } from '../src/commands/options.js';
@@ -20,37 +20,6 @@ import { cliRegistry } from '../src/commands/registry.js';
 import { missingLines } from '../src/found.js';
 import type { Ran, Runner, RunOptions } from '../src/install.js';
 import type { Fetch } from '../src/update.js';
-
-/**
- * A terminal nobody is sitting at: one answer per prompt, and everything the
- * questions wrote kept in one string.
- *
- * The answer is written only once a prompt has been printed, which is what a
- * person does. A fake that wrote them all up front would not do: `readline`
- * takes one line out of a buffer and drops the rest of it.
- */
-const terminal = (...answers: string[]) => {
-  const input = Object.assign(new PassThrough(), { isTTY: true });
-  const pending = [...answers];
-  let said = '';
-  const output = Object.assign(new Writable({
-    write(chunk, _encoding, done) {
-      said += String(chunk);
-      done();
-      if (!said.endsWith(': ')) return;
-      // Past the answers a case gives, each question is answered with Enter,
-      // which keeps what is there: a case is about the answers it names.
-      const answer = pending.shift() ?? '';
-      setImmediate(() => { input.write(`${answer}\n`); });
-    },
-  }), { isTTY: true });
-  // `readline` draws around the cursor and echoes what was typed; a reader of
-  // this file wants the words, so those are what is kept.
-  return {
-    term: { input, output },
-    said: () => said.replace(/\u001b\[[0-9;]*[A-Za-z]/gu, '').replace(/\r/gu, ''),
-  };
-};
 
 let root: string;
 let configDir: string;
@@ -125,8 +94,11 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
+/** The eight main plugins a first run installs, in the order the questions offer them. */
+const MAIN = ['@ahpd/web', '@ahpd/tasks', '@ahpd/computer', '@ahpd/push', '@ahpd/bot', '@ahpd/webhook', '@ahpd/tunnel-devtunnel', '@ahpd/activepieces'];
+
 /** One run of `configure`, answering as the terminal gives, over this case's PATH. */
-const asked = async (...answers: string[]): Promise<{ answered: Configured; said: string }> => {
+const asked = async (...answers: (string | Readonly<Record<string, string | readonly string[]>>)[]): Promise<{ answered: Configured; said: string }> => {
   const term = terminal(...answers);
   const lines: string[] = [];
   const answered = await configure({
@@ -212,8 +184,8 @@ it('is a local command, and no served one', () => {
 });
 
 it('writes the defaults on Enter at every question, and installs Claude and the web UI', async () => {
-  const { answered } = await asked('', '', '', '', '', '', '', '');
-  expect(answered.backends).toEqual(['@ahpd/agent-claude']);
+  const { answered } = await asked('', '', '', '', '', '');
+  expect(answered.backends).toEqual(['@ahpd/agent-acp', '@ahpd/agent-claude']);
   expect(answered.paths).toEqual([process.cwd()]);
 
   expect(read()).toEqual({
@@ -221,7 +193,7 @@ it('writes the defaults on Enter at every question, and installs Claude and the 
     port: 9187,
     connectionTokenFile: tokenFile(),
     paths: [process.cwd()],
-    plugins: ['@ahpd/agent-claude', '@ahpd/web'],
+    plugins: ['@ahpd/agent-acp', '@ahpd/agent-claude', ...MAIN],
   });
   // A secret, so Enter wrote one into the file beside the configuration and it
   // is not the empty string.
@@ -229,52 +201,62 @@ it('writes the defaults on Enter at every question, and installs Claude and the 
   expect(calls).toHaveLength(1);
   expect(calls[0]?.program).toBe('npm');
   expect(calls[0]?.argv).toContain('@ahpd/agent-claude@0.8.0');
+  // ACP is on by default, as Claude is.
+  expect(calls[0]?.argv).toContain('@ahpd/agent-acp');
   // The web UI is offered on a first run, and Enter takes it.
   expect(calls[0]?.argv).toContain('@ahpd/web');
 });
 
+it('offers ACP among the backends, and the main plugins in the other list', async () => {
+  const { said } = await asked('', '', '', '', '', '', '', '');
+  expect(said).toContain('ACP agents');
+  for (const name of ['Web UI', 'Tasks', 'Computers', 'Push', 'Bots', 'Webhooks', 'Dev Tunnels', 'Activepieces']) {
+    expect(said, name).toContain(name);
+  }
+});
+
 it('asks for the plugin marketplaces last, and writes them only when the answer changes them', async () => {
-  const first = await asked('', '', '', '', '', '', '', '');
-  expect(first.said).toContain('Plugin marketplaces [https://plugins.ahpio.com/v1/plugins.json]: ');
+  const first = await asked('', '', '', '', '', '');
+  expect(first.said).toContain('Plugin marketplaces [https://plugins.ahpio.com/v1/plugins.json]');
   // Enter keeps the default, which stays unwritten so it moves with a release.
   expect(read().pluginMarketplaces).toBeUndefined();
-  await asked('', '', '', '', '', '', '', '', 'https://a.example.com/v1/plugins.json, https://b.example.com/v1/plugins.json');
+  await asked({ 'Plugin marketplaces': 'https://a.example.com/v1/plugins.json, https://b.example.com/v1/plugins.json' });
   expect(read().pluginMarketplaces).toEqual(['https://a.example.com/v1/plugins.json', 'https://b.example.com/v1/plugins.json']);
-  const again = await asked('', '', '', '', '', '', '', '', 'none');
-  expect(again.said).toContain('Plugin marketplaces [https://a.example.com/v1/plugins.json, https://b.example.com/v1/plugins.json]: ');
+  const again = await asked({ 'Plugin marketplaces': 'none' });
+  expect(again.said).toContain('Plugin marketplaces [https://a.example.com/v1/plugins.json, https://b.example.com/v1/plugins.json]');
   expect(read().pluginMarketplaces).toEqual([]);
   const off = await asked();
-  expect(off.said).toContain('Plugin marketplaces [none]: ');
+  expect(off.said).toContain('Plugin marketplaces [none]');
   expect(read().pluginMarketplaces).toEqual([]);
 });
 
-it('installs only Claude when the web UI is answered No on a first run', async () => {
-  const { said } = await asked('', '', '', 'n', '', '', '', '');
-  expect(said).toContain('Web UI? [Y/n]: ');
-  expect(read().plugins).toEqual(['@ahpd/agent-claude']);
+it('leaves the web UI out when it is answered No on a first run', async () => {
+  const { said } = await asked({ 'Which other plugins': ' ' });
+  expect(said).toContain('Web UI');
+  expect(read().plugins).toEqual(['@ahpd/agent-acp', '@ahpd/agent-claude', ...MAIN.slice(1)]);
   expect(calls.some((one) => one.argv.includes('@ahpd/web'))).toBe(false);
 });
 
 it('switches a web UI the file names off when it is answered No', async () => {
   put({ plugins: ['@ahpd/agent-claude', '@ahpd/web'] });
-  await asked('', '', '', 'n', '', '', '', '');
+  await asked({ 'Which other plugins': ' ' });
   // A No is not a removal: the entry stays, saying it is off.
-  expect(read().plugins).toEqual(['@ahpd/agent-claude', { source: '@ahpd/web', enabled: false }]);
+  expect(read().plugins).toEqual(['@ahpd/agent-claude', { source: '@ahpd/web', enabled: false }, '@ahpd/agent-acp']);
 });
 
 it('shows what it wrote as the default on a second run, and installs nothing again', async () => {
-  await asked('', '', '', '', '', '', '', '');
-  const again = await asked('', '', '', '', '', '', '', '');
-  expect(again.said).toContain('Claude? [Y/n]: ');
+  await asked();
+  const again = await asked();
+  expect(again.said).toContain('Claude');
   // A backend the file already names is the answer Enter keeps.
-  expect(again.said).toContain('cofold? [y/N]: ');
-  expect(again.said).toContain('Host [127.0.0.1]: ');
-  expect(again.said).toContain('Port [9187]: ');
-  expect(again.said).toContain(`Serve ${process.cwd()}? [Y/n]: `);
+  expect(again.said).toContain('cofold');
+  expect(again.said).toContain('Host [127.0.0.1]');
+  expect(again.said).toContain('Port [9187]');
+  expect(again.said).toContain(`Serve ${process.cwd()}?`);
   // The token that is there is what Enter keeps, rather than a second one.
-  expect(again.said).toContain(`Connection token [keep ${tokenFile()}]: `);
+  expect(again.said).toContain(`Connection token [keep ${tokenFile()}]`);
   expect(calls).toHaveLength(1);
-  expect(read().plugins).toEqual(['@ahpd/agent-claude', '@ahpd/web']);
+  expect(read().plugins).toEqual(['@ahpd/agent-acp', '@ahpd/agent-claude', ...MAIN]);
 });
 
 it('makes the configuration folder on a first run, rather than failing on the token file', async () => {
@@ -296,16 +278,16 @@ it('makes the configuration folder on a first run, rather than failing on the to
 });
 
 it('writes a typed token to the token file', async () => {
-  await asked('', '', '', '', '', '', 'shh', '');
+  await asked({ 'Connection token': 'shh' });
   expect(read().connectionTokenFile).toBe(tokenFile());
   expect(readFileSync(tokenFile(), 'utf8').trim()).toBe('shh');
 });
 
 it('generates a token on Enter, and keeps the one already there', async () => {
-  await asked('', '', '', '', '', '', '', '');
+  await asked('', '', '', '', '', '');
   const generated = readFileSync(tokenFile(), 'utf8').trim();
   expect(generated).not.toBe('');
-  await asked('', '', '', '', '', '', '', '');
+  await asked('', '', '', '', '', '');
   // And a third run changes neither the token nor the file.
   expect(readFileSync(tokenFile(), 'utf8').trim()).toBe(generated);
 });
@@ -313,7 +295,7 @@ it('generates a token on Enter, and keeps the one already there', async () => {
 it('reads a relative token file against the configuration folder, and keeps it as written', async () => {
   put({ connectionTokenFile: 'secret-token' });
   writeFileSync(join(configDir, 'secret-token'), 'kept\n');
-  const { said } = await asked('', '', '', '', '', '', '', '');
+  const { said } = await asked('', '', '', '', '', '');
   expect(said).toContain(`${join(configDir, 'secret-token')} still holds the token.`);
   expect(readFileSync(join(configDir, 'secret-token'), 'utf8').trim()).toBe('kept');
   expect(read().connectionTokenFile).toBe('secret-token');
@@ -322,10 +304,10 @@ it('reads a relative token file against the configuration folder, and keeps it a
 
 it('keeps a token written as a literal, moving it into the token file', async () => {
   put({ connectionToken: 'old-shh' });
-  const { said } = await asked('', '', '', '', '', '', '', '');
+  const { said } = await asked('', '', '', '', '', '');
   // A token clients are already presenting is one Enter keeps, not one it
   // replaces: a fresh one here locks every one of them out.
-  expect(said).toContain(`Connection token [keep the token in ${configFile}]: `);
+  expect(said).toContain(`Connection token [keep the token in ${configFile}]`);
   expect(readFileSync(tokenFile(), 'utf8').trim()).toBe('old-shh');
   expect(read().connectionTokenFile).toBe(tokenFile());
   // And the literal is taken out, since `secret()` refuses both spellings.
@@ -334,50 +316,49 @@ it('keeps a token written as a literal, moving it into the token file', async ()
 
 it('switches a backend the file names off when it is answered No, and on again when it is answered Yes', async () => {
   put({ plugins: ['@ahpd/agent-claude'] });
-  await asked('n', '', '', '', '', '', '', '');
+  await asked({ 'Which agent runtimes': '\x1b[B ' });
   // A No is not a removal: the entry stays, saying it is off, as
   // `ahpd plugin disable` writes it.
-  expect(read().plugins).toEqual([{ source: '@ahpd/agent-claude', enabled: false }]);
+  expect(read().plugins).toEqual([{ source: '@ahpd/agent-claude', enabled: false }, '@ahpd/agent-acp']);
 
   put({ plugins: [{ name: '@ahpd/agent-claude', options: { model: 'opus' } }] });
-  await asked('', '', '', '', '', '', '', '');
-  expect(read().plugins).toEqual([{ source: '@ahpd/agent-claude', options: { model: 'opus' }, enabled: true }]);
+  await asked('', '', '', '', '', '');
+  // Enter keeps an entry that is on as it is written.
+  expect(read().plugins).toEqual([{ name: '@ahpd/agent-claude', options: { model: 'opus' } }, '@ahpd/agent-acp']);
 });
 
 it('leaves a folder answered No out of paths', async () => {
   put({ paths: ['/tmp/one', '/tmp/two'] });
-  const { answered } = await asked('', '', '', '', '', '', '', 'n', '');
+  const { answered } = await asked({ 'Serve /tmp/one?': 'n' });
   expect(answered.paths).toEqual(['/tmp/two']);
   expect(read().paths).toEqual(['/tmp/two']);
 });
 
 it('keeps a key it was not asked about', async () => {
   put({ users: '/tmp/people.json', advancedTools: true });
-  await asked('', '', '', '', '', '', '', '');
+  await asked('', '', '', '', '', '');
   expect(read().users).toBe('/tmp/people.json');
   expect(read().advancedTools).toBe(true);
 });
 
 it('refuses a port that is not one, before anything is written', async () => {
-  await expect(asked('', '', '', '', '', 'nine thousand', '', '')).rejects.toThrow(/^Port must be a number from 0 to 65535, not nine thousand\.$/u);
+  await expect(asked({ 'Port [': 'nine thousand' })).rejects.toThrow(/^Port must be a number from 0 to 65535, not nine thousand\.$/u);
   expect(existsSync(configFile)).toBe(false);
 });
 
-it('refuses rather than serving nothing when every folder is answered No', async () => {
+it('says why when every folder is answered No, and asks the folders again', async () => {
   put({ paths: ['/tmp/one'] });
-  await expect(asked('', '', '', '', '', '', '', 'n')).rejects.toThrow(/every folder/i);
+  const { said, answered } = await asked({ 'Serve /tmp/one?': ['n', 'y'] });
+  expect(said).toContain('Every folder was refused');
+  expect(answered.paths).toEqual(['/tmp/one']);
 });
 
 describe('what is on PATH', () => {
   it('asks about a found agent, and a Yes writes it as a host record and names its plugin', async () => {
     stub('gemini', '0.9.0');
-    const { said } = await asked('', '', '', '', '', '', '', '', '');
-    expect(said).toContain('Gemini? [Y/n]: ');
-    expect(read().plugins).toEqual([
-      '@ahpd/agent-acp',
-      '@ahpd/agent-claude',
-      '@ahpd/web',
-    ]);
+    const { said } = await asked();
+    expect(said).toContain('Gemini');
+    expect(read().plugins).toEqual(['@ahpd/agent-acp', '@ahpd/agent-claude', ...MAIN]);
     // The record is what the agents channel serves; the plugin is what registers
     // the engine it opens on, and the host is the owner a preset's agent had.
     expect(recordOf('gemini')).toMatchObject({
@@ -387,10 +368,19 @@ describe('what is on PATH', () => {
     expect(calls.some((one) => one.program === 'npm' && one.argv.includes('@ahpd/agent-acp'))).toBe(true);
   });
 
-  it('writes no agent-acp entry and installs nothing for it when the agent is answered No', async () => {
+  it('writes no record for an agent answered No, and keeps ACP on as a backend', async () => {
     stub('gemini', '0.9.0');
-    await asked('', '', '', '', 'n', '', '', '', '');
-    expect(read().plugins).toEqual(['@ahpd/agent-claude', '@ahpd/web']);
+    // The agents found are a list of their own, with each ticked: Space unticks it.
+    await asked({ 'Which agents found': ' ' });
+    expect(recordOf('gemini')).toBeUndefined();
+    expect(read().plugins).toEqual(['@ahpd/agent-acp', '@ahpd/agent-claude', ...MAIN]);
+  });
+
+  it('writes no agent-acp entry when ACP is ticked off as a backend', async () => {
+    stub('gemini', '0.9.0');
+    // ACP is the first backend, so Space alone unticks it.
+    await asked({ 'Which agent runtimes': ' ' });
+    expect(read().plugins).toEqual(['@ahpd/agent-claude', ...MAIN]);
     expect(calls.some((one) => one.argv.includes('@ahpd/agent-acp'))).toBe(false);
   });
 
@@ -398,9 +388,9 @@ describe('what is on PATH', () => {
     put({ plugins: [{ name: '@ahpd/agent-acp', options: { hostTools: false } }] });
     putRecord({ id: 'gemini', engine: 'acp', owner: 'host', name: 'Gemini', config: { model: 'flash' } });
     stub('gemini', '0.9.0');
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('Gemini 0.9.0 (configured, @ahpd/agent-acp)');
-    expect(said).not.toContain('Gemini? [Y/n]: ');
+    expect(said).not.toContain('Which agents found');
     expect(read().plugins).toEqual([
       { name: '@ahpd/agent-acp', options: { hostTools: false } },
       '@ahpd/agent-claude',
@@ -415,9 +405,9 @@ describe('what is on PATH', () => {
     // puts the plugin that registers its engine in the file.
     putRecord({ id: 'gemini', engine: 'acp', owner: 'host', name: 'Gemini', config: {} });
     stub('gemini', '0.9.0');
-    const { said } = await asked('', '', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '', '');
     expect(said).toContain('Gemini 0.9.0 (not configured, @ahpd/agent-acp)');
-    expect(said).toContain('Gemini? [Y/n]: ');
+    expect(said).toContain('Gemini');
     expect(read().plugins).toContain('@ahpd/agent-acp');
   });
 
@@ -429,9 +419,9 @@ describe('what is on PATH', () => {
       }],
     });
     stub('gemini', '0.9.0');
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('Gemini 0.9.0 (configured, @ahpd/agent-acp)');
-    expect(said).not.toContain('Gemini? [Y/n]: ');
+    expect(said).not.toContain('Which agents found');
     // The preset is still the only copy of the agent, so no record is made here.
     expect(recordOf('gemini')).toBeUndefined();
     expect(presetsOf()).toEqual({ gemini: { model: 'flash' } });
@@ -439,11 +429,13 @@ describe('what is on PATH', () => {
 
   it('asks nothing about the ACP pi preset when the native pi backend is on', async () => {
     stub('pi-acp', '1.0.0');
-    const { said } = await asked('', '', 'y', '', '', '', '', '');
+    // Down three times to the pi backend and Space ticks it. ACP is on already.
+    const { said } = await asked({ 'Which agent runtimes': '\x1b[B\x1b[B\x1b[B ' });
     expect(said).toContain('pi-acp: not asked, the pi backend runs pi');
-    expect(said).not.toContain('Pi? [Y/n]: ');
-    // The one pi is the backend, and no preset was written beside it.
-    expect(read().plugins).toEqual(['@ahpd/agent-claude', '@ahpd/agent-pi', '@ahpd/web']);
+    expect(said).not.toContain('Which agents found');
+    // The one pi is the backend, and no preset or record was written for the ACP one.
+    expect(read().plugins).toEqual(['@ahpd/agent-acp', '@ahpd/agent-claude', '@ahpd/agent-pi', ...MAIN]);
+    expect(recordOf('pi')).toBeUndefined();
   });
 
   it('offers to remove an ACP pi agent the file has when the native pi backend is on', async () => {
@@ -454,8 +446,8 @@ describe('what is on PATH', () => {
     put(both);
     putRecord(record);
     stub('pi-acp', '1.0.0');
-    const yes = await asked('', '', '', '', '', '', '', '', '');
-    expect(yes.said).toContain('Remove the ACP pi agent? It clashes with the pi backend. [Y/n]: ');
+    const yes = await asked();
+    expect(yes.said).toContain('Remove the ACP pi agent? It clashes with the pi backend.');
     // The record and the preset are both of them: a file this start would move
     // its preset into a record otherwise has two agents of one id.
     expect(recordOf('pi')).toBeUndefined();
@@ -465,23 +457,24 @@ describe('what is on PATH', () => {
 
     put(both);
     putRecord(record);
-    const no = await asked('', '', '', '', 'n', '', '', '', '');
-    expect(no.said).toContain('Remove the ACP pi agent? It clashes with the pi backend. [Y/n]: ');
+    const no = await asked({ 'Remove the ACP pi agent': 'n' });
+    expect(no.said).toContain('Remove the ACP pi agent? It clashes with the pi backend.');
     expect(recordOf('pi')).toMatchObject({ id: 'pi', engine: 'acp' });
     expect(presetsOf()).toEqual({ pi: {} });
   });
 
   it('asks about the ACP pi agent when the native pi backend is answered No', async () => {
     stub('pi-acp', '1.0.0');
-    const { said } = await asked('', '', 'n', '', '', '', '', '', '');
-    expect(said).toContain('Pi? [Y/n]: ');
+    // ACP is on by default and the pi backend is left off, so its agent is offered.
+    const { said } = await asked();
+    expect(said).toContain('Pi');
     expect(said).not.toContain('pi-acp: not asked, the pi backend runs pi');
     expect(recordOf('pi')).toMatchObject({ id: 'pi', engine: 'acp', owner: 'host', name: 'Pi', config: {} });
     expect(read().plugins).toContain('@ahpd/agent-acp');
   });
 
   it('lists every agent it did not find with the line that installs it', async () => {
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('Agents not found:');
     expect(said).toContain(`  Codex: ${installLine(row('codex'), process.platform)}`);
     expect(said).toContain(`  OpenCode: ${installLine(row('opencode'), process.platform)}`);
@@ -490,9 +483,9 @@ describe('what is on PATH', () => {
   });
 
   it('asks no agent question with an empty PATH, so the questions are the ones of today', async () => {
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     for (const agent of Object.values(knownAgents)) {
-      expect(said, `${agent.name} was asked about`).not.toContain(`${agent.name}? [Y/n]: `);
+      expect(said, `${agent.name} was asked about`).not.toContain(`${agent.name}?`);
     }
   });
 
@@ -500,7 +493,7 @@ describe('what is on PATH', () => {
     stub('node', 'v24.21.0');
     stub('bun', '1.2.3');
     stub('deno', '2.0.0');
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('Node v24.21.0 (runs ahpd)');
     expect(said).toContain('Bun 1.2.3 (runs ahpd)');
     expect(said).toContain('Deno 2.0.0 (runs ahpd; each plugin it loads needs an npm: spec)');
@@ -508,13 +501,13 @@ describe('what is on PATH', () => {
 
   it('says ahpd does not run on Node 20', async () => {
     stub('node', 'v22.17.0');
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('Node v22.17.0 (ahpd does not run on it; it needs Node 22.18 or newer)');
   });
 
   it('shows the version the runner gave for the agent it found', async () => {
     stub('gemini', '0.9.0');
-    const { said } = await asked('', '', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '', '');
     expect(said).toContain('Agents found:');
     expect(said).toContain('Gemini 0.9.0 (not configured, @ahpd/agent-acp)');
   });
@@ -522,7 +515,7 @@ describe('what is on PATH', () => {
   it('shows the path and no version when --version fails', async () => {
     stub('gemini');
     failing.add('gemini');
-    const { said } = await asked('', '', '', '', 'n', '', '', '', '');
+    const { said } = await asked({ 'Which agents found': ' ' });
     expect(said).toContain(`Gemini at ${stubFile('gemini')} (not configured, @ahpd/agent-acp)`);
     // The limit is what keeps an agent that checks for updates as it starts
     // from holding up the setup, so the probe is given it.
@@ -533,18 +526,18 @@ describe('what is on PATH', () => {
   it('shows the path and no version when --version passes the 3 seconds', async () => {
     stub('gemini');
     hanging.add('gemini');
-    const { said } = await asked('', '', '', '', 'n', '', '', '', '');
+    const { said } = await asked({ 'Which agents found': ' ' });
     expect(said).toContain(`Gemini at ${stubFile('gemini')} (not configured, @ahpd/agent-acp)`);
   });
 
   it('shows claude under Also found, and asks the three backend questions it always did', async () => {
     stub('claude', '2.1.291');
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('Also found:');
     expect(said).toContain('  claude 2.1.291');
-    expect(said).toContain('Claude? [Y/n]: ');
-    expect(said).toContain('cofold? [y/N]: ');
-    expect(said).toContain('pi? [y/N]: ');
+    expect(said).toContain('Claude');
+    expect(said).toContain('cofold');
+    expect(said).toContain('pi');
   });
 
   it('shows an install line a record writes for a missing agent, not the row it shipped with', async () => {
@@ -555,7 +548,7 @@ describe('what is on PATH', () => {
       id: 'gemini', engine: 'acp', owner: 'host', name: 'Gemini',
       config: { install: { all: 'npm i -g my-gemini' } },
     });
-    const { said } = await asked('', '', '', '', '', '', '', '');
+    const { said } = await asked('', '', '', '', '', '');
     expect(said).toContain('  Gemini: npm i -g my-gemini');
     expect(said).not.toContain('@google/gemini-cli');
   });
@@ -600,7 +593,7 @@ describe('a start with no configuration', () => {
     const { done, said, ran } = await offer(configFile, term);
     expect(done).toBe(true);
     expect(ran).toBe(1);
-    expect(said).toContain('No configuration. Run ahpd configure now? [Y/n]: ');
+    expect(said).toContain('No configuration. Run ahpd configure now?');
   });
 
   it('says it did not run it on no, and refuses as a start with no backend does', async () => {
@@ -640,7 +633,7 @@ describe('a start in a folder nothing serves', () => {
 
   it('asks on yes and writes the folder to paths, which this run serves too', async () => {
     const { paths, said } = await asked({ paths: ['/tmp/one'] }, {}, '');
-    expect(said).toContain(`Serve ${process.cwd()}? [y/N]: `);
+    expect(said).toContain(`Serve ${process.cwd()}?`);
     // Enter keeps the No, so the folder has to be answered for it to be added.
     expect(paths).toEqual(['/tmp/one']);
     expect(read().paths).toEqual(['/tmp/one']);
@@ -676,15 +669,14 @@ describe('a start in a folder nothing serves', () => {
 });
 describe('people and policies', () => {
   /** Enter at each question of today, which the people and policy questions follow. */
-  const today = (): string[] => Array.from({ length: 9 }, () => '');
   const usersOf = (path: string): { id: string; roles: string[] }[] =>
     (JSON.parse(readFileSync(path, 'utf8')) as { users: { id: string; roles: string[] }[] }).users;
   const rowsOf = (): { id: string; kind: string; match: Record<string, string[]> }[] =>
     (JSON.parse(readFileSync(join(configDir, 'policies.json'), 'utf8')) as { policies: { id: string; kind: string; match: Record<string, string[]> }[] }).policies;
 
   it('adds nobody and writes no users file on Enter', async () => {
-    const { answered, said } = await asked(...today());
-    expect(said).toContain('Add a person now? [y/N]: ');
+    const { answered, said } = await asked();
+    expect(said).toContain('Add a person now?');
     expect(answered.added).toEqual([]);
     expect(read().users).toBeUndefined();
     expect(said).not.toContain('ahpd user token');
@@ -693,33 +685,33 @@ describe('people and policies', () => {
   });
 
   it('adds a person as member on Enter, in a users file beside the configuration, and says how they connect', async () => {
-    const { answered, said } = await asked(...today(), 'y', 'alice', '');
+    const { answered, said } = await asked({ 'Add a person now?': 'y', 'Their id': 'alice' });
     const file = join(configDir, 'users.json');
     expect(read().users).toBe(file);
     expect(usersOf(file)).toEqual([expect.objectContaining({ id: 'alice', roles: ['member'] })]);
     expect(answered.added).toEqual(['alice']);
     // The roles offered are the ones the host defines.
-    expect(said).toContain('Roles (admin, guest, member; comma-separated) [member]: ');
-    expect(said).toContain('Add another person? [y/N]: ');
+    expect(said).toContain('Roles (admin, guest, member; comma-separated) [member]');
+    expect(said).toContain('Add another person?');
     expect(said).toContain('To connect as alice: ahpd user token alice --url');
   });
 
   it('gives every role a comma-separated answer names', async () => {
-    await asked(...today(), 'y', 'bob', 'member, guest');
+    await asked({ 'Add a person now?': 'y', 'Their id': 'bob', 'Roles (': 'member, guest' });
     expect(usersOf(join(configDir, 'users.json'))[0]?.roles).toEqual(['member', 'guest']);
   });
 
   it('asks the roles again after one the host does not define', async () => {
-    const { said } = await asked(...today(), 'y', 'carol', 'chief', '');
+    const { said } = await asked({ 'Add a person now?': 'y', 'Their id': 'carol', 'Roles (': ['chief', ''] });
     expect(said).toContain('no role called chief; this host has admin, guest, member');
     expect(usersOf(join(configDir, 'users.json'))[0]?.roles).toEqual(['member']);
   });
 
   it('turns the checks on, keeps the other policy keys, and writes a starter row for each kind on Enter', async () => {
     put({ users: join(configDir, 'users.json'), policies: { payOrder: 'regular' } });
-    const { said } = await asked(...today(), '', 'y', '');
+    const { said } = await asked({ 'Turn the policy checks on?': 'y' });
     expect(read().policies).toEqual({ payOrder: 'regular', check: true });
-    expect(said).toContain('Allow every person every agent, computer, model? A model row opens every model to every person. [Y/n]: ');
+    expect(said).toContain('Allow every person every agent, computer, model? A model row opens every model to every person.');
     expect(rowsOf().map((row) => [row.id, row.kind, row.match])).toEqual([
       ['everyone-agent', 'agent', { agent: ['*'] }],
       ['everyone-computer', 'computer', { computer: ['*'] }],
@@ -733,7 +725,7 @@ describe('people and policies', () => {
     writeFileSync(join(configDir, 'policies.json'), JSON.stringify({ version: 1, policies: [
       { id: 'all', scope: 'all', kind: 'agent', effect: 'allow', match: { agent: ['*'], computer: ['*'] } },
     ] }));
-    const { said } = await asked(...today(), '', '', '');
+    const { said } = await asked();
     expect(said).toContain('Allow every person every computer, model?');
     expect(rowsOf().map((row) => row.id)).toEqual(['all', 'everyone-computer', 'everyone-model']);
   });
@@ -743,7 +735,7 @@ describe('people and policies', () => {
     writeFileSync(join(configDir, 'policies.json'), JSON.stringify({ version: 1, policies: [
       { id: 'everyone-agent', scope: 'user:dave', kind: 'agent', effect: 'allow', match: { agent: ['claude'] } },
     ] }));
-    const { said } = await asked(...today(), '', '', '');
+    const { said } = await asked();
     expect(said).toContain('The store already has a row everyone-agent, so no agent row was written.');
     expect(rowsOf().find((row) => row.id === 'everyone-agent')?.match).toEqual({ agent: ['claude'] });
   });
@@ -751,10 +743,10 @@ describe('people and policies', () => {
   it('reads a relative users path against the configuration folder, and keeps it as written', async () => {
     put({ users: 'people.json' });
     writeFileSync(join(configDir, 'people.json'), JSON.stringify({ roles: { senders: ['session:read'] }, users: [] }));
-    const { said } = await asked(...today(), 'y', 'erin', '');
+    const { said } = await asked({ 'Add a person now?': 'y', 'Their id': 'erin' });
     // The file's own role is offered, which only the file beside the
     // configuration holds.
-    expect(said).toContain('Roles (admin, guest, member, senders; comma-separated) [member]: ');
+    expect(said).toContain('Roles (admin, guest, member, senders; comma-separated) [member]');
     expect(usersOf(join(configDir, 'people.json')).map((one) => one.id)).toEqual(['erin']);
     expect(read().users).toBe('people.json');
     expect(existsSync(join(process.cwd(), 'people.json'))).toBe(false);
@@ -762,10 +754,67 @@ describe('people and policies', () => {
 
   it('offers no row and writes no store with the checks off', async () => {
     put({ users: join(configDir, 'users.json') });
-    const { said } = await asked(...today());
-    expect(said).toContain('Turn the policy checks on? A person no policy allows is refused. [y/N]: ');
+    const { said } = await asked();
+    expect(said).toContain('Turn the policy checks on? A person no policy allows is refused.');
     expect(said).not.toContain('Allow every person');
     expect(read().policies).toBeUndefined();
     expect(existsSync(join(configDir, 'policies.json'))).toBe(false);
+  });
+});
+
+describe('the listeners and the ACP agents to install', () => {
+  // The first agent this host does not have is the first row with a line for
+  // this system, so Space ticks it: the list starts with the cursor on it.
+  const absent = (): KnownAgent => Object.values(knownAgents).find((agent) => installLine(agent, process.platform) !== undefined) as KnownAgent;
+  const shell = (): string[] => calls.filter((one) => one.program === '/bin/sh' || one.program === 'cmd.exe').map((one) => one.argv.at(-1) ?? '');
+
+  it('turns the HTTP API on at a port, and writes it as the port', async () => {
+    await asked({ 'Serve the HTTP API?': 'y', 'Port for the HTTP API': '9300' });
+    expect(read().httpApi).toEqual({ port: 9300 });
+  });
+
+  it('turns the HTTP API on as the daemon\'s own listener on Enter for the port', async () => {
+    await asked({ 'Serve the HTTP API?': 'y' });
+    expect(read().httpApi).toBe(true);
+  });
+
+  it('leaves the HTTP API out of the file on a first run answered No', async () => {
+    await asked({ 'Serve the HTTP API?': 'n' });
+    expect(read()).not.toHaveProperty('httpApi');
+  });
+
+  it('writes false for a listener the file had on and the person turns off', async () => {
+    put({ modelApi: { port: 9400 } });
+    await asked({ 'Serve the model gateway?': 'n' });
+    expect(read().modelApi).toBe(false);
+  });
+
+  it('offers the model gateway with its current port as the answer Enter keeps', async () => {
+    put({ modelApi: { port: 9400 } });
+    const { said } = await asked({ 'Serve the model gateway?': 'y' });
+    expect(said).toContain('Port for the model gateway, or own for the daemon\'s own listener [9400]');
+    expect(read().modelApi).toEqual({ port: 9400 });
+  });
+
+  it('does not install an agent the list leaves unticked, even when the install is confirmed', async () => {
+    await asked({ 'Run these install commands now?': 'y' });
+    expect(shell()).toEqual([]);
+    expect(recordOf(absent().id)).toBeUndefined();
+  });
+
+  it('runs the install line of a ticked agent when the person confirms it, and writes its record', async () => {
+    const agent = absent();
+    const line = installLine(agent, process.platform) as string;
+    const { said } = await asked({ 'Which ACP agents not found': ' ', 'Run these install commands now?': 'y' });
+    expect(said).toContain(`Installing ${agent.name}: ${line}`);
+    expect(shell()).toEqual([line]);
+    expect(recordOf(agent.id)).toMatchObject({ id: agent.id, engine: 'acp' });
+  });
+
+  it('shows the ticked agent\'s line, and runs nothing, when the install is declined', async () => {
+    const agent = absent();
+    await asked({ 'Which ACP agents not found': ' ', 'Run these install commands now?': 'n' });
+    expect(shell()).toEqual([]);
+    expect(recordOf(agent.id)).toBeUndefined();
   });
 });

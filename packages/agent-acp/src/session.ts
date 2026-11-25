@@ -203,6 +203,7 @@ export function acpSession(
     replay: [],
     loading: false,
     opening: undefined,
+    failedOpen: undefined,
     startedWith: '',
     cancelRequested: false,
     disposed: false,
@@ -354,11 +355,14 @@ export function acpSession(
       ...(draft !== undefined ? { draft } : {}),
     }),
 
+    // Its send resolves once the server holds the session, and rejects when it could not start one.
+    sendBringsUp: true,
+
     // The model is the one picked for this send.
     sendMessage: (turnId, text, from, attachments, turnOptions) => {
       const model = chosen;
       chosen = undefined;
-      ctx.sendMessage(turnId, text, model, from, attachments, turnOptions);
+      return ctx.sendMessage(turnId, text, model, from, attachments, turnOptions);
     },
 
     changeModel: (model) => { chosen = model; },
@@ -510,11 +514,24 @@ export function acpSession(
    */
   const refusal = ctx.refreshOptions();
   if (refusal !== undefined) return Promise.reject(new Error(refusal));
-  return ctx.open().then(() => session).catch((error: unknown) => {
+  return ctx.open().then(() => session).catch(async (error: unknown) => {
     const authentication = ctx.authenticationFailure(error);
     // Keep the protocol error's identity, code and data while using the same
     // corrective method names that a later prompt failure already reports.
     if (authentication !== undefined && error instanceof Error) error.message = authentication.message;
+    /*
+     * Upstream says what a server that never opened ran, and what it wrote on
+     * stderr, on the first turn's error (turn.ts). Here the open is the
+     * creation's, so the creation's refusal carries it instead (#463 sync),
+     * and a record whose `stderrTail` is `log` still leaves it to the log.
+     */
+    const opened = ctx.failedOpen;
+    ctx.failedOpen = undefined;
+    if (opened !== undefined && error instanceof Error && ctx.options.stderrTail !== 'log') {
+      const tail = await opened.connection.stderrTail();
+      const ran = opened.path === undefined ? '' : `\n${opened.command} was started with PATH ${opened.path}`;
+      error.message = `${error.message}${ran}${tail === '' ? '' : `\n${tail}`}`;
+    }
     throw error;
   });
 }

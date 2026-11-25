@@ -1,6 +1,6 @@
 ---
 title: The docs say a deleted tunnel comes back
-status: implemented
+status: done
 depends: [task-02-a-running-tunnel-deleted-is-made-again.md]
 layer: "docs"
 ---

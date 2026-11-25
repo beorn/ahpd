@@ -38,11 +38,22 @@ Nothing here limits work: a pool is a key, and what a pool allows belongs to pol
 
 WHEN a writer records usage
 THEN the record is a model record with `kind: model`, or a computer record with `kind: computer`
-AND both have one base: `at`, `source`, `owner`, `team`, `project`, `session`, `chat`, `turn`, `agent`, `computer`, `cost`, `providerCost`, `token`, `meta` and `pools`.
+AND both have one base: `at`, `source`, `owner`, `team`, `project`, `session`, `chat`, `turn`, `agent`, `computer`, `cost`, `providerCost`, `token`, `meta`, `pools` and `tags`.
 A model record adds `model` with the name, provider and token counts, and a computer record adds `seconds`.
 A gateway call made with a key adds `token` and `meta`.
 `token` is the id of the key, and `meta` is the map of names to values the key and the call named.
 This is so that a list by agent or by computer is a filter on one record, not a join.
+
+### The tags a record carries
+
+WHEN the meter writes an agent turn's record
+THEN `tags` holds the agent record's tags, then the tags of each connector the turn's usage named in `_meta['ahpd.connectors']`, each tag once
+AND a Claude turn names the login it ran on, and each login a failover moved it to.
+WHEN the model gateway writes a call's record
+THEN `tags` holds the tags of the connector that served the call.
+A record copies the tags when it is written, so an edit to a tag changes no record already kept.
+A record with no tag has no `tags` field.
+A tag is a label only, and charges no pool.
 
 ### The pools a record is charged to
 
@@ -87,6 +98,13 @@ THEN the meter writes it as both `cost` and `providerCost`, with `from: harness`
 AND it keeps the split into sent and received when the harness gave one.
 A cost of 0 on a turn that counted no token is no cost, so the record has none.
 A cost that is not known is absent, never 0.
+
+A Claude turn's cost is the change in the CLI's running total since the last `result`.
+WHEN a Claude query resumes a session on this host
+THEN the running total starts at the last `cost-state` line of the session's transcript.
+WHEN a fork, a rewind or a session in a machine resumes, or the transcript holds no `cost-state` line
+THEN the first `result` has no cost
+AND each `result` after it is charged its change from that first one.
 
 ### The model gateway charges a configured price
 
@@ -150,4 +168,8 @@ The root connection, and a host with no users file, read every pool.
 WHEN a client reads `usage://groups?by=user,team,project` with a range
 THEN the host sums each record once by the keys asked, with the team and project names beside the keys
 AND it counts a record only when the reader may read at least one of its pools.
+WHEN the client asks `by=tag`
+THEN a record is in one row for each of its tags, and a record with no tag is in none.
+WHEN the client names `tag=<a>,<b>`
+THEN the host sums only the records that hold every tag named.
 The host sums the records, because a client that reads 200 records at a time cannot sum a busy month.

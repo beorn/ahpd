@@ -1,7 +1,7 @@
 ---
 title: A second install finds the first one off the PATH
 domain: daemon
-status: planned
+status: built
 priority: medium
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -62,7 +62,7 @@ do_install -> command -v ahpd (empty) -> resolve_prefix -> resolve_ahpd finds $B
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The version check reads the chosen folder](task-01-the-version-check-reads-the-chosen-folder.md) | implemented | - |
+| [01 - The version check reads the chosen folder](task-01-the-version-check-reads-the-chosen-folder.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -71,7 +71,7 @@ do_install -> command -v ahpd (empty) -> resolve_prefix -> resolve_ahpd finds $B
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-11; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `resolve_prefix` makes `$BIN` outside `--dry-run`. Under `--dry-run` the folder may not exist, and the `-x` test is then false.
 

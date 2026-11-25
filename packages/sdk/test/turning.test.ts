@@ -76,4 +76,40 @@ describe('turning', () => {
     expect(host.turning()).toEqual([]);
     client.close();
   });
+
+  /*
+   * The machine's idle sleep held from the turn's start, as VS Code's host
+   * holds it while a chat works, and still held when it ends: the hold goes 2
+   * minutes later.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostKeepAwake.ts
+   */
+  it('holds the machine awake from the turn\'s start, and keeps the hold past its end', async () => {
+    const holds: { allowOnBattery: boolean; released: boolean }[] = [];
+    const host = createHost({
+      path: dir, agents: [echo({ path: dir, pace: 40 })], resources: fileResources(),
+      keepAwake: (allowOnBattery) => {
+        const hold = { allowOnBattery, released: false };
+        holds.push(hold);
+        return { release: () => { hold.released = true; } };
+      },
+    });
+    const seen = new Map<string, string[]>();
+    const client = host.accept(peer(seen, () => host, ['chat/delta', 'chat/turnComplete']));
+    await client.handle({ method: 'initialize', params: { clientId: 'c', protocolVersions: ['0.9.0'] } });
+    await client.handle({ method: 'createSession', params: { channel: SESSION, provider: 'echo' } });
+    const CHAT = ((await client.handle({ method: 'subscribe', params: { channel: SESSION } })) as { snapshot: { state: { defaultChat: string } } }).snapshot.state.defaultChat;
+    await client.handle({ method: 'subscribe', params: { channel: CHAT } });
+    expect(holds).toEqual([]);
+    await client.handle({
+      method: 'dispatchAction',
+      params: { channel: CHAT, action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { origin: { kind: 'user' }, text: 'one two three' } } },
+    });
+    await heard(seen, 'chat/delta');
+    expect(holds).toEqual([{ allowOnBattery: false, released: false }]);
+    await heard(seen, 'chat/turnComplete');
+    expect(holds).toEqual([{ allowOnBattery: false, released: false }]);
+    await host.close();
+    expect(holds[0]?.released).toBe(true);
+    client.close();
+  });
 });

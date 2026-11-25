@@ -63,7 +63,7 @@ plugin problem(line) -> told.push -> (during apply) load answer -> log | (after 
 - **Checked by hand:** on Linux, 2026-10-15, at `3cf1dc13`. After a client reads `bot://`, a bot file edited by hand to a new owner gives `bot: bots/boozi-2 changed owner; the bot was left as it was` in the daemon log. Before anything reads the bots, the store is not loaded. An edit made then becomes the bot's first state, with no refusal.
 - **Next action:** none. Built 2026-10-15; see [implemented.md](implemented.md).
 - **Open questions:** none.
-- **Watch out for:** the bot's owner after a restart is not this plan, see [the problem](../../../problems/a-bot-file-edited-by-hand-to-a-new-owner-takes-it-after-a-restart.md).
+- **Watch out for:** the bot's owner after a restart is not this plan, see [the problem](../../bots/20261123-0945-a-bot-owner-edited-by-hand-is-logged/plan.md).
 
 ## Final verification checklist
 

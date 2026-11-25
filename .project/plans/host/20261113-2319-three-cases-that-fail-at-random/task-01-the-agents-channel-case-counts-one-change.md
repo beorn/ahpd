@@ -1,6 +1,6 @@
 ---
 title: The agents-channel case counts one change
-status: implemented
+status: done
 depends: []
 layer: "sdk tests"
 refs:

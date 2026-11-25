@@ -7,6 +7,10 @@ import { markerText, readParts, requestedVolume } from '../src/parts.js';
 import { dockerRuntime } from '../src/runtime.js';
 import type { DockerOptions } from '../src/runtime.js';
 import type { MadePart } from '../src/parts.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A part reaches a machine read-only at `/opt/ahpd/<id>`: from its own image

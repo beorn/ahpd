@@ -1,6 +1,6 @@
 ---
 title: The sdk, claude and pi lines use their logger
-status: implemented
+status: done
 depends: []
 layer: "sdk, agent-claude, agent-pi, server"
 refs:

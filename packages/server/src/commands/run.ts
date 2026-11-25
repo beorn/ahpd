@@ -80,7 +80,7 @@ import { controlIn, controlServer } from '../control.js';
 import type { ControlServer } from '../control.js';
 import { here } from '../ask.js';
 import { offerConfigure, askToServe } from './configure.js';
-import { agentPluginsDir, automationsDir, automationsPath, automationStatePath, configDir, configPath, customizationStatePath, daemonLog, hostId, isIdentifier, namedIssuer, policiesPath, rootConfigPath, sessionsDir, sessionsPath, signInIdentifier, urlHost, vaultPath } from '../config.js';
+import { agentPluginsDir, automationsDir, automationsPath, automationStatePath, configDir, configPath, customizationStatePath, daemonLog, hostId, isIdentifier, namedIssuer, policiesPath, rootConfigPath, sessionsDir, sessionsPath, signInIdentifier, urlHost, vaultPath, worktreeRemovalsPath } from '../config.js';
 import { API_PREFIX, PROXY_PREFIX, apiHandler, isUnder, json, listenApi, plainRequests, pluginRoutes, withoutApi, type ApiListener, type ApiOrigins } from '../http.js';
 import { isRootPath } from '../proxy/dialects.js';
 import { mcpHandler } from '../mcp.js';
@@ -117,6 +117,8 @@ import {
 } from './restart.js';
 import type { RestartOutcome } from './restart.js';
 import type { Options } from './options.js';
+import { holdIdleSleep, oncePerProcess } from '../keepawake.js';
+import { fileWorktreeRemovals } from '../worktreeremovals.js';
 
 /** The listener an HTTP surface is on: the daemon's, the API's own or the model API's own. */
 type Place = 'daemon' | 'api' | 'model';
@@ -380,6 +382,8 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     if (written(level, options.logLevel)) process.stderr.write(`${logLine(line, level, options.logTime, process.stderr)}\n`);
   };
   for (const warning of options.warnings) stamp(warning, 'warn');
+  /** The keep-awake helper's log, which says each kind of failure once. */
+  const keepAwakeLog = oncePerProcess({ warn: (line) => { stamp(line, 'warn'); }, debug: (line) => { stamp(line, 'debug'); } });
 
   /*
    * What this host calls its own sign-in resource.
@@ -731,6 +735,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     // The provider lists are kept below, once the channel they read exists.
     catalog: () => catalogue,
     note: (id, outcome) => { connectorLists.note(id, outcome); },
+    connectorTags: (id) => connectorLists.refs().find((one) => one.id === id)?.tags ?? [],
     ...(token === undefined ? {} : { token }),
     ...(users === undefined ? {} : { users }),
     policies,
@@ -1603,6 +1608,10 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
      * the host only shows what it is given and hands writes on.
      */
     rootConfig: daemonRootConfig(options, typed, openWire, (servers) => { mcpServers = servers as typeof mcpServers; }, async () => (await applyNow()).restart),
+    // The machine's idle sleep held while a chat works, as `keepAwakeWhileWorking` says.
+    keepAwake: (allowOnBattery) => holdIdleSleep(allowOnBattery, keepAwakeLog),
+    // The worktree removals still to make, kept beside the configuration so a restart tries them again.
+    worktreeRemovals: fileWorktreeRemovals(worktreeRemovalsPath(), (line) => { stamp(line, 'warn'); }),
     /*
      * The root config a client pushed, kept between restarts, as VS Code's
      * host keeps its own: a daemon restarted for an upgrade comes back with
@@ -1684,6 +1693,11 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     // Whether that is one record per turn or one per report, which `usage.per`
     // in the configuration file chose.
     usagePer: options.usagePer,
+    // The tags each record copies, from the agent records and the connectors.
+    usageTags: {
+      agent: (id) => agentLists.tagsOf(id),
+      connector: (id) => connectorLists.refs().find((one) => one.id === id)?.tags ?? [],
+    },
     // The zone the store below keeps its days in, so a period walked for a
     // limit reads the days the store wrote.
     ...(options.usageTimezone === undefined ? {} : { usageTimezone: options.usageTimezone }),

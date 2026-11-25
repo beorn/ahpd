@@ -488,8 +488,78 @@ it("answers the agent's request with what the owning client said", async () => {
     && (n.params as Note).channel === uri && (n.params as Note).action.type === 'session/inputNeededSet');
   expect(ready).toBeGreaterThan(-1);
   expect(raised).toBeGreaterThan(ready);
+  expect((p.notes[ready]?.params as Note).action.contributor).toEqual({ kind: 'client', clientId: 'a' });
+  expect((p.notes[raised]?.params as Note).action.request).toMatchObject({
+    kind: 'toolClientExecution',
+    chat: chatUri,
+    turnId: 't1',
+    clientId: 'a',
+    toolCall: {
+      toolCallId: 'call-1',
+      // The name the client announced, not the one the model was offered.
+      toolName: 'openFile',
+      status: 'running',
+      contributor: { kind: 'client', clientId: 'a' },
+    },
+  });
   // And the entry the client was asked through is gone, not left open.
   expect(asked(p, uri)).toEqual([]);
+});
+
+const REPORTED = 'client tool mrep=call-1=a__openFile={"path":"/a.txt"}';
+const REQUESTED = 'mreq=a__openFile={"path":"/a.txt"}=-';
+
+/** Every entry ever raised asking a client to run a call. */
+const raisedEver = (p: ReturnType<typeof peer>, uri: string): string[] => actions(p, uri)
+  .filter((one) => one.action.type === 'session/inputNeededSet' && (one.action.request as Bag).kind === 'toolClientExecution')
+  .map((one) => String(((one.action.request as Bag).toolCall as Bag).toolCallId));
+
+/** The question about a call, as the chat holds it. */
+const questioned = (p: ReturnType<typeof peer>, chatUri: string): boolean => actions(p, chatUri)
+  .some((one) => one.action.type === 'chat/toolCallReady' && one.action.confirmationTitle !== undefined);
+
+it('asks no client to run a call the agent has only reported', async () => {
+  const { host, client, peer: p, uri, chatUri } = await talking();
+  await joining(host, uri, chatUri, 'a');
+  // Reported `in_progress`, and ended by the agent with no request for it.
+  begin(client, chatUri, 't1', REPORTED);
+  await until(() => ended(p, chatUri));
+  expect(raisedEver(p, uri)).toEqual([]);
+  // Never said running, since a client runs a call it reads as running.
+  expect(types(p, chatUri).filter((type) => type.startsWith('chat/toolCall')))
+    .toEqual(['chat/toolCallStart', 'chat/toolCallComplete']);
+});
+
+it('asks a client to run a call only once the person allowed it', async () => {
+  const { host, client, peer: p, uri, chatUri, arrived } = await talking();
+  const a = await joining(host, uri, chatUri, 'a');
+  begin(client, chatUri, 't1', `${REPORTED} mper=call-1 ${REQUESTED}`);
+  await until(() => questioned(p, chatUri));
+  expect(raisedEver(p, uri)).toEqual([]);
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: chatUri, action: { type: 'chat/toolCallConfirmed', turnId: 't1', toolCallId: 'call-1', approved: true, confirmed: 'user-action' } },
+  });
+  await until(() => raisedEver(p, uri).length > 0);
+  // Answered at once, whichever of the answer and the request is first.
+  await complete(a.client, chatUri, 'call-1', OK('opened /a.txt'));
+  await until(() => ended(p, chatUri));
+  expect(arrived()).toBeGreaterThan(0);
+  expect(said(p, chatUri)).toEqual(['opened /a.txt']);
+  expect(new Set(raisedEver(p, uri))).toEqual(new Set(['call-1']));
+});
+
+it('asks no client to run a call the person refused', async () => {
+  const { host, client, peer: p, uri, chatUri } = await talking();
+  await joining(host, uri, chatUri, 'a');
+  begin(client, chatUri, 't1', `${REPORTED} mper=call-1 ${REQUESTED}`);
+  await until(() => questioned(p, chatUri));
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: chatUri, action: { type: 'chat/toolCallConfirmed', turnId: 't1', toolCallId: 'call-1', approved: false, reason: 'denied' } },
+  });
+  await until(() => ended(p, chatUri));
+  expect(raisedEver(p, uri)).toEqual([]);
 });
 
 it('pairs two calls of one tool by their arguments', async () => {
@@ -564,13 +634,8 @@ it('refuses a request that two open calls could be for', async () => {
     { isError: true, content: [{ type: 'text', text: ambiguous }] },
     { isError: true, content: [{ type: 'text', text: ambiguous }] },
   ]);
-  // Both rows were raised for the client that can really run them, and went with
-  // the turn that ended: a chat's entries go with its turn, as the reference host
-  // keeps them (sessionInputNeededContribution.ts L56-L60 at a4e689ae).
-  const raised = actions(p, uri)
-    .filter((one) => one.action.type === 'session/inputNeededSet')
-    .map((one) => String(((one.action.request as Bag).toolCall as Bag).toolCallId));
-  expect(raised).toEqual(['call-1', 'call-2']);
+  // Neither is found to be for a request, so no client is asked.
+  expect(raisedEver(p, uri)).toEqual([]);
   expect(asked(p, uri)).toEqual([]);
 });
 

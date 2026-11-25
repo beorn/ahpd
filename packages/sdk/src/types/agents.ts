@@ -63,6 +63,8 @@ export interface AgentRecord {
   description?: string;
   /** What a client draws beside it. */
   icon?: Icon;
+  /** The labels every usage record of its work carries, each once. */
+  tags?: string[];
   /** The model it runs on, where the engine lets a record choose one. */
   model?: string;
   /** The engine's own values, held to its schema. */
@@ -101,6 +103,8 @@ export interface AgentView {
   readonly description: string | undefined;
   /** What a client draws beside it, when it has one. */
   readonly icon: Icon | undefined;
+  /** The labels every usage record of its work carries, when it has some. */
+  readonly tags?: readonly string[];
   /** The model it runs on, when it names one. */
   readonly model: string | undefined;
   /** The engine's own values, each secret read back from the vault. */

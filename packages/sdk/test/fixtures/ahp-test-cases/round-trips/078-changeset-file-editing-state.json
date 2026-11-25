@@ -1,0 +1,60 @@
+{
+  "name": "changeset-file-editing-state",
+  "group": "A",
+  "description": "Changeset file status preserves Editing, explicit 0, combined forward-compatible bits, and omission through native action decoding and encoding.",
+  "type": "StateAction",
+  "input": {
+    "type": "changeset/contentChanged",
+    "files": [
+      {
+        "id": "file:///a.txt",
+        "edit": { "after": { "uri": "file:///a.txt", "content": { "uri": "content:/a" } } },
+        "nonce": "a-1",
+        "status": 1
+      },
+      {
+        "id": "file:///b.txt",
+        "edit": { "after": { "uri": "file:///b.txt", "content": { "uri": "content:/b" } } },
+        "nonce": "b-1",
+        "status": 0
+      },
+      {
+        "id": "file:///c.txt",
+        "edit": { "after": { "uri": "file:///c.txt", "content": { "uri": "content:/c" } } }
+      },
+      {
+        "id": "file:///d.txt",
+        "edit": { "after": { "uri": "file:///d.txt", "content": { "uri": "content:/d" } } },
+        "status": 5
+      }
+    ]
+  },
+  "acceptableOutputs": [
+    {
+      "type": "changeset/contentChanged",
+      "files": [
+        {
+          "id": "file:///a.txt",
+          "edit": { "after": { "uri": "file:///a.txt", "content": { "uri": "content:/a" } } },
+          "nonce": "a-1",
+          "status": 1
+        },
+        {
+          "id": "file:///b.txt",
+          "edit": { "after": { "uri": "file:///b.txt", "content": { "uri": "content:/b" } } },
+          "nonce": "b-1",
+          "status": 0
+        },
+        {
+          "id": "file:///c.txt",
+          "edit": { "after": { "uri": "file:///c.txt", "content": { "uri": "content:/c" } } }
+        },
+        {
+          "id": "file:///d.txt",
+          "edit": { "after": { "uri": "file:///d.txt", "content": { "uri": "content:/d" } } },
+          "status": 5
+        }
+      ]
+    }
+  ]
+}

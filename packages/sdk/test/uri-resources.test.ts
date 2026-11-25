@@ -136,3 +136,62 @@ it('reads a provider\'s scheme from the provider, and a client\'s resource from 
   })).toEqual(answer);
   expect(asked).toEqual(['virtual://editor/notes.md']);
 });
+
+/*
+ * A byte range of a file, from AHP 1.1.0's `resourceRead`: the slice and the
+ * file's `size`, a text slice that never ends inside a character, and a read
+ * with no range answered whole and with no `size`. A scheme whose store reads
+ * no ranges answers the whole resource.
+ * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/common/commands.ts#L866-L920
+ */
+const read = (client: Awaited<ReturnType<typeof open>>, uri: string, more: Record<string, unknown> = {}) =>
+  client.handle({ method: 'resourceRead', params: { channel: 'ahp-root://', uri, ...more } });
+
+it('reads a byte range of a text file and says the file\'s size', async () => {
+  writeFileSync(join(root, 'a.txt'), 'hello world');
+  const client = await open(host());
+  expect(await read(client, `file://${root}/a.txt`, { position: 6, length: 3 }))
+    .toEqual({ data: 'wor', encoding: 'utf-8', contentType: 'text/plain', size: 11 });
+  expect(await read(client, `file://${root}/a.txt`, { position: 6 })).toMatchObject({ data: 'world', size: 11 });
+  expect(await read(client, `file://${root}/a.txt`, { length: 5 })).toMatchObject({ data: 'hello', size: 11 });
+});
+
+it('reads a byte range of a binary file as base64', async () => {
+  writeFileSync(join(root, 'b.bin'), Buffer.from([0, 1, 2, 3, 4, 5]));
+  const client = await open(host());
+  expect(await read(client, `file://${root}/b.bin`, { position: 0, length: 3 }))
+    .toEqual({ data: Buffer.from([0, 1, 2]).toString('base64'), encoding: 'base64', size: 6 });
+  expect(await read(client, `file://${root}/b.bin`, { position: 2, length: 2, encoding: 'base64' }))
+    .toEqual({ data: Buffer.from([2, 3]).toString('base64'), encoding: 'base64', size: 6 });
+});
+
+it('answers nothing past the end, and the size', async () => {
+  writeFileSync(join(root, 'a.txt'), 'abc');
+  const client = await open(host());
+  expect(await read(client, `file://${root}/a.txt`, { position: 10 })).toMatchObject({ data: '', size: 3 });
+});
+
+it('ends a text range before a character it would cut', async () => {
+  // `é` is two bytes, so three bytes from the start hold `a` and all of `é`, and two hold only `a`.
+  writeFileSync(join(root, 'u.txt'), 'aéb');
+  const client = await open(host());
+  expect(await read(client, `file://${root}/u.txt`, { length: 3 })).toMatchObject({ data: 'aé', encoding: 'utf-8', size: 4 });
+  expect(await read(client, `file://${root}/u.txt`, { length: 2 })).toMatchObject({ data: 'a', encoding: 'utf-8', size: 4 });
+});
+
+it('answers a read with no range whole and with no size, and a store with no ranges whole', async () => {
+  writeFileSync(join(root, 'a.txt'), 'abc');
+  const client = await open(host());
+  const whole = await read(client, `file://${root}/a.txt`) as Record<string, unknown>;
+  expect(whole).toMatchObject({ data: 'abc' });
+  expect(whole).not.toHaveProperty('size');
+  expect(await read(client, 'computer://local/status', { position: 1, length: 2 }))
+    .toEqual({ data: 'status of computer://local/status', encoding: 'utf-8' });
+});
+
+it('refuses a bound that is not a whole number of 0 or more', async () => {
+  writeFileSync(join(root, 'a.txt'), 'abc');
+  const client = await open(host());
+  await expect(read(client, `file://${root}/a.txt`, { position: -1 })).rejects.toMatchObject({ code: -32602 });
+  await expect(read(client, `file://${root}/a.txt`, { length: 1.5 })).rejects.toMatchObject({ code: -32602 });
+});

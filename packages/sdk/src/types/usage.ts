@@ -78,6 +78,13 @@ export interface UsageBase {
   providerCost?: Cost;
   /** The pools it is charged to. A record naming none is charged nowhere. */
   pools: string[];
+  /**
+   * The tags of what the work passed through, each once: the agent's, then
+   * each connector's in the order it was used. Copied when the record is
+   * written, so an edit to a tag changes no record already kept. Absent when
+   * none of them had a tag.
+   */
+  tags?: string[];
 }
 
 /** The model a call ran on, and the tokens it used. */
@@ -199,12 +206,17 @@ export interface Usage {
    * many pools it is charged to. `keep` is asked with a record's pools, and a
    * record it refuses is in no row. The range is compared at the day, as
    * `records` compares it.
+   *
+   * By `tag`, a record is in one row for each of its tags, and a record with
+   * no tag is in none. With `tags`, only a record that holds every one of
+   * them is summed.
    */
   groups(
     by: readonly UsageKey[],
     from: string,
     until: string,
     keep: (pools: readonly string[]) => boolean,
+    tags?: readonly string[],
   ): Promise<UsageGroup[]>;
 }
 
@@ -212,15 +224,16 @@ export interface Usage {
  * What a grouped total is summed by.
  *
  * `user` is the record's owner, `team` its `team:` pool and `project` its
- * `project:` pool, each spelled as the pool key it is charged under.
+ * `project:` pool, each spelled as the pool key it is charged under. `tag` is
+ * one of the record's tags, as it is written.
  */
-export type UsageKey = 'user' | 'team' | 'project';
+export type UsageKey = 'user' | 'team' | 'project' | 'tag';
 
 /** One row of a grouped total. */
 export interface UsageGroup {
   /**
-   * The pool key of each key asked for. A key the records had none of, such as
-   * the project of team work, is absent.
+   * The pool key of each key asked for, and the tag itself for `tag`. A key
+   * the records had none of, such as the project of team work, is absent.
    */
   keys: Partial<Record<UsageKey, string>>;
   /** What those records were charged. */

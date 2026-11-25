@@ -1,6 +1,6 @@
 ---
 title: The limit cases count to a few
-status: implemented
+status: done
 depends: [task-01-the-counts-are-a-host-option.md]
 layer: "tests"
 refs:

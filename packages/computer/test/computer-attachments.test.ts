@@ -15,7 +15,10 @@ import type { ComputerPort } from '../../sdk/src/types/computers.js';
 import type { HostOptions } from '../../sdk/src/types/host.js';
 import type { Peer } from '../../sdk/src/types/rpc.js';
 import type { SessionStore } from '../../sdk/src/types/sessions.js';
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A session in a machine reads its attachments at the path the host wrote.

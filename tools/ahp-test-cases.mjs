@@ -50,7 +50,15 @@ try {
  * protocol this host does not speak, so the two are compared before anything
  * is written rather than after.
  */
-const published = JSON.parse(git('show', `${commit}:package.json`)).version;
+/*
+ * The version npm publishes is the TypeScript client's. From 1.1.0 the tag
+ * keeps it in `clients/typescript/package.json`, and the root one says the
+ * repository's own version, `0.9.0`.
+ */
+const manifest = git('ls-tree', '--name-only', commit, 'clients/typescript/package.json').trim() === ''
+  ? 'package.json'
+  : 'clients/typescript/package.json';
+const published = JSON.parse(git('show', `${commit}:${manifest}`)).version;
 const installed = JSON.parse(readFileSync(PACKAGE, 'utf8')).version;
 if (published !== installed) {
   process.stderr.write(`${tag} publishes ${published} and ${installed} is installed; bump the package first\n`);

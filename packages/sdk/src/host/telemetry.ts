@@ -6,6 +6,9 @@ import type { HostContext } from './context.js';
 import { LOG_LEVELS, LOG_SEVERITY, loggerOf } from '../log.js';
 import type { LogLevel, Logger } from '../log.js';
 
+/** A span's attributes, as the signal carries them: no nested values. */
+export type TimingAttributes = Record<string, string | number | boolean>;
+
 /** What the host says about itself: its own log, and turns as spans and histograms. */
 export interface Telemetry {
   LOGS: string;
@@ -14,6 +17,10 @@ export interface Telemetry {
   log: Logger;
   fire(event: HostEvent): Promise<void>;
   telemetered(channel: string, action: Record<string, unknown>): void;
+  /** A span a client's record becomes, sent on the traces channel under the name the record gives. */
+  clientSpan(name: string, attributes: TimingAttributes): void;
+  /** Wait for every span already sent to be written. */
+  flush(): Promise<void>;
 }
 
 export function createTelemetry(ctx: HostContext): Telemetry {
@@ -190,6 +197,44 @@ export function createTelemetry(ctx: HostContext): Telemetry {
     });
   };
 
+  /**
+   * A client's record, as the zero-duration metadata span VS Code emits for
+   * one: observed now, with the record's own attributes and nothing else.
+   *
+   * The attributes are encoded as OTLP/JSON value kinds, so a number is a
+   * `doubleValue` and a boolean a `boolValue`, as the reference host writes
+   * them. The kind is internal and the status OK, because the record is an
+   * observation rather than work the host did.
+   */
+  const clientSpan = (name: string, attributes: TimingAttributes): void => {
+    const at = Date.now();
+    const nano = String(at * 1_000_000);
+    spanned({
+      traceId: hex(16),
+      spanId: hex(8),
+      name,
+      kind: 1,
+      startTimeUnixNano: nano,
+      endTimeUnixNano: nano,
+      attributes: Object.entries(attributes).map(([key, value]) => ({
+        key,
+        value: typeof value === 'string' ? { stringValue: value }
+          : typeof value === 'number' ? { doubleValue: value }
+            : { boolValue: value },
+      })),
+      status: { code: 1 },
+    });
+  };
+
+  /**
+   * Wait for the spans already sent.
+   *
+   * A notification is written to its connection before `clientSpan` returns,
+   * and an answer is written after it, so a span is on the wire ahead of the
+   * answer with no queue of this host's between them.
+   */
+  const flush = (): Promise<void> => Promise.resolve();
+
   /*
    * The agent and tool metrics OpenTelemetry's GenAI conventions define, each
    * with the units and bucket boundaries they name: an invocation's duration
@@ -360,5 +405,5 @@ export function createTelemetry(ctx: HostContext): Telemetry {
     measured();
   };
 
-  return { LOGS, TRACES, METRICS, log, fire, telemetered };
+  return { LOGS, TRACES, METRICS, log, fire, telemetered, clientSpan, flush };
 }

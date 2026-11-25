@@ -1,7 +1,7 @@
 ---
 title: A cofold model call names ahpd
 domain: cofold
-status: planned
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -71,7 +71,7 @@ apply(host) -> cofoldAgent({ app }) -> providerOf / openaiCompat({ app }) -> eac
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - Each model call names ahpd](task-01-each-model-call-names-ahpd.md) | implemented | - |
+| [01 - Each model call names ahpd](task-01-each-model-call-names-ahpd.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -80,7 +80,7 @@ apply(host) -> cofoldAgent({ app }) -> providerOf / openaiCompat({ app }) -> eac
 ## Resume state
 
 - **Done so far:** task 01 implemented 2026-11-10.
-- **Next action:** Softov's review, then `done` on the task. No task is left.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** Windows CI was not run here. A bump of `@cofold/model-openai-compat` past 0.3.0 can change more than the app, so read its changes first.
 

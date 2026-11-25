@@ -1,6 +1,6 @@
 ---
 title: Configure turns the policy checks on and writes starter rows
-status: implemented
+status: done
 depends: [task-01-configure-adds-a-person.md]
 layer: "server"
 refs:

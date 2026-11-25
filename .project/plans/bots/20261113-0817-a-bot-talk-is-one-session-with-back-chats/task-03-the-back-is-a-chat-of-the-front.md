@@ -1,6 +1,6 @@
 ---
 title: The Back is a chat of the Front's session
-status: implemented
+status: done
 depends:
   - task-01-one-session-for-each-bot-and-person.md
   - task-02-the-front-runs-in-the-bots-folder.md

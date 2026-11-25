@@ -22,7 +22,10 @@ import type { HostOptions, HostTool } from '../../sdk/src/types/host.js';
 import type { MachineNeed } from '../../sdk/src/types/machine.js';
 import type { Usage, UsageEntry, UsageTotal } from '../../sdk/src/types/usage.js';
 import type { Vault } from '../../sdk/src/types/vault.js';
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * A machine on another box, reached over a scripted `ssh`.

@@ -1,6 +1,6 @@
 ---
 title: The gone-CLI case waits on events
-status: implemented
+status: done
 depends: []
 layer: "computer tests"
 refs:

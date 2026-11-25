@@ -1,6 +1,6 @@
 ---
 title: A prerelease sdk takes the prereleases its plugins admit
-status: implemented
+status: done
 depends: [task-01-the-shipped-sdk-is-the-gate.md]
 layer: server
 refs:

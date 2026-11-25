@@ -149,6 +149,10 @@ git push origin vX.Y.Z
 - Its `parts` job builds every part in `packages/computer/images/versions.json` for `linux/amd64` and `linux/arm64` with `scripts/parts-publish.mjs --push` and pushes each to `ghcr.io/<owner>/ahpd-part/<id>:<tag>`, the owner being the one `@ahpd/computer`'s `repository` names, which is where every host pulls its parts; then the joined image of them all, to `ghcr.io/<owner>/ahpd-agents:<hash>`.
   A tag already there is left as it is.
   It writes the digest of each image it pushed or found there to `packages/computer/images/digests.json`, which is never committed, and hands it to the release job, which packs it into `@ahpd/computer`; a host pulls each part by that digest.
+- The `parts` job also packs `sdk`, `server`, `agent-cofold` and `agent-pi`, the packages of the `ahpd` part, and `node scripts/parts-bump.mjs --release <folder>` writes the part's version and locks from those tarballs.
+  The image of the part is built from the tarballs, the release job stages the same ones, and `@ahpd/computer` carries the version and the locks, so a host of this release runs this release in its machines and on its boxes. None of it is committed.
+  The release job stops before staging when a lock does not hold the bytes it would stage, or npm serves one of the four at this version with other bytes.
+  Rerun the failed jobs of a run to carry on: they keep the tarballs. Before a new run of a tag whose packages are staged, reject those packages on npm, since a staged package cannot be read to compare.
   The release job waits for the parts job, so a part that does not build or push stops the release before any package is staged, and a rerun of the failed job carries on.
   A part pushed to a personal account for the first time is a private package, [GitHub's default](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility), and no host can pull it until it is made public on its package page, once.
 

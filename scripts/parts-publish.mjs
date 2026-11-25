@@ -27,14 +27,18 @@
  * platforms and nothing is pushed, which is the release's rehearsal.
  *
  * Usage, with the resolver and the condition that read the plugin's own source:
- *   node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs [--push [--digests <file>] | --local]
+ *   node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs [--push [--digests <file>] | --local] [--packages <folder>]
+ *
+ * `--packages` names the folder of the ahpd part's packed packages, which the
+ * release builds its image from before npm serves them.
  *
  * Exit status is 1 when an image did not build or has no digest after its push,
  * and 2 for a refusal of the arguments.
  */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const USAGE = `Every part image and the joined image, built at the tags a daemon from this checkout asks for.
@@ -43,14 +47,17 @@ const USAGE = `Every part image and the joined image, built at the tags a daemon
   node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs --push    build for both platforms, push what is not there, and write each digest
   node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs --local   build on this host's Docker
 
-  --digests <file>   with --push, where the digests are written; packages/computer/images/digests.json by default`;
+  --digests <file>   with --push, where the digests are written; packages/computer/images/digests.json by default
+  --packages <folder>  the packed packages the ahpd part is built from, in place of npm's`;
 
 const argv = process.argv.slice(2);
 const digestsAt = argv.indexOf('--digests');
-const flags = argv.filter((_, at) => digestsAt === -1 || (at !== digestsAt && at !== digestsAt + 1));
+const packagesAt = argv.indexOf('--packages');
+const flags = argv.filter((_, at) => [digestsAt, packagesAt].every((one) => one === -1 || (at !== one && at !== one + 1)));
 if (
   flags.some((one) => one !== '--push' && one !== '--local')
   || (flags.includes('--push') && flags.includes('--local'))
+  || (packagesAt !== -1 && argv[packagesAt + 1] === undefined)
   || (digestsAt !== -1 && (argv[digestsAt + 1] === undefined || !flags.includes('--push')))
 ) {
   process.stderr.write(`${USAGE}\n`);
@@ -117,6 +124,11 @@ const keepDigest = (image, remote) => {
   return true;
 };
 
+/** The packed packages of the ahpd part, which its build adds to npm's cache. */
+const packages = packagesAt === -1 ? [] : readdirSync(argv[packagesAt + 1])
+  .filter((one) => one.endsWith('.tgz'))
+  .map((name) => ({ name, bytes: readFileSync(join(argv[packagesAt + 1], name)) }));
+
 // Each part after the parts it requires, so `node` is there before what copies it in.
 const ordered = [];
 const visit = (id) => {
@@ -145,7 +157,7 @@ for (const id of ordered) {
     name: id,
     tag,
     required: (part.requires ?? []).map((need) => tags.get(need)),
-    context: contextOf(file, source?.from === 'workspace' ? [...source.tarballs, ...source.plugins] : lock ?? []),
+    context: contextOf(file, source?.from === 'workspace' ? [...source.tarballs, ...source.plugins] : [...(lock ?? []), ...(part.kind === 'ahpd' ? packages : [])]),
   });
 }
 

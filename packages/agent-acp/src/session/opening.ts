@@ -53,7 +53,7 @@ const SPAWN_KEYS = [
 const LIVE_KEYS = [
   'command', 'args', 'env', 'cwd', 'provider', 'displayName', 'description', 'model',
   'authenticate', 'authenticateInMachine', 'hostTools', 'honoursTrust', 'toolsChanged', 'machine', 'variant',
-  'cutTurns', 'stderrTail', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
+  'cutTurns', 'stderrTail', 'portFailures', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
   'listingIdleMs', 'sessionListMaxPages', 'exitGraceMs', 'stderrBytes', 'killGraceMs', 'closeGraceMs',
 ] as const;
 
@@ -202,6 +202,29 @@ const serversFor = async (
 };
 
 /**
+ * What a machine port answers, with a refusal said as `portFailures` says.
+ *
+ * `spawn`, the default, says `The <what> could not start in computer://<id>.`
+ * and logs the port's own message, which can name a socket path, a registry or
+ * an image. `message` passes the port's refusal on as it is.
+ */
+export const askMachine = async <T>(
+  options: Pick<AcpOptions, 'portFailures' | 'log' | 'provider'>,
+  id: string,
+  what: 'agent' | 'terminal',
+  ask: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await ask();
+  }
+  catch (error) {
+    if (options.portFailures === 'message') throw error;
+    options.log?.(`${options.provider}: computer://${id}: the ${what} could not start: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    throw new Error(`The ${what} could not start in computer://${id}.`);
+  }
+};
+
+/**
  * The machine this session was told to run in, as its id, or nothing.
  *
  * A name that cannot be reached throws rather than falling back to this host: a
@@ -304,11 +327,11 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
      * paths that mean anything inside the machine are its own. The port uses
      * the machine's working directory when the caller names none.
      */
-    const spawn = await computers.how(id, {
+    const spawn = await askMachine(options, id, 'agent', () => computers.how(id, {
       command: options.command,
       ...(options.args === undefined ? {} : { args: options.args }),
       ...(options.env === undefined ? {} : { env: options.env }),
-    });
+    }));
     if (spawn === undefined) throw new Error(`There is no computer called ${id}`);
     return spawn;
   };
@@ -389,6 +412,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
   const open = (): Promise<{ connection: AcpConnection; sessionId: string }> => {
     if (ctx.opening !== undefined) return ctx.opening;
     ctx.loading = true;
+    ctx.failedOpen = undefined;
     /*
      * The config every client holds as the open begins, read before the open
      * learns the server's own: `learnModes`, `learnConfigOptions` and
@@ -397,8 +421,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
      */
     const values = { ...ctx.values };
     const startingWith = spawnOf(options);
-    /** The server this open spawned, once it has. */
+    /** The server this open spawned, once it has, with what it ran. */
     let made: AcpConnection | undefined;
+    let ran: { command: string; path: string | undefined } | undefined;
     /** This opening's custody of the seat's ACP child (#34599), held from admission until its child's end is recorded. */
     let custody: Custody | undefined;
     // Install the pending identity before the opening body can reach placement.
@@ -453,6 +478,11 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         }
         custody = held;
       }
+      // A machine's PATH is the machine's, which this host does not know.
+      ran = {
+        command: moved?.command ?? options.command,
+        path: moved === undefined ? start.env?.PATH ?? options.env?.PATH ?? process.env.PATH : undefined,
+      };
       let connection: AcpConnection;
       let escaped: import('node:child_process').ChildProcess | undefined;
       let setupFailed = false;
@@ -474,14 +504,24 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         ...(moved !== undefined
           ? { args: moved.args }
           : options.args === undefined ? {} : { args: options.args }),
-        ...(moved?.env !== undefined
-          ? { env: moved.env }
-          : moved === undefined && options.env !== undefined ? { env: {
-            ...options.env,
-            ...(custody?.spawnGuard === undefined ? {} : { HAB_ACP_SPAWN_GUARD: JSON.stringify({
-              ...custody.spawnGuard, fd: 3, opening: custody.opening,
-            }) }),
-          } } : {}),
+        /*
+         * On this host the agent's own variables go over the preset's, so the
+         * commands it runs reach the shell authentication helper. In a machine
+         * only the machine's are used: the helper's socket is this host's.
+         * The spawn guard the host projects goes last, so nothing a record or
+         * the helper names can stand in for it (#34599).
+         */
+        ...(moved !== undefined
+          ? (moved.env === undefined ? {} : { env: moved.env })
+          : (options.env === undefined && start.env === undefined
+            ? {}
+            : { env: {
+              ...(options.env ?? {}),
+              ...(start.env ?? {}),
+              ...(custody?.spawnGuard === undefined ? {} : { HAB_ACP_SPAWN_GUARD: JSON.stringify({
+                ...custody.spawnGuard, fd: 3, opening: custody.opening,
+              }) }),
+            } })),
         ...(moved?.cwd !== undefined ? { cwd: moved.cwd } : moved === undefined ? { cwd } : {}),
         handlers: {
           update: ctx.sessionUpdate,
@@ -773,6 +813,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
       if (ctx.opening === pending) ctx.opening = undefined;
       if (made === undefined) return;
       if (ctx.successfulOpening?.connection === made) ctx.successfulOpening = undefined;
+      ctx.failedOpen = { connection: made, command: ran?.command ?? options.command, path: ran?.path };
       if (ctx.live === made) ctx.live = undefined;
       void made.close();
     });

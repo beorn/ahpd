@@ -1,6 +1,6 @@
 ---
 title: The notes say how to upgrade
-status: implemented
+status: done
 depends: [task-01-the-shipped-sdk-is-the-gate.md, task-02-a-prerelease-sdk-takes-prereleases.md, task-03-a-release-sets-the-sdk-range.md]
 layer: docs
 refs:

@@ -1,7 +1,7 @@
 ---
 title: The orchestration limits are a host option
 domain: host
-status: active
+status: built
 priority: medium
 created: 2026-11-18
 revalidated: 2026-11-18
@@ -65,8 +65,8 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the counts are a host option](task-01-the-counts-are-a-host-option.md) | implemented | - |
-| [02 - the limit cases count to a few](task-02-the-limit-cases-count-to-a-few.md) | implemented | 01 |
+| [01 - the counts are a host option](task-01-the-counts-are-a-host-option.md) | done | - |
+| [02 - the limit cases count to a few](task-02-the-limit-cases-count-to-a-few.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -76,7 +76,7 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 ## Resume state
 
 - **Done so far:** tasks 01 and 02 are `implemented` on 2026-11-18, on the branch `host/20261118-0603-the-orchestration-limits-are-a-host-option`.
-- **Next action:** Softov's review.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** the refusal sentence names the number; a case with a limit of 3 reads "3 of 3", not "50 of 50".
 

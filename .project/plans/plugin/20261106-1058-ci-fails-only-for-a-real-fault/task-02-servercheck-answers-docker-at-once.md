@@ -1,6 +1,6 @@
 ---
 title: The servercheck case answers docker at once
-status: todo
+status: done
 depends: []
 layer: "tests"
 refs:
@@ -32,3 +32,5 @@ No `docker` call in it waits on a daemon.
 - The PR's `processes` job passes with no rerun.
 
 ## Resume
+
+Fixed before this build, by #396 (merged 2026-11-20): the server-check script runs without `docker` or `virsh`. Its two failures since 2026-11-08 came before that merge.

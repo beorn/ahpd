@@ -175,7 +175,7 @@ It loads the plugin with its defaults, and what holds inside a machine is its pr
 
 **The host comes from the `ahpd` part.**
 cofold and pi each declare the `ahpd` part as a need, so the machine has `/opt/ahpd/ahpd` mounted and `ahpd` on its `PATH`, run by the Node of the `node` part. The part holds `@ahpd/agent-cofold` and `@ahpd/agent-pi` in `/opt/ahpd/ahpd/plugins`, and its launcher sets `AHPD_PLUGIN_ROOT` to that directory, so the inner host finds both plugins with nothing in its configuration directory.
-Any glibc image runs it with nothing installed, `debian:bookworm-slim`, the default, among them. The part is ahpd from npm at the version the versions file names, or a checkout's own packed packages where `AHPD_PART_AHPD_ROOT` names the checkout; see [Parts](#parts).
+Any glibc image runs it with nothing installed, `debian:bookworm-slim`, the default, among them. The part is ahpd at the version the versions file names, which is the host's own in a host installed from a release, or a checkout's own packed packages where `AHPD_PART_AHPD_ROOT` names the checkout; see [Parts](#parts).
 A machine whose part could not be loaded is refused for these sessions by name, like any part an agent needs.
 
 **The image's user owns a writable `HOME` and `XDG_CONFIG_HOME`, with no mount under either.**
@@ -270,16 +270,16 @@ A profile that names `cofold` carries the `ahpd` part its nested host runs from,
 | Need | What it is on the host | Where it goes |
 | --- | --- | --- |
 | `ahpdPart` | the `ahpd` part, with `@ahpd/agent-cofold` among its plugins | `/opt/ahpd/ahpd`, with `ahpd` on the machine's `PATH` |
-| `cofoldState` | a state volume seeded with the harness's `config.json` | `/ahpd/cofold`, the file at `/ahpd/cofold/copapo/config.json` |
-| `cofoldConfig` | the harness's `config.json`, read-only, only in a profile with `state: "host"` | `/ahpd/cofold/copapo/config.json` |
-| `cofoldConfigPath` | - | `COPAPO_CONFIG=/ahpd/cofold/copapo/config.json` |
+| `cofoldState` | a state volume seeded with the harness's `config.json` | `/ahpd/cofold`, the file at `/ahpd/cofold/cofold/config.json` |
+| `cofoldConfig` | the harness's `config.json`, read-only, only in a profile with `state: "host"` | `/ahpd/cofold/cofold/config.json` |
+| `cofoldConfigPath` | - | `COFOLD_CONFIG=/ahpd/cofold/cofold/config.json` |
 | `cofoldBaseUrl` | - | `COFOLD_BASE_URL`, only when a profile names it |
 | `cofoldApiKey` | - | `COFOLD_API_KEY`, only when a profile names it |
 | `cofoldModel` | - | `COFOLD_MODEL`, only when a profile names it |
 
 `computerConfigDir` in the `@ahpd/agent-cofold` options names that directory, `/ahpd/cofold` by default, and `false` leaves the image's own configuration alone and declares only the part.
 
-The path inside the machine is fixed and `COPAPO_CONFIG` points at the file, the layer cofold's harness reads from that variable, so the configuration is found whichever user the image runs as - a container whose home is `/home/app` reads it the same as one running as root. A profile that mounts the configuration at some other path of its own gets a machine where the harness does not look.
+The path inside the machine is fixed and `COFOLD_CONFIG` points at the file, the layer cofold's harness reads from that variable, so the configuration is found whichever user the image runs as - a container whose home is `/home/app` reads it the same as one running as root. A profile that mounts the configuration at some other path of its own gets a machine where the harness does not look.
 
 `XDG_CONFIG_HOME` is not touched, and that is the point: it is the nested `ahpd`'s own folder as well, and a machine's mount point is root-owned, so pointing it at `/ahpd/cofold` stops any image that does not run as root from starting at all - `EACCES: permission denied, mkdir '/ahpd/cofold/ahpd/usage'` on the way in. Every other program in the machine keeps its own XDG configuration.
 
@@ -358,18 +358,18 @@ A policy names every ssh machine with `computer: ["ssh.*"]`.
 
 ### What the box needs
 
-- What the install below downloads with: Linux on x86_64 or aarch64, `curl`, `tar`, `xz` and `sha256sum`, and a route to nodejs.org and the npm registry. A box without them names in `host` the command that starts an ahpd of its own, by its full path where the `PATH` of a non-interactive login does not hold it, as it does not hold a Node installed by nvm.
+- What the install below downloads with: Linux on x86_64 or aarch64, `curl`, `tar`, `xz` and `sha256sum`, and a route to nodejs.org and the npm registry, or none: the host then sends the files, and `curl` is not needed. A box without them names in `host` the command that starts an ahpd of its own, by its full path where the `PATH` of a non-interactive login does not hold it, as it does not hold a Node installed by nvm.
 - The plugins of the agents it serves beyond cofold and pi, which the install brings, in the box's configuration folder, where `ahpd plugin install` run there puts them, each configured in the box's own `config.json`. The host on the box loads a plugin with the options its own file gives it, and serves the agent records in its own `agents` folder, so cofold's `model` lives in the file and an ACP agent's in its record.
 - Its own model credentials. Nothing is sent from this host: `host` above sources a file on the box, because a non-interactive ssh reads no profile.
 - This host's key in `authorized_keys`, and the box's host key known to this host. Every call passes `BatchMode=yes`, so a password prompt or an unknown host key fails with ssh's own sentence.
 
 ### The ahpd on the box
 
-With no `host`, a session's host is ahpd at the version `versions.json` names, which this host installs on the box the first time a session starts there, as VS Code installs its CLI on a host it reaches over SSH.
+With no `host`, a session's host is ahpd at the version `versions.json` names, a released host's own, which this host installs on the box the first time a session starts there, as VS Code installs its CLI on a host it reaches over SSH.
 The install is in `$XDG_DATA_HOME/ahpd/server/<version>-<hash>`, under `~/.local/share` when that is unset, so it needs no `sudo` and leaves any other ahpd on the box as it is.
-It holds what a machine's `/opt/ahpd` holds of the `node` and `ahpd` parts: Node from its download, checked by its sha256, and `@ahpd/server` with cofold and pi, installed by `npm ci` from the ahpd part's lock (see [Parts](#parts)). The box downloads them itself.
+It holds what a machine's `/opt/ahpd` holds of the `node` and `ahpd` parts: Node from its download, checked by its sha256, and `@ahpd/server` with cofold and pi, installed by `npm ci` from the ahpd part's two locks (see [Parts](#parts)). The box downloads them itself.
 
-An install that is there is used again. A version, a download or a plugin that moves is a new folder, and the five installs used most recently are kept.
+An install that is there is used again. A version, a download or a lock that moves is a new folder, and the five installs used most recently are kept.
 The log says each install:
 
 ```text
@@ -377,7 +377,15 @@ computer: ahpd 0.8.0 was installed on deb at /home/me/.local/share/ahpd/server/0
 ```
 
 A box no download is made for, anything but Linux on x86_64 or aarch64, is refused before anything is installed, in the words VS Code [refuses one with](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/sshRemoteAgentHostService.ts#L935-L938), `Unsupported remote platform: FreeBSD amd64`, and runs an ahpd of its own by naming it in `host`.
-A download that fails runs the newest other install of this host's there, as VS Code falls back to its [newest other CLI](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/remoteAgentHostCliInstaller.ts#L111-L123), and the log says so and why; with none, the session is refused with the install's own last line.
+A download that fails runs the newest other install of this host's there, as VS Code falls back to its [newest other CLI](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/remoteAgentHostCliInstaller.ts#L111-L123), and the log says so and why.
+With none, this host sends the box the files: Node and the npm packages of the two locks, for the box's platform, as one tar over ssh, about 80 MB. The box checks them by the same sum and the same locks, installs from them with no download, and removes them. The log names the box and why its own download failed:
+
+```text
+computer: ahpd 0.16.0 was not installed on deb, so this host sends it the files: curl: (6) Could not resolve host: nodejs.org
+```
+
+This host downloads the files once and keeps them for a week after the last box that needed them, in `$XDG_CACHE_HOME/ahpd/host-copies`, under `~/.cache` when that is unset. A session is refused with both reasons when the files cannot be sent either, and with the first alone for a box no download is made for. A box with an older install that runs keeps running it, with nothing sent, until it can download. A box that reaches nodejs.org and then waits on npm for over ten minutes is refused as one that took too long, and is sent nothing.
+As on a box that downloads, `node-pty` is built where the box has a compiler, and a box without one has no terminals.
 The folder the box answers is checked to be one of this host's installs, directly under its root and named `<version>-<hash>`, before anything runs from it.
 
 ### What the box can run
@@ -443,16 +451,7 @@ ahpd join ws://hub.example:7331 --token 7d1f... --workdir /srv/box
 A client lists `node.box` while that node is connected.
 A session created with `computer: "computer://node.box"` runs on the node.
 
-| Command | What it does |
-| --- | --- |
-| `ahpd node add <name>` | Adds a node and mints its token, shown once. Adding it again replaces the token, and the old one stops working |
-| `ahpd node list` | The nodes in the file, one name per line |
-| `ahpd node rm <name>` | Removes a node. Its token is refused from its next connection on, and a joined one is dropped |
-| `ahpd join <url>` | Dials the hub at a `ws://` or `http://` address, with `--token`, `--token-file` or `AHPD_TOKEN`. `--workdir` names the folder a session there starts in, and the current one is the default |
-
-`node:read` lists the nodes, and `node:write` adds and removes them ([Users and grants](../sdk/USERS.md)).
-The nodes file sits beside the users file, so `--users` or the `users` key names both.
-A host with no users file has nowhere to keep a node.
+The commands that add, list and remove a node, and `ahpd join`, are on [Nodes](../server/NODES.md), with where the nodes are kept and the grants.
 
 ### What runs there
 
@@ -636,7 +635,7 @@ The session's folder is on this host, so `code` says how the machine gets the se
 
 Either way the work comes back the same way, by the fetch [Disposable machines](#disposable-machines) describes, and the machine never pushes.
 
-A credential of this host's own never goes to another box. An agent need marked as a credential whose value is this host's, such as a cofold configuration seeded from `~/.config/copapo/config.json`, is refused at create with a sentence naming the need. Give the box its own value in the profile instead, best named from the vault as above: the value is passed by name on each `docker exec` and is never in the machine's `docker inspect`.
+A credential of this host's own never goes to another box. An agent need marked as a credential whose value is this host's, such as a cofold configuration seeded from `~/.config/cofold/config.json`, is refused at create with a sentence naming the need. Give the box its own value in the profile instead, best named from the vault as above: the value is passed by name on each `docker exec` and is never in the machine's `docker inspect`.
 
 ### Profiles that make VMs
 
@@ -974,7 +973,7 @@ A backend reads its chat's resolved sandbox from `Start.computers.sandbox(chat)`
 
 ### The runtime
 
-`@vscode/sandbox-runtime`, the runtime VS Code's terminal sandbox runs, enforces the settings. A backend asks `Start.computers.sandboxed(id, options)` for each command it runs for its agent and each MCP server it starts, and runs the descriptor it gets back:
+`@ahpio/sandbox-runtime` enforces the settings. It is ahpio's fork of Anthropic's sandbox runtime, which VS Code's terminal sandbox runs, with `network.enabled` added so a chat can allow the whole network. A backend asks `Start.computers.sandboxed(id, options)` for each command it runs for its agent and each MCP server it starts, and runs the descriptor it gets back:
 
 - a command runs inside the runtime while the chat's sandbox is on, as VS Code's terminal sandbox wraps one;
 - an MCP server runs inside it while `sandboxMcpServers` is on too, as VS Code's MCP sandbox starts one;
@@ -1008,15 +1007,17 @@ The versions file is `packages/computer/images/versions.json`, and it is the onl
 | `node` | The Node every npm part needs | One download per platform |
 | `npm` | A CLI published to npm | `packages`, installed onto the node part, each at the part's `version` or at its own when written `<package>@<version>` |
 | `archive` | A CLI published as a tarball | `archives`, one url and sha256 per platform, `paths`, where each command is in the download, and any `packages` installed onto the node part beside it, each written `<package>@<version>` |
-| `ahpd` | ahpd itself | From npm at its `version`, or a checkout's own packages where `AHPD_PART_AHPD_ROOT` names the checkout |
+| `ahpd` | ahpd itself | At its `version`, from the packages the release publishes, or a checkout's own packages where `AHPD_PART_AHPD_ROOT` names the checkout |
 
 A part is built once, by the release workflow, for `linux/amd64` and `linux/arm64`, and pushed to the GitHub container registry of the repository `@ahpd/computer` names, `ghcr.io/<owner>/ahpd-part/<id>:<tag>`; a host pulls it at that tag the first time it is asked for and tags it `ahpd-part/<id>:<tag>`, as VS Code's build produces each agent SDK once per release and every host [downloads it at first use](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/build/agent-sdk/README.md#L1-L5). The tag is the version, so `ahpd-part/codex:2.1.1` that is already there is answered from the daemon rather than pulled again. A package pinned at its own version adds that version to the tag, so `ahpd-part/claude:0.85.1-2.1.291` moves when either moves. A short hash of the Dockerfile that writes the image is in the tag after them, so an ahpd upgrade that changes how an image is written is a different image at the same versions, and the release that carries the change publishes it. Once a part is pulled, each of its launchers is run once with `--version` in the image a machine runs when its profile names none, with the parts it requires mounted, as VS Code [checks its CLI after an install](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/remoteAgentHostCliInstaller.ts#L102-L106); a launcher that does not answer takes the tag away from the image, so the next ask pulls it again. When the pull or the check fails, the newest earlier image of the part here whose launchers answer is loaded in its place, as VS Code [falls back to an older CLI](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/remoteAgentHostCliInstaller.ts#L111-L123), and the log says which. A part with no such image is refused by name and every other part still loads; a machine asking for it within 30 seconds is told the same failure without another pull, and the next ask after that pulls it again, as VS Code holds a [failed SDK load](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSdkDownloader.ts#L372-L395). The hold is per Docker, so a failure on one refuses nothing on another.
 
 An installed host pulls each part, and the joined image, by its digest: the release writes the digest of every image it publishes to `images/digests.json` in `@ahpd/computer`, and the host pulls `ghcr.io/<owner>/ahpd-part/<id>@sha256:<digest>`, then tags it `ahpd-part/<id>:<tag>` as before. A pull by digest gets those bytes or fails, so a tag pushed again with other content is not what a machine runs. A checkout has no digests file, because the file is never committed: it pulls each part by its tag, and the log says `<tag> has no pinned digest, so it is pulled by its tag` once for each part. A digests file that is not an object of sha256 digests by tag refuses the part, and the message names the file.
 
-A part's npm packages are installed from a lock, as VS Code installs each agent SDK from the `package.json` and `package-lock.json` [committed beside it](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/build/agent-sdk/README.md#L48-L57): `packages/computer/images/parts/<id>` holds the two files of each `npm` part, of each `archive` part with `packages`, and of the `ahpd` part, whose are `@ahpd/sdk` and `@ahpd/server` at its version. The build copies them in, checks each against the sum its Dockerfile names, and runs `npm ci`, so the image is a function of its lock and a lock that moves moves the tag. Install scripts run, because several of these packages fetch their binary in a `postinstall`, and the peers each package names are installed with it, because dsh's own packages reach one another as peers.
+A part's npm packages are installed from a lock, as VS Code installs each agent SDK from the `package.json` and `package-lock.json` [committed beside it](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/build/agent-sdk/README.md#L48-L57): `packages/computer/images/parts/<id>` holds the two files of each `npm` part, of each `archive` part with `packages`, and of the `ahpd` part, whose are `@ahpd/sdk` and `@ahpd/server` at its version. The `ahpd` part has two more in `ahpd/plugins`, for its plugins with `@ahpd/sdk` beside them, installed with `--legacy-peer-deps` so that no plugin's peer range is checked against another's. The build copies them in, checks each against the sum its Dockerfile names, and runs `npm ci`, so the image is a function of its lock and a lock that moves moves the tag. Install scripts run, because several of these packages fetch their binary in a `postinstall`, and the peers each package names are installed with it, because dsh's own packages reach one another as peers.
 
-The `ahpd` part takes local code only when asked: `AHPD_PART_AHPD_ROOT` in the daemon's environment names a checkout of this repository, whose packages are packed with `pnpm pack`, which needs `pnpm build` first, and installed into a part built on this host, and the daemon logs one line naming the checkout. Without it a checkout runs the version the versions file names, as an installed daemon does, as VS Code takes an agent SDK's local code only from that SDK's [override variable](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSdkDownloader.ts#L364-L370).
+A release builds the `ahpd` part from its own packages, before npm serves them: it writes the part's version and locks from the tarballs it stages and ships them in `@ahpd/computer`, so a host installed from a release runs its own version in its machines and on its boxes. The `npm ci` in the image finds each tarball in npm's cache by the integrity its lock holds. A machine pulls the image as soon as the release run ends; a box installs from npm, so it waits until every package is approved.
+
+The `ahpd` part takes local code only when asked: `AHPD_PART_AHPD_ROOT` in the daemon's environment names a checkout of this repository, whose packages are packed with `pnpm pack`, which needs `pnpm build` first, and installed into a part built on this host, and the daemon logs one line naming the checkout. Without it a checkout runs the version committed in the versions file, which the weekly bump moves to the last release on npm, as VS Code takes an agent SDK's local code only from that SDK's [override variable](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSdkDownloader.ts#L364-L370).
 
 ### Parts in a machine
 
@@ -1063,7 +1064,7 @@ The kinds it will not build are named in the error a missing or unknown `kind` g
 
 ### Bumps
 
-Bumps come by pull request. `.github/workflows/parts-bump.yml` runs weekly and on demand, compares the file with the ACP registry and with npm, computes each archive's new sha256, writes the lock of each part that moved and has npm packages, and opens one pull request carrying every newer version with its lock. An archive part's `paths` are kept as they are, so a version whose download moved a command fails its build, naming the path to edit. The `ahpd` part moves to the higher of the `latest` and `next` versions npm serves of `@ahpd/server`, a release candidate included, so a machine and a box run the last release npm serves, one behind a host that was just released: a release cannot pin its own version, which npm serves only after it is approved. Run the workflow by hand after a release is approved to propose it at once. A part on a release never moves to a prerelease, and the log names the prerelease it skipped. A part already on a prerelease, put there by hand, moves to a newer prerelease or to a release. A part no feed carries is skipped and named in the log, so it is bumped by hand, as is a package pinned at its own version, such as Claude Code in the `claude` part:
+Bumps come by pull request. `.github/workflows/parts-bump.yml` runs weekly and on demand, compares the file with the ACP registry and with npm, computes each archive's new sha256, writes the lock of each part that moved and has npm packages, and opens one pull request carrying every newer version with its lock. An archive part's `paths` are kept as they are, so a version whose download moved a command fails its build, naming the path to edit. The `ahpd` part moves to the higher of the `latest` and `next` versions npm serves of `@ahpd/server`, a release candidate included, which is the version a host run from a checkout uses. A release writes its own version in its place when it packs `@ahpd/computer`. A part on a release never moves to a prerelease, and the log names the prerelease it skipped. A part already on a prerelease, put there by hand, moves to a newer prerelease or to a release. A part no feed carries is skipped and named in the log, so it is bumped by hand, as is a package pinned at its own version, such as Claude Code in the `claude` part:
 
 ```sh
 node scripts/parts-bump.mjs --dry-run

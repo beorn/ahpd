@@ -1,7 +1,7 @@
 ---
 title: The session tools find a session and list the agents
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -72,9 +72,9 @@ tools/list (per caller) -> list_sessions / list_agents / list_models / create_se
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - list_sessions finds by more](task-01-list-sessions-finds-by-more.md) | implemented | - |
-| [02 - list_agents and list_models](task-02-list-agents-and-list-models.md) | implemented | - |
-| [03 - create_session names the agents](task-03-create-session-names-the-agents.md) | implemented | 02 |
+| [01 - list_sessions finds by more](task-01-list-sessions-finds-by-more.md) | done | - |
+| [02 - list_agents and list_models](task-02-list-agents-and-list-models.md) | done | - |
+| [03 - create_session names the agents](task-03-create-session-names-the-agents.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -84,7 +84,7 @@ tools/list (per caller) -> list_sessions / list_agents / list_models / create_se
 ## Resume state
 
 - **Done so far:** planned 2026-11-10; task-01 implemented 2026-11-10; task-02 implemented 2026-11-10; task-03 implemented 2026-11-10.
-- **Next action:** none - every task is implemented, and the plan waits on Softov's review.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `/mcp` and each session's `/ahp-mcp/<uuid>` serve the same tools; a change reaches both. The prescribed `TMPDIR` inside the worktree turns eight git/filesystem sdk cases red (`changes-refresh`, `git`, `watches`, `worktrees`) and fourteen server cases red (`control`, `join`, `plugin-live`, `plugins-channel`, `server-cli-start`); all pass with `TMPDIR` outside the repository.
 

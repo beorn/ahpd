@@ -1,6 +1,6 @@
 ---
 title: The docs say whose turns are approved
-status: implemented
+status: done
 depends: [task-01-the-owners-turns-get-the-approvals.md, task-02-a-setting-for-turns-nobody-sent.md]
 layer: docs
 refs:

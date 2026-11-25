@@ -312,7 +312,7 @@ it('refuses a permission and a question asked with no turn running, and an empty
   } as never)).toBe('cancelled');
   expect(await handlers.askElicitation(form as never)).toEqual({ action: 'cancel' });
   // In a turn, a question with neither a page nor a field is cancelled unasked.
-  ctx.mapping = { turnId: 't1', parts: [], calls: new Map(), opening: [] };
+  ctx.mapping = { turnId: 't1', parts: [], calls: new Map() };
   expect(await handlers.askElicitation({ ...form, requestedSchema: { type: 'object', properties: {} } } as never)).toEqual({ action: 'cancel' });
   expect(said).toEqual([]);
 });
@@ -742,7 +742,7 @@ it('says what the host decides a question by on its ready, and offers no options
     permissions: new Map(),
     terminals: new Map(),
     elicitations: new Map(),
-    mapping: { turnId: 't1', parts: [], calls: new Map(), opening: [] },
+    mapping: { turnId: 't1', parts: [], calls: new Map() },
     clientToolOf: () => undefined,
     openCall: (call: { toolCallId: string }) => { opened.push(call.toolCallId); },
     options: {},

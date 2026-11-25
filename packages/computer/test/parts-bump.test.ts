@@ -1,5 +1,6 @@
 import { posix } from '../../../tools/posix.ts';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -180,14 +181,97 @@ it.skipIf(!posix)('writes the lock of every part with npm packages from the vers
     dependencies: { '@agentclientprotocol/claude-agent-acp': '0.85.1', '@anthropic-ai/claude-code': '2.1.291' },
   });
   expect(manifest('ahpd')).toEqual({ name: 'ahpd-part-ahpd', private: true, dependencies: { '@ahpd/sdk': '0.8.0', '@ahpd/server': '0.8.0' } });
+  expect(manifest('ahpd/plugins')).toEqual({ name: 'ahpd-part-ahpd-plugins', private: true, dependencies: { '@ahpd/sdk': '0.8.0', '@ahpd/agent-cofold': '0.8.0' } });
   // A part with no npm packages has no lock.
   expect(existsSync(join(at, 'packages/computer/images/parts/goose'))).toBe(false);
   // npm wrote each lock in the part's own folder, resolving and running nothing.
   expect(readFileSync(join(at, 'npm.log'), 'utf8')).toBe([
     `${join(at, 'packages/computer/images/parts/claude')} install --package-lock-only --ignore-scripts --no-audit --no-fund`,
     `${join(at, 'packages/computer/images/parts/ahpd')} install --package-lock-only --ignore-scripts --no-audit --no-fund`,
+    `${join(at, 'packages/computer/images/parts/ahpd/plugins')} install --package-lock-only --ignore-scripts --no-audit --no-fund --legacy-peer-deps`,
     '',
   ].join('\n'));
+});
+
+/**
+ * An npm on `PATH` that locks what its manifest names as npm does a `file:`
+ * dependency: each with the file as its `resolved`, the version its name says
+ * and the sha512 of its bytes, or `NPM_WRONG` in place of the sum.
+ */
+const NPM_LOCKING = `#!${process.execPath}
+const { createHash } = require('node:crypto');
+const { readFileSync, writeFileSync } = require('node:fs');
+const { dependencies } = JSON.parse(readFileSync('package.json', 'utf8'));
+const packages = { '': { dependencies } };
+for (const [name, spec] of Object.entries(dependencies)) {
+  const bytes = readFileSync(spec.slice('file:'.length));
+  const version = /-(\\d+\\.\\d+\\.\\d+.*)\\.tgz$/.exec(spec)[1];
+  packages['node_modules/' + name] = { version, resolved: spec, integrity: process.env.NPM_WRONG ?? 'sha512-' + createHash('sha512').update(bytes).digest('base64') };
+}
+packages['node_modules/ws'] = { version: '8.18.0', resolved: 'https://registry.npmjs.org/ws/-/ws-8.18.0.tgz', integrity: 'sha512-ws' };
+writeFileSync('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages }));
+`;
+
+/** One `--release` over the ahpd and goose parts, from a folder holding `tarballs`. */
+const releaseOf = (tarballs: string[], env: Record<string, string> = {}) => {
+  const at = mkdtempSync(join(tmpdir(), 'ahpd-bump-'));
+  loose.push(at);
+  for (const dir of ['scripts', 'packages/computer/images', 'bin', 'packed']) mkdirSync(join(at, dir), { recursive: true });
+  // A CommonJS stand-in, whatever the folder above says.
+  writeFileSync(join(at, 'bin/package.json'), '{ "type": "commonjs" }');
+  writeFileSync(join(at, 'scripts/parts-bump.mjs'), readFileSync(SCRIPT));
+  writeFileSync(join(at, 'bin/npm'), NPM_LOCKING, { mode: 0o755 });
+  const file = join(at, 'packages/computer/images/versions.json');
+  writeFileSync(file, `${JSON.stringify([GOOSE, ahpdAt('0.15.0-rc.3')], null, 2)}\n`);
+  const before = readFileSync(file, 'utf8');
+  for (const name of tarballs) writeFileSync(join(at, 'packed', name), `the bytes of ${name}`);
+  const run = spawnSync(process.execPath, [join(at, 'scripts/parts-bump.mjs'), '--release', 'packed'], {
+    encoding: 'utf8', cwd: at, env: { ...process.env, PATH: `${join(at, 'bin')}:${process.env.PATH ?? ''}`, ...env },
+  });
+  const read = (path: string): unknown => JSON.parse(readFileSync(join(at, 'packages/computer/images/parts', path), 'utf8'));
+  return {
+    said: `${run.stdout}${run.stderr}`, status: run.status, read, file,
+    untouched: (): boolean => readFileSync(file, 'utf8') === before && !existsSync(join(at, 'packages/computer/images/parts')),
+  };
+};
+
+/** The packed packages of the ahpd part, as `pnpm pack` names them, with one no part pins. */
+const PACKED = ['ahpd-sdk-0.16.0-rc.1.tgz', 'ahpd-server-0.16.0-rc.1.tgz', 'ahpd-agent-cofold-0.16.0-rc.1.tgz', 'ahpd-computer-0.16.0-rc.1.tgz'];
+
+// POSIX-only: the stand-in npm is a script on `PATH`, which Windows does not run.
+it.skipIf(!posix)('writes a release version and locks from its packed packages, as npm will serve them', () => {
+  const run = releaseOf(PACKED);
+  expect(run.status, run.said).toBe(0);
+  expect(run.said).toBe('the ahpd part is 0.16.0-rc.1\n');
+  const parts = JSON.parse(readFileSync(run.file, 'utf8')) as { id: string; version: string }[];
+  expect(parts.map((one) => [one.id, one.version])).toEqual([['goose', '1.53.0'], ['ahpd', '0.16.0-rc.1']]);
+  const sum = (name: string): string => `sha512-${createHash('sha512').update(`the bytes of ${name}`).digest('base64')}`;
+  const pinned = { '@ahpd/sdk': '0.16.0-rc.1', '@ahpd/server': '0.16.0-rc.1' };
+  expect(run.read('ahpd/package.json')).toEqual({ name: 'ahpd-part-ahpd', private: true, dependencies: pinned });
+  expect(run.read('ahpd/package-lock.json')).toMatchObject({
+    packages: {
+      '': { dependencies: pinned },
+      'node_modules/@ahpd/server': { version: '0.16.0-rc.1', resolved: 'https://registry.npmjs.org/@ahpd/server/-/server-0.16.0-rc.1.tgz', integrity: sum('ahpd-server-0.16.0-rc.1.tgz') },
+      'node_modules/ws': { resolved: 'https://registry.npmjs.org/ws/-/ws-8.18.0.tgz', integrity: 'sha512-ws' },
+    },
+  });
+  expect(run.read('ahpd/plugins/package-lock.json')).toMatchObject({
+    packages: { 'node_modules/@ahpd/agent-cofold': { resolved: 'https://registry.npmjs.org/@ahpd/agent-cofold/-/agent-cofold-0.16.0-rc.1.tgz', integrity: sum('ahpd-agent-cofold-0.16.0-rc.1.tgz') } },
+  });
+});
+
+// POSIX-only, as the case above.
+it.skipIf(!posix)('refuses a release whose packages are missing, differ in version or are not what npm locked, and writes nothing', () => {
+  const missing = releaseOf(PACKED.slice(1));
+  expect(missing.said).toBe('not released: packed holds no tarball of @ahpd/sdk\n');
+  const mixed = releaseOf([...PACKED.slice(1), 'ahpd-sdk-0.15.0.tgz']);
+  expect(mixed.said).toBe('not released: packed holds packages of more than one version: 0.15.0, 0.16.0-rc.1\n');
+  const wrong = releaseOf(PACKED, { NPM_WRONG: 'sha512-other' });
+  expect(wrong.said).toMatch(/^not released: the lock of ahpd does not hold .*ahpd-sdk-0\.16\.0-rc\.1\.tgz\n$/);
+  for (const run of [missing, mixed, wrong]) {
+    expect(run.status).toBe(1);
+    expect(run.untouched()).toBe(true);
+  }
 });
 
 it('writes the moves a registry entry that is one version does make', () => {

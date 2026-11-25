@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/webhook",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Webhooks for ahpd. A URL that talks to a bot or fires an automation, with its own secret.",
+  "description": "Webhooks integration. Allow external services to trigger actions in ahpd, such as sending messages to bots or starting automations, each with its own secret.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -58,12 +58,12 @@
     "test": "cd ../.. && vitest run packages/webhook/test"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0",
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "devDependencies": {
     "@ahpd/sdk": "workspace:*",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "ahpd": {
     "entry": "./dist/index.js",

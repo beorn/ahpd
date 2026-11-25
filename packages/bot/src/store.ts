@@ -181,9 +181,9 @@ export function botStore(
    * Take one change the store did not make, once the collection has it.
    *
    * A record a person edited by hand can say anything, so it is read as any
-   * other record is, through `kept`. The two fields a hand edit may not change
-   * are refused here, because nothing before this point has seen the record.
-   * So is a bot whose slug has a tombstone: its file came back after the
+   * other record is, through `kept`. A new workspace is refused here, because
+   * nothing before this point has seen the record, and a new owner is taken
+   * and said. So is a bot whose slug has a tombstone: its file came back after the
    * delete, and the name it would answer to is spent.
    */
   const take = async (change: RecordChange): Promise<void> => {
@@ -221,18 +221,33 @@ export function botStore(
     // therefore answers with the persona the bot's own file has.
     const bot = withAgents(seams.yaml, one, seams.instructionsIn);
     const before = held.get(bot.id);
-    if (before !== undefined && before.owner !== bot.owner) {
-      onProblem(`bots/${bot.id} changed owner; the bot was left as it was`);
-      return;
-    }
     if (before !== undefined && before.workspace !== bot.workspace) {
       onProblem(`bots/${bot.id} changed workspace; the bot was left as it was`);
       return;
     }
     // A write of what is already here moved nothing, and is not a change.
     if (before !== undefined && same(before, bot)) return;
-    held.set(bot.id, bot);
-    heard?.({ type: before === undefined ? 'added' : 'updated', bot, before });
+    /*
+     * A new owner from the file is taken: the file is the bot's truth, and a
+     * restart would read it so anyway. Whoever may write the configuration
+     * folder already runs this daemon, so the change is said in its log, and
+     * the record's time moves so a client's etag sees it.
+     */
+    let taken = bot;
+    if (before !== undefined && before.owner !== bot.owner) {
+      onProblem(`bots/${bot.id} owner changed from ${before.owner} to ${bot.owner} by an edit of its file`);
+      const updatedAt = new Date().toISOString();
+      taken = { ...bot, updatedAt };
+      writing.add(bot.id);
+      try {
+        await bots.put({ ...said, updatedAt });
+      }
+      finally {
+        writing.delete(bot.id);
+      }
+    }
+    held.set(taken.id, taken);
+    heard?.({ type: before === undefined ? 'added' : 'updated', bot: taken, before });
   };
 
   /** Whether this record is from before the file was the one copy: it still carries a part. */

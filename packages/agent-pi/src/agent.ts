@@ -15,7 +15,8 @@
  * the catalogue is `catalog.ts`.
  */
 
-import { ensureWorkspacelessScratchDir } from '@ahpd/sdk';
+import { randomUUID } from 'node:crypto';
+import { ensureWorkspacelessScratchDir, idFor } from '@ahpd/sdk';
 import type { Agent, Bag, Listed, Offered, Session } from '@ahpd/sdk';
 import { runtimeModels } from './backend.js';
 import type { RuntimeModels } from './backend.js';
@@ -24,9 +25,12 @@ import { listed } from './models.js';
 import { replayed } from './replay.js';
 import { piMachine } from './machine.js';
 import { piSession } from './session.js';
-import { turnsOf } from './transcript.js';
+import { turnsOf, writeImportedHistory } from './transcript.js';
 import type { PiOptions } from './types.js';
 import { permissionModeProperty } from './types.js';
+
+/** The ids pi's own session store takes for a session's file. */
+const PI_SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 /**
  * One AHP backend over one embedded pi.
@@ -46,6 +50,15 @@ export function piAgent(
   const provider = options.provider ?? 'pi';
   const displayName = options.displayName ?? 'pi';
   const paths = [...directories];
+
+  /**
+   * The sessions a client imported, by the uri it imports them under.
+   *
+   * The host creates the session straight after the import, and pi starts a
+   * session from an id only through `resume`; the file's id is therefore kept
+   * here, for the start that follows.
+   */
+  const imported = new Map<string, string>();
 
   /**
    * What a session may be told.
@@ -194,18 +207,46 @@ export function piAgent(
     machine: () => piMachine(provider),
 
     /*
+     * A conversation a client brought, written as a pi session before the
+     * session that continues it starts.
+     *
+     * The turns become pi's own entries, in the file pi's lookup reads, under
+     * the session's id: the session resumes them, and a turn sent to it reads
+     * the conversation as pi wrote it.
+     */
+    importConversation: async (conversation) => {
+      const folder = conversation.workingDirectory ?? ensureWorkspacelessScratchDir(conversation.uri);
+      // pi names a session by an id its store accepts; one it does not is
+      // given a fresh id rather than refused, as the conversation is still
+      // one a client asked to keep.
+      const named = idFor(conversation.uri);
+      const id = PI_SESSION_ID.test(named) ? named : randomUUID();
+      await writeImportedHistory(conversation.turns, {
+        sessionId: id,
+        folder,
+        ...(options.sessionDir === undefined ? {} : { sessionDir: options.sessionDir }),
+        ...(conversation.model === undefined ? {} : { model: conversation.model.id }),
+      });
+      imported.set(conversation.uri, id);
+    },
+
+    /*
      * A resumed session's earlier turns are read from pi's file before the
      * session is built, so a file pi cannot read fails the session's start, as
      * VS Code's Copilot agent raises a failure to read a chat whose session it
      * knows; the session is handed what was read.
+     *
+     * A session a client imported is resumed the same way, from the file the
+     * import wrote. A peer chat has a conversation of its own and does not
+     * continue the session's.
      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/copilotAgent.ts#L7933-L7939
      */
     create: (start) => {
-      if (start.resume === undefined) return piSession(options, start, options.open);
-      const resume = start.resume;
+      const resume = start.resume ?? (start.chatId === undefined ? imported.get(start.uri) : undefined);
+      if (resume === undefined) return piSession(options, start, options.open);
       return (async (): Promise<Session> => {
         const earlier = await replayed(options, resume, [start.workingDirectory ?? ensureWorkspacelessScratchDir(start.uri)]);
-        return piSession(options, start, options.open, async () => earlier);
+        return piSession(options, { ...start, resume }, options.open, async () => earlier);
       })();
     },
   };

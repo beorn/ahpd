@@ -384,6 +384,12 @@ export function liveNodes(options: LiveOptions): LiveNodes {
   const kept = new Map<string, Live>();
   /** Every session a node was asked for and has not dialled back yet. */
   const opening = new Map<string, Opening>();
+  /**
+   * The session sockets each node dialled back, by node. A node's own
+   * reconnect leaves them open, and a removal closes them with its control
+   * socket, so a removed node runs nothing more here.
+   */
+  const dialled = new Map<string, Set<Peer>>();
   /** The nodes a watcher has already been told are here. */
   const announced = new Set<string>();
   /** Everyone following the nodes that come and go. */
@@ -497,9 +503,19 @@ export function liveNodes(options: LiveOptions): LiveNodes {
     opening.delete(id);
     clearTimeout(asked.timer);
     const held = hostOver(peer);
+    const sockets = dialled.get(node) ?? new Set<Peer>();
+    sockets.add(peer);
+    dialled.set(node, sockets);
     const workdir = kept.get(node)?.workdir;
     asked.settle(undefined, { host: held.host, ...(workdir === undefined ? {} : { workingDirectory: workdir }) });
-    return held.raw;
+    return {
+      raw: held.raw.raw,
+      close: () => {
+        sockets.delete(peer);
+        if (sockets.size === 0 && dialled.get(node) === sockets) dialled.delete(node);
+        held.raw.close();
+      },
+    };
   };
 
   const connect = async (id: string, asked: NestedStart): Promise<NestedStarted | undefined> => {
@@ -565,11 +581,14 @@ export function liveNodes(options: LiveOptions): LiveNodes {
     return arrived;
   };
 
-  /** Take a node's connection away, and fail the sessions it had not dialled yet. */
+  /** Take a node's connection away, close the sessions it dialled, and fail the ones it had not dialled yet. */
   const drop = (id: string): void => {
     const held = kept.get(id);
     kept.delete(id);
     held?.peer.close();
+    const sockets = dialled.get(id);
+    dialled.delete(id);
+    for (const one of sockets ?? []) one.close();
     abandoned(id, `node ${id} was removed from this hub`);
     // Said here as well as at the close, because a socket that is being
     // closed may not have said it went yet.

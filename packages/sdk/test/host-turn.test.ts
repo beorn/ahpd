@@ -1056,7 +1056,10 @@ describe('running a failed turn again', () => {
     });
 
     const said = actions(p, chatUri).map((e) => e.action);
-    const both = { inputTokens: 4, outputTokens: 1, _meta: { 'ahpd.cost': { amount: 0.75, currency: 'USD' } } };
+    // A turn that failed before its conversation was written starts it over on a
+    // new CLI, whose running total starts from nothing: the second run spent
+    // 0.75, and the turn the two runs' costs added.
+    const both = { inputTokens: 4, outputTokens: 1, _meta: { 'ahpd.cost': { amount: 1.25, currency: 'USD' } } };
     // Timed on this host, as VS Code's host times a turn: the first run's time
     // is what its failure said, and the resumed end adds the second run's.
     const first = Number(said.find((one) => one.type === 'chat/error')?.duration);

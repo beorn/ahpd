@@ -1,6 +1,7 @@
 import { compareProtocolVersions, negotiateProtocolVersion, PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol';
 import { RUN_HISTORY_LIMIT } from '../automations/automations.js';
 import { INVALID_PARAMS, RpcError } from '../rpc.js';
+import { multipleChatProvidersOn } from '../vscoderootconfig.js';
 import { uriOf } from '../resources/fileuri.js';
 import { bag, str } from '../utils/values.js';
 import { keyOf, normalizeScopes, tokensForConnection } from './auth.js';
@@ -427,7 +428,7 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
           snapshots.push(snapshot);
           connection.activeSubscriptions.add(meant);
           ctx.clearBaselineDebt(connection.clientId, meant);
-          openedBy(meant, connection.clientId);
+          openedBy(meant, connection.clientId, ownerFor(connection));
           // Recent in the residency, as a subscribe makes it.
           // https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L11633-L11634
           ctx.touch(meant);
@@ -444,6 +445,19 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
         serverInfo: { name: 'ahpd', version: options.diagnostics?.version ?? '0.0.1' },
         snapshots,
         defaultDirectory: uriOf(dir),
+        /*
+         * The path style of the process this host runs in, as VS Code's host
+         * says it at every start: a client joins and splits this host's paths
+         * by it.
+         * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/common/agentHostPathStyle.ts#L13
+         */
+        environment: { pathStyle: process.platform === 'win32' ? 'windows' : 'posix' },
+        /*
+         * Whether one session may hold chats on different agents, said while
+         * the root config allows it and to a client of 1.1.0, which added it.
+         * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/node/protocolServerHandler.ts#L1067-L1077
+         */
+        ...(multipleChatProvidersOn(ctx.rootConfig) && compareProtocolVersions(agreed, '1.1.0') >= 0 ? { multipleChatProviders: {} } : {}),
         // What the client should ask about rather than send. A slash is a
         // skill or a prompt the host contributed; an at-sign and a hash are
         // both a file, which is how VS Code's own host answers the two.
@@ -471,6 +485,13 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
          * own and this host restricts nothing beyond its one-minute
          * resolution.
          *
+         * `targets` because a run may continue its previous session or send
+         * its message to one chat, as AHP 1.2.0 describes both.
+         *
+         * `oneTime` because a store fires a one-time trigger at its `runAt`,
+         * once, as AHP 1.2.0 describes it and VS Code advertises it.
+         * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostAutomationService.ts#L289
+         *
          * `runCancellation` is served, so a client offers Stop on a run that
          * is `pending` or `running`. What it stops is the turn in each of the
          * run's sessions through the same call a stop in a chat makes, and
@@ -491,7 +512,8 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
         ...(options.automations
           ? {
             automations: {
-              create: {}, schedules: {}, runCancellation: {},
+              create: {}, schedules: {}, oneTime: {}, runCancellation: {},
+              targets: { previousSession: {}, chat: {} },
               runHistoryLimit: RUN_HISTORY_LIMIT,
               ...(options.clientPlugins ? { customizations: {} } : {}),
             },
@@ -518,13 +540,61 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
         _meta: {
           'vscode.removeSessionArtifact': true,
           'vscode.detachedWorktrees': true,
+          // The worktree cleanup four, where this host makes worktrees at all.
+          // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/protocolServerHandler.ts#L1258-L1261
+          ...(options.worktrees === undefined ? {} : {
+            'vscode.worktreeCleanup': true,
+            'vscode.forceWorktreeCleanup': true,
+            'vscode.prepareSessionWorktreeCleanup': true,
+            'vscode.managedWorktrees': true,
+          }),
+          // A worktree's disk usage is measured on this host's disk.
+          // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/protocolServerHandler.ts#L1256
+          'vscode.worktreeDiskUsage': true,
+          // A single-chat session moves under another, whether or not moving chats is on now.
+          // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/agentHostExtensionProtocol.ts#L128-L132
+          'vscode.sessionMove': true,
+          // A session a backend lists may be adopted without sending it a turn.
+          // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/meta/vscode/agentHostSessionImportMeta.ts
+          'vscode.importSession': true,
+          // A new peer chat may be asked for a folder, a worktree or a scratch folder of its own.
+          // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/meta/vscode/agentHostCreateChatWorkspaceMeta.ts#L11-L12
+          'vscode.createChatWorkspace': true,
+          // A conversation may be imported into a new session while an agent of
+          // this host can write one as its own history.
+          ...([...agents.values()].some((one) => one.importConversation !== undefined)
+            ? { 'vscode.createSessionImport': true }
+            : {}),
           'vscode.getAgentHostSessionStateFile.chat': true,
           // A debug-log collection its window follows may be called off.
           'vscode.debugLogsCancellation': true,
+          /*
+           * A window's timing records, while the root setting that takes them
+           * is on. Both flags are the reference host's, offered together, and
+           * a change of the setting reaches a client at its next `initialize`
+           * because `_meta` is read once.
+           * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/agentHostExtensionProtocol.ts#L232-L233
+           */
+          ...(ctx.rootConfig.diagnosticTiming === true ? {
+            'vscode.agentHostTiming': true,
+            'vscode.chatUserInteractionTiming': true,
+          } : {}),
           // A run of this host's automations needs no client connected. The
           // reference client offers a host's automations only where it says
           // so, so it goes with the `automations` capability above.
-          ...(options.automations ? { 'vscode.autonomousAutomations': true } : {}),
+          //
+          /*
+           * A deletion may take the sessions its runs made, the list it
+           * answered is kept for a retry, and a deletion still running is kept
+           * across a restart.
+           * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/agentHostExtensionProtocol.ts#L220-L226
+           */
+          ...(options.automations ? {
+            'vscode.autonomousAutomations': true,
+            'vscode.automationHistory': true,
+            'vscode.automationHistoryReceipts': true,
+            'vscode.automationHistoryDeletionState': true,
+          } : {}),
           /*
            * The automations catalogue narrowed to one owner, as an RFC 6570
            * template a client expands before it subscribes, as the protocol
@@ -557,6 +627,10 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
           // Docker, or no Dev Container CLI, omits it and is never asked -
           // decision `a-dev-container-is-reached-by-docker-exec`.
           ...(containersReady ? { 'vscode.devContainers': true } : {}),
+          // The environments the same launcher makes, which a client reads
+          // before it offers New Dev Container: a container made from an image
+          // rather than from a folder's `devcontainer.json`.
+          ...(containersReady ? { 'vscode.devContainerEnvironments': true } : {}),
           // What this host serves beside `file:`, so a client can draw a
           // screen for a scheme before it has a URI to ask.
           ...(advertisedSchemes() === undefined ? {} : { 'ahpd.resourceProviders': advertisedSchemes() }),
@@ -731,7 +805,7 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
        */
       for (const meant of resumed.keys()) {
         connection.activeSubscriptions.add(meant);
-        openedBy(meant, connection.clientId);
+        openedBy(meant, connection.clientId, ownerFor(connection));
         // Recent in the residency, as a subscribe makes it.
         // https://github.com/microsoft/vscode/blob/a4e689ae13ef7a1fe9b515656b51c9be7c274294/src/vs/platform/agentHost/node/agentService.ts#L11633-L11634
         ctx.touch(meant);
@@ -812,6 +886,14 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
        * backend's own credential.
        */
       const target = params.target === undefined ? undefined : targetOf(params.target);
+      /*
+       * The client's account hint, which AHP 1.1.0 added: refused when it is
+       * there and empty, in VS Code's words, and kept with the token.
+       * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/node/agentHostAuthenticationService.ts#L184-L185
+       */
+      if (params.accountId !== undefined && (typeof params.accountId !== 'string' || params.accountId.length === 0))
+        throw new RpcError(INVALID_PARAMS, 'accountId must be a nonempty string');
+      const accountId = params.accountId as string | undefined;
       /*
        * A backend's own resource, or one of its MCP servers'.
        *
@@ -978,6 +1060,7 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
         resource,
         scopes,
         ...(target === undefined ? {} : { target }),
+        ...(accountId === undefined ? {} : { accountId }),
         ...(expiresIn !== undefined ? { expiresAt: Date.now() + expiresIn * 1000 } : {}),
       });
       void fire({ type: 'authenticated', client: connection.clientId || 'anonymous', resource });

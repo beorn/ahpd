@@ -1,6 +1,6 @@
 ---
 title: Grants, policy and usage say gateway
-status: implemented
+status: done
 depends: []
 layer: "packages/sdk, packages/server"
 refs:

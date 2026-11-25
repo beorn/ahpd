@@ -1,7 +1,7 @@
 ---
 title: A git seed takes three execs
 domain: container
-status: planned
+status: built
 priority: medium
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -58,7 +58,7 @@ run -> seedGit -> chown, init --bare, config core.bare, cp -a alternates -> chec
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The seed writes config and HEAD](task-01-the-seed-writes-config-and-head.md) | implemented | - |
+| [01 - The seed writes config and HEAD](task-01-the-seed-writes-config-and-head.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -68,7 +68,7 @@ run -> seedGit -> chown, init --bare, config core.bare, cp -a alternates -> chec
 ## Resume state
 
 - **Done so far:** task-01 is implemented: the seed writes `config` and `HEAD` in the `docker cp -a` archive, and `idsOfMachine` reads uid and gid from one `id`.
-- **Next action:** review and merge the PR, then the [Windows check](../../../pending/windows-machine-paths-checks.md).
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the written `config` holds the three keys `git init --bare` writes, with `core.bare` false and no `logallrefupdates`.
 

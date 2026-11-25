@@ -26,6 +26,43 @@ export type { SearchConfig, ToolsConfig } from '@cofold/tools';
 export const DEFAULT_TOOLS: ToolsConfig = { files: true, shell: true, web: true, memory: true };
 
 /**
+ * The assignments that set `env` before a command in the shell cofold runs.
+ *
+ * cofold's shell takes no environment of its own, so the variables go in the
+ * command the shell is given. The default shell is `sh -c` on POSIX and
+ * PowerShell elsewhere, and each is given its own assignment syntax.
+ */
+const assignmentsFor = (env: Record<string, string>): string => Object.entries(env)
+  .map(([name, value]) => (process.platform === 'win32'
+    ? `$env:${name}='${value.replace(/'/gu, "''")}';`
+    : `export ${name}='${value.replace(/'/gu, "'\\''")}';`))
+  .join(' ');
+
+/**
+ * cofold's own shell, with `env` set before every command.
+ *
+ * Only the `shell` capability is touched: files, web and memory run no
+ * program. The command is prefixed inside `execute`, so the tool keeps its
+ * name, words and `subject` - the command a permission rule matches is still
+ * the one the model wrote.
+ */
+const withShellEnv = (capability: Capability, env: Record<string, string>): Capability => {
+  const tools = capability.tools;
+  if (capability.id !== 'shell' || tools === undefined) return capability;
+  return {
+    ...capability,
+    tools: async (args) => (await tools(args)).map((tool) => ({
+      ...tool,
+      execute: (input: unknown, ctx: Parameters<typeof tool.execute>[1]) => {
+        const command = (input as { command?: unknown } | undefined)?.command;
+        if (typeof command !== 'string' || command === '') return tool.execute(input, ctx);
+        return tool.execute({ ...(input as Record<string, unknown>), command: `${assignmentsFor(env)} ${command}` }, ctx);
+      },
+    })),
+  };
+};
+
+/**
  * The capabilities a session gets, in cofold's own order: files, shell, web and
  * memory, each one on unless the configuration turned it off.
  *
@@ -37,18 +74,24 @@ export const DEFAULT_TOOLS: ToolsConfig = { files: true, shell: true, web: true,
  * contribution - it was named for this deployment, and these are defaults - so
  * the capability's tool of that name is left out. A host that offers
  * `write_file` still gets the capability's other four.
+ *
+ * `env` is the environment a shell command runs with, set before each command
+ * it is given; cofold's shell has no seam of its own for one.
  */
 export function capabilitiesOf(
   tools: ToolsConfig,
-  args: { workspace: string; memoryDir?: string },
+  args: { workspace: string; memoryDir?: string; env?: Record<string, string> },
   taken: Iterable<string> = [],
 ): Capability[] {
   const built = standardCapabilities(tools, {
     workspace: args.workspace,
     ...(args.memoryDir === undefined ? {} : { memoryDir: args.memoryDir }),
   });
+  const withEnv = args.env === undefined || Object.keys(args.env).length === 0
+    ? built
+    : built.map((capability) => withShellEnv(capability, args.env as Record<string, string>));
   const names = [...taken];
-  return names.length === 0 ? built : built.map((capability) => ({ ...capability, exclude: names }));
+  return names.length === 0 ? withEnv : withEnv.map((capability) => ({ ...capability, exclude: names }));
 }
 
 /** One non-empty string, or nothing for a value this package cannot use. */

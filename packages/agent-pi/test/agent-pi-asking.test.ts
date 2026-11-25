@@ -617,3 +617,23 @@ it('takes a permission mode while the session runs, and refuses an unknown one',
   expect(session.settings().permissionMode).toBe('plan');
   expect(await session.setConfig?.('permissionMode', 'nonsense')).toContain('permissionMode');
 });
+/*
+ * pi can still ask about a call while it winds down after a stop. The
+ * question would stand on a turn nobody is answering, and pi would wait on it,
+ * so it is refused as the stop refuses the questions it leaves.
+ */
+it('refuses a call asked about after a stop, and asks nobody', async () => {
+  const { session, pi, sent } = opened({ settings: { permissionMode: 'default' } } as Partial<Start>);
+  pi.hold();
+  session.sendMessage('t1', 'hello');
+  await settled();
+  session.abort();
+  await settled();
+  const asked = sent.filter((one) => one.action.type === 'session/inputNeededSet').length;
+  const late = await Promise.race([
+    driveCall(pi, 'c-late', 'bash', { command: 'ls' }),
+    settled().then(() => 'still waiting'),
+  ]);
+  expect(late).toEqual({ block: true, reason: 'The turn was stopped' });
+  expect(sent.filter((one) => one.action.type === 'session/inputNeededSet')).toHaveLength(asked);
+});

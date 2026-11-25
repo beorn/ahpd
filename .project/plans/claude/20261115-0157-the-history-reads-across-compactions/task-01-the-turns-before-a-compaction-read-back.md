@@ -1,6 +1,6 @@
 ---
 title: The turns before a compaction read back
-status: implemented
+status: done
 depends: []
 layer: "agent-claude"
 refs:

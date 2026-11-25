@@ -76,8 +76,8 @@ pi -> /v1 with the key -> callerOf -> users.verify -> principal { token, keyScop
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A key is minted with a scope](task-01-a-key-is-minted-with-a-scope.md) | implemented | - |
-| [02 - A call charges the scope of its key](task-02-a-call-charges-the-scope-of-its-key.md) | implemented | 01 |
+| [01 - A key is minted with a scope](task-01-a-key-is-minted-with-a-scope.md) | done | - |
+| [02 - A call charges the scope of its key](task-02-a-call-charges-the-scope-of-its-key.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -87,7 +87,7 @@ pi -> /v1 with the key -> callerOf -> users.verify -> principal { token, keyScop
 ## Resume state
 
 - **Done so far:** both tasks are implemented. A token record carries an optional `scope`, `ahpd token mint --scope` writes it after checking it against the person's memberships, and `token list` shows it. The principal reads the scope of its key from the live record, `scopeFor` charges to it when a call names none and refuses a call that names another, and the proxy caller and the sessions reach that through `scopeFor` with no code change of their own. The docs say so in `docs/server/PROXY.md`, `docs/server/USERS.md` and `docs/sdk/USERS.md`.
-- **Next action:** Softov reviews, and runs the by-hand pi check that needs a live host. `implemented.md` is written.
+- **Next action:** none for the plan, closed on 2026-11-20 with the 0.15.0 release. The pi check by hand that needs a live host is not recorded as done.
 - **Open questions:** none.
 - **Watch out for:** `scopeFor` returns nothing on a host with no teams. A key with a scope on such a host is refused at the mint, because there is no team to name. The by-hand pi check in task 02 was not run here, since this box is not a host for pi.
 

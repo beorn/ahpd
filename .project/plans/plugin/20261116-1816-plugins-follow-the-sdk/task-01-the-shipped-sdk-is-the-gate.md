@@ -1,6 +1,6 @@
 ---
 title: The sdk the daemon ships is the gate
-status: implemented
+status: done
 depends: []
 layer: server
 refs:

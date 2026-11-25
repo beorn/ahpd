@@ -238,3 +238,80 @@ it('has a label and a description in each catalog for every operation of the kin
   }
 });
 
+/** An error as the service's SDK throws one, with the HTTP status on its `response`. */
+const refusedWith = (status: number): Error => Object.assign(new Error(`Request failed with status code ${status}`), { response: { status } });
+
+/** A service that refuses its first `refusals` adds with 401, then serves, and counts every add. */
+const refusingFirst = (refusals: number): { service: Service; adds: () => number } => {
+  const { service } = serving();
+  let tries = 0;
+  return {
+    service: {
+      ...service,
+      add: async (connector, port, anonymous) => {
+        tries += 1;
+        if (tries <= refusals) throw refusedWith(401);
+        return service.add(connector, port, anonymous);
+      },
+    },
+    adds: () => tries,
+  };
+};
+
+/** Yield until `done` says so, or fail after a second. */
+const until = async (done: () => boolean, what: string): Promise<void> => {
+  const end = Date.now() + 1000;
+  while (Date.now() < end) {
+    if (done()) return;
+    await new Promise((settled) => { setTimeout(settled, 2); });
+  }
+  throw new Error(`${what} never happened`);
+};
+
+/*
+ * A start the service refused with 401 may be a token not yet refreshed, so
+ * the record is started again after a wait, and when its connector next holds
+ * a token, until it runs or a person stops it.
+ */
+it('starts a record again after a wait when the service refused its start with 401', async () => {
+  const { service, adds } = refusingFirst(1);
+  const { kind } = kindOf({ service, retryMs: { first: 10, most: 40 } });
+  const reports: TunnelReport[] = [];
+
+  await kind.create(recordOf({ connector: 'mine', port: 9187 }), (report) => { reports.push(report); });
+  expect(reports.at(-1)?.status).toBe('error');
+  expect(reports.at(-1)?.error).toContain('tried again at');
+
+  await until(() => reports.at(-1)?.status === 'running', 'the second start');
+  expect(adds()).toBe(2);
+});
+
+it('starts a waiting record when its connector holds a new token', async () => {
+  const { service, adds } = refusingFirst(1);
+  let told: ((connector: string) => void) | undefined;
+  const { kind } = kindOf({ service, retryMs: { first: 60_000, most: 60_000 }, onHold: (listener) => { told = listener; return () => { told = undefined; }; } });
+  const reports: TunnelReport[] = [];
+
+  await kind.create(recordOf({ connector: 'mine', port: 9187 }), (report) => { reports.push(report); });
+  expect(reports.at(-1)?.status).toBe('error');
+  told?.('other');
+  await new Promise((settled) => { setTimeout(settled, 20); });
+  expect(adds()).toBe(1);
+
+  told?.('mine');
+  await until(() => reports.at(-1)?.status === 'running', 'the start on a new token');
+  expect(adds()).toBe(2);
+});
+
+it('does not start a record again once a person stopped it', async () => {
+  const { service, adds } = refusingFirst(10);
+  const { kind } = kindOf({ service, retryMs: { first: 10, most: 10 } });
+  const reports: TunnelReport[] = [];
+  const tunnel = recordOf({ connector: 'mine', port: 9187 });
+
+  await kind.create(tunnel, (report) => { reports.push(report); });
+  await kind.invoke('stop', tunnel, (report) => { reports.push(report); }, undefined);
+  await new Promise((settled) => { setTimeout(settled, 60); });
+  expect(adds()).toBe(1);
+  expect(reports.at(-1)?.status).toBe('stopped');
+});

@@ -1,6 +1,6 @@
 ---
 title: A running tunnel deleted is made again
-status: implemented
+status: done
 depends: [task-01-a-missing-tunnel-is-made-again-at-start.md]
 layer: "tunnel-devtunnel"
 ---

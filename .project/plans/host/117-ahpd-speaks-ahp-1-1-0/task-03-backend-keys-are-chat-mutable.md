@@ -1,6 +1,6 @@
 ---
 title: Backend keys are chat-mutable
-status: todo
+status: dropped
 depends: [02]
 layer: "agents"
 refs:
@@ -11,6 +11,8 @@ refs:
   - "[code://packages/agent-pi/src/types.ts#L68](../../../../packages/agent-pi/src/types.ts#L68) - `permissionModeProperty`"
   - "git://github.com/microsoft/vscode@e941aa12741 - `agentHostSchema.ts` and `claudeAgent.ts`, the keys VS Code marks chat-mutable"
 ---
+
+Built on main by `7f7a74ffe`: agent-acp marks its keys `chatMutable`. Task 07 moves it to the package types.
 
 ## Objective
 

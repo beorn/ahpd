@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { continues, retargeted, targetOf } from '../automations/targets.js';
 import { computerSource } from '../machines/computers.js';
 import { Status, idOf, uriFor } from '../sessions/catalog.js';
 import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
@@ -8,12 +9,12 @@ import { presetById } from '../automations/triggerpresets.js';
 import { localPath } from '../resources/fileuri.js';
 import { createRuleEngine } from '../automations/triggers.js';
 import { wakeMessage } from '../automations/wakemessage.js';
-import { bag } from '../utils/values.js';
+import { bag, ownerOfPrincipal, str, strings } from '../utils/values.js';
 import { AUTOMATIONS, isAutomationResource } from './channels.js';
 import { CLOSING, need, noProvider, reason } from './common.js';
 import { refusalReason } from './gate.js';
 import type { Bag } from '../types/common.js';
-import type { AutomationEntry, AutomationRun, AutomationRunState, RunEnding, StartSession } from '../types/automations.js';
+import type { AutomationEntry, AutomationRun, AutomationRunState, AutomationStore, RunEnding, StartSession } from '../types/automations.js';
 import type { ConnectorOwner } from '../types/connectors.js';
 import type { PluginStarts, ChatRequest, TriggerTypeDefinition } from '../types/plugin.js';
 import type { RuleMatch } from '../automations/triggers.js';
@@ -22,7 +23,10 @@ import type { AutomationWake, SessionEventKind, SessionRule } from '../types/tri
 import type { Owner } from '../types/usage.js';
 import type { SessionCreation } from '../types/sessions.js';
 import type { TurnEndEvent } from '../types/events.js';
+import type { Principal } from '../types/users.js';
 import type { HostContext } from './context.js';
+import type { Connection } from '../types/host.js';
+import type { MessageFrom } from '../types/session.js';
 import { mayTrust } from './trust.js';
 
 /** How long the window the hourly cap counts runs over is. */
@@ -106,6 +110,44 @@ const ownerOf = (entry: AutomationEntry): Owner | undefined => {
   return typeof held === 'string' && /^(?:user|team|project|root):.+$/.test(held) ? held as Owner : undefined;
 };
 
+/** One MCP server of a session that needs a sign-in, as its customization draws it. */
+interface SignIn {
+  /** The customization id a client's `authenticate` target names. */
+  id: string;
+  /** The server's name, as the request says which server it is. */
+  name: string;
+  /** The `authRequired` state the server holds. */
+  state: Bag;
+}
+
+/**
+ * What one challenge is, as a key: the resource and the scopes it asks for, the
+ * reason it asks, and the client it names.
+ *
+ * Two states with one key are one thing to ask a window, so a server that says
+ * the same challenge twice is asked once. A token that expired is a different
+ * reason from one never given, and a challenge naming a client is not the same
+ * as one that does not, so both are asked.
+ */
+const challengeKeyOf = (state: Bag): string => JSON.stringify([
+  str(bag(state.resource).resource) ?? '',
+  strings(state.requiredScopes),
+  str(state.reason) ?? '',
+  str(bag(state.oauthClient).clientId) ?? '',
+]);
+
+/**
+ * The MCP servers a session publishes that need a sign-in.
+ *
+ * Read from the top level of the list. A server a plugin carries is one of the
+ * plugin's parts and not an entry of its own: it is owned by that connector,
+ * and its sign-in is the connector's to get rather than this round's to ask.
+ */
+const signingIn = (customizations: Bag[]): SignIn[] => customizations
+  .filter((one) => one.type === 'mcpServer' && bag(one.state).kind === 'authRequired')
+  .map((one) => ({ id: str(one.id) ?? '', name: str(one.name) ?? '', state: bag(one.state) }))
+  .filter((one) => one.id !== '');
+
 /**
  * What an automation says about waking, from `_meta.ahpd` on its definition.
  *
@@ -120,7 +162,8 @@ const wakeOf = (definition: Bag): AutomationWake => {
   const held = bag(bag(definition._meta)['ahpd']);
   const overlap = String(held.overlap);
   return {
-    session: held.session === 'pinned' ? 'pinned' : 'new',
+    // `target` decides, and the older `pinned` stands in for `previousSession` where it names none.
+    session: targetOf(definition).kind === 'previousSession' ? 'pinned' : 'new',
     overlap: (OVERLAPS.includes(overlap) ? overlap : 'queue') as NonNullable<AutomationWake['overlap']>,
     ...(typeof held.pinnedSession === 'string' ? { pinnedSession: held.pinnedSession } : {}),
   };
@@ -180,6 +223,8 @@ export const runState = ({ owner, notes, ...rest }: AutomationRun): AutomationRu
  * is told when it moves, and the run a due automation starts.
  */
 export interface Automations {
+  /** A chat moved to `to`: each automation whose chat target is that chat names its new session. */
+  moveChatAutomations(from: string, to: string, chat: string): void;
   /** The run each manual request made, by its `requestId`, with the automation it named. */
   manualRunRequests: Map<string, { automation: string; run: string }>;
   /** Move the run a session belongs to, when that session stops working. */
@@ -233,11 +278,28 @@ export interface Automations {
   wirePluginStarts(): void;
   /** The clock, wired to the only thing that can act on it. */
   due(event: { automation: string; origin: Bag }): void;
+  /**
+   * Delete an automation, and the sessions its runs made when `deleteHistory`.
+   *
+   * `legacySessions` names sessions a client remembers from before their
+   * automation origin was kept, deleted with the rest. `requestId` names the
+   * request, so a retry is answered from the receipt the deletion left.
+   * `acting` is the person asking, and every session the deletion takes is
+   * checked against them before any of it is deleted. Answered with the URIs of
+   * the sessions actually deleted.
+   */
+  deleteAutomation(
+    automation: string, deleteHistory: boolean, legacySessions: string[], requestId?: string, acting?: Principal | Owner,
+  ): Promise<string[]>;
+  /** Finish the deletions a store's file held when this host started. */
+  resumeAutomationDeletions(): Promise<void>;
+  /** Drop a receipt a client has its answer for. Answers whether it was there. */
+  acknowledgeAutomationDeletion(requestId: string): boolean;
 }
 
 export function createAutomations(ctx: HostContext): Automations {
   const {
-    options, sessions, byChat, senders, charged, origins, kept,
+    options, sessions, byChat, senders, charged, origins, kept, connections, ownerFor,
     dispatch, log, fire, statusOf, principalFor, admitted, placedIn,
     resolveCreatedSessionConfig, createProviderSession, backendsOwn, modelIn, unheld, forWhom, leadOf,
     scratchFolder, turnInstructions,
@@ -249,8 +311,22 @@ export function createAutomations(ctx: HostContext): Automations {
    */
   const runStates = new Map<string, Pick<AutomationRun, 'automation' | 'lifecycle' | 'sessions' | 'primarySession'>>();
 
+  /**
+   * The challenges each run's session has been asked a client about, by the
+   * session and then by the server.
+   *
+   * One challenge is one question, so a server that keeps saying it is asked
+   * once. A server that leaves `authRequired` has its entry dropped, and one
+   * that comes back asks again - a different token, or the same one refused,
+   * is what a later round is for.
+   */
+  const askedSignIns = new Map<string, Map<string, Set<string>>>();
+
   /** The run each manual request made, by its `requestId`, for the daemon's run. */
   const manualRunRequests = new Map<string, { automation: string; run: string }>();
+
+  /** The deletion of each automation that is still running, by automation. */
+  const deleting = new Map<string, Promise<string[]>>();
 
   /**
    * The one wake each automation is holding behind a run that is still going.
@@ -356,6 +432,12 @@ export function createAutomations(ctx: HostContext): Automations {
     const found = store?.runOf?.(run);
     if (found === undefined) return `Automation run not found: ${run}`;
     if (OVER.has(String(found.lifecycle.status))) return `Automation run is already terminal: ${run}`;
+    // A run whose message still waits is cancelled by taking the message out, and touches no turn.
+    const queued = queuedRuns.get(run);
+    if (queued !== undefined) {
+      ctx.dequeue(queued.chat, queued.id);
+      return undefined;
+    }
     if (found.sessions.length === 0) {
       waiting.delete(found.automation);
       store?.settle?.(run, { status: 'cancelled' });
@@ -450,6 +532,9 @@ export function createAutomations(ctx: HostContext): Automations {
 
   /** Pinned chats a run has passed the busy check for and is still waking, so a second run finds them busy. */
   const claimed = new Set<string>();
+
+  /** The runs whose message waits in a chat's queue, by run, with the chat and the message's id. */
+  const queuedRuns = new Map<string, { chat: string; id: string }>();
 
   /**
    * Whether a chat has a turn running in it, is waiting on a person, or is
@@ -616,6 +701,17 @@ export function createAutomations(ctx: HostContext): Automations {
    * on it, and the store is what keeps that.
    */
   const request = (automation: string, origin: Bag, facts: WakeFacts | undefined, said: string, byEvent: boolean): void => {
+    /*
+     * A run that continues a session or a chat queues its message there and
+     * never steers a turn, as AHP 1.2.0 says, so `overlap` is not asked: each
+     * wake is a run, and its message waits its turn in the chat.
+     * https://github.com/microsoft/agent-host-protocol/blob/e36b0a20/types/channels-automation/state.ts#L316-L346
+     */
+    if (continues(targetOf(options.automations?.get(automation)?.definition))) {
+      if (byEvent && !counted(automation)) return;
+      void fly(automation, origin, facts, said);
+      return;
+    }
     const flight = going(automation);
     const overlap = wakeFor(automation).overlap ?? 'queue';
     /*
@@ -731,15 +827,16 @@ export function createAutomations(ctx: HostContext): Automations {
     });
   };
 
-  const beginIn = (session: string, wanted: StartSession, initialPrompt = false): void => {
+  const beginIn = (session: string, wanted: StartSession, chatUri = ctx.defaultChatFor(session), initialPrompt = false): void => {
     if (wanted.text.trim() === '') return;
     const turnId = crypto.randomUUID();
     if (wanted.owner !== undefined) senders.set(turnId, wanted.owner);
-    const chat = byChat.get(ctx.defaultChatFor(session))?.chat;
-    if (chat !== undefined) {
-      if (initialPrompt) initialPromptTurns.set(session, { channel: chat.chatUri, turnId });
-      void ctx.startTurn(chat, turnId, wanted.text, modelIn(wanted.model), { origin: { kind: 'automation' } });
-    }
+    const chat = byChat.get(chatUri)?.chat;
+    if (chat === undefined) return;
+    if (initialPrompt) initialPromptTurns.set(session, { channel: chat.chatUri, turnId });
+    // Running from here, before a backend can end the turn it is handed.
+    wanted.running?.();
+    void ctx.startTurn(chat, turnId, wanted.text, modelIn(wanted.model), { origin: { kind: 'automation' } });
   };
 
   /**
@@ -812,7 +909,13 @@ export function createAutomations(ctx: HostContext): Automations {
         ...(origin === undefined ? {} : { origin }),
       };
     }
-    wanted = structuredClone(wanted);
+    /*
+     * A copy of the data, so nothing the caller still holds changes the start.
+     * `running` is the store's callback, not data: structuredClone refuses a
+     * function, so it is carried over by reference (#463 sync).
+     */
+    const { running, ...data } = wanted;
+    wanted = { ...structuredClone(data), ...(running === undefined ? {} : { running }) };
     const provider = wanted.provider ?? ctx.first?.provider;
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
@@ -951,9 +1054,86 @@ export function createAutomations(ctx: HostContext): Automations {
     }
     ctx.oweTree(uri, {}, () => ({}));
     fireRun(wanted);
-    beginIn(uri, wanted, true);
+    beginIn(uri, wanted, undefined, true);
     return uri;
     });
+  };
+
+  /**
+   * Put a run's message in a chat's queue, and answer once a turn takes it up.
+   *
+   * As AHP 1.2.0 says of a run that continues a session: the message is a
+   * queued pending message with the template's model, the run stays `pending`
+   * while it waits and is `running` from the turn that takes it, and a message
+   * withdrawn without a turn cancels the run.
+   * https://github.com/microsoft/agent-host-protocol/blob/e36b0a20/types/channels-automation/state.ts#L316-L346
+   */
+  const queueIn = (session: string, chat: string, wanted: StartSession, taken: () => void): Promise<string> => new Promise((resolve, reject) => {
+    const run = String(bag(wanted.origin)['run'] ?? '');
+    const id = crypto.randomUUID();
+    queuedRuns.set(run, { chat, id });
+    ctx.enqueue(chat, id, wanted.text, { origin: { kind: 'automation' } } as MessageFrom,
+      wanted.owner === undefined ? undefined : { owner: wanted.owner },
+      {
+        model: modelIn(wanted.model),
+        taken: () => {
+          queuedRuns.delete(run);
+          taken();
+          wanted.running?.();
+          resolve(session);
+        },
+        withdrawn: () => {
+          queuedRuns.delete(run);
+          options.automations?.settle?.(run, { status: 'cancelled' });
+          reject(new Error('The automation\'s queued message was withdrawn'));
+        },
+      });
+    log(`${run} waits in the queue of ${chat}`);
+  });
+
+  /**
+   * Keep a chat target's `session` right when its chat moves, as AHP asks:
+   * the definition is updated and published with `automation/set`.
+   * https://github.com/microsoft/agent-host-protocol/blob/e36b0a20/types/channels-automation/state.ts#L380-L386
+   */
+  const moveChatAutomations = (_from: string, to: string, chat: string): void => {
+    const store = options.automations;
+    if (store === undefined) return;
+    for (const one of retargeted(store.list(), to, chat)) store.update(one.resource, { target: one.target });
+  };
+
+  /**
+   * A run of a chat target: its message goes to that chat, now when the chat
+   * is idle and through its queue when it is busy. The chat being gone, or
+   * belonging to somebody the automation may not act for, fails the run.
+   * https://github.com/microsoft/agent-host-protocol/blob/e36b0a20/types/channels-automation/state.ts#L360-L392
+   */
+  const beginInChat = async (automation: string, session: string, chat: string, wanted: StartSession): Promise<string> => {
+    if (ctx.sessionFor(chat) !== session || !(sessions.has(session) || ctx.owners.has(session)))
+      throw new RpcError(-32009, `This automation's chat no longer exists: ${chat}`);
+    const owner = wanted.owner;
+    if (owner !== undefined && kept.owner(idOf(session)) !== owner)
+      throw new RpcError(-32009, 'This automation is set to run in a chat that belongs to somebody else');
+    const startedBy = { kind: 'automation', automation, run: String(bag(wanted.origin)['run'] ?? '') } as const;
+    const release = ctx.hold(session);
+    try {
+      if (!sessions.has(session)) await ctx.wake(session);
+      if (!byChat.has(chat)) throw new RpcError(-32009, `This automation's chat no longer exists: ${chat}`);
+      const state = ctx.stateOf(chat) as { activeTurn?: unknown } | undefined;
+      const busy = (state?.activeTurn !== undefined && state.activeTurn !== null) || pinBusy(session);
+      const mark = (): void => {
+        origins.set(session, startedBy);
+        kept.setAutomationOrigin?.(idOf(session), startedBy);
+        fireRun(wanted);
+      };
+      if (busy) return await queueIn(session, chat, wanted, mark);
+      mark();
+      beginIn(session, wanted, chat);
+      return session;
+    }
+    finally {
+      release();
+    }
   };
 
   /**
@@ -972,10 +1152,14 @@ export function createAutomations(ctx: HostContext): Automations {
      */
     const automation = wanted.origin?.automation;
     const wake = automation === undefined ? undefined : wakeOf(bag(options.automations?.get(automation)?.definition));
+    // A chat target sends each run to its one chat, and never makes a session.
+    const target = automation === undefined ? undefined : targetOf(options.automations?.get(automation)?.definition);
+    if (automation !== undefined && target?.kind === 'chat') return await beginInChat(automation, target.session, target.chat, wanted);
     const pin = wake?.session === 'pinned' ? wake.pinnedSession : undefined;
     // Live, or asleep in the catalogue: a sleeping one is woken in place once
     // every check below has let the run through.
-    const reachable = pin !== undefined && (sessions.has(pin) || ctx.owners.has(pin));
+    // An archived session is never usable, as AHP says of the previous session: the run makes another.
+    const reachable = pin !== undefined && (sessions.has(pin) || ctx.owners.has(pin)) && (statusOf(pin) & Status.IsArchived) === 0;
     if (automation !== undefined && pin !== undefined && reachable) {
       /*
        * A chat somebody else has is not a chat this run may work in.
@@ -1028,8 +1212,14 @@ export function createAutomations(ctx: HostContext): Automations {
        * is a person pressing Run: they are owed a reason rather than a second
        * turn in a chat that is busy.
        */
+      const startedBy = { kind: 'automation', automation, run: String(bag(wanted.origin)['run'] ?? '') } as const;
       if (pinBusy(pin) || heldBy(automation, pin) !== undefined) {
-        throw new RpcError(-32009, 'The chat this automation runs in is already running a turn');
+        // Busy: the message waits in the chat's queue, and the run is pending until a turn takes it.
+        return await queueIn(pin, ctx.defaultChatFor(pin), wanted, () => {
+          origins.set(pin, startedBy);
+          kept.setAutomationOrigin?.(idOf(pin), startedBy);
+          fireRun(wanted);
+        });
       }
       /*
        * Woken only now, for a run that will go ahead, and held awake until its
@@ -1047,7 +1237,6 @@ export function createAutomations(ctx: HostContext): Automations {
          * the run, and the one that made the session is remembered by the
          * session itself rather than by this map.
          */
-        const startedBy = { kind: 'automation', automation, run: String(bag(wanted.origin)['run'] ?? '') } as const;
         origins.set(pin, startedBy);
         // Kept with the session's record too, so the row a restart lists names
         // the run that last used it.
@@ -1477,17 +1666,99 @@ export function createAutomations(ctx: HostContext): Automations {
       data,
     };
     const origin = { kind: 'trigger', triggerId: String(trigger?.id ?? ''), event: data };
-    void fly(resource, origin, facts, `${by} asked for ${resource}`);
+    // Through `request`, as a fire's wake goes: a connector's run is an
+    // event's, so it counts against the hourly cap and obeys the overlap mode.
+    request(resource, origin, facts, `${by} asked for ${resource}`, true);
   };
 
   /** The rule engine, with the clock a test may hand it and the host's own answer. */
   const engine = createRuleEngine({ onMatch: woke });
 
-  /*
-   * Every event every session does, every turn as it starts, and everything a
-   * session does that is not an event, for as long as this host runs.
+  /**
+   * The connections one owner's work may be asked of: every connection where
+   * nobody owns anything, and the owner's own on a host with people in it. An
+   * automation nobody owns is asked of nobody there, because there is no
+   * person it belongs to whose window could hold the token.
+   */
+  const connectionsOf = (owner: Owner | undefined): Connection[] => {
+    if (owner === undefined && options.users !== undefined) return [];
+    return [...connections].filter((one) => ownerFor(one) === owner);
+  };
+
+  /**
+   * Ask each of the automation owner's connections, in turn, to sign a server in.
    *
-   * The three subscriptions are held rather than dropped, because a rule
+   * The first client that reports a sign-in ends the round: it holds a token
+   * already and pushes it through `authenticate` itself, which is the whole of
+   * what this asks of it. Anything else - a refusal, an error, a client that
+   * does not serve the method - is logged at debug and the next connection is
+   * asked, because no window being able to answer is the ordinary case for a
+   * run nobody is looking at.
+   */
+  const askForSignIn = async (session: string, owner: Owner | undefined, server: SignIn): Promise<void> => {
+    const auth: Bag = { ...server.state };
+    delete auth.kind;
+    for (const connection of connectionsOf(owner)) {
+      const who = connection.clientId === '' ? 'a client' : connection.clientId;
+      try {
+        const answer = await connection.peer.request('vscode/requestMcpAuthentication', {
+          target: { kind: 'mcpServer', session, customizationId: server.id },
+          serverName: server.name,
+          auth,
+        });
+        if (bag(answer).authenticated === true) return;
+        log.debug(`${session}: ${who} did not sign ${server.name} in`);
+      }
+      catch (error) {
+        log.debug(`${session}: ${who} could not be asked to sign ${server.name} in: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  };
+
+  /**
+   * A run's session published its customizations: ask about every server that
+   * needs a sign-in and whose challenge this session has not asked yet.
+   *
+   * A session no automation runs is not read at all, which is where a window's
+   * own session stays its window's to prompt. A server that has left
+   * `authRequired` has what was asked about it dropped, so a challenge that
+   * comes later is asked again.
+   */
+  const readCustomizations = (session: string, customizations: Bag[]): void => {
+    const from = origins.get(session);
+    if (from === undefined) return;
+    const asking = signingIn(customizations);
+    const asked = askedSignIns.get(session) ?? new Map<string, Set<string>>();
+    const still = new Set(asking.map((one) => one.id));
+    for (const id of [...asked.keys()]) {
+      if (!still.has(id)) asked.delete(id);
+    }
+    if (asking.length === 0) {
+      askedSignIns.delete(session);
+      return;
+    }
+    askedSignIns.set(session, asked);
+    const entry = options.automations?.get(from.automation);
+    if (entry === undefined) return;
+    const owner = ownerOf(entry);
+    for (const server of asking) {
+      const keys = asked.get(server.id) ?? new Set<string>();
+      asked.set(server.id, keys);
+      const key = challengeKeyOf(server.state);
+      if (keys.has(key)) continue;
+      // Marked before it is asked, so a second action saying the same thing
+      // while the first round is still out does not ask it twice.
+      keys.add(key);
+      void askForSignIn(session, owner, server);
+    }
+  };
+
+  /*
+   * Every event every session does, every turn as it starts, everything a
+   * session does that is not an event, and every customization list a session
+   * publishes, for as long as this host runs.
+   *
+   * The subscriptions are held rather than dropped, because a rule
    * outliving the host it belongs to would be a rule firing into a closed
    * daemon: `stop` is what the host's own close calls. Every turn as it starts
    * is what a rule about a long turn is timed from, since a turn that says
@@ -1502,6 +1773,7 @@ export function createAutomations(ctx: HostContext): Automations {
   });
   const stopTurns = ctx.sessionEvents.turns((turn) => { engine.started(turn); });
   const stopMoving = ctx.sessionEvents.moved((session) => { engine.moved(session); });
+  const stopCustomizations = ctx.sessionEvents.customizations(readCustomizations);
   for (const one of options.automations?.list() ?? []) watchFor(one.resource);
 
   /**
@@ -1518,6 +1790,7 @@ export function createAutomations(ctx: HostContext): Automations {
   const gone = (session: string): void => {
     initialPromptTurns.delete(session);
     engine.end(session);
+    askedSignIns.delete(session);
     for (const [automation, one] of watched) {
       if (one.wake.session !== 'pinned' || one.wake.pinnedSession !== session) continue;
       if (waiting.get(automation) === undefined) continue;
@@ -1537,6 +1810,8 @@ export function createAutomations(ctx: HostContext): Automations {
     stopEvents();
     stopTurns();
     stopMoving();
+    stopCustomizations();
+    askedSignIns.clear();
     waiting.clear();
     engine.close();
   };
@@ -1619,9 +1894,164 @@ export function createAutomations(ctx: HostContext): Automations {
     request(automation, origin, undefined, `${automation} was due`, false);
   };
 
+  /**
+   * The sessions whose kept automation origin names this automation.
+   *
+   * Read off the session store rather than off the automation's run history,
+   * which a restart does not keep.
+   */
+  const runSessionsOf = (automation: string): string[] => kept.sessions()
+    .filter((id) => kept.automationOrigin?.(id)?.automation === automation)
+    .map((id) => ctx.nameOf(id));
+
+  /** The run of this automation that has not ended, where it has one. */
+  const goingRunOf = (store: AutomationStore, entry: AutomationEntry): string | undefined => entry.runs
+    .map((one) => store.runOf(String(bag(one).resource)))
+    .find((one) => one !== undefined && !OVER.has(String(one.lifecycle.status)))?.resource;
+
+  /**
+   * The owner a deletion is kept under: the person who asked, where the store
+   * keeps an owner, and nothing for a host with nobody to name.
+   */
+  const requesterOf = (acting: Principal | Owner | undefined): Owner | undefined =>
+    typeof acting === 'string' ? acting : acting === undefined ? undefined : ownerOfPrincipal(acting);
+
+  /**
+   * Delete one session of a deletion, answering whether it went.
+   *
+   * A deletion a restart resumed names sessions this daemon only lists. A
+   * listing registers one as the backend's, which is what lets it be removed.
+   * `acting` is the person the deletion was asked by, and the removal is
+   * checked against them again.
+   */
+  const deleteSession = async (automation: string, uri: string, acting?: Principal | Owner): Promise<boolean> => {
+    try {
+      if (ctx.sessions.get(uri) === undefined && ctx.owners.get(uri) === undefined) {
+        await ctx.restoreSession(idOf(uri));
+      }
+      await ctx.removeSession(uri, acting);
+      return true;
+    } catch (error) {
+      log.warn(`Deleting ${automation} could not delete ${uri}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  };
+
+  /**
+   * Delete the sessions a deletion still names, then keep what it answered.
+   *
+   * The sessions are read again after each one, so a request that joined while
+   * this ran has its own sessions deleted too.
+   */
+  const runDeletion = async (automation: string, acting?: Principal | Owner): Promise<string[]> => {
+    const store = options.automations;
+    const deleted: string[] = [];
+    const seen = new Set<string>();
+    for (;;) {
+      const pending = store?.deletionOf?.(automation);
+      const next = pending?.sessions.find((uri) => !seen.has(uri));
+      if (next === undefined) break;
+      seen.add(next);
+      if (await deleteSession(automation, next, acting)) deleted.push(next);
+    }
+    store?.finishDeletion?.(automation, deleted);
+    return deleted;
+  };
+
+  /** The deletion running for one automation, started here if it is not yet. */
+  const beginDeletion = (automation: string, acting?: Principal | Owner): Promise<string[]> => {
+    const running = deleting.get(automation);
+    if (running !== undefined) return running;
+    const started = runDeletion(automation, acting).finally(() => {
+      if (deleting.get(automation) === started) deleting.delete(automation);
+    });
+    deleting.set(automation, started);
+    return started;
+  };
+
+  /**
+   * Delete one automation, and the sessions its runs made when asked.
+   *
+   * The checks are the `automation/removed` action's, so this door cannot
+   * delete what the catalogue's cannot. A chat automation continues one
+   * conversation, so it deletes neither its run sessions nor `legacySessions`.
+   *
+   * A `requestId` makes the answer repeatable: a finished deletion keeps what
+   * it deleted until the client acknowledges it, and one still running takes
+   * the request on and answers it when the deletion ends.
+   */
+  const deleteAutomation = async (
+    automation: string, deleteHistory: boolean, legacySessions: string[], requestId?: string, acting?: Principal | Owner,
+  ): Promise<string[]> => {
+    const store = need(options.automations, 'vscode/deleteAutomation');
+
+    const receipt = requestId === undefined ? undefined : store.receiptOf?.(requestId);
+    if (receipt !== undefined && receipt.automation === automation) return receipt.sessions;
+
+    if (deleting.has(automation) || store.deletionOf?.(automation) !== undefined) {
+      if (!deleteHistory)
+        throw new RpcError(INTERNAL_ERROR, `Automation deletion is already in progress: ${automation}`);
+      store.beginDeletion?.(automation, [], requestId, requesterOf(acting));
+      return await beginDeletion(automation, store.deletionOf?.(automation)?.requester ?? acting);
+    }
+
+    const found = store.get(automation);
+    if (found === undefined) return [];
+    if (!found.operations.includes('remove'))
+      throw new RpcError(INTERNAL_ERROR, `Automation operation 'remove' is not available: ${automation}`);
+    if (goingRunOf(store, found) !== undefined)
+      throw new RpcError(INTERNAL_ERROR, 'Automation has an active or recovering run and cannot be removed');
+    const chat = targetOf(found.definition).kind === 'chat';
+    const sessions = chat ? [] : [...new Set([...runSessionsOf(automation), ...legacySessions])];
+    /*
+     * Every session is checked before the automation goes, so a request that
+     * may take the definition but not one of the sessions is refused whole
+     * rather than leaving the automation removed and half its history gone.
+     */
+    if (deleteHistory) for (const uri of sessions) ctx.mayDispose(acting, uri);
+    store.remove(automation);
+    // The copies its template named, which nothing names any more.
+    const plugins = options.clientPlugins;
+    if (plugins !== undefined) {
+      plugins.collectGarbage((options.automations?.list() ?? [])
+        .flatMap((one) => (one.customizations ?? []).map((copy) => localPath(copy.uri))));
+    }
+    if (!deleteHistory) return [];
+    if (store.beginDeletion === undefined || store.deletionOf === undefined) {
+      const deleted: string[] = [];
+      for (const uri of sessions) if (await deleteSession(automation, uri, acting)) deleted.push(uri);
+      return deleted;
+    }
+    store.beginDeletion(automation, sessions, requestId, requesterOf(acting));
+    return await beginDeletion(automation, acting);
+  };
+
+  /**
+   * Finish the deletions a store's file held when this host started.
+   *
+   * The deleted definitions are already gone; what is left is the sessions,
+   * which a restart only lists. One listing is done first so every session the
+   * file names has a backend that answers for it.
+   */
+  const resumeAutomationDeletions = async (): Promise<void> => {
+    const pending = options.automations?.deletions?.() ?? [];
+    if (pending.length === 0) return;
+    await ctx.refresh().catch(() => []);
+    for (const one of pending) {
+      if (deleting.has(one.automation)) continue;
+      await beginDeletion(one.automation, one.requester).catch((error: unknown) => {
+        log.warn(`Finishing the deletion of ${one.automation} failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  };
+
+  /** Drop a receipt a client has its answer for. */
+  const acknowledgeAutomationDeletion = (requestId: string): boolean =>
+    options.automations?.acknowledgeDeletion?.(requestId) ?? false;
+
   return {
-    manualRunRequests, settleRun, settleInitialPrompt, cancelRun, gone, stop, changed, beginAutomation, startForAutomation, startForPlugin, startForPluginChat, due,
-    wireTriggerTypes, wirePluginStarts,
+    moveChatAutomations, manualRunRequests, settleRun, settleInitialPrompt, cancelRun, gone, stop, changed, beginAutomation, startForAutomation, startForPlugin, startForPluginChat, due,
+    deleteAutomation, resumeAutomationDeletions, acknowledgeAutomationDeletion, wireTriggerTypes, wirePluginStarts,
   };
 }
 

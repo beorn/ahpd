@@ -1,6 +1,6 @@
 ---
 title: A question reads the owner's settings
-status: implemented
+status: done
 depends: [task-01-a-push-keeps-the-keys-for-its-person.md]
 layer: "sdk"
 refs:

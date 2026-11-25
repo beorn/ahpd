@@ -1,6 +1,6 @@
 ---
 title: gone waits 20 s for a stopped daemon
-status: implemented
+status: done
 depends: []
 layer: "tests"
 refs:

@@ -4,10 +4,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { posix } from '../../../tools/posix.ts';
-import { dockerfileOf, JOINED_BASE, lockOf, readParts, registryOf, tagOf } from '../src/parts.js';
+import { ahpdSourceOf, dockerfileOf, JOINED_BASE, lockOf, readParts, registryOf, tagOf } from '../src/parts.js';
 import type { Part } from '../src/parts.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * The release workflow's part builder, run the way the workflow runs it, over
@@ -107,6 +111,26 @@ it.skipIf(!posix)('builds every part for both platforms and pushes it where a ho
   expect(built[0]?.files).toEqual([]);
   // Nothing was built into this host's own images.
   expect(held.builds ?? []).toEqual([]);
+}, CASE_MS);
+
+/*
+ * A release builds its own ahpd part before npm serves its packages, so they go
+ * in that part's context, and the image is at the tag a host without them asks for.
+ */
+// POSIX-only: the stand-in docker is a shell script on `PATH`, which Windows does not run.
+it.skipIf(!posix)('gives the ahpd part the packed packages, at the tag a host asks for', async () => {
+  const packed = mkdtempSync(join(tmpdir(), 'ahpd-parts-packed-'));
+  loose.push(packed);
+  writeFileSync(join(packed, 'ahpd-server-9.9.9.tgz'), 'packed');
+  const { held, status } = await publish(['--push', '--packages', packed]);
+  expect(status).toBe(0);
+  const ahpd = parts.find((one) => one.kind === 'ahpd') as Part;
+  const source = await ahpdSourceOf();
+  const tag = tagOf(ahpd, source.hash, dockerfileOf(ahpd, source, lockOf(ahpd)));
+  const built = (held.buildx ?? []).find((one) => one.tags.includes(`${registryOf()}/${tag}`));
+  expect(built?.files).toEqual(['package.json', 'package-lock.json', 'plugins/package.json', 'plugins/package-lock.json', 'ahpd-server-9.9.9.tgz']);
+  // No other part is given them.
+  expect((held.buildx ?? []).filter((one) => one.files?.some((file) => file.endsWith('.tgz')))).toHaveLength(1);
 }, CASE_MS);
 
 /*

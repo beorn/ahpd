@@ -1,7 +1,7 @@
 ---
 title: A pi model named with its provider keeps that provider
 domain: pi
-status: planned
+status: built
 priority: high
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -70,7 +70,7 @@ record model -> piSession first open -> backend.setModel(options.model) -> model
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A qualified model keeps its provider](task-01-a-qualified-model-keeps-its-provider.md) | implemented | - |
+| [01 - A qualified model keeps its provider](task-01-a-qualified-model-keeps-its-provider.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -80,7 +80,7 @@ record model -> piSession first open -> backend.setModel(options.model) -> model
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-11; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `available` in `setModel` holds only the models with a key. The provider check needs `getProviders()`, not `available`.
 

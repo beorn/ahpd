@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { uriOf } from '../src/resources/fileuri.js';
 import { gitChanges } from '../src/sessions/changes.js';
@@ -47,13 +47,16 @@ const repository = (): { dir: string; origin: string } => {
 /** GitHub, as far as this source asks it. `canRead` is a port that can also read a pull request. */
 const github = (existing: PullRequest[] = [], canRead = false) => {
   const opened: NewPullRequest[] = [];
-  const asked: { branch: string; token: string | undefined }[] = [];
+  const asked: { branch: string; token: string | undefined; headOwner?: string }[] = [];
   return {
     opened,
     asked,
     ask: {
       resource: { resource: 'https://api.github.com/repos' },
-      forBranch: async (_repo: unknown, branch: string, token: string | undefined) => { asked.push({ branch, token }); return existing; },
+      forBranch: async (_repo: unknown, branch: string, token: string | undefined, _cwd: string, headOwner?: string) => {
+        asked.push({ branch, token, ...(headOwner === undefined ? {} : { headOwner }) });
+        return existing;
+      },
       create: async (_repo: unknown, wanted: NewPullRequest, _token: string | undefined) => {
         opened.push(wanted);
         return { url: `https://github.com/softov/ahpd/pull/${opened.length}`, state: 'open' as const };
@@ -185,6 +188,29 @@ describe('creating a pull request', () => {
       title: 'Port it',
       branch: 'fix/kqueue',
     });
+  });
+
+  /*
+   * A branch pushed to a fork is asked about under the fork's owner, so its
+   * open request is found rather than opened a second time. The remote names
+   * the fork on GitHub, and pushes to a local repository in its place.
+   */
+  it('finds the open request of a branch pushed to a fork, under the fork\'s owner', async () => {
+    const { dir } = repository();
+    const fork = join(dirname(dir), 'fork.git');
+    gitSync(['init', '-q', '--bare', '-b', 'main', fork]);
+    git(dir, 'remote', 'add', 'fork', 'https://github.com/beorn/ahpd.git');
+    git(dir, 'config', 'remote.fork.pushurl', fork);
+    git(dir, 'checkout', '-q', '-b', 'fix/kqueue');
+    git(dir, 'config', 'branch.fix/kqueue.pushRemote', 'fork');
+    writeFileSync(join(dir, 'tracked.txt'), 'two\n');
+    git(dir, 'commit', '-qam', 'Port it');
+    const fake = github([{ url: 'https://github.com/softov/ahpd/pull/8', state: 'open' }]);
+    const said = await invoke(dir, 'create-pr', withGithub(fake));
+    expect(fake.asked).toEqual([{ branch: 'fix/kqueue', token: undefined, headOwner: 'beorn' }]);
+    expect(fake.opened).toEqual([]);
+    expect(said?.followUp?.content.uri).toBe('https://github.com/softov/ahpd/pull/8');
+    expect(git(fork, 'rev-parse', '--verify', 'refs/heads/fix/kqueue')).toBe(git(dir, 'rev-parse', 'HEAD'));
   });
 
   it('refuses what this host cannot do, in the reference host\'s words', async () => {

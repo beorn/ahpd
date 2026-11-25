@@ -1,7 +1,7 @@
 ---
 title: A plugin's chat has an origin, an interactivity and tools
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -80,8 +80,8 @@ client chat/turnStarted | chat/pendingMessageSet | chat/turnResume on a read-onl
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - a-chat-request-names-origin-and-tools](task-01-a-chat-request-names-origin-and-tools.md) | implemented | - |
-| [02 - a-read-only-chat-takes-no-turn](task-02-a-read-only-chat-takes-no-turn.md) | implemented | 01 |
+| [01 - a-chat-request-names-origin-and-tools](task-01-a-chat-request-names-origin-and-tools.md) | done | - |
+| [02 - a-read-only-chat-takes-no-turn](task-02-a-read-only-chat-takes-no-turn.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -91,7 +91,7 @@ client chat/turnStarted | chat/pendingMessageSet | chat/turnResume on a read-onl
 ## Resume state
 
 - **Done so far:** tasks 01 and 02 are `implemented`, waiting for review.
-- **Next action:** Softov's review.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the protocol's value is `read-only`; `readOnly` is the refusal code in `chatactions.ts`, not an interactivity.
 - **Watch out for:** a plugin cannot queue into its own `read-only` chat over its client connection. The bot's Back is `full`, so no plugin does that yet.

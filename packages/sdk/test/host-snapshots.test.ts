@@ -1326,6 +1326,59 @@ describe('a session\'s annotations', () => {
       .rejects.toMatchObject({ code: -32001 });
   });
 
+  /*
+   * AHP 1.1.0 names a session's channel `ahp-annotations:/<id>` and has the
+   * session say it in `annotations.resource`. A VS Code 1.145 window still
+   * makes `<session>/annotations` itself, so both names are served.
+   * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/channels-annotations/state.ts#L25-L36
+   */
+  it('names its channel ahp-annotations in the session state, and answers it', async () => {
+    const { client, uri } = await running();
+    expect(uri).toBe('ahp-session:/live');
+    const session = await client.handle({ method: 'subscribe', params: { channel: uri } }) as {
+      snapshot: { state: { annotations?: { resource: string; annotationCount: number; entryCount: number } } };
+    };
+    expect(session.snapshot.state.annotations).toEqual({ resource: 'ahp-annotations:/live', annotationCount: 0, entryCount: 0 });
+    const opened = await client.handle({ method: 'subscribe', params: { channel: 'ahp-annotations:/live' } }) as {
+      snapshot: { resource: string; state: { annotations: unknown[] } };
+    };
+    expect(opened.snapshot.resource).toBe('ahp-annotations:/live');
+    expect(opened.snapshot.state.annotations).toEqual([]);
+  });
+
+  it('says a mark on both names, and counts it in the session state', async () => {
+    const { host, client, uri } = await running();
+    const other = host.accept(peer());
+    await other.handle(hello(['0.9.0']));
+    await other.handle({ method: 'subscribe', params: { channel: `${uri}/annotations` } });
+    await client.handle({ method: 'subscribe', params: { channel: 'ahp-annotations:/live' } });
+    client.handle({
+      method: 'dispatchAction',
+      params: {
+        channel: 'ahp-annotations:/live',
+        action: {
+          type: 'annotations/set',
+          annotation: { id: 'a1', origin: { session: uri }, resource: `${WORK_URI}/x.ts`, resolved: false, entries: [{ id: 'e1', text: 'one' }, { id: 'e2', text: 'two' }] },
+        },
+      },
+    });
+    await flushed();
+    const old = await other.handle({ method: 'subscribe', params: { channel: `${uri}/annotations` } }) as {
+      snapshot: { state: { annotations: { id: string }[] } };
+    };
+    expect(old.snapshot.state.annotations.map((one) => one.id)).toEqual(['a1']);
+    const session = await client.handle({ method: 'subscribe', params: { channel: uri } }) as {
+      snapshot: { state: { annotations?: { annotationCount: number; entryCount: number } } };
+    };
+    expect(session.snapshot.state.annotations).toMatchObject({ annotationCount: 1, entryCount: 2 });
+  });
+
+  it('refuses a mark on a channel that names no session\'s annotations', async () => {
+    const { client } = await running();
+    await expect(client.handle({ method: 'subscribe', params: { channel: 'ahp-annotations://vscode-legacy/not-base64!' } }))
+      .rejects.toMatchObject({ code: expect.any(Number) });
+  });
+
   it('keeps a mark one client made, and shows it to the next', async () => {
     const { host, client, uri } = await running();
     const marks = `${uri}/annotations`;

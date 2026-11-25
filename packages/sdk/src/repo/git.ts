@@ -28,6 +28,18 @@ const quiet = (): NodeJS.ProcessEnv => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0
  * createHost({ path, agents: [claude({ paths })], directories: gitBranches() });
  * ```
  */
+
+/**
+ * The owner and repository of a GitHub remote, if the remote is one.
+ *
+ * Both URL forms git writes: `git@github.com:owner/repo.git` and
+ * `https://github.com/owner/repo`. Anything else is a remote this says
+ * nothing about rather than one it guesses at.
+ */
+export const githubRemoteOf = (url: string | undefined): { owner: string; repo: string } | undefined => {
+  const found = /github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/.exec(url ?? '');
+  return found ? { owner: found[1] as string, repo: found[2] as string } : undefined;
+};
 export function gitBranches(): DirectoryFacts {
   /*
    * The branch, per *directory* rather than per session.
@@ -57,17 +69,7 @@ export function gitBranches(): DirectoryFacts {
       });
     });
 
-  /**
-   * The owner and repository of a GitHub remote, if the remote is one.
-   *
-   * Both URL forms git writes: `git@github.com:owner/repo.git` and
-   * `https://github.com/owner/repo`. Anything else is a remote this says
-   * nothing about rather than one it guesses at.
-   */
-  const github = (url: string | undefined): { owner: string; repo: string } | undefined => {
-    const found = /github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/.exec(url ?? '');
-    return found ? { owner: found[1] as string, repo: found[2] as string } : undefined;
-  };
+  const github = githubRemoteOf;
 
   /**
    * The project a directory's sessions are in, as VS Code's agents resolve

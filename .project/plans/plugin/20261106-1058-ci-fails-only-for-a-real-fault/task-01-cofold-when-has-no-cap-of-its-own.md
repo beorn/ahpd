@@ -1,6 +1,6 @@
 ---
 title: The cofold when has no deadline of its own
-status: todo
+status: done
 depends: []
 layer: "tests"
 refs:
@@ -32,3 +32,5 @@ The cofold tools cases wait for their event until the suite's limit for a case e
 - The PR's `windows (1/3)` job passes with no rerun.
 
 ## Resume
+
+Fixed before this build, by `1e0251f5c` (2026-11-08). `when` waits `WAIT_MS` from `tools/wait.ts`: 15 s on Windows and 4 s elsewhere, under the case's budget. A slow runner gets the case's time, and the wait still fails in its own words. That is the suite's rule now, so the deadline stays. No cofold tools case failed in a failed CI run since 2026-11-08.

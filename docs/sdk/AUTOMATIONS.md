@@ -1,6 +1,6 @@
 # Automations
 
-An **automation** is one instruction this host carries out with nobody watching: a trigger says when, and a **run** is a session whose first message is what the automation wrote. A run may be a session of its own, or one more turn in the chat a pinned automation keeps.
+An **automation** is one instruction this host carries out with nobody watching: a trigger says when, and a **run** is a session whose first message is what the automation wrote. A run may be a session of its own, one more turn in the session of the last run, or a message to one chosen chat.
 
 Automations live on a catalogue of their own, `ahp-automations://`. A client subscribes to it, writes definitions into it, and watches each run on the run's own channel.
 
@@ -11,13 +11,13 @@ Terms, one line each:
 | Term | |
 | --- | --- |
 | an automation | A definition: the message a run is given, the shape of its session, and the triggers that wake it |
-| a trigger | When it runs: a `schedule`, an `event` of a type this host or a plugin offers, or nothing at all, which is manual only |
+| a trigger | When it runs: a `schedule`, a `oneTime` time, an `event` of a type this host or a plugin offers, or nothing at all, which is manual only |
 | a run | One execution, with a lifecycle and the sessions it started |
 | the overlap | What happens to an event that arrives while a run of the same automation is going |
 | pinned | An automation that keeps one chat and adds each run to it as the next turn |
 | the owner | Whose work the automation is, as `user:<id>`, `team:<id>`, `project:<id>` or `root:<host>` |
 
-## The three kinds of trigger
+## The kinds of trigger
 
 A trigger has an `id`, a `kind`, a `type`, a `title`, and either `events` or a `schedule`.
 
@@ -30,6 +30,8 @@ A trigger has an `id`, a `kind`, a `type`, a `title`, and either `events` or a `
 | `session` | One of the eight things a session does, with a count, a follow-up or a state check around it |
 | `watch` | One of five patterns somebody already thought about, with its numbers left to you |
 | a plugin's | A type a plugin registered, with its own events and its own config schema |
+
+`oneTime` runs once, at its `runAt`, an ISO 8601 time. It comes from AHP 1.2.0, and the host advertises it as `oneTime` in its automation capabilities. A one-time automation has that one trigger and no `disableConditions`. A `runAt` already gone by runs at once, or not at all when it is a minute late or more and `misfirePolicy` is `skip`. Once its run is created, the definition's `_meta.ahpd.oneTimeRun` names the run, the automation has no `nextRunAt`, and an update is refused. A press of Run is not its run, so it leaves the trigger to fire.
 
 `listAutomationTriggerDefinitions` answers with every event type this host fires - the two above, and each plugin's beside them - and nothing for a schedule, which needs no form. Manual is not a trigger at all: an empty trigger list is what the protocol says manual-only means.
 
@@ -114,22 +116,29 @@ A run is started by a schedule, by an event, or by a person pressing Run, and al
 
 The store records the run before the session exists, marks it `running` when the session is asked for, and the host settles it when a turn of its session's default chat ends and none of its other sessions is still working, as VS Code's host settles a run on its sessions' default chats; a turn in a side chat of that session leaves the run going. `runAutomation` is answered with the run once it is recorded, and its session is made after, so a press is answered whatever making the session takes, as VS Code's host answers it. A press's `requestId` is its identity, as it is to VS Code's host: the same request asked again is answered with the run it made, and one already used for another automation is refused. Its lifecycle is `pending`, then `running`, then one of `completed`, `failed` or `cancelled`, and a `failed` one carries the chat error's own `ErrorInfo`, its `errorType` and `message`. A run that could not start at all is `failed` with no `startedAt`, because no execution began.
 
-An automation's entry carries its runs newest first, twenty at a time, with `runsNextCursor` when there are more: `fetchAutomationRuns` grows the page in view and every subscriber reads the longer list off the same `automation/set`, because the protocol's answer to that command is empty. A cursor that is not the entry's own is refused, and an entry with no more runs is answered at once, as VS Code's host answers. `operations` is always `update`, `remove` and `run`: `enabled` governs the schedule only, so a person can run a switched-off automation by hand.
+An automation's entry carries its runs newest first, twenty at a time, with `runsNextCursor` when there are more: `fetchAutomationRuns` grows the page in view and every subscriber reads the longer list off the same `automation/set`, because the protocol's answer to that command is empty. A cursor that is not the entry's own is refused, and an entry with no more runs is answered at once, as VS Code's host answers. `operations` is `update`, `remove` and `run`, and a one-time automation whose trigger has run drops `update`. `enabled` governs the schedule only, so a person can run a switched-off automation by hand.
 
-## One chat, or a session each run
+## Where a run goes
 
-By default every run makes a session of its own. The automation's `_meta.ahpd.session` set to `pinned` changes that: it keeps one session and adds each run as the next turn in the chat that session holds, so a run sees the ones before it. The host writes that session's URI to `_meta.ahpd.pinnedSession` - it is the host's own note, and a client writing one has it dropped - and a run whose session is gone makes a new one and keeps it there. The session's folder, worktree and machine stay between runs, and its context grows until the backend compacts it. A pinned session that is asleep is woken in place for the run, and no new session is made - [SESSIONS.md](SESSIONS.md#sleep-and-wake).
+An automation's `target`, from AHP 1.2.0, says where each run sends its message. The host advertises `targets` with `previousSession` and `chat` in its automation capabilities.
 
-A pinned automation also types into a chat somebody else may be using, so a turn running there is a turn already going, whoever started it: an event arriving then is answered by `overlap` like any other, and a run pressed by hand while somebody's own turn runs there fails, with that reason. A pinned run into a chat that belongs to somebody else is refused as well - it is the one road into a session that does not go through `createSession`, and it must not be a way to type in another person's session as though the work were theirs.
+| `target.kind` | Where each run goes |
+| --- | --- |
+| `newSession`, or no `target` | A session of its own |
+| `previousSession` | The session of the automation's last run, as the next turn in its default chat, so a run sees the ones before it |
+| `chat` | One chat a person chose, named by `target.chat`. The host sets `target.session` to the session that owns it, and keeps it right when the chat moves |
+
+A definition with no `target` and the older `_meta.ahpd.session: 'pinned'` reads as `previousSession`. For both, the host writes the session's URI to `_meta.ahpd.pinnedSession`. That is the host's own note, and a client writing one has it dropped. A run whose session is gone or archived makes a new one and keeps it. The session's folder, worktree and machine stay between runs, and its context grows until the backend compacts it. A session that is asleep is woken in place for the run - [SESSIONS.md](SESSIONS.md#sleep-and-wake). A `chat` run never makes a session: its chat being gone fails the run.
+
+A run that continues a session or a chat may find a turn running there, whoever started it. Its message then waits in the chat's queue, as a queued pending message with the template's model. The run is `pending` while it waits and `running` from the turn that takes it up. A person who takes the message out of the queue cancels the run, and a cancel of the run takes the message out. It never steers the running turn. A run into a chat that belongs to somebody else is refused: it must not be a way to type in another person's session as though the work were theirs. A `chat` target to a chat this host does not have, or that the automation's owner may not drive, is refused when the automation is saved.
 
 ```json
-{ "_meta": { "ahpd": { "session": "pinned", "pinnedSession": "ahp-session://claude/local/..." } } }
+{ "target": { "kind": "chat", "chat": "ahp-session:/...", "session": "ahp-session:/..." } }
 ```
-
 
 ## What an event does while a run is going
 
-An event can arrive while the automation's own last run is still going, and `_meta.ahpd.overlap` says what happens to it. Left out, it is `queue`.
+An event can arrive while the automation's own last run is still going, and `_meta.ahpd.overlap` says what happens to it. Left out, it is `queue`. It applies to runs that make a session of their own: a run that continues a session or a chat always waits in the chat's queue, as *Where a run goes* says.
 
 | Mode | What happens |
 | --- | --- |
@@ -138,7 +147,7 @@ An event can arrive while the automation's own last run is still going, and `_me
 | `parallel` | A run starts for every event |
 | `skip` | The event is dropped, and counted on the run it arrived during |
 
-A pinned automation refuses `parallel` when it is saved, because it has one chat and two turns in it at once is not a thing. A scheduled automation answers to this setting exactly as an event does. A press is never held: while a run of the automation is going, the press is answered with the newest such run, as VS Code's host answers it, and otherwise a run starts now. A press on a pinned automation whose chat is running somebody's own turn starts a run that fails with the reason, because that chat takes one turn at a time. Decision: An automation says what an event does while it runs.
+A pinned automation refuses `parallel` when it is saved, because it has one chat and two turns in it at once is not a thing. A scheduled automation answers to this setting exactly as an event does. A press is never held: while a run of the automation is going, the press is answered with the newest such run, as VS Code's host answers it, and otherwise a run starts now. Decision: An automation says what an event does while it runs.
 
 An event dropped by `skip` is dropped before anything is counted, so it is not one of the twenty an hour either; the one counted on the run is noted as `ahpd.dropped` in the run's `_meta`, which is how the agent working in that turn, and anybody watching the run, learns what happened while it worked.
 
@@ -184,7 +193,7 @@ An automation that names no owner is the host's own work and has nobody to be. S
 
 - A rule only sees sessions its owner may `session:read`, and an owner this host has not met sees none. An automation that names no owner sees every session, unless the daemon was started with `unownedAutomations: "none"` - and an event a plugin fires is held to that same answer, whether or not it names a session.
 - A run's own sessions never wake the automation that made them, so an automation cannot feed itself.
-- An automation runs at most 20 times an hour. Past that an event is dropped and logged with the count, and the next one inside the hour is dropped too. Switching the automation off and on again does not start the hour over, and an event its own overlap mode dropped is not one of the twenty. A clock is not counted: a schedule's own cadence is the bound on it.
+- An automation runs at most 20 times an hour. Past that an event is dropped and logged with the count, and the next one inside the hour is dropped too. Switching the automation off and on again does not start the hour over, and an event its own overlap mode dropped is not one of the twenty. A run a plugin asks for by the automation's id, as the webhook connector does, counts as an event's, and obeys the overlap mode too. A clock is not counted: a schedule's own cadence is the bound on it.
 - Counts, timers and the hourly count live in memory and start again when the daemon restarts, so a wake that was halfway through is missed once. What somebody wrote down survives: with `automations: "file"` the definitions come back on a restart, and so does the occurrence each was waiting for.
 
 ## Configuration
@@ -232,11 +241,7 @@ A daemon started over the `automations.json` an earlier version wrote converts i
 
 Automations are driven over the protocol, and over the HTTP API where the daemon serves one. `ahpd automation export` and `import` move one out and in as [ahpd's own file](#automation-files), or as [VS Code's file](#vs-code-automation-files) with `--vscode`.
 
-`ahpd automation list` shows one row per automation: the id that export takes, the name, the folder, the schedule and whether it is on. `--json` gives the same rows, and over HTTP it is `GET /api/automation/list`.
-
-```text
-0b6f1c1e-4d8e-4d8a-9a43-6a3f4c2b9e10  Review yesterday's commits  /home/softov/ahpd  0 9 * * * America/Campo_Grande  on
-```
+The commands, `ahpd automation list`, `export` and `import`, are on [the server's Automations page](../server/AUTOMATIONS.md).
 
 | Command | What it does |
 | --- | --- |

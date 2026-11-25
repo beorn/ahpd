@@ -1,7 +1,7 @@
 ---
 title: A session's approvals follow its owner
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-16
 revalidated: 2026-11-16
@@ -76,9 +76,9 @@ start -> trustedBy -> the start's sender, by the same rule -> workspaceTrust, or
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the owner's turns get the approvals](task-01-the-owners-turns-get-the-approvals.md) | implemented | - |
-| [02 - a setting for turns nobody sent](task-02-a-setting-for-turns-nobody-sent.md) | implemented | 01 |
-| [03 - the docs say whose turns are approved](task-03-the-docs-say-whose-turns-are-approved.md) | implemented | 01, 02 |
+| [01 - the owner's turns get the approvals](task-01-the-owners-turns-get-the-approvals.md) | done | - |
+| [02 - a setting for turns nobody sent](task-02-a-setting-for-turns-nobody-sent.md) | done | 01 |
+| [03 - the docs say whose turns are approved](task-03-the-docs-say-whose-turns-are-approved.md) | done | 01, 02 |
 
 ## Risks and tradeoffs
 
@@ -87,6 +87,7 @@ start -> trustedBy -> the start's sender, by the same rule -> workspaceTrust, or
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 to 03 built on 2026-11-16 on branch `host/20261116-2126-approvals-follow-the-sessions-owner`, awaiting review.
 - **Next action:** Softov reviews the PR, then the checks of *Final verification checklist* on the test daemon.

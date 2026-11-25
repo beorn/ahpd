@@ -76,6 +76,26 @@ it('answers whether it keeps a session, from the store and by the id in the URI'
   expect(await pluginHost('fixture', context).host.sessionKept('echo:/one')).toBe(false);
 });
 
+it('answers whether a session opens from the store alone, with no host built over the plugin', async () => {
+  const store = memorySessions();
+  store.setConfig('one', {});
+  store.setUri?.('one', 'ahp-session:/one');
+  const context: LoaderContext = {
+    path: '/tmp/plugin-host',
+    paths: ['/tmp/plugin-host'],
+    version: '0.0.0',
+    hostName: 'host',
+    configDir: '/tmp/plugin-host',
+    log: loggerOf(() => {}),
+    say: () => {},
+  };
+
+  // No catalogue to ask, so the store's row is the whole answer, as `sessionKept` gives it.
+  expect(await pluginHost('fixture', context, { sessions: () => store }).host.sessionOpens('ahp-session:/one')).toBe(true);
+  expect(await pluginHost('fixture', context, { sessions: () => store }).host.sessionOpens('echo:/one')).toBe(false);
+  expect(await pluginHost('fixture', context).host.sessionOpens('ahp-session:/one')).toBe(false);
+});
+
 it('gives a plugin YAML functions that throw where the loader gave none', () => {
   const context: LoaderContext = {
     path: '/tmp/plugin-host',

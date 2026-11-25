@@ -190,7 +190,7 @@ it('shows the terminal a host tool opened on its call, and keeps it in the compl
   ]);
 });
 
-it('disallows Bash and aliases it to a marked host bash, and leaves an unmarked one alone', async () => {
+it('disallows Bash and aliases it and bash to a marked host bash, and leaves an unmarked one alone', async () => {
   const shell: BoundTool = {
     definition: { name: 'bash', inputSchema: { type: 'object', properties: { command: { type: 'string' } } } },
     overridesBuiltInTool: true,
@@ -198,17 +198,17 @@ it('disallows Bash and aliases it to a marked host bash, and leaves an unmarked 
   };
   await open([shell]);
   expect(sdk.options?.disallowedTools).toContain('Bash');
-  expect(sdk.options?.toolAliases).toEqual({ Bash: 'mcp__host__bash' });
+  expect(sdk.options?.toolAliases).toEqual({ Bash: 'mcp__host__bash', bash: 'mcp__host__bash' });
 
   // The same tool without the mark is just another host tool: Claude keeps its
-  // own Bash.
+  // own Bash, and a lower-case call reaches it.
   const plain: BoundTool = {
     definition: { name: 'bash', inputSchema: { type: 'object', properties: { command: { type: 'string' } } } },
     run: async () => 'ran',
   };
   await open([plain]);
   expect((sdk.options?.disallowedTools as string[] | undefined) ?? []).not.toContain('Bash');
-  expect(sdk.options?.toolAliases).toBeUndefined();
+  expect(sdk.options?.toolAliases).toEqual({ bash: 'Bash' });
 });
 
 it('asks about a marked host shell\'s call as a shell command, which the owner\'s terminal rules read', async () => {

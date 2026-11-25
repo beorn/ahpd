@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/push",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Push notifications for ahpd. Tells a phone or browser when a session needs you, through Expo or Web Push.",
+  "description": "Push notifications integration. Get a phone or browser notification when an ahpd session needs you, even with the app closed.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -59,12 +59,12 @@
     "test": "cd ../.. && vitest run packages/push/test"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0",
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "devDependencies": {
     "@ahpd/sdk": "workspace:*",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "ahpd": {
     "entry": "./dist/index.js",

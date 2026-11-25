@@ -147,6 +147,8 @@ export class OpenTunnels {
   readonly #held = new Map<string, OpenTunnel>();
   /** The refresh each open connector is running now, by connector id. */
   readonly #refreshing = new Map<string, Promise<void>>();
+  /** Who is told each time a connector holds a token. */
+  readonly #listeners = new Set<(id: string) => void>();
 
   /** The token of one open connector, or nothing when it is not open. */
   held(id: string): OpenTunnel | undefined {
@@ -181,9 +183,16 @@ export class OpenTunnels {
     return [...this.#held.keys()];
   }
 
-  /** Keep one connector's token until it closes. */
+  /** Keep one connector's token until it closes, and tell each listener. */
   hold(id: string, tunnel: OpenTunnel): void {
     this.#held.set(id, tunnel);
+    for (const listener of this.#listeners) listener(id);
+  }
+
+  /** Be told the id of each connector that holds a token, at its open and at each refresh. Answers what stops it. */
+  onHold(listener: (id: string) => void): () => void {
+    this.#listeners.add(listener);
+    return () => { this.#listeners.delete(listener); };
   }
 
   /** Forget one connector, when it closes. */

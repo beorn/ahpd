@@ -43,6 +43,14 @@ export const ARTIFACT_TOOL_NAMES: readonly string[] = [ADD, REMOVE, LIST];
  */
 export const ENABLE_ARTIFACT_TOOLS = 'artifactTools';
 
+/** The root key that lets an agent choose how the chat shows what it records, VS Code's `chatResources`. */
+export const ENABLE_CHAT_RESOURCES = 'chatResources';
+
+/** How the chat shows a recorded entry: a pill of its own, or that and above the chat input. */
+export const ARTIFACT_MODES = ['pinned', 'aboveInput'] as const;
+export type ArtifactMode = typeof ARTIFACT_MODES[number];
+const isArtifactMode = (value: unknown): value is ArtifactMode => (ARTIFACT_MODES as readonly unknown[]).includes(value);
+
 /** One entry, as the tool takes it and as it is kept. */
 export interface Artifact {
   id: string;
@@ -53,6 +61,10 @@ export interface Artifact {
   uri?: string;
   commitHash?: string;
   isGitHub?: boolean;
+  /** How the agent asked the chat to show it. */
+  mode?: ArtifactMode;
+  /** Counts the changes of `mode` after the first, so a client can tell a new request from one it applied. */
+  modeRevision?: number;
 }
 
 /**
@@ -92,7 +104,13 @@ export const isGitHubLink = (link: string): boolean => {
 };
 
 /** One entry of `add_artifact_or_reference`, checked the way the reference host checks it. */
-export const parseArtifact = (raw: unknown, tool: string, prefix?: string): Omit<Artifact, 'id'> => {
+/**
+ * One entry of the tool's input. `acceptsMode` says whether `mode` is read;
+ * otherwise it is ignored like any unknown field, even an invalid one, as
+ * VS Code's host ignores it without chat resources.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/sessionArtifactCollection.ts#L94-L115
+ */
+export const parseArtifact = (raw: unknown, tool: string, prefix?: string, acceptsMode = false): Omit<Artifact, 'id'> => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw))
     throw new Error(`Invalid ${tool} input: ${prefix ? `${prefix} must be an object.` : 'expected an object.'}`);
   const args = raw as Record<string, unknown>;
@@ -103,7 +121,11 @@ export const parseArtifact = (raw: unknown, tool: string, prefix?: string): Omit
   if (typeof args.isArtifact !== 'boolean')
     throw new Error(`Invalid ${tool} input: ${field('isArtifact')} must be a boolean \u2014 true for an artifact, false for a reference.`);
   const kind = type as ArtifactType;
+  const mode = acceptsMode ? args.mode : undefined;
+  if (mode !== undefined && !isArtifactMode(mode))
+    throw new Error(`Invalid ${tool} input: ${field('mode')} must be one of ${ARTIFACT_MODES.join(', ')}.`);
   const out: Omit<Artifact, 'id'> = { type: kind, label: required(args.label, field('label'), tool).trim(), isArtifact: args.isArtifact };
+  if (mode !== undefined) out.mode = mode;
   if (LINKED.has(kind)) out.link = requireWebLink(args.link, field('link'), tool);
   if (ADDRESSED.has(kind)) out.uri = requireUri(args.uri, field('uri'), tool);
   if (kind === 'commit') out.commitHash = required(args.commitHash, field('commitHash'), tool).trim();
@@ -112,12 +134,12 @@ export const parseArtifact = (raw: unknown, tool: string, prefix?: string): Omit
 };
 
 /** The batch, or the older single-entry shape, which is still taken. */
-export const parseArtifacts = (raw: unknown, tool: string): Omit<Artifact, 'id'>[] => {
+export const parseArtifacts = (raw: unknown, tool: string, acceptsMode = false): Omit<Artifact, 'id'>[] => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`Invalid ${tool} input: expected an object.`);
   const items = (raw as Record<string, unknown>).items;
-  if (items === undefined) return [parseArtifact(raw, tool)];
+  if (items === undefined) return [parseArtifact(raw, tool, undefined, acceptsMode)];
   if (!Array.isArray(items) || items.length === 0) throw new Error(`Invalid ${tool} input: items must be a non-empty array.`);
-  return items.map((item, index) => parseArtifact(item, tool, `items[${index}]`));
+  return items.map((item, index) => parseArtifact(item, tool, `items[${index}]`, acceptsMode));
 };
 
 /** What makes two entries the same one: the thing they point at. */
@@ -151,8 +173,25 @@ export const recordArtifact = (held: Artifact[], one: Omit<Artifact, 'id'>, mint
     const made: Artifact = { id: mintId(), ...one };
     return { held: [...held, made], artifact: made, status: `Added ${noun(one.isArtifact)}` };
   }
+  /*
+   * Recorded again with another mode asks again: the entry takes the mode, and
+   * `modeRevision` moves where it had one before, so a client can tell a new
+   * request from one it applied.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/sessionArtifactCollection.ts#L170-L178
+   */
+  if (one.mode !== undefined && same.mode !== one.mode && !(same.isArtifact === false && one.isArtifact === true)) {
+    const updated: Artifact = { ...same, mode: one.mode, ...(same.mode !== undefined ? { modeRevision: (same.modeRevision ?? 0) + 1 } : {}) };
+    return { held: held.map((other) => (other === same ? updated : other)), artifact: updated, status: `Updated how the chat shows the ${noun(same.isArtifact)}` };
+  }
   if (same.isArtifact === false && one.isArtifact === true) {
-    const artifact: Artifact = { id: same.id, ...one };
+    // The reference's request for how to show it stays unless the input replaces it.
+    const mode = one.mode ?? same.mode;
+    const artifact: Artifact = {
+      id: same.id,
+      ...one,
+      ...(mode === undefined ? {} : { mode }),
+      ...(same.modeRevision === undefined ? {} : { modeRevision: same.modeRevision }),
+    };
     return {
       held: held.map((other) => (other === same ? artifact : other)),
       artifact,
@@ -171,6 +210,8 @@ export const artifactsIn = (held: Bag[] | undefined): Artifact[] => (held ?? [])
   if (typeof raw.uri === 'string') one.uri = raw.uri;
   if (typeof raw.commitHash === 'string') one.commitHash = raw.commitHash;
   if (typeof raw.isGitHub === 'boolean') one.isGitHub = raw.isGitHub;
+  if (isArtifactMode(raw.mode)) one.mode = raw.mode;
+  if (typeof raw.modeRevision === 'number' && Number.isSafeInteger(raw.modeRevision) && raw.modeRevision > 0) one.modeRevision = raw.modeRevision;
   return [one];
 });
 
@@ -188,6 +229,14 @@ const entrySchema = {
   },
   required: ['type', 'label', 'isArtifact'],
 };
+
+/** Offered only while chat resources are on: how the chat shows a recorded file, VS Code's description. */
+const modeProperty = {
+  type: 'string',
+  enum: [...ARTIFACT_MODES],
+  description: 'Optional, for files. How the chat shows the file; omit it to list the file with the others. `pinned` gives it a pill of its own. `aboveInput` also shows it above the chat input, for example a status or plan Markdown file you keep updating. The user can change it afterwards. Recording the file again with another mode asks again.',
+};
+const entrySchemaWithMode = { ...entrySchema, properties: { ...entrySchema.properties, mode: modeProperty } };
 
 export const artifactTools = (): HostTool[] => [
   {
@@ -214,8 +263,24 @@ export const artifactTools = (): HostTool[] => [
      * https://github.com/microsoft/vscode/blob/1564f100807a/src/vs/platform/agentHost/node/shared/artifactServerTools.ts#L74-L93
      */
     deferLoading: false,
+    /*
+     * With chat resources on, each entry takes `mode` too, as VS Code's host
+     * swaps in its input schema with the mode property.
+     * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/artifactServerTools.ts#L188-L192
+     */
+    forSession: (session) => (session.rootConfig?.[ENABLE_CHAT_RESOURCES] !== true ? undefined : {
+      definition: {
+        inputSchema: {
+          type: 'object',
+          properties: {
+            items: { type: 'array', minItems: 1, description: 'Artifacts and references to record in this call. Batch related entries when practical.', items: entrySchemaWithMode },
+          },
+          required: ['items'],
+        },
+      },
+    }),
     run: (input, at) => {
-      const wanted = parseArtifacts(input, ADD);
+      const wanted = parseArtifacts(input, ADD, at.rootConfig()[ENABLE_CHAT_RESOURCES] === true);
       for (const one of wanted) {
         if (one.uri !== undefined && /^agent-host-session:/i.test(one.uri))
           throw new Error(`Invalid ${ADD} input: sessions and chats created with session-management tools must not be recorded as artifacts or references.`);

@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/server",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "The ahpd daemon: an Agent Host Protocol server on Node, Bun or Deno, with agents loaded as plugins",
+  "description": "The ahpd daemon: a self-hosted, extensible agent host built on the Agent Host Protocol. Run Claude, Pi, Codex, Gemini, and other ACP-compatible agents, with scheduling, team management, usage tracking and a model gateway built in, and webhooks, isolated computers and more as plugins.",
   "keywords": [
     "ahp",
     "agent-host-protocol",
@@ -52,9 +52,9 @@
     "@cofold/commands": "^0.3.0",
     "@cofold/config": "^0.3.1",
     "@cofold/remote": "^0.5.0",
-    "@cofold/terminal": "^0.4.0",
+    "@cofold/terminal": "^0.5.1",
     "@cofold/yaml": "^0.3.0",
-    "@microsoft/agent-host-protocol": "^1.0.0",
+    "@microsoft/agent-host-protocol": "^1.1.0",
     "@xterm/headless": "^6.0.0",
     "semver": "^7.8.5"
   },

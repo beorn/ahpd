@@ -1,6 +1,6 @@
 ---
 title: A person reads their own settings back
-status: implemented
+status: done
 depends: [task-01-a-push-keeps-the-keys-for-its-person.md]
 layer: "sdk"
 refs:

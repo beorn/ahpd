@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 Activepieces pieces as connectors for the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon. Each piece is an adapter. Each of its actions is a tool that the host offers to a session or a bot that binds a connector of it.
 
@@ -107,4 +109,4 @@ An action its piece marks for humans alone, with `audience: 'human'`, is not off
 
 ## License
 
-MIT.
+MIT © Softov

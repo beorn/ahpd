@@ -37,7 +37,7 @@ No `devtunnel` process runs.
 - ahpd #189 passed its 11 CI checks, Windows included, after MayCXC's union was merged in.
 - On 2026-11-04 Softov ran `plugin-1122-tunnel-checks.md` on a real Dev Tunnel, and the tunnels worked.
 - ahpc reached the daemon through a person tunnel on port 37537 only after that port got anonymous access. A private port needs a Dev Tunnels token, which ahpc cannot send yet: see ahpc's brief `ahpc-connects-through-a-private-dev-tunnel.md`.
-- The system tunnel failed at the daemon's start with 401, and ran after a disable and an enable: see [the problem](../../../problems/a-system-tunnel-that-fails-at-start-is-not-retried.md).
+- The system tunnel failed at the daemon's start with 401, and ran after a disable and an enable: see [the problem](../20261118-1106-a-failed-system-tunnel-is-retried/plan.md).
 
 ## Departures from the plan
 

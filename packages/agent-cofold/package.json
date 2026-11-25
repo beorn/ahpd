@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/agent-cofold",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Cofold agent runtime integration for the Agent Host Protocol. Run it as an ahpd plugin or use it directly with @ahpd/sdk.",
+  "description": "Cofold agent runtime integration. A generic agent for OpenAI-compatible models, as an ahpd plugin or directly with @ahpd/sdk.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -62,18 +62,18 @@
     "test": "cd ../.. && vitest run packages/agent-cofold/test"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0"
   },
   "devDependencies": {
     "@ahpd/sdk": "workspace:*"
   },
   "dependencies": {
-    "@cofold/agents": "^0.4.0",
+    "@cofold/agents": "^0.4.1",
     "@cofold/commands": "^0.3.0",
     "@cofold/config": "^0.3.1",
     "@cofold/model-openai-compat": "^0.3.0",
     "@cofold/store-file": "^0.2.2",
-    "@cofold/tools": "^0.4.1"
+    "@cofold/tools": "^0.4.2"
   },
   "ahpd": {
     "entry": "./dist/index.js",
@@ -94,6 +94,8 @@
       "properties": {
         "model": { "type": "string", "description": "Default model for agents that don't set one." },
         "baseUrl": { "type": "string", "description": "Default OpenAI-compatible endpoint for agents that don't set one." },
+        "apiKey": { "type": "string", "writeOnly": true, "description": "Default API key for agents that don't set one." },
+        "resource": { "type": "string", "description": "Protected resource that clients authenticate against. Defaults to the endpoint's origin when it uses https." },
         "models": {
           "type": "array",
           "items": {
@@ -108,12 +110,21 @@
           "description": "The models at baseUrl, by id, with the thinking levels each accepts in supportsReasoningEffort. Cofold offers the levels it supports."
         },
         "instructions": { "type": "string", "description": "Default system prompt for agents that don't set one." },
-        "computerConfigDir": {
-          "anyOf": [{ "type": "string" }, { "const": false }],
-          "description": "Cofold configuration directory inside a computer. Defaults to '/ahpd/cofold'. Set to false to keep the computer image's own configuration."
+        "autoCompactTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "History size, in estimated tokens, at which a session compacts. Defaults to the autoCompactAt share of the model's context, or of 32000 when the context is unknown, and never goes above that."
         },
-        "store": { "type": "string", "description": "Folder for cofold's file store, shared by every agent. Defaults to '$COFOLD_HOME', or '~/.cofold'." },
-        "memory": { "type": "boolean", "description": "Keep each agent's store in memory instead of on disk. For tests." },
+        "autoCompactAt": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "The share of the model's listed context, or of 32000, a session compacts at when autoCompactTokens names no lower point, copapo's 0.8 by default."
+        },
+        "hostTools": {
+          "type": "boolean",
+          "description": "Offer the host's tools to each session. On by default. Each agent can override it."
+        },
         "tools": {
           "type": "object",
           "properties": {
@@ -143,28 +154,17 @@
           "type": "boolean",
           "description": "Refuse unknown keys in tools. On by default; set to false to drop them instead."
         },
-        "apiKey": { "type": "string", "writeOnly": true, "description": "Default API key for agents that don't set one." },
-        "resource": { "type": "string", "description": "Protected resource that clients authenticate against. Defaults to the endpoint's origin when it uses https." },
-        "autoCompactTokens": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "History size, in estimated tokens, at which a session compacts. Defaults to the autoCompactAt share of the model's context, or of 32000 when the context is unknown, and never goes above that."
-        },
-        "autoCompactAt": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "maximum": 1,
-          "description": "The share of the model's listed context, or of 32000, a session compacts at when autoCompactTokens names no lower point, copapo's 0.8 by default."
+        "store": { "type": "string", "description": "Folder for cofold's file store, shared by every agent. Defaults to '$COFOLD_HOME', or '~/.cofold'." },
+        "computerConfigDir": {
+          "anyOf": [{ "type": "string" }, { "const": false }],
+          "description": "Cofold configuration directory inside a computer. Defaults to '/ahpd/cofold'. Set to false to keep the computer image's own configuration."
         },
         "catalogueTimeoutMs": {
           "type": "integer",
           "minimum": 1,
           "description": "How long, in milliseconds, the endpoint is given to publish its catalogue before the configured model stands alone, the time VS Code gives a runtime's model catalogue. 15000 by default."
         },
-        "hostTools": {
-          "type": "boolean",
-          "description": "Offer the host's tools to each session. On by default. Each agent can override it."
-        }
+        "memory": { "type": "boolean", "description": "Keep each agent's store in memory instead of on disk. For tests." }
       }
     }
   }

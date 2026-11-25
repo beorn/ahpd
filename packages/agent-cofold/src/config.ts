@@ -39,17 +39,18 @@ export interface HarnessConfig {
 }
 
 /**
- * The person's own harness file: the one `$COPAPO_CONFIG` names, else
- * `$XDG_CONFIG_HOME/copapo/config.json`, else `~/.config/copapo/config.json`,
- * the user layer copapo's resolver reads. It is what a machine is seeded with,
- * and `COPAPO_CONFIG` is what a machine sets, pointing at the copy it mounts.
- * https://github.com/softov/cofold/blob/ee4819644696b88e83e63c56ed7bdf426d32cfb9/packages/papo/src/config.ts#L126-L129
+ * The person's own harness file: the one `$COFOLD_CONFIG` names, else
+ * `$XDG_CONFIG_HOME/cofold/config.json`, else `~/.config/cofold/config.json`,
+ * the user layer copapo's resolver reads under cofold's name. It is what a
+ * machine is seeded with, and `COFOLD_CONFIG` is what a machine sets, pointing
+ * at the copy it mounts.
+ * https://github.com/softov/cofold/blob/97e05d0/packages/copapo/src/config.ts#L135-L138
  */
 export const harnessConfigPath = (env: NodeJS.ProcessEnv = process.env, home: string = homedir(), cwd: string = process.cwd()): string => {
-  const named = env['COPAPO_CONFIG'];
+  const named = env['COFOLD_CONFIG'];
   return named !== undefined && named !== ''
     ? resolve(cwd, named)
-    : join(env['XDG_CONFIG_HOME'] ?? join(home, '.config'), 'copapo', 'config.json');
+    : join(env['XDG_CONFIG_HOME'] ?? join(home, '.config'), 'cofold', 'config.json');
 };
 
 /** A non-empty string, or nothing for a blank or missing one. */
@@ -60,14 +61,14 @@ const word = (value: unknown): string | undefined =>
  * Read the harness configuration as copapo reads it, or answer that there was
  * none.
  *
- * cofold's own resolver walks the layers under copapo's name: the person's
- * `~/.config/copapo/config.json`, the nearest `.copapo.json` at or above `cwd`,
- * and the file `$COPAPO_CONFIG` names, each merging over the one before. On top
- * of them `COPAPO_BASE_URL`, `COPAPO_API_KEY` and `COPAPO_MODEL`, or the family's
- * `COFOLD_*` where copapo's own are unset, add or replace a provider called
- * `default`, and a model with no slash is a model of `default`; they are how a
- * machine is given a key with no file holding it.
- * https://github.com/softov/cofold/blob/ee4819644696b88e83e63c56ed7bdf426d32cfb9/packages/papo/src/config.ts#L83-L124
+ * cofold's own resolver walks the layers under cofold's name, as copapo does:
+ * the person's `~/.config/cofold/config.json`, the nearest `.cofold.json` at or
+ * above `cwd`, and the file `$COFOLD_CONFIG` names, each merging over the one
+ * before. On top of them `COFOLD_BASE_URL`, `COFOLD_API_KEY` and `COFOLD_MODEL`
+ * add or replace a provider called `default`, and a model with no slash is a
+ * model of `default`; they are how a machine is given a key with no file
+ * holding it. The copapo names are not read, as copapo no longer reads them.
+ * https://github.com/softov/cofold/blob/97e05d0/packages/copapo/src/config.ts#L87-L128
  *
  * A layer that cannot be read is no layer's values: most machines that run a
  * plugin have never run the harness, and the plugin's own options and the
@@ -78,7 +79,7 @@ const word = (value: unknown): string | undefined =>
 export const harnessConfig = (env: NodeJS.ProcessEnv = process.env, home: string = homedir(), cwd: string = process.cwd()): HarnessConfig => {
   let found: Readonly<Record<string, unknown>> = {};
   try {
-    found = resolveConfig({ name: 'copapo', project: '.copapo.json', cwd, env, home }).values;
+    found = resolveConfig({ name: 'cofold', project: '.cofold.json', cwd, env, home }).values;
   }
   catch {
     // A layer that would not read; the variables below may still name a provider.
@@ -103,8 +104,8 @@ export const harnessConfig = (env: NodeJS.ProcessEnv = process.env, home: string
     });
   }
 
-  // `COPAPO_*` over `COFOLD_*`, as copapo reads the family's variables.
-  const variable = (name: string): string | undefined => word(env[`COPAPO_${name}`]) ?? word(env[`COFOLD_${name}`]);
+  // The family's variables, one name each, as copapo reads them.
+  const variable = (name: string): string | undefined => word(env[`COFOLD_${name}`]);
   const baseUrl = variable('BASE_URL');
   if (baseUrl !== undefined) {
     const apiKey = variable('API_KEY');

@@ -94,8 +94,15 @@ const SEEDED = {
  * agent like any other.
  */
 const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
+  hostTools: { type: 'boolean', description: "Whether this agent's sessions are offered the host's own tools, over the plugin-wide setting." },
+  toolsChanged: {
+    type: 'string',
+    enum: ['notify', 'list'],
+    description: "How this agent hears that the tools it listed have moved: notify holds a stream open and sends notifications/tools/list_changed down it, list says nothing and leaves it to the agent's next tools/list. Both serve the current list; defaults to notify.",
+  },
   base: { type: 'string', description: 'The shipped row this record takes, for an id that is not itself one.' },
   command: { type: 'string', description: 'The program to spawn as the ACP server.' },
+  args: { type: 'array', items: { type: 'string' }, description: 'The arguments to give it, replacing the row\'s own.' },
   install: {
     type: 'object',
     properties: {
@@ -107,7 +114,6 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
     description: "How to install this agent, by system, as the vendor's own docs give it. A system's key wins over all, and a system with no line is left to page.",
   },
   page: { type: 'string', description: "The vendor's install page, for a system the install lines do not cover." },
-  args: { type: 'array', items: { type: 'string' }, description: 'The arguments to give it, replacing the row\'s own.' },
   env: { type: 'object', additionalProperties: envValue, description: "Environment variables merged over the daemon's own for the child, by variable name. A variable is a credential wherever the server keeps one, so each answers <set>; a value written { \"$secret\": \"host:<name>\" } is read from the vault for this agent's owner." },
   cwd: { type: 'string', description: "The directory the server runs in; the session's working directory when absent." },
   sessionIdEnv: { type: 'string', description: 'Host-only environment variable supported by this server for its forced conversation UUID.' },
@@ -118,12 +124,26 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
     required: ['methodId'],
     description: 'The sign-in to send after the handshake, as the methodId of a method the server lists in authMethods. A value naming one it does not offer fails the turn that opened.',
   },
-  hostTools: { type: 'boolean', description: "Whether this agent's sessions are offered the host's own tools, over the plugin-wide setting." },
   honoursTrust: { type: 'boolean', description: "Whether this agent asks before it loads a project's own settings and hooks. Absent, a session of it in a folder the host did not vouch for is refused rather than started, because ACP carries no trust field." },
-  toolsChanged: {
+  // Read by `machineOf` as well as described here, so a wrongly written block
+  // is refused with a line naming the field and never a value. A variable's
+  // value is read where the machine is made, so a `$secret` reaches this
+  // plugin as the name it wrote.
+  machine: {
+    type: 'object',
+    description: 'What a machine needs to run this agent: env, variables set only inside the machine, each a string, { fromEnv: NAME } read from the daemon\'s NAME when the record opens, or { "$secret": "<scope>:<name>" } read when the machine is made; copy, a list of { source, target } host paths copied in; part, the id of the part its CLI comes from; state, the absolute directory it keeps its configuration in; and seed, the host files that directory is seeded from.',
+    properties: {
+      env: { type: 'object', additionalProperties: MACHINE_ENV_VALUE, description: 'Variables set inside the machine, by name.' },
+      copy: { type: 'array', items: COPIED, description: 'Host paths copied into the machine, each { source, target }.' },
+      part: { type: 'string', description: "The part the agent's CLI comes from, a string naming its id in the host's versions file." },
+      state: { type: 'string', description: 'The absolute directory inside the machine the agent keeps its configuration in, as a state volume.' },
+      seed: { type: 'array', items: SEEDED, description: 'The host files the state directory is seeded from, each { source, target, keep, drop }: source the host path, target where it lands in the directory, and for a JSON file keep the top-level keys kept and drop the dotted paths removed.' },
+    },
+  },
+  portFailures: {
     type: 'string',
-    enum: ['notify', 'list'],
-    description: "How this agent hears that the tools it listed have moved: notify holds a stream open and sends notifications/tools/list_changed down it, list says nothing and leaves it to the agent's next tools/list. Both serve the current list; defaults to notify.",
+    enum: ['spawn', 'message'],
+    description: "How a machine that could not start this agent or its terminal is said: spawn says one short sentence with no host path and logs the machine's own message; message passes that message on, as VS Code does. Defaults to spawn.",
   },
   cutTurns: {
     type: 'string',
@@ -179,21 +199,6 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
     type: 'integer',
     minimum: 0,
     description: 'How long, in milliseconds, a session waits for the server to answer session/close before the connection goes. Defaults to 1000.',
-  },
-  // Read by `machineOf` as well as described here, so a wrongly written block
-  // is refused with a line naming the field and never a value. A variable's
-  // value is read where the machine is made, so a `$secret` reaches this
-  // plugin as the name it wrote.
-  machine: {
-    type: 'object',
-    description: 'What a machine needs to run this agent: env, variables set only inside the machine, each a string, { fromEnv: NAME } read from the daemon\'s NAME when the record opens, or { "$secret": "<scope>:<name>" } read when the machine is made; copy, a list of { source, target } host paths copied in; part, the id of the part its CLI comes from; state, the absolute directory it keeps its configuration in; and seed, the host files that directory is seeded from.',
-    properties: {
-      env: { type: 'object', additionalProperties: MACHINE_ENV_VALUE, description: 'Variables set inside the machine, by name.' },
-      copy: { type: 'array', items: COPIED, description: 'Host paths copied into the machine, each { source, target }.' },
-      part: { type: 'string', description: "The part the agent's CLI comes from, a string naming its id in the host's versions file." },
-      state: { type: 'string', description: 'The absolute directory inside the machine the agent keeps its configuration in, as a state volume.' },
-      seed: { type: 'array', items: SEEDED, description: 'The host files the state directory is seeded from, each { source, target, keep, drop }: source the host path, target where it lands in the directory, and for a JSON file keep the top-level keys kept and drop the dotted paths removed.' },
-    },
   },
 };
 
@@ -413,6 +418,7 @@ const optionsOfRecord = (shared: Shared, record: AgentView): AcpOptions => {
   const honoursTrust = typeof config['honoursTrust'] === 'boolean' ? config['honoursTrust'] : row?.honoursTrust;
   const cutTurns = config['cutTurns'] === 'error' || config['cutTurns'] === 'complete' ? config['cutTurns'] : undefined;
   const stderrTail = config['stderrTail'] === 'sentence' || config['stderrTail'] === 'log' ? config['stderrTail'] : undefined;
+  const portFailures = config['portFailures'] === 'spawn' || config['portFailures'] === 'message' ? config['portFailures'] : undefined;
   const modesFrom = config['modes'] === 'refreshed' || config['modes'] === 'preset' ? config['modes'] : undefined;
   const unreported = config['unreportedClientCalls'];
   const unreportedClientCalls = unreported === 'row' || unreported === 'error' ? unreported : undefined;
@@ -448,6 +454,7 @@ const optionsOfRecord = (shared: Shared, record: AgentView): AcpOptions => {
     ...(toolsChanged === undefined ? {} : { toolsChanged }),
     ...(cutTurns === undefined ? {} : { cutTurns }),
     ...(stderrTail === undefined ? {} : { stderrTail }),
+    ...(portFailures === undefined ? {} : { portFailures }),
     ...(modesFrom === undefined ? {} : { modesFrom }),
     ...(unreportedClientCalls === undefined ? {} : { unreportedClientCalls }),
     ...bounds,

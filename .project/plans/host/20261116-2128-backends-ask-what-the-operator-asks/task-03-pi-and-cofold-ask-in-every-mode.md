@@ -1,6 +1,6 @@
 ---
 title: pi and cofold ask in every mode
-status: implemented
+status: done
 depends: [task-01-the-start-carries-the-check.md]
 layer: agent-pi, agent-cofold
 refs:

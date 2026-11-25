@@ -230,8 +230,8 @@ afterEach(() => {
 
 /** What the endpoint was sent for a session with these settings, over a harness file with `extra` in it. */
 const sent = async (settings: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
-  mkdirSync(join(home, 'copapo'), { recursive: true });
-  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify({
+  mkdirSync(join(home, 'cofold'), { recursive: true });
+  writeFileSync(join(home, 'cofold', 'config.json'), JSON.stringify({
     providers: [{ id: 'open_router', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k' }],
     model: 'open_router/deepseek/deepseek-chat',
     ...extra,
@@ -275,8 +275,8 @@ it('offers the session its own reasoning under the agent\'s provider, the harnes
     sessionMutable: true,
     chatMutable: true,
   });
-  mkdirSync(join(home, 'copapo'), { recursive: true });
-  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify({ reasoning: 'medium' }));
+  mkdirSync(join(home, 'cofold'), { recursive: true });
+  writeFileSync(join(home, 'cofold', 'config.json'), JSON.stringify({ reasoning: 'medium' }));
   expect(properties(cofoldAgent({}))['cofold.reasoning']?.default).toBe('medium');
 });
 
@@ -294,8 +294,8 @@ it('runs a turn on the session\'s reasoning where its model selection names no l
 
 /** What the provider was asked to build for a session with these settings. */
 const builtFor = (settings: Record<string, unknown>): Record<string, unknown> => {
-  mkdirSync(join(home, 'copapo'), { recursive: true });
-  writeFileSync(join(home, 'copapo', 'config.json'), JSON.stringify({
+  mkdirSync(join(home, 'cofold'), { recursive: true });
+  writeFileSync(join(home, 'cofold', 'config.json'), JSON.stringify({
     providers: [{ id: 'open_router', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k' }],
     model: 'open_router/deepseek/deepseek-chat',
   }));

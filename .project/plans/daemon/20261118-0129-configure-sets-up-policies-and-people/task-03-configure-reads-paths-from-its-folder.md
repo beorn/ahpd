@@ -1,6 +1,6 @@
 ---
 title: Configure reads its paths from the configuration folder
-status: implemented
+status: done
 depends: [task-01-configure-adds-a-person.md]
 layer: "server"
 refs:

@@ -448,6 +448,16 @@ describe('a team key', () => {
 });
 
 describe('the call is recorded', () => {
+  it('carries the tags of the connector that served the call, and none where it has none', async () => {
+    const { served, usage } = await setup({ connectorTags: (id) => (id === 'openrouter' ? ['softov', 'paid'] : []) });
+    expect((await send(served.port, CHAT, { headers: { 'x-api-key': who.ana }, body: { model: 'openai/gpt-5.5' } })).status).toBe(200);
+    expect((await send(served.port, CHAT, { headers: { 'x-api-key': who.ana }, body: { model: 'local/default' } })).status).toBe(200);
+    const entries = await settled(usage, 2);
+    const byConnector = Object.fromEntries(entries.map((one) => [one.model.connector, one]));
+    expect(byConnector['openrouter']?.tags).toEqual(['softov', 'paid']);
+    expect(byConnector['local']).not.toHaveProperty('tags');
+  });
+
   it('writes one record for a JSON answer, with the tokens, the price cost and the person\'s pools', async () => {
     const { served, usage } = await setup();
     expect((await send(served.port, CHAT, { headers: { 'x-api-key': who.ana }, body: { model: 'openai/gpt-5.5' } })).status).toBe(200);

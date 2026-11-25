@@ -165,7 +165,7 @@ it('registers the claude engine, its template and host-only field', async () => 
   expect(engine).toMatchObject({
     name: 'claude',
     title: 'Claude Code',
-    hostOnly: ['extraArgs'],
+    hostOnly: ['extraArgs', 'computerConfigDir'],
     keyVariables: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   });
   // The agent a record from it serves is named as VS Code's Claude agent is.
@@ -176,7 +176,7 @@ it('registers the claude engine, its template and host-only field', async () => 
   // record's config is what this engine runs and nothing a second engine spells.
   const fields = Object.keys((engine?.schema.properties ?? {}) as Bag).sort();
   expect(fields).toEqual([
-    'cliStart', 'dontAsk', 'enableTasks', 'env', 'extraArgs', 'fileMostBytes', 'hostTasks', 'hostTools', 'keepCliModels', 'keepFramed', 'logins', 'maxShellInitScript',
+    'autoAllowBashIfSandboxed', 'cliStart', 'computerConfigDir', 'dontAsk', 'enableTasks', 'env', 'extraArgs', 'fileMostBytes', 'hostTasks', 'hostTools', 'keepCliModels', 'keepFramed', 'logins', 'maxShellInitScript',
     'maxTerminalOutputBytes', 'modelSources', 'models', 'outputStyle', 'portFailures', 'ruleDepth', 'ruleMost', 'sandbox', 'stopEnds',
     'subagentStartTimeoutMs', 'subagentTitleMax', 'subagentsFrom', 'taskOutputFirstWaitMs', 'taskOutputLongestWaitMs', 'taskOutputQuietReads',
     'thinking', 'watchWaitMs',
@@ -204,7 +204,7 @@ it('opens one backend per record, with the record\'s own id, name and values', a
   // Each query its first send started is built from its own record: the first has thinking off, the
   // second the fallback and its own sandbox.
   expect(sdk.options.map((held) => held['thinking'])).toEqual([{ type: 'disabled' }, { type: 'adaptive' }]);
-  expect(sdk.options.map((held) => held['settings'])).toEqual([undefined, { sandbox: { enabled: true, autoAllowBashIfSandboxed: true } }]);
+  expect(sdk.options.map((held) => held['settings'])).toEqual([undefined, { sandbox: { enabled: true } }]);
 });
 
 it('applies an edit at the next turn, restarting the CLI on the conversation it had', async () => {

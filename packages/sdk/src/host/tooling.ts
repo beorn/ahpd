@@ -13,6 +13,8 @@ import { CREATED_BY_META, SEND_REMOTE_MESSAGE } from '../sessions/remotesession.
 import { SESSION_TOOL_NAMES } from '../tools/session.js';
 import { ENABLE_CUSTOM_TERMINAL_TOOL, SHELL_TOOL_NAMES } from '../tools/shell.js';
 import { ARTIFACT_TOOL_NAMES, ENABLE_ARTIFACT_TOOLS } from '../tools/artifacts.js';
+import { resolveCreatedModelSelection } from '../tools/modeloptions.js';
+import type { CreatedModelOptions } from '../tools/modeloptions.js';
 import { bag, ownerOfPrincipal, reason, str } from '../utils/values.js';
 import { mayUseAgent, ownershipOf } from '../agents/usable.js';
 import { groupOf } from '../access/users.js';
@@ -20,8 +22,8 @@ import { teamsOf } from '../usage/scopes.js';
 import { enablementKeyOf } from '../plugins/enablement.js';
 import { chatIdFor, schemeOf } from './channels.js';
 import { chatUriFormatOf, mintPeerChatUri } from '../vscode/chatminting.js';
-import { filterChatConfigValues } from '../vscode/chatconfig.js';
-import type { ConfigSchema } from '../vscode/chatconfig.js';
+import { filterChatConfigValues } from './chatconfig.js';
+import type { ConfigSchema } from './chatconfig.js';
 import { AGENT_CLIENT_SCHEME } from './clienturi.js';
 import { agentRefusal, need, noProvider } from './common.js';
 import { asksForTool } from './permissions.js';
@@ -36,7 +38,7 @@ import type { Owner } from '../types/usage.js';
 import type { ClientPlugins, SyncedPlugin } from '../types/clientplugins.js';
 import type { Connection, HostOptions, HostTool, SendMessageAnswer, SendMessageRequest, SessionlessToolCall, ToolCall, ToolCaller, TitleStrategy, ToolSession } from '../types/host.js';
 import type { Agent, BoundTool, McpServer, ToolCallFacts } from '../types/agent.js';
-import type { MessageFrom, Session, TurnOptions } from '../types/session.js';
+import type { Chosen, MessageFrom, Session, TurnOptions } from '../types/session.js';
 import type { DiscardedFileEdits } from '../types/changes.js';
 import type { ChatSummary, ToolDefinition } from '@microsoft/agent-host-protocol';
 import type { ToolsEndpoint } from '../tools/server.js';
@@ -53,6 +55,13 @@ import type { HostContext } from './context.js';
  * bounded is the chain - A makes B makes C - and how many are made across it
  * is the count below.
  */
+/**
+ * The agents that get the host's terminal tool unless the root config turns
+ * it off: the ones this host runs itself, whose own shells cannot move to the
+ * background.
+ */
+const HOST_SHELL_PROVIDERS: readonly string[] = ['pi', 'cofold'];
+
 const MAX_SPAWN_DEPTH = 3;
 
 /**
@@ -425,6 +434,8 @@ export interface Tooling {
    * against that session's budget, its tree's or its own.
    */
   openChat(session: string, asked: ChatStart, calling?: { uri: string; chatUri: string }): Promise<{ chat: string }>;
+  /** The config one chat of a session is started with, on the backend that serves it. */
+  chatConfigOf(agent: Agent, held: Held, asked: Record<string, unknown> | undefined): Record<string, unknown>;
 }
 
 /**
@@ -437,6 +448,8 @@ export interface Tooling {
 interface ChatStart {
   title?: string;
   model?: string;
+  /** The model options a tool asked for, present while agents can choose them. */
+  modelOptions?: CreatedModelOptions;
   provider?: string;
   config?: Record<string, unknown>;
   prompt?: string;
@@ -542,17 +555,25 @@ export function createTooling(ctx: HostContext): Tooling {
    */
   const namedBy = (uri: string): string[] => kept.tools?.(idOf(uri)) ?? [];
   /**
-   * Whether this host offers the agent terminal tool.
+   * Whether this host offers the agent terminal tool to a session of
+   * `provider`.
    *
-   * The reference's switch, `enableCustomTerminalTool`, which is off until the
-   * root config turns it on, and never on Windows: there the reference leaves
-   * the agent its own shell, and so does this host. A host with no terminal
-   * store has no shell to offer either, whatever the switch says.
+   * The reference's switch, `enableCustomTerminalTool`, and never on Windows:
+   * there the reference leaves the agent its own shell, and so does this
+   * host. A host with no terminal store has no shell to offer either,
+   * whatever the switch says.
+   *
+   * The switch is off until the root config turns it on, except for the
+   * agents this host runs itself, pi and cofold, where it is on until the
+   * root config turns it off: their shell is the one a person can move to the
+   * background and watch in a terminal. A switch a client set either way wins.
    */
-  const shellToolsFor = (): boolean =>
-    rootConfig[ENABLE_CUSTOM_TERMINAL_TOOL] === true
-    && process.platform !== 'win32'
-    && options.terminals !== undefined;
+  const shellToolsFor = (provider: string | undefined): boolean => {
+    if (process.platform === 'win32' || options.terminals === undefined) return false;
+    const set = rootConfig[ENABLE_CUSTOM_TERMINAL_TOOL];
+    if (typeof set === 'boolean') return set;
+    return provider !== undefined && HOST_SHELL_PROVIDERS.includes(provider);
+  };
   /**
    * Whether this host offers the artifact tools.
    *
@@ -586,7 +607,7 @@ export function createTooling(ctx: HostContext): Tooling {
     return ctx.contributing.filter((one) =>
       (one.optIn !== true || named.includes(one.definition.name))
       && (sessionToolsFor(uri, provider) || !SESSION_TOOL_NAMES.includes(one.definition.name) || forChat.includes(one.definition.name))
-      && (shellToolsFor() || !SHELL_TOOL_NAMES.includes(one.definition.name))
+      && (shellToolsFor(providerOf(uri, provider).provider) || !SHELL_TOOL_NAMES.includes(one.definition.name))
       && (artifactToolsFor() || !ARTIFACT_TOOL_NAMES.includes(one.definition.name)));
   };
   /**
@@ -667,9 +688,19 @@ export function createTooling(ctx: HostContext): Tooling {
     config: kept.config(idOf(uri)),
     bindings: sessionBindings(uri),
     startedWorkspaceless: ctx.startedWorkspaceless.has(uri),
-    agents: agentNamesOf(uri),
+    ...offeredTo(agentNamesOf(uri)),
     multipleDirectories: (sessions.get(uri)?.agent ?? (provider === undefined ? undefined : ctx.agents.get(provider)))?.multipleDirectories === true,
+    rootConfig: ctx.rootConfig,
   });
+  /** The agents a caller may start and their models, as one reading. */
+  const offeredTo = (agents: ToolSession['agents']): Pick<ToolSession, 'agents' | 'models'> => ({ agents, models: offeredModelsOf(agents) });
+  /** The models of the agents a caller may start, as `create_session` lists them. */
+  const offeredModelsOf = (agents: { provider: string }[] | undefined): ToolSession['models'] => {
+    const may = agents === undefined ? undefined : new Set(agents.map((one) => one.provider));
+    return [...learned].filter(([provider]) => may === undefined || may.has(provider)).flatMap(([provider, known]) => known.models.map((model) => ({
+      id: model.id, name: model.name, provider, ...(model.configSchema === undefined ? {} : { configSchema: model.configSchema }),
+    })));
+  };
   /**
    * One tool's definition for a session, shaped for it, or nothing where the
    * session does not support the tool: VS Code's host offers a tool to a
@@ -1208,6 +1239,10 @@ export function createTooling(ctx: HostContext): Tooling {
     catch (error) { return asked.map((one) => ({ ...one, error: reason(error) })); }
   };
 
+  /** What a client decided about a plugin and its servers, as one string. */
+  const decidedBy = (announced: Bag): string =>
+    JSON.stringify([announced.enablement ?? null, announced.childEnablement ?? null]);
+
   /**
    * What a session's clients contribute, as one string.
    *
@@ -1216,8 +1251,33 @@ export function createTooling(ctx: HostContext): Tooling {
    * the echo that prompted the next announcement.
    */
   const signatureOf = (rows: Map<string, HeldPlugin[]>): string => [...rows]
-    .map(([clientId, list]) => `${clientId}:${list.map((one) => `${str(one.announced.uri) ?? ''}#${str(one.announced.nonce) ?? ''}`).join(',')}`)
+    .map(([clientId, list]) => `${clientId}:${list.map((one) => `${str(one.announced.uri) ?? ''}#${str(one.announced.nonce) ?? ''}#${decidedBy(one.announced)}`).join(',')}`)
     .join('|');
+
+  /**
+   * A copy's servers with the client's decisions laid on them again.
+   *
+   * The session's own entry on a server stays: it is what a toggle here
+   * wrote, and the client's announcement is not the session's to undo. A
+   * session entry the client announced last time is the client's, and goes
+   * with its old announcement.
+   */
+  const rechild = (one: HeldPlugin, previous: Bag): Bag[] | undefined => {
+    if (one.children === undefined) return undefined;
+    const named = bag(one.announced.childEnablement);
+    const said = bag(previous.childEnablement);
+    return one.children.map((part) => {
+      if (part.type !== 'mcpServer') return part;
+      const name = str(part.name) ?? '';
+      const theirs = JSON.stringify(enablementOf(said[name]).filter((entry) => str(entry.kind) === 'session'));
+      const own = enablementOf(part.enablement).filter((entry) => str(entry.kind) === 'session');
+      const fromClient = enablementOf(named[name]);
+      if (JSON.stringify(own) === theirs) own.length = 0;
+      const decisions = byScope(own.length === 0 ? fromClient : [...own, ...fromClient.filter((entry) => str(entry.kind) !== 'session')]);
+      const rest = Object.fromEntries(Object.entries(part).filter(([key]) => key !== 'enablement'));
+      return decisions.length === 0 ? rest : { ...rest, enablement: decisions };
+    });
+  };
 
   /**
    * Copy what a session's clients announced, and say what happened.
@@ -1234,6 +1294,9 @@ export function createTooling(ctx: HostContext): Tooling {
   const reconcile = async (uri: string): Promise<void> => {
     const at = idOf(uri);
     const before = plugins.get(at) ?? new Map<string, HeldPlugin[]>();
+    // Signed first: a kept plugin is the same object in both maps, and it takes
+    // the new announcement below.
+    const signed = signatureOf(before);
     const asked = new Map<string, Bag[]>();
     for (const client of activeClientsOf(uri)) {
       const clientId = str(client.clientId) ?? '';
@@ -1241,18 +1304,37 @@ export function createTooling(ctx: HostContext): Tooling {
     }
     const fresh = new Map<string, HeldPlugin[]>();
     const added = new Map<string, HeldPlugin[]>();
+    const decided: [string, HeldPlugin][] = [];
     for (const [clientId, list] of asked) {
       const was = before.get(clientId) ?? [];
-      // Matched by URI and nonce, so a plugin announced again unchanged is the
-      // copy this host already has rather than a second one beside it.
-      const now = list.map((one) => was.find((old) => samePlugin(old.announced, one)) ?? { announced: one, load: { kind: 'loading' } });
+      const now = list.map((one): HeldPlugin => {
+        // Matched by URI and nonce, so a plugin announced again unchanged is the
+        // copy this host already has rather than a second one beside it. The
+        // announcement is taken whole, as the reference host takes a client's
+        // customizations, so a decision that moved is the one that stands.
+        // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L565
+        const kept = was.find((old) => samePlugin(old.announced, one));
+        if (kept !== undefined) {
+          const previous = kept.announced;
+          if (decidedBy(previous) !== decidedBy(one)) decided.push([clientId, kept]);
+          kept.announced = one;
+          const children = rechild(kept, previous);
+          if (children !== undefined) kept.children = children;
+          return kept;
+        }
+        // A new revision of a plugin the session already holds keeps the
+        // session's own decision, which is about the plugin and not one copy.
+        // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L2120-L2124
+        const prior = was.find((old) => (str(old.announced.uri) ?? '') === (str(one.uri) ?? ''));
+        return { announced: one, load: { kind: 'loading' }, ...(prior?.decision === undefined ? {} : { decision: prior.decision }) };
+      });
       const made = now.filter((one) => !was.includes(one));
       if (made.length > 0) added.set(clientId, made);
       fresh.set(clientId, now);
     }
     // Nothing moved. Said again is not changed, and this host holds the list a
     // client already has.
-    if (signatureOf(fresh) === signatureOf(before)) return;
+    if (signatureOf(fresh) === signed) return;
     if (fresh.size === 0) plugins.delete(at);
     else plugins.set(at, fresh);
     dispatch(uri, { type: 'session/customizationsChanged', customizations: reportedBy(uri) });
@@ -1261,6 +1343,9 @@ export function createTooling(ctx: HostContext): Tooling {
     const settle = (clientId: string, one: HeldPlugin): void => {
       dispatch(uri, { type: 'session/customizationUpdated', customization: entryOf(uri, clientId, one) });
     };
+    // A kept plugin whose decisions moved, said on its own as a copy that
+    // settled is: its copy is the one this host already has.
+    for (const [clientId, one] of decided) settle(clientId, one);
     const port = options.clientPlugins;
     for (const [clientId, list] of added) {
       if (port === undefined) {
@@ -1943,13 +2028,20 @@ export function createTooling(ctx: HostContext): Tooling {
    * settings its agent names as inherited from its config.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L2566-L2600
    */
-  const creationDefaults = (calling: { uri: string; chatUri: string }): { agent?: Agent; model?: string; config?: Record<string, unknown> } => {
+  const creationDefaults = (calling: { uri: string; chatUri: string }): { agent?: Agent; model?: Chosen; config?: Record<string, unknown> } => {
     const held = sessions.get(calling.uri);
     const agent = held?.backends.get(calling.chatUri)?.agent ?? held?.agent;
     const state = (ctx.stateOf(calling.chatUri) ?? {}) as Bag;
     const turns = Array.isArray(state.turns) ? state.turns as Bag[] : [];
     const message = (bag(state.activeTurn)?.message ?? state.draft ?? turns.at(-1)?.message) as Bag | undefined;
-    const model = str(bag(message?.model)?.id);
+    // The whole selection, so the new chat keeps the calling chat's effort and context size.
+    const chosen = bag(message?.model);
+    const id = str(chosen?.id);
+    const values_ = bag(chosen?.config);
+    const model: Chosen | undefined = id === undefined ? undefined : {
+      id,
+      ...(values_ === undefined ? {} : { config: Object.fromEntries(Object.entries(values_).filter(([, one]) => one === null || ['string', 'number', 'boolean'].includes(typeof one))) as NonNullable<Chosen['config']> }),
+    };
     // The calling chat's own config in force, which its backend answers.
     const values = byChat.get(calling.chatUri)?.chat.settings() ?? {};
     const config = agent?.inheritedChatConfig?.(values);
@@ -2012,7 +2104,10 @@ export function createTooling(ctx: HostContext): Tooling {
     // run one agent, as VS Code's create-chat takes it.
     // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1375-L1378
     const defaults = calling === undefined ? undefined : creationDefaults(calling);
-    const model = asked.model ?? (defaults?.agent === agent ? defaults.model : undefined);
+    // The checks and the inheritance of VS Code's create-session.
+    // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1419
+    const model = resolveCreatedModelSelection(asked.model, asked.modelOptions, agent.provider,
+      defaults?.agent === agent ? defaults.model : undefined, modelsKnown);
     // Minted in the format of the session's default chat, as VS Code's tool
     // mints a peer chat, so every client that sees the session addresses it.
     // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1379
@@ -2075,7 +2170,7 @@ export function createTooling(ctx: HostContext): Tooling {
       // chat's credentials.
       // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1373
       if (calling !== undefined) remember(calling.chatUri, firstTurn);
-      void ctx.startTurn(chat, firstTurn, asked.prompt, model === undefined ? undefined : { id: model }, asked.from);
+      void ctx.startTurn(chat, firstTurn, asked.prompt, model, asked.from);
     }
     if (budget !== undefined) countUp(budget, 'chats');
     return { chat: chatUri };
@@ -2098,9 +2193,9 @@ export function createTooling(ctx: HostContext): Tooling {
   };
 
   /** Models any session here can run on, each with the provider it belongs to. */
-  const modelsKnown = (): { id: string; name: string; provider: string }[] =>
+  const modelsKnown = (): { id: string; name: string; provider: string; configSchema?: Record<string, unknown> }[] =>
     [...learned].flatMap(([provider, known]) => known.models.map((model) => ({
-      id: model.id, name: model.name, provider,
+      id: model.id, name: model.name, provider, ...(model.configSchema === undefined ? {} : { configSchema: model.configSchema }),
     })));
 
   /** Every backend this host offers, whether or not it has named a model yet. */
@@ -2349,7 +2444,9 @@ export function createTooling(ctx: HostContext): Tooling {
       const agent = ctx.agents.get(provider);
       if (agent === undefined) throw new Error(noProvider(provider));
       const inherits = defaults.agent === agent;
-      const model = asked.model ?? (inherits ? defaults.model : undefined);
+      // https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1454
+      const model = resolveCreatedModelSelection(asked.model, asked.modelOptions, provider,
+        inherits ? defaults.model : undefined, modelsKnown);
       /*
        * Named for the client whose turn made it: `<provider>:/<uuid>` when an
        * older VS Code window sent the running turn, so that window sees the
@@ -2370,7 +2467,7 @@ export function createTooling(ctx: HostContext): Tooling {
         ...(inherits ? defaults.config ?? {} : {}),
         ...(checkedConfig(agent, asked.config) ?? {}),
         ...(asked.isolation !== undefined ? { isolation: asked.isolation } : {}),
-        ...(model !== undefined ? { model } : {}),
+        ...(model !== undefined ? { model: model.id } : {}),
       };
       // The same steps `createSession` takes for a client, in the same order:
       // the host's keys kept apart from the backend's, and a worktree made at
@@ -2408,7 +2505,7 @@ export function createTooling(ctx: HostContext): Tooling {
       if (opened === undefined || lead === undefined) throw new Error(`${made} did not start`);
       const firstTurn = crypto.randomUUID();
       remember(chatUri, firstTurn);
-      void ctx.startTurn(lead.chat, firstTurn, asked.prompt, model === undefined ? undefined : { id: model }, asked.from);
+      void ctx.startTurn(lead.chat, firstTurn, asked.prompt, model, asked.from);
       countUp(budget, 'sessions');
       return { session: made, chat: opened };
     },
@@ -2497,6 +2594,7 @@ export function createTooling(ctx: HostContext): Tooling {
     cancelWake: () => ctx.setWake(uri, chatUri, undefined),
     artifacts: () => [...(kept.artifacts(idOf(uri)) ?? [])],
     setArtifacts: (list) => { setArtifacts(uri, list); },
+    rootConfig: () => ctx.rootConfig,
     annotations: () => marksOf(idOf(uri)),
     markAnnotation: (action) => { markAnnotation(uri, action); },
     resourceComments: {
@@ -2524,6 +2622,21 @@ export function createTooling(ctx: HostContext): Tooling {
       return {
         set: (task) => { tasks.set(chatUri, task); },
         remove: (id) => { tasks.remove(chatUri, id); },
+      };
+    },
+    /*
+     * The call's own offer, bound to the chat that holds it: a worker's chat
+     * where a subagent made the call, the calling chat otherwise. A call the
+     * backend named no id for has nothing to offer.
+     */
+    movable: () => {
+      const calls = ctx.background.heldMovable();
+      const toolCallId = call?.toolCallId;
+      const holding = workerOfCall(uri, toolCallId) ?? chatUri;
+      return {
+        offer: (move) => { if (toolCallId !== undefined) calls.offer(holding, toolCallId, move); },
+        withdraw: () => { if (toolCallId !== undefined) calls.withdraw(holding, toolCallId); },
+        moved: (row) => { if (toolCallId !== undefined) calls.moved(holding, toolCallId, row); },
       };
     },
     read: async (asked) => {
@@ -2642,12 +2755,14 @@ export function createTooling(ctx: HostContext): Tooling {
         const agent = ctx.agents.get(provider);
         if (agent === undefined) throw new Error(noProvider(provider));
         const made = uriFor(crypto.randomUUID());
+        // No calling chat, so nothing to inherit: the options are checked against the model named.
+        const model = resolveCreatedModelSelection(asked.model, asked.modelOptions, provider, undefined, modelsKnown);
         // The backend's own settings, checked, and the two keys this call owns
         // over them, as a session made from a turn builds them.
         const config: Record<string, unknown> = {
           ...(checkedConfig(agent, asked.config) ?? {}),
           ...(asked.isolation !== undefined ? { isolation: asked.isolation } : {}),
-          ...(asked.model !== undefined ? { model: asked.model } : {}),
+          ...(model !== undefined ? { model: model.id } : {}),
         };
         // None named, the daemon's `workspacelessFolder` says where it works.
         const where = asked.workingDirectory ?? await scratchFolder(made);
@@ -2660,7 +2775,7 @@ export function createTooling(ctx: HostContext): Tooling {
         if (opened === undefined || lead === undefined) throw new Error(`${made} did not start`);
         const first = crypto.randomUUID();
         sent(first);
-        void ctx.startTurn(lead.chat, first, asked.prompt, asked.model === undefined ? undefined : { id: asked.model }, asked.from);
+        void ctx.startTurn(lead.chat, first, asked.prompt, model, asked.from);
         return { session: made, chat: opened };
       },
       createChat: async (session, asked) => await openChat(session, asked),
@@ -2680,10 +2795,12 @@ export function createTooling(ctx: HostContext): Tooling {
         mover(undefined, (provider) => tokensForConnection(ctx.agents, undefined, provider), { channel: chat, destination }),
       // A row is drawn in a chat, and a call with no session has none.
       background: needsSession,
+      movable: needsSession,
       scheduleWake: needsSession,
       cancelWake: needsSession,
       artifacts: needsSession,
       setArtifacts: needsSession,
+      rootConfig: () => ctx.rootConfig,
       // A mark is drawn on a session's files, and a call with no session has none.
       annotations: needsSession,
       markAnnotation: needsSession,
@@ -2714,7 +2831,8 @@ export function createTooling(ctx: HostContext): Tooling {
       if (one.grant !== undefined && !callerMay(caller, one.grant)) return [];
       // No session means no strategy of its own: the deferred one this host
       // gives every session is the one a person is offered.
-      const session: ToolSession = { titleStrategy: strategyOf(''), agents: agentNames(caller.principal, caller.root === true) };
+      const agents = agentNames(caller.principal, caller.root === true);
+      const session: ToolSession = { titleStrategy: strategyOf(''), agents, rootConfig: ctx.rootConfig, models: offeredModelsOf(agents) };
       if (one.isEnabledForSession?.(session) === false) return [];
       const asked = one.forSession?.(session);
       const definition = asked?.definition === undefined ? one.definition : { ...one.definition, ...asked.definition };
@@ -3044,7 +3162,7 @@ export function createTooling(ctx: HostContext): Tooling {
     clientTools, clientPluginsOf, toggleClientPlugin, customizationUnder, workingDirectoryOf, withEntries, tellOff, forgetTold, recordCustomizationEnablement, publishSessionCustomizations,
     retool, pluginsSettled, chatMeant, renameChat, renameSession, snapshotDefaultChatTitle, toolContext, sessionlessContext,
     pluginsFor, pluginsMoved, mcpFor, deniedMcpServers,
-    toolsServersGone, boundTools, sessionlessTools, instructions, turnInstructions, reportDiscarded, openChat,
+    toolsServersGone, boundTools, sessionlessTools, instructions, turnInstructions, reportDiscarded, openChat, chatConfigOf,
     moving, served,
   };
 }

@@ -1,6 +1,6 @@
 ---
 title: A read-only chat takes no message from a client
-status: implemented
+status: done
 depends:
   - task-01-a-chat-request-names-origin-and-tools.md
 layer: "sdk host"

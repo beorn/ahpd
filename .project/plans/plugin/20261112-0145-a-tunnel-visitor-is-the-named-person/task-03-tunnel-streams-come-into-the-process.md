@@ -1,6 +1,6 @@
 ---
 title: Tunnel streams come into the daemon's process
-status: implemented
+status: done
 depends: [task-01-a-plugin-admits-a-person-by-a-key.md, task-02-a-tunnel-record-names-a-person.md]
 layer: "tunnel-devtunnel"
 refs:

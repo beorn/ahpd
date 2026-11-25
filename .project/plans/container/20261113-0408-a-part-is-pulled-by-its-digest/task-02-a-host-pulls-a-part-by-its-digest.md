@@ -1,6 +1,6 @@
 ---
 title: A host pulls a part by its digest
-status: implemented
+status: done
 depends: [task-01-the-publish-job-writes-the-digests.md]
 layer: "computer"
 refs:

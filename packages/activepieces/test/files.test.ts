@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -6,6 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fileProcessor } from '../src/files.js';
 import type { ApFile, ApStreamingFile } from '../src/files.js';
 import { fileLinks } from '../../../tools/links.ts';
+
+// The real `open`, which a case can make refuse once.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...real, open: vi.fn(real.open) };
+});
 
 /*
  * The file one FILE value names, as the engine's `fileProcessor` makes it.
@@ -109,6 +116,14 @@ describe('an attachment', () => {
 });
 
 describe('a prop the piece declares streaming', () => {
+  it('is no file when the file will not open, and nothing throws', async () => {
+    // Gone between finding it and opening it: the open is made before the body
+    // is handed on, so the refusal is a missing file rather than a stream error.
+    const dir = withFiles({ 'big.txt': 'streamed' });
+    vi.mocked(open).mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 'ENOENT' }));
+    expect(await fileProcessor({ ...FILE, streaming: true }, 'big.txt', dir)).toBeNull();
+  });
+
   it('is given a body to read, its size where it is known', async () => {
     const dir = withFiles({ 'big.txt': 'streamed' });
     const streaming = { ...FILE, streaming: true };

@@ -29,8 +29,11 @@ const STATE: CanvasState = {
   extensionName: 'Canvas',
   title: 'Board',
   status: 'ready',
-  url: 'https://canvas.test/board',
+  uri: 'https://canvas.test/board',
 };
+
+/** The state as the host sends it: the old `url` beside `uri`, for a VS Code 1.145 window. */
+const SENT = { ...STATE, url: STATE.uri };
 
 const context = (): LoaderContext => ({
   path: DIR, paths: [DIR], version: sdkVersion(), hostName: 'test', configDir: DIR, log: loggerOf(() => {}), say: () => {},
@@ -120,7 +123,7 @@ describe('canvasesEnabled', () => {
 
     const listed = await chatState(client, chat);
     expect(listed.canvases).toEqual([{ resource }]);
-    expect(await canvasState(client, resource)).toEqual(STATE);
+    expect(await canvasState(client, resource)).toEqual(SENT);
     expect(() => plugin.closeCanvas(resource)).not.toThrow();
   });
 });
@@ -171,11 +174,11 @@ describe('a client that agreed 0.9.0', () => {
 });
 
 describe('a state a plugin gives', () => {
-  it('is replaced whole, and a state without a url is sent without one', async () => {
+  it('is replaced whole, and a state without a uri is sent without one', async () => {
     const { hosts, client, chat } = await made({ on: true });
     const plugin = hosts[0] as PluginHost;
     const resource = await plugin.openCanvas(chat, STATE);
-    const { url: _url, ...without } = STATE;
+    const { uri: _uri, ...without } = STATE;
     plugin.updateCanvas(resource, { ...without, title: 'Drawn again' });
 
     const state = await canvasState(client, resource);
@@ -192,12 +195,12 @@ describe('a state a plugin gives', () => {
     }
   });
 
-  it('needs a url that is absolute http(s), and the url is not in the sentence', async () => {
+  it('needs a uri that is absolute http(s), and the uri is not in the sentence', async () => {
     const { hosts, chat } = await made({ on: true });
     const plugin = hosts[0] as PluginHost;
     for (const url of ['board/1', 'file:///board', 'ftp://canvas.test/board', 'https://']) {
-      const message = await refused(() => plugin.openCanvas(chat, { ...STATE, url }));
-      expect(message).toBe('plugin board: openCanvas needs state.url to be an absolute http(s) URL with a host');
+      const message = await refused(() => plugin.openCanvas(chat, { ...STATE, uri: url }));
+      expect(message).toBe('plugin board: openCanvas needs state.uri to be an absolute http(s) URL with a host');
       expect(message).not.toContain(url);
     }
   });
@@ -273,7 +276,7 @@ describe('a chat whose session sleeps', () => {
     const resource = await plugin.host.openCanvas(first, STATE);
     expect(starts).toBe(3);
     expect((await chatState(client, first)).canvases).toEqual([{ resource }]);
-    expect(await canvasState(client, resource)).toEqual(STATE);
+    expect(await canvasState(client, resource)).toEqual(SENT);
   });
 });
 

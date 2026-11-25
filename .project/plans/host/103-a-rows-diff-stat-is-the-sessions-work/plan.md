@@ -131,7 +131,7 @@ turn ends -> checkpoint -> Session Changes (or Branch Changes) -> summary.change
   Untracked files that are not ignored go into the object store.
   Tasks 01, 03 and 04 chose sites their Files lists did not name; each task's Resume gives them.
   The fault in task 04's Resume is open: `changes.ts` reads a session's files under the channel URI and under the id.
-  It is the problem [a-sessions-changes-are-kept-under-two-keys.md](../../../problems/a-sessions-changes-are-kept-under-two-keys.md).
+  It is the problem [a-sessions-changes-are-kept-under-two-keys.md](../../host/20261123-0945-a-sessions-changes-have-one-key/plan.md).
   A live session's `session` scope never sees the checkpoints, and a row's counts never see the tracker.
   No task decides which spelling is canonical.
   `packages/sdk/test/changes-refresh.test.ts` case `announces the session's counts` now passes on a timing.

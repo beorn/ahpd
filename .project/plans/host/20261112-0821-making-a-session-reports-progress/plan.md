@@ -1,7 +1,7 @@
 ---
 title: Making a session reports its progress
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -65,8 +65,8 @@ createSession(progressToken) -> lifecycle create -> computers.create(MachineSour
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The host says each step of a create](task-01-the-host-says-each-step-of-a-create.md) | implemented | - |
-| [02 - The docker runtime says its steps](task-02-the-docker-runtime-says-its-steps.md) | implemented | 01 |
+| [01 - The host says each step of a create](task-01-the-host-says-each-step-of-a-create.md) | done | - |
+| [02 - The docker runtime says its steps](task-02-the-docker-runtime-says-its-steps.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -76,7 +76,7 @@ createSession(progressToken) -> lifecycle create -> computers.create(MachineSour
 ## Resume state
 
 - **Done so far:** both tasks implemented, 2026-11-12. A `createSession` with a `progressToken` and a machine source says each step through `root/progress`. It closes with `progress` equal to `total` on every path, a refusal before the claim included. A create with no token, or with no machine, says nothing. The docker runtime says `Pulling <image>` when the image is absent, then `Making the machine` and `Seeding the checkout`. The host says `Starting the agent`. The plugin's `run` wrapper carries `progress` to the router, which is where it was lost. The tests are written, and `pnpm exec tsc -p tsconfig.json --noEmit` passes. The vitest suites are left to Softov, per the session's rules.
-- **Next action:** review and merge the PR, then ahpc's `cli/20261112-0821-create-session-waits-on-progress`, which must keep its timeout for a create with no machine.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** a `createSession` for a session the host already holds answers at once, before anything is made. When it names a machine source, it closes the progress at once, with no step before it. The devcontainer route reports only `Starting the agent`, because a devcontainer build has no image, run or seed step of its own.
 

@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { createHost } from '../src/host.js';
+import { memorySessions } from '../src/sessions/sessions.js';
 import { echo } from '../../../examples/echo/agent.js';
 import type { ChangesetOperation, ChangesetSource } from '../src/types/changes.js';
 import type { BroughtBack, ComputerPort } from '../src/types/computers.js';
@@ -230,4 +231,84 @@ it('logs a machine that could not be brought back, and the turn still ends', asy
     .includes('computers: bringing the work of box back for ahp-session:/one failed: docker is not running')))
     .toBe(true);
   await until(() => turnEnded(p, chatUri));
+});
+
+/** One turn in a session, so the echo backend keeps it as a harness keeps a transcript. */
+const turnIn = async (client: { handle(request: unknown): Promise<unknown> }, uri: string): Promise<void> => {
+  const opened = await client.handle({ method: 'subscribe', params: { channel: uri } }) as { snapshot: { state: { defaultChat: string } } };
+  const chat = opened.snapshot.state.defaultChat;
+  await client.handle({ method: 'subscribe', params: { channel: chat } });
+  await client.handle({
+    method: 'dispatchAction',
+    params: { channel: chat, action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { text: 'hello', origin: { kind: 'user' } } } },
+  });
+};
+
+/** Wait until the backend lists one session. */
+const listedBy = async (agent: { list?(): Promise<unknown[]> }): Promise<void> => {
+  const end = Date.now() + WAIT_MS;
+  while (Date.now() < end) {
+    if (((await agent.list?.()) ?? []).length === 1) return;
+    await settle(2);
+  }
+  throw new Error('the backend never listed the session');
+};
+
+/*
+ * A session this process does not hold, because the host started again and
+ * nobody resumed it, lets its machine go when a client disposes it: no
+ * teardown ran to tell the port it left, so the dispose does.
+ */
+it('lets the machine go when a client disposes a session this process does not hold', async () => {
+  const kept = memorySessions();
+  const said: string[] = [];
+  const port = machinePort(said);
+  // One backend for both hosts, which keeps its sessions in memory: what a
+  // harness on disk is to a daemon started again.
+  const agent = echo({ path: DIR, pace: 0 });
+  const first = createHost({ path: DIR, agents: [agent], computers: port, sessions: kept });
+  const one = first.accept(peer());
+  await one.handle({ method: 'initialize', params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] } });
+  await one.handle({ method: 'createSession', params: { channel: 'ahp-session:/kept', provider: 'echo', config: { computer: 'computer://box' } } });
+  await turnIn(one, 'ahp-session:/kept');
+  await listedBy(agent);
+  await until(() => said.includes('enter box ahp-session:/kept'));
+  await first.close();
+
+  said.length = 0;
+  const again = createHost({ path: DIR, agents: [agent], computers: port, sessions: kept });
+  const two = again.accept(peer());
+  await two.handle({ method: 'initialize', params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] } });
+  // Listed, as a client's window lists it, and never opened.
+  await two.handle({ method: 'listSessions', params: {} });
+  await two.handle({ method: 'disposeSession', params: { channel: 'ahp-session:/kept' } });
+  await until(() => said.includes('leave box ahp-session:/kept'));
+  expect(said.filter((one) => one.startsWith('enter'))).toEqual([]);
+  await again.close();
+});
+
+it('tells the port nothing when a client disposes a session in no machine that this process does not hold', async () => {
+  const kept = memorySessions();
+  const said: string[] = [];
+  const port = machinePort(said);
+  // One backend for both hosts, which keeps its sessions in memory: what a
+  // harness on disk is to a daemon started again.
+  const agent = echo({ path: DIR, pace: 0 });
+  const first = createHost({ path: DIR, agents: [agent], computers: port, sessions: kept });
+  const one = first.accept(peer());
+  await one.handle({ method: 'initialize', params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] } });
+  await one.handle({ method: 'createSession', params: { channel: 'ahp-session:/here', provider: 'echo' } });
+  await turnIn(one, 'ahp-session:/here');
+  await listedBy(agent);
+  await first.close();
+
+  const again = createHost({ path: DIR, agents: [agent], computers: port, sessions: kept });
+  const two = again.accept(peer());
+  await two.handle({ method: 'initialize', params: { clientId: 'probe', protocolVersions: ['0.9.0'], initialSubscriptions: ['ahp-root://'] } });
+  // Listed, as a client's window lists it, and never opened.
+  await two.handle({ method: 'listSessions', params: {} });
+  await two.handle({ method: 'disposeSession', params: { channel: 'ahp-session:/here' } });
+  await settle(8);
+  expect(said).toEqual([]);
+  await again.close();
 });

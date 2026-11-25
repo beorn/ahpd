@@ -130,6 +130,10 @@ THEN the host drops the wake and writes a log line
 AND a schedule or a press of Run does not count against the cap.
 A dropped `skip` event is not counted, because it did not start a run.
 
+WHEN a plugin asks for a run by an automation's id, as the webhook connector does
+THEN the run counts against the cap as an event's wake
+AND it obeys the automation's overlap mode.
+
 ### A pinned automation runs in one chat
 
 WHEN an automation sets `_meta.ahpd.session` to `pinned`

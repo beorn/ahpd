@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { CATALOGUE_PASS_MS, computerCatalogue } from '../src/catalogue.js';
 import { computerProvider } from '../src/provider.js';
 import { claimedOf, stateOf } from '../src/runtime.js';
@@ -16,7 +16,10 @@ import type { ComputerRuntime } from '../src/runtime.js';
 import type { HostTool, ToolCall } from '../../sdk/src/types/host.js';
 import type { ChannelHandle, PluginHost } from '../../sdk/src/types/plugin.js';
 import type { Principal } from '../../sdk/src/types/users.js';
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { PROCESS_CASE_MS, WAIT_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * The `x-ahpd-computers://` channel.

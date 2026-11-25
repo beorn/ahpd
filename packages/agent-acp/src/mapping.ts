@@ -195,7 +195,7 @@ const contributorOf = (call: AcpCall): Bag =>
  * it - so it waits until the agent has said the call is running. A call that
  * arrives already finished has left it too.
  */
-const started = (status: ToolCallStatus | null | undefined): boolean =>
+export const started = (status: ToolCallStatus | null | undefined): boolean =>
   status !== undefined && status !== null && status !== 'pending';
 
 /**
@@ -227,7 +227,7 @@ const mayReady = (call: AcpCall): boolean => started(call.status) && !call.asked
  * and again for a `rawInput` that arrived after, because the ready action is
  * where the arguments a client shows come from.
  */
-const ready = (turn: AcpTurn, call: AcpCall, input: string | undefined): Bag => {
+export const ready = (turn: AcpTurn, call: AcpCall, input: string | undefined): Bag => {
   call.readied = true;
   const said: Bag = {
     invocationMessage: call.displayName,
@@ -251,19 +251,18 @@ const ready = (turn: AcpTurn, call: AcpCall, input: string | undefined): Bag => 
 };
 
 /**
- * The ready that says a call is running, and the ask that follows it.
+ * The ready that says a call is running.
  *
- * A call a client owns is that client's to run, so the call is held for the
- * entry asking it at the one ready that says the agent has started the call -
- * never at `pending`, which is the agent saying it has not. A call that arrives
- * already finished is nobody's to run and asks nobody. The entry goes up once
- * the ready has, so it names a call the chat holds running.
+ * Not for a call a client owns, until it is asked to run it: the agent may
+ * report the call started and ask for its permission after, and a client runs
+ * a call it reads as running. Its ready goes out with its `tools/call`, which
+ * the agent makes once the permission is settled. One that ends with no
+ * request is never readied, since a client would run it: it is left as it is,
+ * as VS Code's host leaves a client's call nobody runs.
+ * https://github.com/microsoft/vscode/blob/7f668a4988e528b6fe5f13fd8e9890affeae678c/src/vs/platform/agentHost/node/agentSideEffects.ts#L1792-L1796
  */
-const running = (turn: AcpTurn, call: AcpCall, input: string | undefined): Bag[] => {
-  const finished = call.status === 'completed' || call.status === 'failed';
-  if (call.contributor !== undefined && !finished) turn.opening.push(call);
-  return [ready(turn, call, input)];
-};
+const running = (turn: AcpTurn, call: AcpCall, input: string | undefined): Bag[] =>
+  (call.contributor !== undefined && !call.readied ? [] : [ready(turn, call, input)]);
 
 /**
  * A call's bag, as the `_meta` an action about it carries.
@@ -363,7 +362,8 @@ const closed = (turn: AcpTurn, call: AcpCall, content: Bag[], actions: Bag[], at
   const part = callPartOf(turn, call.toolCallId);
   if (part !== undefined) {
     const held = bag(part.toolCall);
-    if (held.status !== 'cancelled') {
+    const unrun = call.contributor !== undefined && held.status === 'streaming';
+    if (held.status !== 'cancelled' && !unrun) {
       delete held.content;
       Object.assign(held, result, { status: 'completed' });
     }
