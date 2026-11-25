@@ -254,6 +254,17 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
               writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `did not take the lock in ${String(budget)} ms and was not stopped: ${why}` });
               return refused('DRIVER_FAILED', `the deploy child did not take the lock in ${String(budget)} ms and could not be stopped: ${why}`);
             }
+            // The kill is not instant, so the child may have taken the lock between the last check and the signal.
+            // Re-read it before answering: "without taking the lock" must never sit in the journal beside a lock
+            // naming this deploy (@cto 2026-11-25). A lock found here is stale, and the next deploy clears it
+            // through the pid-and-start-time check, so it is named and left, never resumed.
+            const after = status(layout).lock;
+            if (after !== undefined && after.deployId === request.deployId) {
+              // 'outcome unknown', not 'not started': a child that held the lock may have run a step before the
+              // signal reached it, and the journal says the step it had reached rather than claiming it never began.
+              writeJournalEntry(layout, { event: 'outcome unknown', deployId: request.deployId, step: after.step, reason: 'killed after taking the lock; the lock it left is stale and the next deploy clears it' });
+              return refused('DRIVER_FAILED', `the deploy child was killed after taking the lock at step ${after.step}; its lock is stale and the next deploy clears it`);
+            }
             writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `killed after ${String(budget)} ms without taking the lock` });
             return refused('DRIVER_FAILED', `the deploy child was killed after ${String(budget)} ms without taking the lock`);
           }

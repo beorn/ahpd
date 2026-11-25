@@ -116,6 +116,37 @@ describe('the deploy plugin (#38276 slice 2)', () => {
     expect(lines.at(-1)).toMatchObject({ event: 'not started', reason: 'killed after 120 ms without taking the lock' });
   }, 20_000);
 
+  it('says the lock was taken when the kill lands after the last check (#38276, @cto 2026-11-25)', async () => {
+    // The kill is not instant: a child can win the lock between the last poll and the signal. The journal must then
+    // name the lock it left instead of claiming no lock was ever taken, and the next deploy clears the stale one.
+    const stateDir = machine();
+    const repo = repoFixture();
+    const root = join(stateDir, 'deploy', 'web');
+    const found = deployMethods({
+      stateDir,
+      switches: () => ON,
+      services: () => ['web'],
+      waitForLockMs: 120,
+      start: (request) => ({
+        whenExited: new Promise<number | null>(() => {}),
+        killGroup: () => {
+          // The race this test is about: the lock appears as the signal is sent, with a pid that is already gone.
+          mkdirSync(root, { recursive: true });
+          const lock = { deployId: request.deployId, step: 'resolve', pid: 999_999, startedAt: new Date().toISOString(), from: null, to: '' };
+          writeFileSync(join(root, 'deploy.lock'), JSON.stringify(lock) + '\n');
+        },
+      }),
+    });
+    const answer = await (found['x-ahpd/deploy/run'] as DeployMethod).handle({ service: 'web', version: 'main', repo }, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
+    expect(answer['code']).toBe('DRIVER_FAILED');
+    expect(String(answer['message'])).toContain('after taking the lock at step resolve');
+    expect(String(answer['message'])).toContain('the next deploy clears it');
+    const lines = readFileSync(join(root, 'deploy.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines.at(-1)).toMatchObject({ event: 'outcome unknown', step: 'resolve', reason: 'killed after taking the lock; the lock it left is stale and the next deploy clears it' });
+    // Left in place, not silently removed: the next claim names the step and clears it through the pid check.
+    expect(existsSync(join(root, 'deploy.lock'))).toBe(true);
+  }, 20_000);
+
   it('refuses a second deploy by the running deploy id', async () => {
     const stateDir = machine();
     const root = join(stateDir, 'deploy', 'web');
