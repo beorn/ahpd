@@ -140,7 +140,7 @@ const journal = (layout: DeployLayout, event: Readonly<Record<string, unknown>>)
   appendFileSync(paths(layout).journal, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
 };
 
-interface LockBody {
+export interface DeployLock {
   readonly deployId: string;
   readonly step: DeployStep;
   readonly pid: number;
@@ -149,11 +149,11 @@ interface LockBody {
   readonly to: string;
 }
 
-const readLock = (layout: DeployLayout): LockBody | undefined => {
+const readLock = (layout: DeployLayout): DeployLock | undefined => {
   const file = paths(layout).lock;
   if (!existsSync(file)) return undefined;
   try {
-    return JSON.parse(readFileSync(file, 'utf8')) as LockBody;
+    return JSON.parse(readFileSync(file, 'utf8')) as DeployLock;
   } catch {
     // A lock we cannot read is still a lock: the deploy that wrote it may be mid-step.
     return { deployId: 'unreadable', step: 'resolve', pid: -1, startedAt: '', from: null, to: '' };
@@ -163,7 +163,7 @@ const readLock = (layout: DeployLayout): LockBody | undefined => {
 /**
  * Take the deploy lock, or say who holds it. `wx` is the whole mutual exclusion: two calls, one wins the create.
  */
-const takeLock = (layout: DeployLayout, body: LockBody): boolean => {
+const takeLock = (layout: DeployLayout, body: DeployLock): boolean => {
   mkdirSync(paths(layout).root, { recursive: true });
   try {
     const descriptor = openSync(paths(layout).lock, 'wx');
@@ -180,8 +180,10 @@ const takeLock = (layout: DeployLayout, body: LockBody): boolean => {
 };
 
 /** Move the lock's step forward before the step runs, so a crash names the step it was in. */
-const setLockStep = (layout: DeployLayout, body: LockBody, step: DeployStep): void => {
-  writeFileSync(paths(layout).lock, `${JSON.stringify({ ...body, step })}\n`);
+const setLockStep = (layout: DeployLayout, body: DeployLock, step: DeployStep): DeployLock => {
+  const next = { ...body, step };
+  writeFileSync(paths(layout).lock, `${JSON.stringify(next)}\n`);
+  return next;
 };
 
 const releaseLock = (layout: DeployLayout): void => {
@@ -322,6 +324,8 @@ export interface DeployOptions extends DeployLayout {
   readonly declaration: DeployDeclaration;
   /** A deploy id the caller may choose; generated otherwise. It is what the refusal and the journal carry. */
   readonly deployId?: string;
+  /** The lock a caller already took through {@link claim}, so a caller that answers before the steps does not claim twice. */
+  readonly claimed?: DeployLock;
   /**
    * Whether this machine accepts a build or hook command, asked before that step runs; absent accepts every command.
    *
@@ -343,34 +347,61 @@ const alive = (pid: number): boolean => {
   }
 };
 
+/** A claim's lock, when it took one; or the answer the whole-call path would have given instead. */
+export type Claim =
+  | { readonly ok: true; readonly lock: DeployLock }
+  | { readonly ok: false; readonly result: DeployResult };
+
 /**
- * One call: service S on machine M at version X. Refuses while another deploy of the same service holds the lock;
- * reports `outcome unknown: <step>` when the lock is left over from a process that is gone, and never resumes it.
+ * Takes one service's deploy lock without running a step.
+ *
+ * A caller that answers before the work needs this: an AHP method's round trip is seconds while a deploy is minutes,
+ * so the method claims, answers `started <deployId>`, and lets the steps run. Claiming first is what keeps that
+ * answer truthful — a second call in the same second is refused by the running deploy's id, exactly as the
+ * whole-call path refuses it.
  */
-export const deploy = (options: DeployOptions): DeployResult => {
-  const layout: DeployLayout = { stateDir: options.stateDir, service: options.service };
+export const claim = (layout: DeployLayout, deployId: string = randomUUID()): Claim => {
   const before = readLock(layout);
   if (before !== undefined) {
     if (alive(before.pid)) {
       journal(layout, { event: 'refused', deployId: before.deployId, holder: before.deployId, step: before.step });
       const outcome: DeployState = { state: 'refused, deploy running', deployId: before.deployId };
-      return { service: options.service, deployId: before.deployId, sha: before.to, from: before.from, steps: [], outcome };
+      return { ok: false, result: { service: layout.service, deployId: before.deployId, sha: before.to, from: before.from, steps: [], outcome } };
     }
     // The lock outlived its process: say which step it was in and stop. It is never resumed or retried.
     journal(layout, { event: 'outcome unknown', deployId: before.deployId, step: before.step, pid: before.pid });
     releaseLock(layout);
     const outcome: DeployState = { state: 'outcome unknown', sha: before.to === '' ? null : before.to, step: before.step, deployId: before.deployId };
-    return { service: options.service, deployId: before.deployId, sha: before.to, from: before.from, steps: [], outcome };
+    return { ok: false, result: { service: layout.service, deployId: before.deployId, sha: before.to, from: before.from, steps: [], outcome } };
   }
 
   const from = currentRelease(layout);
-  const deployId = options.deployId ?? randomUUID();
-  const lock: LockBody = { deployId, step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from, to: '' };
+  const lock: DeployLock = { deployId, step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from, to: '' };
   if (!takeLock(layout, lock)) {
     const holder = readLock(layout);
     const outcome: DeployState = { state: 'refused, deploy running', deployId: holder?.deployId ?? 'unknown' };
-    return { service: options.service, deployId: outcome.deployId, sha: holder?.to ?? '', from, steps: [], outcome };
+    return { ok: false, result: { service: layout.service, deployId: outcome.deployId, sha: holder?.to ?? '', from, steps: [], outcome } };
   }
+  return { ok: true, lock };
+};
+
+/**
+ * One call: service S on machine M at version X. Refuses while another deploy of the same service holds the lock;
+ * reports `outcome unknown: <step>` when the lock is left over from a process that is gone, and never resumes it.
+ *
+ * `claimed` is for a caller that already took the lock through {@link claim} so it could answer before the steps.
+ */
+export const deploy = (options: DeployOptions): DeployResult => {
+  const layout: DeployLayout = { stateDir: options.stateDir, service: options.service };
+  let lock: DeployLock;
+  if (options.claimed === undefined) {
+    const taken = claim(layout, options.deployId);
+    if (!taken.ok) return taken.result;
+    lock = taken.lock;
+  } else {
+    lock = options.claimed;
+  }
+  const { deployId, from } = lock;
   let sha: string;
   try {
     sha = resolveVersion(layout, options.declaration, options.version);
@@ -401,7 +432,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
     // The ruling's first line: "started <from>-><to>" is written before any step runs.
     journal(layout, { event: 'started', deployId, from, to: sha, version: options.version });
 
-    setLockStep(layout, lock, 'fetch');
+    lock = setLockStep(layout, lock, 'fetch');
     const store = ensureObjectStore(layout, options.declaration.repo);
     const release = join(paths(layout).releases, sha);
     mkdirSync(paths(layout).releases, { recursive: true });
@@ -417,7 +448,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
     }
     steps.push({ step: 'fetch', ok: true, ms: 0 });
 
-    setLockStep(layout, lock, 'build');
+    lock = setLockStep(layout, lock, 'build');
     const buildRefusal = rejected('build', options.declaration.build);
     if (buildRefusal !== undefined) {
       // Nothing has been switched, so the refusal names the step and the machine says why, and current stays put.
@@ -428,7 +459,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
     steps.push(built);
     if (!built.ok) return finish(fail('build', `build exited ${String(built.code)}`));
 
-    setLockStep(layout, lock, 'before_switch');
+    lock = setLockStep(layout, lock, 'before_switch');
     const hookRefusal = rejected('before_switch', options.declaration.beforeSwitch);
     if (hookRefusal !== undefined) {
       journal(layout, { event: 'refused', deployId, step: 'before_switch', reason: hookRefusal });
@@ -438,7 +469,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
     steps.push(hooked);
     if (!hooked.ok) return finish(fail('before_switch', `before_switch exited ${String(hooked.code)}`));
 
-    setLockStep(layout, lock, 'switch');
+    lock = setLockStep(layout, lock, 'switch');
     switchTo(layout, sha);
     steps.push({ step: 'switch', ok: true, ms: 0 });
     journal(layout, { event: 'switched', deployId, sha, from });
@@ -449,7 +480,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
       return finish({ state: 'switched, unchecked', sha, from });
     }
 
-    setLockStep(layout, lock, 'check');
+    lock = setLockStep(layout, lock, 'check');
     const checkRefusal = rejected('check', options.declaration.check);
     if (checkRefusal !== undefined) {
       // The folder is live and nothing checked it: that is `switched, unchecked`, said plainly rather than hidden.
@@ -480,6 +511,10 @@ export const deploy = (options: DeployOptions): DeployResult => {
     return { service: options.service, deployId, sha, from, steps, outcome };
   }
 };
+
+// #38276 slice 2: the package is also an ahpd plugin, `x-ahpd/deploy/run` and `x-ahpd/deploy/report` (plugin.ts).
+export { apply, deployMethods, METHODS, name, title } from './plugin.js';
+export type { DeployHost, DeployMethod, DeployRefusal, DeployRefusalCode, DeployMethodsOptions, Permit } from './plugin.js';
 
 /** The journal, oldest first, for a reader that shows what happened without running anything. */
 export const readJournal = (layout: DeployLayout): readonly Readonly<Record<string, unknown>>[] => {
@@ -521,6 +556,6 @@ export const sweep = (stateDir: string): readonly SweptDeploy[] => {
   return swept;
 };
 
-export const status = (layout: DeployLayout): { readonly current: string | null; readonly lock: LockBody | undefined } => {
+export const status = (layout: DeployLayout): { readonly current: string | null; readonly lock: DeployLock | undefined } => {
   return { current: currentRelease(layout), lock: readLock(layout) };
 };
