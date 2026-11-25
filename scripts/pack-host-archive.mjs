@@ -3,11 +3,12 @@
 // so a host needs no package manager (#38280, @cto 078f53e9). Run it on the machine it builds for: native modules
 // are taken for this machine, never cross-built.
 //
-//   node scripts/pack-host-archive.mjs --commit <full sha> --tag <release tag> --source-base <https url> --out <empty dir>
+//   node scripts/pack-host-archive.mjs --commit <full sha> --tag <release tag> --source-base <https url> \
+//     --pin-base <file> --out <empty dir>
 //
-// Writes <out>/ahpd-<version>-<platform>-<arch>.tar.gz and <out>/ahpd-pin-<platform>-<arch>.json: the ahpd pin only.
-// The served pins-<platform>-<arch>.json carries four pins (runtime, ahpd, hostPlugin, supervisor) and is assembled
-// by the release from this file, so the one-pin file is named so it can never be served as the whole set. Refuses, by name:
+// Writes <out>/ahpd-<version>-<platform>-<arch>.tar.gz and the complete <out>/pins-<platform>-<arch>.json: the
+// runtime, hostPlugin and supervisor pins from --pin-base (checked in per platform), plus the ahpd pin this run made.
+// This script is the one producer of that file (@cto c5038798); the CLI and bootstrap require all four pins. Refuses, by name:
 // a dirty tree, a HEAD that is not the commit, an @ahpd/* package that did not come from this workspace, a
 // non-empty output folder, a source base that is not https, any type error, and a missing build output. Prints the node, pnpm, bun and tar versions it used, so
 // two builds can be compared.
@@ -52,6 +53,7 @@ const tag = arg('tag');
 const sourceBase = arg('source-base').replace(/\/+$/, '');
 if (!/^https:\/\/[^/\s]+/.test(sourceBase)) fail(`--source-base must be an https URL, got ${sourceBase}`);
 const out = resolve(arg('out'));
+const pinBasePath = resolve(arg('pin-base'));
 const root = must('git', ['rev-parse', '--show-toplevel']);
 
 // The commit, exactly, and nothing beside it.
@@ -66,6 +68,28 @@ const platform = PLATFORMS[process.platform] ?? fail(`platform ${process.platfor
 const arch = ARCHES[process.arch] ?? fail(`arch ${process.arch} is not one we ship`);
 const tar = process.platform === 'darwin' ? 'gtar' : 'tar';
 if (!/GNU tar/.test(run(tar, ['--version']).stdout ?? '')) fail(`${tar} is not GNU tar; the archive needs --sort and --mtime`);
+
+// The pins the host CLI reads, checked the way it checks them, so a base it would refuse is refused here first.
+const SEMVER = /^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/;
+const CHECKSUM = /^(sha256:[0-9a-f]{64}|sha512-[A-Za-z0-9+/]{86}==)$/;
+const checkPin = (where, pin) => {
+  if (typeof pin !== 'object' || pin === null || Array.isArray(pin)) fail(`${where} is not an object`);
+  if (typeof pin.version !== 'string' || !SEMVER.test(pin.version)) fail(`${where}.version is not a version: ${pin.version}`);
+  if (typeof pin.source !== 'string' || !pin.source.startsWith('https://')) fail(`${where}.source is not an https URL: ${pin.source}`);
+  if (typeof pin.checksum !== 'string' || !CHECKSUM.test(pin.checksum)) fail(`${where}.checksum is neither sha256:<64 hex> nor sha512-<base64>: ${pin.checksum}`);
+  if (pin.platform !== undefined && pin.platform !== platform) fail(`${where} is built for platform ${pin.platform}, this machine is ${platform}`);
+  if (pin.arch !== undefined && pin.arch !== arch) fail(`${where} is built for arch ${pin.arch}, this machine is ${arch}`);
+};
+let pinBase;
+try { pinBase = JSON.parse(readFileSync(pinBasePath, 'utf8')); } catch (error) { fail(`--pin-base ${pinBasePath} is not readable JSON: ${error.message}`); }
+const basePins = pinBase?.pins;
+if (typeof basePins !== 'object' || basePins === null) fail(`--pin-base ${pinBasePath} has no "pins" object`);
+for (const key of Object.keys(basePins))
+  if (!['runtime', 'hostPlugin', 'supervisor'].includes(key)) fail(`--pin-base ${pinBasePath} names pin "${key}"; it holds runtime, hostPlugin and supervisor only, and this run adds ahpd`);
+for (const key of ['runtime', 'hostPlugin', 'supervisor']) {
+  if (basePins[key] === undefined) fail(`--pin-base ${pinBasePath} has no ${key} pin`);
+  checkPin(`--pin-base ${key}`, basePins[key]);
+}
 
 const versions = {
   node: process.version,
@@ -116,15 +140,12 @@ must('gzip', ['-n', '-9', `${archive}.tar`]);
 must('mv', [`${archive}.tar.gz`, archive]);
 const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
 
+const ahpdPin = { version, platform, arch, source: `${sourceBase}/${tag}/${name}`, checksum: `sha256:${sha256}` };
+checkPin('ahpd', ahpdPin);
 const pins = {
   version,
   platform,
-  arch,
-  commit,
-  built: versions,
-  pins: {
-    ahpd: { version, platform, arch, source: `${sourceBase}/${tag}/${name}`, checksum: `sha256:${sha256}` },
-  },
+  pins: { runtime: basePins.runtime, ahpd: ahpdPin, hostPlugin: basePins.hostPlugin, supervisor: basePins.supervisor },
 };
-writeFileSync(join(out, `ahpd-pin-${platform}-${arch}.json`), `${JSON.stringify(pins, null, 2)}\n`);
+writeFileSync(join(out, `pins-${platform}-${arch}.json`), `${JSON.stringify(pins, null, 2)}\n`);
 process.stdout.write(`pack-host-archive: ${name} sha256:${sha256}\n`);
