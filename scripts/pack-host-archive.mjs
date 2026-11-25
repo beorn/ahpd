@@ -95,7 +95,9 @@ const foreignInStage = readdirSync(store).filter((name) => name.startsWith('@ahp
 if (foreignInStage.length > 0) fail(`the staged tree holds @ahpd packages that are not from the workspace: ${foreignInStage.join(', ')}`);
 
 const version = `${JSON.parse(readFileSync(join(root, 'packages/server/package.json'), 'utf8')).version}-beorn.${commit.slice(0, 8)}`;
-const name = `ahpd-${version}-${platform}-${arch}.tar.gz`;
+// The installer accepts exactly one top-level folder, named after the archive without `.tar.gz` (@dev/5, @cto).
+const top = `ahpd-${version}-${platform}-${arch}`;
+const name = `${top}.tar.gz`;
 const archive = join(out, name);
 const mtime = must('git', ['show', '-s', '--format=%ct', commit], { cwd: root });
 // pnpm's .bin shims and its own state files hold the absolute staging path: on a host they point nowhere, and they
@@ -103,7 +105,7 @@ const mtime = must('git', ['show', '-s', '--format=%ct', commit], { cwd: root })
 must(tar, [
   '--sort=name', `--mtime=@${mtime}`, '--owner=0', '--group=0', '--numeric-owner',
   '--exclude=node_modules/.bin', '--exclude=.modules.yaml', '--exclude=.pnpm-workspace-state-v1.json',
-  '-C', out, '-cf', `${archive}.tar`, `--transform=s,^stage,ahpd-${version},`, 'stage',
+  '-C', out, '-cf', `${archive}.tar`, `--transform=s,^stage,${top},`, 'stage',
 ]);
 must('gzip', ['-n', '-9', `${archive}.tar`]);
 must('mv', [`${archive}.tar.gz`, archive]);
