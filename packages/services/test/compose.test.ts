@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
-  BACKUP_BYTES_MAX, BACKUP_LINES_MAX, acknowledgeFiles, backupServices, controlService, listServices, putService, removeService, serviceLogs,
+  CHANGES_BYTES_MAX, acknowledgeFiles, changesAt, controlService, listServices, putService, removeService, serviceLogs,
   type Machine,
 } from '../src/compose.js';
 import { REMOTE_COMMANDS_OFF } from '../src/switches.js';
@@ -497,7 +497,7 @@ describe('ifVersion "absent" (#38277 slice 3b, @cto c89ade9c: create only, so a 
   });
 });
 
-describe('backup (#38277 slice 3b, @cto c89ade9c: the listing and the change log after a cursor, reads only)', () => {
+describe('the change log by byte position (#38277, @cto 720ff22b: whole lines, the log\'s identity, never a silent restart)', () => {
   const FILE = 'processes:\n  web:\n    command: one\n';
   beforeEach(() => { writeFileSync(local, FILE); });
 
@@ -509,111 +509,104 @@ describe('backup (#38277 slice 3b, @cto c89ade9c: the listing and the change log
     });
     appendFileSync(machine.changeLog, `${lines.join('\n')}\n`);
   };
-  const backup = (after?: string) => {
-    const answer = backupServices(machine, after === undefined ? {} : { after });
+  const changes = (range: { position?: number; length?: number } = {}, log?: string) => {
+    const answer = changesAt(machine, range, log);
     if (!answer.ok) throw new Error(`${answer.code}: ${answer.message}`);
     return answer;
   };
 
-  it('carries a plain env key but never its value, nor any log line holding it (@cto c89ade9c)', async () => {
+  it('carries the lines a stale put logged with its diff blanked at the source, never a plain env value (@cto c89ade9c)', async () => {
     const withValue = 'processes:\n  web:\n    command: one\n    environment:\n      - DB_PASSWORD=hunter2\n';
     writeFileSync(local, withValue);
     const read1 = version();
     await putService(machine, LOCAL_ONLY, { service: { name: 'web', cwd: '/srv' }, ifVersion: read1 });
-    // A stale put logs its diff, blanked at the source; the backup carries that line.
     await putService(machine, REMOTE, { service: { name: 'web', cwd: '/other' }, ifVersion: read1, seen: withValue });
-    const answer = backup();
+    const answer = changes();
     expect(answer.lines.map((line) => line['op'])).toEqual(['put', 'put']);
     expect(answer.lines[1]).toMatchObject({ refused: { code: 'STALE_VERSION' } });
-    expect(answer.listing).toEqual(listServices(machine));
-    const json = JSON.stringify(answer);
-    expect(json).toContain('DB_PASSWORD');
-    expect(json).not.toContain('hunter2');
+    expect(JSON.stringify(answer)).not.toContain('hunter2');
   });
 
-  it('pages by cursor with more, and answers a line appended later from where it stopped', () => {
-    appendLines(450);
-    const first = backup();
-    expect([first.lines.length, first.more]).toEqual([BACKUP_LINES_MAX, true]);
-    const second = backup(first.cursor);
-    expect([second.lines[0]?.['n'], second.lines.length, second.more]).toEqual([200, 200, true]);
-    const third = backup(second.cursor);
-    expect([third.lines[0]?.['n'], third.lines.length, third.more]).toEqual([400, 50, false]);
-    const caughtUp = backup(third.cursor);
-    expect([caughtUp.lines, caughtUp.cursor, caughtUp.more]).toEqual([[], third.cursor, false]);
-    appendLines(1, 0, 450);
-    appendFileSync(machine.changeLog, '{"op":"half-writ'); // a write in progress waits for the next backup
-    const later = backup(third.cursor);
-    expect([later.lines, later.more]).toEqual([[{ op: 'test', n: 450, pad: '' }], false]);
+  it('cuts each read at the last newline at or before position + length, and the next read starts at its end', () => {
+    appendLines(10, 100);
+    const first = changes({ position: 0, length: 350 });
+    expect([first.lines.map((line) => line['n']), first.position, first.end, first.size]).toEqual([[0, 1, 2], 0, 300, 1000]);
+    const second = changes({ position: first.end, length: 350 }, first.log);
+    expect([second.lines.map((line) => line['n']), second.end]).toEqual([[3, 4, 5], 600]);
+    expect(second.log).toBe(first.log);
+    const rest = changes({ position: second.end }, first.log);
+    expect([rest.lines.map((line) => line['n']), rest.end]).toEqual([[6, 7, 8, 9], 1000]);
+    const caughtUp = changes({ position: rest.end }, first.log);
+    expect([caughtUp.lines, caughtUp.end]).toEqual([[], 1000]);
+    appendLines(1, 0, 10);
+    appendFileSync(machine.changeLog, '{"op":"half-writ'); // a write in progress waits for the next read
+    expect(changes({ position: rest.end }, first.log).lines).toEqual([{ op: 'test', n: 10, pad: '' }]);
   });
 
-  it('answers at most 256 KB of whole lines, and a single longer line alone so the backup moves on', () => {
+  it('answers at most 256 KB, and one longer line alone so a reader moves past it', () => {
     appendLines(130, 2048);
-    const first = backup();
-    expect([first.lines.length, first.more]).toEqual([BACKUP_BYTES_MAX / 2048, true]);
-    const rest = backup(first.cursor);
-    expect([rest.lines.map((line) => line['n']), rest.more]).toEqual([[128, 129], false]);
-    appendLines(1, BACKUP_BYTES_MAX + 10, 130);
+    const first = changes();
+    expect([first.lines.length, first.end]).toEqual([CHANGES_BYTES_MAX / 2048, CHANGES_BYTES_MAX]);
+    expect(changes({ position: 0, length: CHANGES_BYTES_MAX * 4 }).end).toBe(CHANGES_BYTES_MAX);
+    const rest = changes({ position: first.end });
+    expect(rest.lines.map((line) => line['n'])).toEqual([128, 129]);
+    appendLines(1, CHANGES_BYTES_MAX + 10, 130);
     appendLines(1, 0, 131);
-    const long = backup(rest.cursor);
-    expect([long.lines.map((line) => line['n']), long.more]).toEqual([[130], true]);
-    expect(backup(long.cursor).lines.map((line) => line['n'])).toEqual([131]);
+    const long = changes({ position: rest.end });
+    expect(long.lines.map((line) => line['n'])).toEqual([130]);
+    expect(changes({ position: long.end }).lines.map((line) => line['n'])).toEqual([131]);
   });
 
-  it('answers CURSOR_RESET, naming the log, after it is replaced or cut short; without a cursor it starts again', () => {
+  it('refuses CHANGES_REPLACED, naming the log, for another identity or a position past the end; from 0 it reads the new log', () => {
     appendLines(3);
-    const { cursor } = backup();
+    const { log, end } = changes();
     writeFileSync(`${machine.changeLog}.new`, `${JSON.stringify({ op: 'fresh' })}\n`);
     renameSync(`${machine.changeLog}.new`, machine.changeLog);
-    expect(backupServices(machine, { after: cursor }))
-      .toMatchObject({ ok: false, code: 'CURSOR_RESET', message: expect.stringContaining(`${machine.changeLog} was replaced`) as unknown });
-    expect(backup().lines).toEqual([{ op: 'fresh' }]);
-    const { cursor: atEnd } = backup();
+    expect(changesAt(machine, { position: end }, log))
+      .toMatchObject({ ok: false, code: 'CHANGES_REPLACED', message: expect.stringContaining(`${machine.changeLog} was replaced`) as unknown });
+    expect(changes().lines).toEqual([{ op: 'fresh' }]);
+    const atEnd = changes();
     writeFileSync(machine.changeLog, ''); // the same file, emptied in place
-    expect(backupServices(machine, { after: atEnd }))
-      .toMatchObject({ ok: false, code: 'CURSOR_RESET', message: expect.stringContaining('past its end') as unknown });
-    expect(backupServices(machine, { after: 'not-a-cursor' }))
-      .toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining(machine.changeLog) as unknown });
+    expect(changesAt(machine, { position: atEnd.end }, atEnd.log))
+      .toMatchObject({ ok: false, code: 'CHANGES_REPLACED', message: expect.stringContaining('past the end') as unknown });
+    expect(changesAt(machine, { position: -1 })).toMatchObject({ ok: false, code: 'INVALID' });
   });
 
   // ext4 hands a deleted file's inode number to the next file made, so a log deleted and written again keeps its
   // device and inode; only its creation time tells it from the old one.
-  it('answers CURSOR_RESET for a log deleted and made again, even where the new file gets the old inode number', () => {
+  it('refuses CHANGES_REPLACED for a log deleted and made again, even where the new file gets the old inode number', () => {
     appendLines(3);
-    const { cursor } = backup();
+    const { log } = changes();
     const before = statSync(machine.changeLog, { bigint: true });
     rmSync(machine.changeLog);
     appendFileSync(machine.changeLog, `${JSON.stringify({ op: 'one' })}\n`.repeat(6));
     const after = statSync(machine.changeLog, { bigint: true });
     expect(after.birthtimeNs).not.toBe(before.birthtimeNs);
-    expect(backupServices(machine, { after: cursor }))
-      .toMatchObject({ ok: false, code: 'CURSOR_RESET', message: expect.stringContaining(`${machine.changeLog} was replaced`) as unknown });
+    expect(changesAt(machine, {}, log))
+      .toMatchObject({ ok: false, code: 'CHANGES_REPLACED', message: expect.stringContaining(`${machine.changeLog} was replaced`) as unknown });
   });
 
-  it('answers a missing log as no lines and writes nothing; its cursor reads the log from its start once there is one', () => {
-    const empty = backup();
-    expect([empty.lines, empty.more]).toEqual([[], false]);
+  it('answers a missing log as no lines and an empty identity, writes nothing, and refuses a position or identity held for a log that is gone', () => {
+    expect(changes()).toEqual({ ok: true, log: '', position: 0, end: 0, size: 0, lines: [] });
+    expect(() => statSync(machine.changeLog)).toThrow(/ENOENT/);
+    expect(changesAt(machine, { position: 10 })).toMatchObject({ ok: false, code: 'CHANGES_REPLACED' });
+    expect(changesAt(machine, {}, '1:2:3')).toMatchObject({ ok: false, code: 'CHANGES_REPLACED' });
     expect(() => statSync(machine.changeLog)).toThrow(/ENOENT/);
     appendLines(2);
-    expect(backup(empty.cursor).lines.map((line) => line['n'])).toEqual([0, 1]);
-    const before = readFileSync(machine.changeLog, 'utf8');
-    backupServices(machine, { after: 'not-a-cursor' });
-    expect(readFileSync(machine.changeLog, 'utf8')).toBe(before);
+    expect(changes({}, '').lines.map((line) => line['n'])).toEqual([0, 1]);
   });
 
   it('refuses an unreadable log by name', () => {
     mkdirSync(machine.changeLog);
-    expect(backupServices(machine, {}))
+    expect(changesAt(machine))
       .toMatchObject({ ok: false, code: 'FILE_UNREADABLE', message: expect.stringContaining(machine.changeLog) as unknown });
   });
 
-  // @cto f7a8801f: one bad line (a crash mid-append) must not stop every later change being backed up.
+  // @cto f7a8801f: one bad line (a crash mid-append) must not stop every later change being read.
   it('answers a line that is not JSON as a marker with its offset and length, never its text, and goes on past it', () => {
     appendFileSync(machine.changeLog, '{"op":"ok"}\nhunter2\n{"op":"after"}\n');
-    const answer = backupServices(machine, {});
-    if (!answer.ok) throw new Error(answer.message);
+    const answer = changes();
     expect(answer.lines).toEqual([{ op: 'ok' }, { unreadable: true, offset: 12, bytes: 7 }, { op: 'after' }]);
     expect(JSON.stringify(answer)).not.toContain('hunter2');
-    expect(answer.more).toBe(false);
   });
 });

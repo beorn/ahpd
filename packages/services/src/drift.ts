@@ -234,8 +234,10 @@ export async function driftFacts(machine: Machine, stateFile: string): Promise<D
  * as it is now, and answer the alerts. Never throws; a state file that cannot
  * be written is one more alert.
  */
-export async function checkDrift(machine: Machine, stateFile: string): Promise<DriftAlert[]> {
+export async function checkDrift(machine: Machine, stateFile: string, seen: (facts: DriftFacts) => void = () => {}): Promise<DriftAlert[]> {
   const facts = await driftFacts(machine, stateFile);
+  // What the check read, for a reader that shows it (the services channel's rows): one read of process-compose, not two.
+  seen(facts);
   const alerts = compareDrift(facts);
   if (typeof facts.known !== 'string') {
     const unknown = [...facts.hashes].filter(([file, now]) => 'hash' in now && (facts.known as Record<string, string>)[file] === undefined);
