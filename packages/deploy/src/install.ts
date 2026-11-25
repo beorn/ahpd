@@ -17,6 +17,9 @@
 /** Where the host runs. The boot item and its enable command are the only platform-dependent parts. */
 export type InstallPlatform = 'darwin' | 'linux'
 
+/** The machine word, in node's own spelling, so a release built for another one is refused rather than run. */
+export type InstallArch = 'x64' | 'arm64'
+
 /** One pinned download. The version and the checksum travel together or the install stops by name. */
 export interface InstallPin {
   /** `1.3.13`, `0.15.0-rc.4`, `v1.34.1`: an exact version, never a range, a tag or `latest`. */
@@ -31,6 +34,12 @@ export interface InstallPin {
    * refused too, never trusted.
    */
   readonly checksum: string | null
+  /**
+   * The machine a release archive was built for, when the artifact is machine-specific. The manifest refuses a pin
+   * built for another platform or arch by name, before anything is downloaded (@cto 2026-11-25).
+   */
+  readonly platform?: InstallPlatform
+  readonly arch?: InstallArch
 }
 
 /** The four downloads a customer install makes. Each one is a separate supply chain and gets its own pin. */
@@ -45,7 +54,7 @@ export interface InstallPins {
 }
 
 export interface InstallEntry {
-  readonly kind: 'dir' | 'file' | 'symlink' | 'boot-item'
+  readonly kind: 'dir' | 'file' | 'symlink' | 'archive' | 'boot-item'
   /** Absolute path. Every entry but the boot item is inside the install root. */
   readonly path: string
   /** A symlink's target, or `download:<name>` for a file whose bytes a pin brings. */
@@ -84,6 +93,8 @@ export interface InstallOptions {
   /** The ahpd version this install places; also the release folder's name. */
   readonly version: string
   readonly pins: InstallPins
+  /** This machine's word: what a machine-specific pin is checked against. */
+  readonly arch: InstallArch
   /** `$XDG_CONFIG_HOME`; defaults to `<home>/.config`, as the XDG base-directory spec says. */
   readonly configHome?: string
 }
@@ -93,6 +104,7 @@ export type InstallRefusal =
   | { readonly kind: 'malformed-checksum'; readonly download: keyof InstallPins; readonly checksum: string }
   | { readonly kind: 'unpinned-version'; readonly download: keyof InstallPins; readonly version: string }
   | { readonly kind: 'insecure-source'; readonly download: keyof InstallPins; readonly source: string }
+  | { readonly kind: 'wrong-machine'; readonly download: keyof InstallPins; readonly builtFor: string; readonly machine: string }
 
 export const INSTALL_ROOT_NAME = '.ahpd';
 export const BOOT_LABEL = 'dev.hallohuman.ahpd';
@@ -106,7 +118,7 @@ const isChecksum = (checksum: string): boolean =>
   /^sha256:[0-9a-f]{64}$/u.test(checksum) || /^sha512-[A-Za-z0-9+/]{86}==$/u.test(checksum);
 
 /** Every refusal this manifest would have to answer for, named by the download it is about. */
-export const installRefusals = (pins: InstallPins): readonly InstallRefusal[] => {
+export const installRefusals = (pins: InstallPins, machine: { readonly platform: InstallPlatform; readonly arch: InstallArch }): readonly InstallRefusal[] => {
   const refusals: InstallRefusal[] = []
   for (const download of Object.keys(pins) as (keyof InstallPins)[]) {
     const pin = pins[download]
@@ -114,6 +126,11 @@ export const installRefusals = (pins: InstallPins): readonly InstallRefusal[] =>
     if (!pin.source.startsWith('https://')) refusals.push({ kind: 'insecure-source', download, source: pin.source })
     if (pin.checksum === null) refusals.push({ kind: 'missing-checksum', download })
     else if (!isChecksum(pin.checksum)) refusals.push({ kind: 'malformed-checksum', download, checksum: pin.checksum })
+    // A binary built for another machine is refused by name, never run and never half-placed.
+    if (pin.platform !== undefined && pin.platform !== machine.platform)
+      refusals.push({ kind: 'wrong-machine', download, builtFor: `${pin.platform}-${pin.arch ?? '?'}`, machine: `${machine.platform}-${machine.arch}` })
+    else if (pin.arch !== undefined && pin.arch !== machine.arch)
+      refusals.push({ kind: 'wrong-machine', download, builtFor: `${pin.platform ?? machine.platform}-${pin.arch}`, machine: `${machine.platform}-${machine.arch}` })
   }
   return refusals
 }
@@ -142,7 +159,7 @@ export const customerInstallManifest = (
 ):
   | { readonly ok: true; readonly manifest: InstallManifest }
   | { readonly ok: false; readonly refusals: readonly InstallRefusal[] } => {
-  const refusals = installRefusals(options.pins)
+  const refusals = installRefusals(options.pins, { platform: options.platform, arch: options.arch })
   if (refusals.length) return { ok: false, refusals }
 
   const root = options.root ?? `${options.home}/${INSTALL_ROOT_NAME}`
@@ -156,9 +173,10 @@ export const customerInstallManifest = (
     { kind: 'dir', path: `${stateDir}/deploy`, why: "the deploy driver's root, which holds one folder per service" },
     { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}`, why: "@ahpd/deploy's own layout: release folders, current, the journal" },
     { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases`, why: 'every release folder, so switching back keeps the old one' },
-    { kind: 'dir', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}`, why: `ahpd ${options.version} and the runtime it runs on` },
+    // The release folder is not created: it is the pinned archive, extracted. `current` moves only onto a tree that
+    // was verified and unpacked in staging first (@cto 2026-11-25).
+    { kind: 'archive', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}`, from: 'download:ahpd', why: `ahpd ${options.version} and the packages it loads, extracted from the pinned archive` },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/runtime`, from: 'download:runtime', why: 'the pinned runtime: the customer Node is not used' },
-    { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/ahpd`, from: 'download:ahpd', why: 'the daemon' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/host-plugin`, from: 'download:hostPlugin', why: 'our host plug-in' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/supervisor`, from: 'download:supervisor', why: 'the supervisor the boot item starts' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/deploy.log`, from: 'generated:journal', why: 'the deploy journal: what moved current, and when' },
@@ -210,4 +228,6 @@ export const describeRefusal = (refusal: InstallRefusal): string =>
       ? `refused: ${refusal.download} version ${refusal.version} is not an exact version`
       : refusal.kind === 'malformed-checksum'
         ? `refused: ${refusal.download} checksum ${refusal.checksum} is not sha256:<64 hex> or sha512-<86 base64>==`
-        : `refused: ${refusal.download} source ${refusal.source} is not https`
+        : refusal.kind === 'insecure-source'
+          ? `refused: ${refusal.download} source ${refusal.source} is not https`
+          : `refused: ${refusal.download} pins built for ${refusal.builtFor}, this machine is ${refusal.machine}`

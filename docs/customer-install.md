@@ -85,8 +85,10 @@ The installer's entry point is a POSIX shell bootstrap in the **Hightea repo**, 
 asset (@cto 2026-11-25). It must run before any runtime exists, so it lives nowhere else: not in this repo's
 `scripts/`, and not in a new repository.
 
-- The script pins the runtime's version and its `sha256` itself, verifies the download before running anything, and
-  refuses on a mismatch.
+- The pins file names the runtime, its version and its `sha256`; the bootstrap verifies it before running anything and
+  refuses on a mismatch. The runtime pin names a `.tar.gz`, not a `.zip`: a bare Debian or Ubuntu has no `unzip`, and
+  installing it needs root — the one thing this install promises not to need (@dev/5, 2026-11-25). A `.zip` pin on a
+  machine without `unzip` is refused by name rather than failing inside the download.
 - The host guide shows both forms: the download-then-inspect one, and the one-liner.
 - Everything after the runtime exists is this package's `plan`/`apply`, so there is one manifest and one switch.
 
@@ -134,6 +136,22 @@ releases up to `keep` (`DEFAULT_KEEP` is 3, so a successful switch keeps exactly
 folder it deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared with the git deploy driver;
 only the ordering differs — commit time there, version order here, with `0.10.0` above `0.9.0` and a release above its
 release candidate.
+
+## The daemon is one archive, and running it means unpacking it
+
+`pins.ahpd` is a single `ahpd-<version>-<platform>-<arch>.tar.gz` built with its whole resolved tree inside (server plus
+`node_modules`, native modules built for that machine), the way node and VS Code server ship (@cto 2026-11-25). Nothing
+resolves from npm at install time and no package manager runs on the customer's machine.
+
+It is read with npm's own `tar` (node-tar), so GNU long names, pax headers and hardlinks arrive intact and no
+code here interprets header bytes. It is read twice. First every entry is listed and checked: one absolute path, one `..`, one device or fifo, one
+entry outside the single top directory named after the archive, or one link that points outside the release refuses the
+whole archive and names the entry that did it. Only then is it written, into `<release>.staging`, with modes preserved
+so `bin` entries and native `.node` files keep their exec bits, and ownership never touched. One rename puts the
+verified tree at `releases/<version>`; `current` moves after that, never onto a tree that was not checked.
+
+A pin that names another platform or arch is refused before anything is downloaded, with
+`pins built for <platform>-<arch>, this machine is <platform>-<arch>`.
 
 The record says `installed` before the prune runs, because a release that is running and recorded is installed whether
 or not the tidy-up worked. A prune that then fails comes back as `pruneFailed {path, output}` on an otherwise good

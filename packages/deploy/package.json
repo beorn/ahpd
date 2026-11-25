@@ -28,7 +28,8 @@
     }
   },
   "scripts": {
-    "prepack": "tsc -p .",
+    "build:bin": "bun build src/bin.ts --target=node --outfile dist/bin.js",
+    "prepack": "tsc -p . && bun run build:bin",
     "test": "cd ../.. && vitest run packages/deploy/test"
   },
   "files": [
@@ -53,7 +54,8 @@
     }
   },
   "dependencies": {
-    "@ahpd/services": "workspace:*"
+    "@ahpd/services": "workspace:*",
+    "tar": "^7.5.23"
   },
   "bin": {
     "ahpd-host-install": "./dist/bin.js"

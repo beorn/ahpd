@@ -147,11 +147,19 @@ export const run = async (
     return 2;
   }
 
+  // The machine word decides which release archive is runnable, so it is read rather than assumed.
+  const arch = process.arch;
+  if (arch !== 'x64' && arch !== 'arm64') {
+    err(`refused: this machine is ${process.platform}-${arch}; the installer has pins for darwin-arm64 and linux-x64. ${USAGE}`);
+    return 2;
+  }
+
   const root = values.get('--root');
   const built = customerInstallManifest({
     platform: file.platform,
     version: file.version,
     home,
+    arch,
     ...(root === undefined ? {} : { root }),
     pins: file.pins,
   });
