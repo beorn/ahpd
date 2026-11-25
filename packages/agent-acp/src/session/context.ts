@@ -9,6 +9,12 @@ import type { Opening } from './opening.js';
 import type { Turn } from './turn.js';
 
 /** A turn handed while the server ran another: what `sendMessage` was handed. */
+/** Whether a session was offered the host's own tools, and why not when it was not. */
+export interface HostToolsAnswer {
+  available: boolean;
+  reason?: string;
+}
+
 export interface PendingTurn {
   turnId: string;
   text: string;
@@ -195,6 +201,12 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
    * the proof the move carried (#37272).
    */
   openedMeta: Record<string, unknown> | undefined;
+  /**
+   * Whether this session was offered the host's own tools, as the last opening
+   * decided it, with the reason when it was not. Published in the summary's
+   * `_meta` as `ahpd/hostTools`; absent when the host offers its sessions no tools.
+   */
+  hostTools: HostToolsAnswer | undefined;
   /** Whether the server said it can be asked to close that conversation. */
   closes: boolean;
   /**
