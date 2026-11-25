@@ -26,8 +26,9 @@ import {
   alwaysAsks, asksForTool, confirmationOptions, getAutoApproval as autoApprovalOf, isDeniedByPermissions, isForbiddenSnapshotWrite, managedDecision,
   permissionRulesOf,
 } from './permissions.js';
+import { permissionRuleProblem } from '../access/permissionrules.js';
 import { mcpServerOf } from './permissions.js';
-import type { ToolApproval } from './permissions.js';
+import type { PermissionRules, ToolApproval } from './permissions.js';
 import { vscodeRootProperties } from '../vscoderootconfig.js';
 import { PENDING_CONFIRMATION_FIELDS } from '../types/agent.js';
 import type { PendingConfirmation } from '../types/agent.js';
@@ -559,6 +560,24 @@ export function createSpawn(ctx: HostContext): Spawn {
     return ctx.principalFor(owner)?.can('config:permissions') === true;
   };
 
+  /**
+   * The rules a question is judged by, each one that can match nothing said
+   * once by name: a rule that does not parse, or a bare name with a wildcard,
+   * would otherwise answer every question with a plain no and leave its
+   * writer to find out why nothing was allowed.
+   */
+  const saidRules = new Set<string>();
+  const rulesSaid = (rules: PermissionRules): PermissionRules => {
+    for (const rule of [...rules.allow, ...rules.deny, ...rules.ask]) {
+      if (saidRules.has(rule)) continue;
+      const problem = permissionRuleProblem(rule);
+      if (problem === undefined) continue;
+      saidRules.add(rule);
+      ctx.log.warn(problem);
+    }
+    return rules;
+  };
+
   /** The rules the owner of a session keeps for their own sessions, or nothing. */
   const personRulesOf = (session: string): Bag | undefined => {
     const person = personOf(kept.owner(idOf(session)));
@@ -648,7 +667,7 @@ export function createSpawn(ctx: HostContext): Spawn {
       ...(commandLine === undefined ? {} : { commandLine }),
       ...(signal.requestSandboxBypass === true ? { requestSandboxBypass: true } : {}),
       // The session's rules, then its owner's own, then the host's.
-      rules: permissionRulesOf(owning?.config.permissions, personRulesOf(session), ctx.rootConfig.permissions),
+      rules: rulesSaid(permissionRulesOf(owning?.config.permissions, personRulesOf(session), ctx.rootConfig.permissions)),
       context: { ...(folders[0] === undefined ? {} : { workingDirectory: folders[0] }), homeDirectory: homedir(), ignorePathCase: process.platform === 'win32' || process.platform === 'darwin' },
       workingDirectories: folders,
       ...(attachments === undefined ? {} : { attachmentsDirectory: attachments }),
