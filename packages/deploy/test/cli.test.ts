@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as ts from 'typescript';
 import { run, USAGE } from '../src/cli.js';
-import type { InstallIo } from '../src/install-run.js';
+import { nodeInstallIo, type InstallIo } from '../src/install-run.js';
 
 const pinsFile = (overrides: Record<string, unknown> = {}) => {
   const file = join(mkdtempSync(join(tmpdir(), 'ahpd-cli-')), 'pins.json');
@@ -29,6 +30,21 @@ const pinsFile = (overrides: Record<string, unknown> = {}) => {
 const collect = () => {
   const lines: string[] = [];
   return { lines, out: (line: string) => lines.push(line), err: (line: string) => lines.push(line) };
+};
+
+/** The bytes the fake fetch answers, and a checksum that matches them, so an apply reaches its prune step. */
+const bytesOf = (source: string) => `bytes:${source}`;
+const honestChecksum = (source: string) => `sha256:${createHash('sha256').update(bytesOf(source)).digest('hex')}`;
+const honestPinsFile = () => {
+  const fetchable = (version: string, source: string) => ({ version, source, checksum: honestChecksum(source) });
+  return pinsFile({
+    pins: {
+      runtime: fetchable('1.3.13', 'https://bun.invalid/1'),
+      ahpd: fetchable('0.15.0-rc.4', 'https://reg.invalid/a.tgz'),
+      hostPlugin: fetchable('0.1.0', 'https://reg.invalid/h.tgz'),
+      supervisor: fetchable('1.34.1', 'https://rel.invalid/s.gz'),
+    },
+  });
 };
 
 const noopIo = () =>
@@ -169,5 +185,26 @@ describe('ahpd-host-install, the command the bootstrap runs (#38280)', () => {
     const sink = collect();
     expect(await run(['--plan', '--pins', file], noopIo(), sink.out, sink.err)).toBe(2);
     expect(sink.lines.join('\n')).toContain(`${file}: ${file} has no supervisor pin`);
+  });
+
+  // @level l3 @consumer a prune that fails after a good install is a warning, and the command still exits 0.
+  it('prints a prune failure as a warning on a successful install', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ahpd-cli-home-'));
+    const io: InstallIo = {
+      ...nodeInstallIo(),
+      fetchTo: async (source, path) => {
+        writeFileSync(path, bytesOf(source));
+      },
+      run: () => ({ code: 0, output: '' }),
+      list: (path) => {
+        throw new Error(`EACCES: ${path}`);
+      },
+    };
+    const sink = collect();
+    const code = await run(['--apply', '--pins', honestPinsFile(), '--home', home], io, sink.out, sink.err);
+    expect(code).toBe(0);
+    const text = sink.lines.join('\n');
+    expect(text).toContain('wrote ');
+    expect(text).toMatch(/warning: could not prune releases at .*EACCES/);
   });
 });

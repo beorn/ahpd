@@ -178,6 +178,12 @@ export const run = async (
   const done = await applyInstall(manifest, io);
   for (const line of done.wrote) out(`wrote ${line}`);
   for (const line of done.pruned) out(`pruned ${line}`);
+  // The release is installed and running, so a tidy-up that failed is a warning on a success - never a failed install
+  // (@cto 2026-11-25).
+  if (done.pruneFailed !== undefined)
+    err(
+      `warning: could not prune releases at ${done.pruneFailed.path}: ${done.pruneFailed.output}; the release is installed and running`,
+    );
   if (!done.ok && done.refusal !== undefined) {
     err(describeApplyRefusal(done.refusal));
     return 1;
