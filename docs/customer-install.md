@@ -116,7 +116,17 @@ data never goes without `--purge`, which prints exactly what it deletes first.
 
 Running the same one command with a newer version is a switch, not a second install: the new release folder is placed
 and verified the same way, `current` moves through `activateRelease`, the boot item is stopped and started again so it
-picks up the new release, and a failed start names both the stop that ran and the start that failed.
+picks up the new release, and only a started release is pruned for.
+
+A start that fails does not leave a dead host pointing at a release nobody started: `current` goes back through
+`activateRelease` with the reason "switching back after a failed start", the old release is started again, the record
+goes back to the release that is running, and the refusal reports both halves of the attempt plus the switch back.
+Nothing is pruned on that path.
+
+A record that will not parse is refused — `install record at <path> is unreadable: <why>; nothing changed` — never read
+as a fresh install, because it is the only statement of what that folder owns. A folder in `releases/` whose name is not
+a version is never pruned and is named (`kept <name>: not a version`); a failure to list the release folders at all is a
+refusal, not a silent "nothing to prune".
 
 Pruning keeps `current` plus the newest `keep - 1` releases (`DEFAULT_KEEP` is 3), and the result names every folder it
 deleted. The rule is one function in `@ahpd/deploy` (`releasesToPrune`) shared with the git deploy driver; only the

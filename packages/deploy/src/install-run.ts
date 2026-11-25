@@ -97,6 +97,8 @@ export interface ApplyResult {
   readonly wrote: readonly string[];
   /** Release folders the prune removed, oldest first: a switch says what it deleted, not just what it installed. */
   readonly pruned: readonly string[];
+  /** Directories in `releases/` that were not pruned and why, so a stray folder is named rather than guessed at. */
+  readonly keptReleases: readonly { readonly name: string; readonly why: string }[];
   readonly refusal?: ApplyRefusal;
 }
 
@@ -147,11 +149,20 @@ export interface InstallRecord {
   readonly manifest: InstallManifest;
 }
 
-/** Newest first, so `0.9.0` sorts below `0.10.0` and a release candidate below its release. */
+/** A folder name that is a version, not a stray directory somebody left in `releases/`. */
+export const isVersion = (name: string): boolean => /^v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$/u.test(name);
+
+/**
+ * Newest first, by semver's own order: numeric core parts, then pre-release parts segment by segment, numeric when
+ * both are numeric, so `1.0.0-rc.10` is above `1.0.0-rc.9` and a release is above its own release candidate.
+ */
 export const compareVersions = (left: string, right: string): number => {
-  const parse = (one: string): { core: readonly number[]; pre: string } => {
+  const parse = (one: string): { core: readonly number[]; pre: readonly string[] } => {
     const [core = '', pre = ''] = one.replace(/^v/u, '').split(/[-+]/u, 2) as [string, string?];
-    return { core: core.split('.').map((part) => Number.parseInt(part, 10) || 0), pre };
+    return {
+      core: core.split('.').map((part) => Number.parseInt(part, 10) || 0),
+      pre: pre === '' ? [] : pre.split('.'),
+    };
   };
   const a = parse(left);
   const b = parse(right);
@@ -159,34 +170,64 @@ export const compareVersions = (left: string, right: string): number => {
     const difference = (b.core[index] ?? 0) - (a.core[index] ?? 0);
     if (difference !== 0) return difference;
   }
-  // A release outranks its own pre-release: `1.0.0` before `1.0.0-rc.1` in newest-first order.
-  if (a.pre === b.pre) return left.localeCompare(right) * -1;
-  if (a.pre === '') return -1;
-  if (b.pre === '') return 1;
-  return b.pre.localeCompare(a.pre);
+  if (a.pre.length === 0 && b.pre.length === 0) return -left.localeCompare(right);
+  if (a.pre.length === 0) return -1;
+  if (b.pre.length === 0) return 1;
+  for (let index = 0; index < Math.max(a.pre.length, b.pre.length); index += 1) {
+    const x = a.pre[index];
+    const y = b.pre[index];
+    if (x === undefined) return 1;
+    if (y === undefined) return -1;
+    const numericX = Number(x);
+    const numericY = Number(y);
+    if (!Number.isNaN(numericX) && !Number.isNaN(numericY)) {
+      if (numericY !== numericX) return numericY - numericX;
+    } else if (x !== y) return y.localeCompare(x);
+  }
+  return 0;
 };
+
+const isMissingPath = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT';
+
+export interface PruneKept {
+  readonly name: string;
+  readonly why: string;
+}
+
+export type PruneOutcome =
+  | { readonly ok: true; readonly removed: readonly string[]; readonly kept: readonly PruneKept[] }
+  | { readonly ok: false; readonly path: string; readonly output: string };
 
 /**
  * Keep `current` and the newest `keep - 1` releases, by the same rule `pruneReleases` uses; only the ordering is
  * different here because a customer install names folders by version rather than by commit.
+ *
+ * No release folders at all is a fact, not an error. Any other failure to list them is a refusal: silently pruning
+ * nothing would report a clean switch while the disk fills. A folder whose name is not a version is never pruned and
+ * is named, because it is not ours to guess about.
  */
 export const pruneReleaseFolders = (
   io: Pick<InstallIo, 'list' | 'removeTree'>,
   layout: DeployLayout,
   current: string | null,
   keep = DEFAULT_KEEP,
-): readonly string[] => {
+): PruneOutcome => {
   const releases = `${layout.stateDir}/deploy/${layout.service}/releases`;
   let names: readonly string[];
   try {
     names = io.list(releases);
-  } catch {
-    return [];
+  } catch (error) {
+    if (isMissingPath(error)) return { ok: true, removed: [], kept: [] };
+    return { ok: false, path: releases, output: message(error) };
   }
-  const ordered = [...names].sort(compareVersions);
-  const removed = releasesToPrune(ordered, current, keep);
+  const versions = names.filter(isVersion);
+  const kept: PruneKept[] = names
+    .filter((name) => !isVersion(name))
+    .map((name) => ({ name, why: 'not a version' }));
+  const removed = releasesToPrune([...versions].sort(compareVersions), current, keep);
   for (const name of removed) io.removeTree(`${releases}/${name}`);
-  return removed;
+  return { ok: true, removed, kept };
 };
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -221,33 +262,49 @@ export const applyInstall = async (
 
   // A foreign root is never adopted. Our own record - even from an interrupted run - is ours to finish.
   if (io.exists(manifest.root) && !io.exists(installedManifest))
-    return { ok: false, wrote, pruned: [], refusal: { kind: 'foreign-root', path: manifest.root } };
-  // A finished install we are re-applying is a version switch: the boot item must be restarted, not bootstrapped twice.
-  const upgrading =
-    io.exists(installedManifest) &&
-    (() => {
-      try {
-        return (JSON.parse(io.readFile(installedManifest)) as { state?: string }).state === 'installed';
-      } catch {
-        return false;
-      }
-    })();
+    return { ok: false, wrote, pruned: [], keptReleases: [], refusal: { kind: 'foreign-root', path: manifest.root } };
+  // A record that will not parse is refused, never read as a fresh install: that would overwrite the only statement of
+  // what this folder owns (@cto 2026-11-25). A finished record we are re-applying is a switch, so the boot item is
+  // restarted rather than bootstrapped twice.
+  let previous: InstallManifest | null = null;
+  let upgrading = false;
+  if (io.exists(installedManifest)) {
+    let record: InstallRecord;
+    try {
+      record = JSON.parse(io.readFile(installedManifest)) as InstallRecord;
+    } catch (error) {
+      return {
+        ok: false,
+        wrote,
+        pruned: [],
+        keptReleases: [],
+        refusal: {
+          kind: 'step-failed',
+          step: 'read install record',
+          path: installedManifest,
+          output: `install record at ${installedManifest} is unreadable: ${message(error)}; nothing changed`,
+        },
+      };
+    }
+    previous = record.manifest ?? null;
+    upgrading = record.state === 'installed';
+  }
 
   const root = await attempt('create install root', manifest.root, () => io.mkdir(manifest.root));
-  if (!root.ok) return { ok: false, wrote, pruned: [], refusal: root.refusal };
+  if (!root.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: root.refusal };
 
   // The record goes down first, so a failure below leaves a folder the next apply recognises as its own.
   const opened = await attempt('write install record', installedManifest, () =>
     io.writeFile(installedManifest, JSON.stringify({ state: 'installing', manifest } satisfies InstallRecord, null, 2)),
   );
-  if (!opened.ok) return { ok: false, wrote, pruned: [], refusal: opened.refusal };
+  if (!opened.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: opened.refusal };
   wrote.push(installedManifest);
 
   for (const entry of manifest.entries) {
     if (entry.path === installedManifest) continue;
     if (entry.kind === 'dir') {
       const made = await attempt('create directory', entry.path, () => io.mkdir(entry.path));
-      if (!made.ok) return { ok: false, wrote, pruned: [], refusal: made.refusal };
+      if (!made.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: made.refusal };
       wrote.push(entry.path);
       continue;
     }
@@ -256,7 +313,7 @@ export const applyInstall = async (
     if (entry.kind === 'symlink' || entry.from === 'generated:journal') continue;
     if (entry.from === 'generated:boot-item') {
       const written = await attempt('write boot item record', entry.path, () => io.writeFile(entry.path, bootContent(manifest)));
-      if (!written.ok) return { ok: false, wrote, pruned: [], refusal: written.refusal };
+      if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
       wrote.push(entry.path);
       continue;
     }
@@ -265,7 +322,7 @@ export const applyInstall = async (
         io.mkdir(dirname(entry.path));
         io.writeFile(entry.path, bootContent(manifest));
       });
-      if (!written.ok) return { ok: false, wrote, pruned: [], refusal: written.refusal };
+      if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
       wrote.push(entry.path);
       continue;
     }
@@ -274,18 +331,18 @@ export const applyInstall = async (
       const pin = manifest.pins[name];
       // No silent default: a null checksum at apply time is refused, even though the plan refuses it first.
       if (pin.checksum === null)
-        return { ok: false, wrote, pruned: [], refusal: { kind: 'missing-checksum', download: name } };
+        return { ok: false, wrote, pruned: [], keptReleases: [], refusal: { kind: 'missing-checksum', download: name } };
       const staging = `${entry.path}.download`;
       const fetched = await attempt('download', pin.source, () => io.fetchTo(pin.source, staging));
       if (!fetched.ok) {
         await attempt('remove staged download', staging, () => io.remove(staging));
-        return { ok: false, wrote, pruned: [], refusal: fetched.refusal };
+        return { ok: false, wrote, pruned: [], keptReleases: [], refusal: fetched.refusal };
       }
       const { algorithm, encoding } = pinDigest(pin.checksum);
       const actual = io.hash(staging, algorithm, encoding);
       if (actual !== expectedDigest(pin)) {
         await attempt('remove staged download', staging, () => io.remove(staging));
-        return { ok: false, wrote, pruned: [], refusal: { kind: 'checksum-mismatch', download: name, expected: expectedDigest(pin), actual } };
+        return { ok: false, wrote, pruned: [], keptReleases: [], refusal: { kind: 'checksum-mismatch', download: name, expected: expectedDigest(pin), actual } };
       }
       // Verified bytes, made executable, then placed: what runs is what was checked.
       const placed = await attempt('place download', entry.path, () => {
@@ -294,7 +351,7 @@ export const applyInstall = async (
       });
       if (!placed.ok) {
         await attempt('remove staged download', staging, () => io.remove(staging));
-        return { ok: false, wrote, pruned: [], refusal: placed.refusal };
+        return { ok: false, wrote, pruned: [], keptReleases: [], refusal: placed.refusal };
       }
       wrote.push(entry.path);
       continue;
@@ -303,37 +360,81 @@ export const applyInstall = async (
       ok: false,
       wrote,
       pruned: [],
+      keptReleases: [],
       refusal: { kind: 'step-failed', step: 'write file', path: entry.path, output: 'the manifest names no source for this file' },
     };
   }
 
   const layout = { stateDir: `${manifest.root}/state`, service: 'ahpd' };
-  switchTo(layout, manifest.version, upgrading ? `customer host switch to ${manifest.version}` : 'customer host install');
-  const pruned = pruneReleaseFolders(io, layout, manifest.version);
+  switchTo(
+    layout,
+    manifest.version,
+    upgrading ? `customer host switch to ${manifest.version}` : 'customer host install',
+  );
 
   // The loaded boot item points at `current`, so a switch needs it restarted; a first install just starts it.
   const stopped = upgrading ? io.run(manifest.bootItem.disable) : { code: 0, output: '' };
   const enabled = await attempt('enable boot item', manifest.bootItem.path, () => io.run(manifest.bootItem.enable));
-  if (!enabled.ok) return { ok: false, wrote, pruned, refusal: enabled.refusal };
-  if (enabled.value.code !== 0)
+  const started = enabled.ok && enabled.value.code === 0;
+  if (!started) {
+    const failure = enabled.ok ? enabled.value.output : enabled.refusal.kind === 'step-failed' ? enabled.refusal.output : '';
+    // A failed start goes back to the release that was running, so a bad switch never leaves a dead host pointing at
+    // a release nobody has started (@cto 2026-11-25).
+    if (upgrading && previous !== null) {
+      switchTo(layout, previous.version, 'switching back after a failed start');
+      const restarted = io.run(manifest.bootItem.enable);
+      await attempt('restore install record', installedManifest, () =>
+        io.writeFile(
+          installedManifest,
+          JSON.stringify({ state: 'installed', manifest: previous } satisfies InstallRecord, null, 2),
+        ),
+      );
+      return {
+        ok: false,
+        wrote,
+        pruned: [],
+        keptReleases: [],
+        refusal: {
+          kind: 'step-failed',
+          step: 'enable boot item',
+          path: manifest.bootItem.path,
+          // Both halves of the attempt, then the switch back and its own start: nothing is left to guess.
+          output: `${stopped.output} then ${failure}; switched back to ${previous.version}: ${restarted.output}`.trim(),
+        },
+      };
+    }
     return {
       ok: false,
       wrote,
-      pruned,
+      pruned: [],
+      keptReleases: [],
       refusal: {
         kind: 'step-failed',
         step: 'enable boot item',
         path: manifest.bootItem.path,
-        // A restart names both halves: the stop that ran before it, and the start that failed.
-        output: upgrading ? `${stopped.output} then ${enabled.value.output}`.trim() : enabled.value.output,
+        output: failure,
       },
     };
+  }
+
+  // Only a started release is worth keeping the disk tidy for: a failed switch pruned nothing above.
+  const prunedNow = pruneReleaseFolders(io, layout, manifest.version);
+  if (!prunedNow.ok)
+    return {
+      ok: false,
+      wrote,
+      pruned: [],
+      keptReleases: [],
+      refusal: { kind: 'step-failed', step: 'prune releases', path: prunedNow.path, output: prunedNow.output },
+    };
+  const pruned = prunedNow.removed;
+  const keptReleases = prunedNow.kept;
 
   const closed = await attempt('finish install record', installedManifest, () =>
     io.writeFile(installedManifest, JSON.stringify({ state: 'installed', manifest } satisfies InstallRecord, null, 2)),
   );
-  if (!closed.ok) return { ok: false, wrote, pruned, refusal: closed.refusal };
-  return { ok: true, wrote, pruned };
+  if (!closed.ok) return { ok: false, wrote, pruned, keptReleases, refusal: closed.refusal };
+  return { ok: true, wrote, pruned, keptReleases };
 };
 
 export interface UninstallOptions {

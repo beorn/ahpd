@@ -123,7 +123,10 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
 const existsOf = (io: Fake, path: string) => io.paths.has(path);
 
 const recordOf = (io: Fake, manifest: ReturnType<typeof manifestWith>) =>
-  JSON.parse(io.content.get(`${manifest.root}/install.json`) ?? '{}') as { state?: string };
+  JSON.parse(io.content.get(`${manifest.root}/install.json`) ?? '{}') as {
+    state?: string;
+    manifest?: { version?: string };
+  };
 
 describe('apply writes the plan, and refuses what it must (#38280)', () => {
   // @level l3 @consumer a root this install did not create is never adopted, $AHPD_HOME included.
@@ -255,6 +258,11 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     // `current` is kept even when it is older than everything else: it is what is running, plus the newest other.
     expect(releasesToPrune(['0.12.0', '0.11.0', '0.10.0'], '0.10.0', 2)).toEqual(['0.11.0']);
     expect(releasesToPrune(['1.0.0', '1.0.0-rc.1'], '1.0.0', 1)).toEqual(['1.0.0-rc.1']);
+    // Pre-release parts compare segment by segment, numerically: rc.10 is above rc.9.
+    expect(releasesToPrune(['1.0.0-rc.10', '1.0.0-rc.9', '1.0.0-rc.8'], '1.0.0-rc.10', 1)).toEqual([
+      '1.0.0-rc.9',
+      '1.0.0-rc.8',
+    ]);
     expect(['0.9.0', '0.10.0', '1.0.0-rc.1', '1.0.0'].sort(compareVersions)).toEqual([
       '1.0.0',
       '1.0.0-rc.1',
@@ -287,19 +295,62 @@ describe('a version switch places, activates and prunes by one shared rule (#382
     expect(existsOf(io, '/home/customer/.ahpd/state/deploy/ahpd/releases/0.13.0')).toBe(false);
   });
 
-  // @level l3 @consumer a switch that cannot restart the boot item names the stop it ran and the start that failed.
-  it('reports both halves when the restarted boot item will not start', async () => {
+  // @level l3 @consumer a folder that is not a version is never pruned, and it is named rather than guessed at.
+  it('keeps a stray folder in releases and says why', () => {
+    const releases = '/r/state/deploy/ahpd/releases';
+    const io = fakeIo([releases, `${releases}/junk`, `${releases}/0.15.0`, `${releases}/0.16.0`]);
+    for (const path of [releases, `${releases}/junk`, `${releases}/0.15.0`, `${releases}/0.16.0`]) io.dirs.add(path);
+    const out = pruneReleaseFolders(io, { stateDir: '/r/state', service: 'ahpd' }, '0.16.0', 1);
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error('unreachable');
+    expect(out.kept).toEqual([{ name: 'junk', why: 'not a version' }]);
+    expect(out.removed).toEqual(['0.15.0']);
+    expect(io.paths.has(`${releases}/junk`)).toBe(true);
+  });
+
+  // @level l3 @consumer a start that fails switches back: current on the old release, the old service running, and
+  // nothing pruned, so a bad switch never leaves a dead host pointing at a release nobody started.
+  it('switches back when the restarted boot item will not start, and prunes nothing', async () => {
     const io = fakeIo();
+    const switched: string[] = [];
+    const switchTo = (_layout: unknown, version: string) => {
+      switched.push(version);
+    };
     const first = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.13.0', pins: HONEST });
     if (!first.ok) throw new Error('expected a manifest');
-    expect((await applyInstall(first.manifest, io, () => undefined)).ok).toBe(true);
+    expect((await applyInstall(first.manifest, io, switchTo)).ok).toBe(true);
+    // Four releases first, so a prune would have something to remove if it ran at the wrong moment.
+    for (const version of ['0.14.0', '0.15.0']) {
+      const next = customerInstallManifest({ platform: 'linux', home: '/home/customer', version, pins: HONEST });
+      if (!next.ok) throw new Error('expected a manifest');
+      expect((await applyInstall(next.manifest, io, switchTo)).ok).toBe(true);
+    }
     io.failRun();
-    const second = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.14.0', pins: HONEST });
-    if (!second.ok) throw new Error('expected a manifest');
-    const result = await applyInstall(second.manifest, io, () => undefined);
+    const failing = customerInstallManifest({ platform: 'linux', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    if (!failing.ok) throw new Error('expected a manifest');
+    const result = await applyInstall(failing.manifest, io, switchTo);
     expect(result.ok).toBe(false);
     expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'enable boot item' });
-    expect(describeApplyRefusal(result.refusal!)).toContain('launchctl: no such service');
+    const text = describeApplyRefusal(result.refusal!);
+    expect(text).toContain('launchctl: no such service');
+    expect(text).toContain('switched back to 0.15.0');
+    // The last two switches are: onto 0.16.0, then back to the release that was running.
+    expect(switched.slice(-2)).toEqual(['0.16.0', '0.15.0']);
+    expect(result.pruned).toEqual([]);
+    expect(recordOf(io, failing.manifest).manifest?.version).toBe('0.15.0');
+    expect(existsOf(io, '/home/customer/.ahpd/state/deploy/ahpd/releases/0.13.0')).toBe(true);
+  });
+
+  // @level l3 @consumer a record that will not parse is refused, never read as a fresh install.
+  it('refuses an unreadable install record and changes nothing', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo([manifest.root, `${manifest.root}/install.json`]);
+    io.content.set(`${manifest.root}/install.json`, '{ not json');
+    const result = await applyInstall(manifest, io, () => undefined);
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'read install record' });
+    expect(describeApplyRefusal(result.refusal!)).toContain('is unreadable');
+    expect(io.content.get(`${manifest.root}/install.json`)).toBe('{ not json');
   });
 });
 
