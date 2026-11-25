@@ -142,7 +142,7 @@ describe('the deploy plugin (#38276 slice 2)', () => {
     expect(String(answer['message'])).toContain('after taking the lock at step resolve');
     expect(String(answer['message'])).toContain('the next deploy clears it');
     const lines = readFileSync(join(root, 'deploy.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(lines.at(-1)).toMatchObject({ event: 'not started', reason: 'killed after taking the lock at step resolve; the lock it left is stale and the next deploy clears it' });
+    expect(lines.at(-1)).toMatchObject({ event: 'outcome unknown', step: 'resolve', reason: 'killed after taking the lock; the lock it left is stale and the next deploy clears it' });
     // Left in place, not silently removed: the next claim names the step and clears it through the pid check.
     expect(existsSync(join(root, 'deploy.lock'))).toBe(true);
   }, 20_000);

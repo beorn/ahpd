@@ -260,7 +260,9 @@ export function deployMethods(options: DeployMethodsOptions): Record<string, Dep
             // through the pid-and-start-time check, so it is named and left, never resumed.
             const after = status(layout).lock;
             if (after !== undefined && after.deployId === request.deployId) {
-              writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `killed after taking the lock at step ${after.step}; the lock it left is stale and the next deploy clears it` });
+              // 'outcome unknown', not 'not started': a child that held the lock may have run a step before the
+              // signal reached it, and the journal says the step it had reached rather than claiming it never began.
+              writeJournalEntry(layout, { event: 'outcome unknown', deployId: request.deployId, step: after.step, reason: 'killed after taking the lock; the lock it left is stale and the next deploy clears it' });
               return refused('DRIVER_FAILED', `the deploy child was killed after taking the lock at step ${after.step}; its lock is stale and the next deploy clears it`);
             }
             writeJournalEntry(layout, { event: 'not started', deployId: request.deployId, reason: `killed after ${String(budget)} ms without taking the lock` });
