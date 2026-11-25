@@ -167,6 +167,59 @@ describe('a pinned release archive is checked before it is written (#38280)', ()
     expect(existsSync(release)).toBe(false);
   });
 
+  // @level l3 @consumer a symlink's target is relative to the folder the link sits in, so one level up from the
+  // top directory points BESIDE the release, not inside it (@cto 2026-11-25).
+  it('refuses a symlink that climbs one level out of the release', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/package.json`, body: '{}' },
+        { name: `${top}/link`, kind: 'symlink', target: '../x' },
+      ]),
+    );
+    const release = into();
+    expect(() => unpackArchive(archive, release, top)).toThrow(/link/u);
+    expect(existsSync(release)).toBe(false);
+  });
+
+  // @level l3 @consumer one level up from a folder INSIDE the release is still inside the release: kept.
+  it('keeps a symlink in a subfolder that climbs to the release root', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/b`, body: 'b\n' },
+        { name: `${top}/a/l`, kind: 'symlink', target: '../b' },
+      ]),
+    );
+    const release = into();
+    unpackArchive(archive, release, top);
+    expect(readlinkSync(join(release, 'a', 'l'))).toBe('../b');
+  });
+
+  // @level l3 @consumer a hard link's target is a path in the archive root, and one that climbs is refused outright.
+  it('refuses a hard link that climbs with ..', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/package.json`, body: '{}' },
+        { name: `${top}/hl`, typeflag: '1', target: `${top}/../../etc/passwd` },
+      ]),
+    );
+    const release = into();
+    expect(() => unpackArchive(archive, release, top)).toThrow(/hl/u);
+    expect(existsSync(release)).toBe(false);
+  });
+
+  // @level l3 @consumer a hard link to a file inside the release is how a real tree dedupes, and it stays a link.
+  it('keeps a hard link whose target is inside the release', () => {
+    const archive = write(
+      archiveOf([
+        { name: `${top}/x/z`, body: 'z\n' },
+        { name: `${top}/x/y`, typeflag: '1', target: `${top}/x/z` },
+      ]),
+    );
+    const release = into();
+    unpackArchive(archive, release, top);
+    expect(statSync(join(release, 'x', 'y')).ino).toBe(statSync(join(release, 'x', 'z')).ino);
+  });
+
   // @level l3 @consumer a device or fifo is not a file this installer places, and it is named.
   it('refuses a fifo entry', () => {
     const archive = write(

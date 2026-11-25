@@ -48,16 +48,30 @@ const plainRelative = (path: string): boolean => {
   return !path.split('/').includes('..');
 };
 
-/** Where a link leads, resolved from the entry that holds it: it has to land inside the release. */
-const linkStaysInside = (entryName: string, target: string, topDir: string): boolean => {
-  if (target === '' || target.startsWith('/') || target.includes('\\')) return false;
-  const parts: string[] = [];
-  for (const part of `${entryName}/${target}`.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') parts.pop();
-    else parts.push(part);
+/**
+ * Where a link leads, and whether that lands inside the release (@cto 2026-11-25).
+ *
+ * The two link kinds resolve from different places, and getting that wrong is an escape. A symlink's target is
+ * relative to the folder the link sits in, so `top/link -> ../x` points BESIDE the release, not at `top/x`. A hard
+ * link's target is a path in the archive root, not relative to the entry at all. Both are resolved from their own
+ * base, `..` is allowed to climb only within the release, and a hard link that climbs at all is refused outright:
+ * nothing in a release needs one, so there is no reason to accept the arithmetic.
+ */
+const linkStaysInside = (entry: ArchiveEntry, topDir: string): boolean => {
+  const target = entry.target;
+  if (target === undefined || target === '' || target.startsWith('/') || target.includes('\\')) return false;
+  const fromFolder = entry.kind === 'symlink'
+  const parts: string[] = fromFolder ? entry.name.split('/').slice(0, -1) : []
+  for (const part of target.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (!fromFolder || parts.length === 0) return false
+      parts.pop()
+      continue
+    }
+    parts.push(part)
   }
-  return parts.length > 1 && parts[0] === topDir;
+  return parts.length > 0 && parts[0] === topDir
 };
 
 /** The entries, refused as a whole when any one of them is not a safe member of `<topDir>/`. */
@@ -70,10 +84,9 @@ export const checkArchive = (entries: readonly ArchiveEntry[], topDir: string): 
     if (entry.kind === 'other')
       throw new Error('archive entry ' + entry.name + ' is a device, fifo or other special file, which this installer does not unpack');
     if (entry.kind !== 'symlink' && entry.kind !== 'hardlink') continue;
-    const target = entry.target;
-    if (target === undefined) throw new Error('archive entry ' + entry.name + ' is a link with no target');
-    if (!linkStaysInside(entry.name, target, topDir))
-      throw new Error('archive entry ' + entry.name + ' links to ' + target + ', which is outside the release');
+    if (entry.target === undefined) throw new Error('archive entry ' + entry.name + ' is a link with no target');
+    if (!linkStaysInside(entry, topDir))
+      throw new Error('archive entry ' + entry.name + ' links to ' + entry.target + ', which is outside the release');
   }
   return entries;
 };
