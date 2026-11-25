@@ -354,6 +354,10 @@ describe("a turn's login", () => {
     await settle();
     expect(sdk.queries).toHaveLength(2);
     expect(tokenOf()).toBe('token-work-again');
+    // And the new CLI continues the conversation rather than starting one:
+    // the first CLI named it, and the second is resumed by that name.
+    expect(sdk.queries[0]?.options.resume).toBeUndefined();
+    expect(sdk.queries[1]?.options.resume).toBe('cli-1');
   });
 
   it("moves the next turn when an edit names other logins, and to the agent's own credential when it names none", async () => {
