@@ -56,7 +56,7 @@ const declaration = (repo: string, extra: Partial<DeployDeclaration> = {}): Depl
 });
 
 describe('deploy driver (#38276)', () => {
-  it('resolves a version once to a sha and refuses one the declared ref cannot reach', () => {
+  it('resolves a version once to a sha and refuses one the declared ref cannot reach', async () => {
     const { repo, main, side, stateDir } = fixture();
     const layout = { stateDir, service: 'svc' };
     expect(resolveVersion(layout, { repo, ref: 'main' }, 'main')).toBe(main);
@@ -64,9 +64,9 @@ describe('deploy driver (#38276)', () => {
     expect(() => resolveVersion(layout, { repo, ref: 'main' }, 'nope')).toThrow(/not a commit/u);
   });
 
-  it('writes started <from>-><to> before any step, then switches one symlink and checks', () => {
+  it('writes started <from>-><to> before any step, then switches one symlink and checks', async () => {
     const { repo, main, stateDir } = fixture();
-    const result = deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
+    const result = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
     expect(result.outcome.state).toBe('switched, checked');
     expect(result.sha).toBe(main);
     expect(currentRelease({ stateDir, service: 'svc' })).toBe(main);
@@ -75,17 +75,17 @@ describe('deploy driver (#38276)', () => {
     expect(journal.map((one) => one.event)).toContain('switched');
   });
 
-  it('says switched, unchecked when the declaration has no check, and never healthy', () => {
+  it('says switched, unchecked when the declaration has no check, and never healthy', async () => {
     const { repo, stateDir } = fixture();
-    const result = deploy({ stateDir, service: 'svc', version: 'main', declaration: { repo, ref: 'main' } });
+    const result = await deploy({ stateDir, service: 'svc', version: 'main', declaration: { repo, ref: 'main' } });
     expect(result.outcome.state).toBe('switched, unchecked');
   });
 
-  it('keeps the new release live and fails loudly when a check fails without a declared migration', () => {
+  it('keeps the new release live and fails loudly when a check fails without a declared migration', async () => {
     const { repo, stateDir } = fixture();
-    const first = deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
+    const first = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
     expect(first.outcome.state).toBe('switched, checked');
-    const failing = deploy({
+    const failing = await deploy({
       stateDir,
       service: 'svc',
       version: 'main',
@@ -95,10 +95,10 @@ describe('deploy driver (#38276)', () => {
     expect(currentRelease({ stateDir, service: 'svc' })).toBe(first.sha);
   });
 
-  it('switches back only for migrations: expand-only, and says the migration stays applied', () => {
+  it('switches back only for migrations: expand-only, and says the migration stays applied', async () => {
     const { repo, side, stateDir } = fixture();
-    const first = deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
-    const moving = deploy({
+    const first = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
+    const moving = await deploy({
       stateDir,
       service: 'svc',
       version: 'side',
@@ -111,9 +111,9 @@ describe('deploy driver (#38276)', () => {
     expect(journal.some((one) => one.event === 'switched back')).toBe(true);
   });
 
-  it('refuses a build the machine does not accept, before anything is switched, and says why', () => {
+  it('refuses a build the machine does not accept, before anything is switched, and says why', async () => {
     const { repo, stateDir } = fixture();
-    const result = deploy({
+    const result = await deploy({
       stateDir,
       service: 'svc',
       version: 'main',
@@ -129,20 +129,107 @@ describe('deploy driver (#38276)', () => {
     expect(journal.some((one) => one.event === 'switched')).toBe(false);
   });
 
-  it('reports a refused check as switched, unchecked, because the folder is live and nothing checked it', () => {
-    const { repo, main, stateDir } = fixture();
-    const result = deploy({
+  it('refuses the whole deploy up front when any declared command is refused, so a switch never happens unchecked', async () => {
+    const { repo, stateDir } = fixture();
+    const result = await deploy({
       stateDir,
       service: 'svc',
       version: 'main',
       declaration: declaration(repo),
       permit: () => 'commands from Hightea are off on this machine',
     });
-    expect(result.outcome).toMatchObject({ state: 'switched, unchecked', sha: main });
-    expect(currentRelease({ stateDir, service: 'svc' })).toBe(main);
+    expect(result.outcome).toMatchObject({ state: 'refused, command not allowed', step: 'check', reason: 'commands from Hightea are off on this machine' });
+    expect(currentRelease({ stateDir, service: 'svc' })).toBeNull();
+    const journal = readJournal({ stateDir, service: 'svc' });
+    expect(journal.some((one) => one.event === 'started')).toBe(false);
+    expect(journal.some((one) => one.event === 'switched')).toBe(false);
   });
 
-  it('sweeps what an earlier process left unfinished at start, and leaves a live deploy alone', () => {
+  it('gives a step only PATH, HOME, LANG, TMPDIR and its own references, never the daemon\'s environment', async () => {
+    const { repo, stateDir } = fixture();
+    process.env['DEPLOY_TEST_TOKEN'] = 'ahpd-holds-this';
+    try {
+      const result = await deploy({
+        stateDir,
+        service: 'svc',
+        version: 'main',
+        declaration: declaration(repo, {
+          check: { command: 'sh', args: ['-c', 'echo inherited=$DEPLOY_TEST_TOKEN; echo path=$PATH'] },
+        }),
+      });
+      expect(result.outcome.state).toBe('switched, checked');
+      const said = result.steps.find((one) => one.step === 'check')?.output ?? '';
+      expect(said.split('\n')[0]).toBe('inherited=');
+      expect(said).not.toContain('ahpd-holds-this');
+      expect(said.split('\n')[1]).not.toBe('path=');
+    } finally {
+      delete process.env['DEPLOY_TEST_TOKEN'];
+    }
+  });
+
+  it('reads a declared $secret from the machine\'s vault and starts nothing when the vault has no value', async () => {
+    const { repo, stateDir } = fixture();
+    const withSecret = await deploy({
+      stateDir,
+      service: 'svc',
+      version: 'main',
+      declaration: declaration(repo, {
+        check: { command: 'sh', args: ['-c', 'echo token=$TOKEN'], env: { TOKEN: { $secret: 'env:DEPLOY_VAULT' } } },
+      }),
+      secrets: (ref) => (ref === 'env:DEPLOY_VAULT' ? 'from-the-vault' : undefined),
+    });
+    expect(withSecret.outcome.state).toBe('switched, checked');
+    expect(withSecret.steps.find((one) => one.step === 'check')?.output).toContain('token=from-the-vault');
+
+    const missing = join(stateDir, 'must-not-exist');
+    const without = await deploy({
+      stateDir,
+      service: 'other',
+      version: 'main',
+      declaration: { repo, ref: 'main', build: { command: 'sh', args: ['-c', 'touch ' + missing], env: { TOKEN: { $secret: 'env:ABSENT' } } } },
+      secrets: () => undefined,
+      machine: 'the-test-machine',
+    });
+    expect(without.outcome).toMatchObject({ state: 'failed, new release live', step: 'build' });
+    expect(String((without.outcome as { reason?: string }).reason)).toContain('secret env:ABSENT has no value on the-test-machine');
+    expect(without.steps.find((one) => one.step === 'build')).toMatchObject({ ok: false, code: 78 });
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it('kills a step that outlives its timeout and says "timed out after N" rather than an exit code', async () => {
+    const { repo, stateDir } = fixture();
+    const result = await deploy({
+      stateDir,
+      service: 'svc',
+      version: 'main',
+      declaration: { repo, ref: 'main', build: { command: 'sh', args: ['-c', 'sleep 30'], timeoutMs: 250 } },
+    });
+    expect(result.outcome.state).toBe('failed, new release live');
+    expect(String((result.outcome as { reason?: string }).reason)).toContain('timed out after 250');
+    expect(result.steps.find((one) => one.step === 'build')).toMatchObject({ ok: false, timedOut: true });
+  }, 20_000);
+
+  it('treats a lock whose pid now belongs to another process as dead, and never resumes it', async () => {
+    const { repo, main, stateDir } = fixture();
+    const root = join(stateDir, 'deploy', 'svc');
+    mkdirSync(root, { recursive: true });
+    // This pid is alive (it is this process), but the start time recorded beside it is not the one it has.
+    writeFileSync(join(root, 'deploy.lock'),
+      JSON.stringify({ deployId: 'reused', step: 'build', pid: process.pid, pidStart: '1', startedAt: new Date().toISOString(), from: null, to: main }) + '\n');
+    const answer = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
+    expect(answer.outcome).toMatchObject({ state: 'outcome unknown', step: 'build', deployId: 'reused' });
+    expect(status({ stateDir, service: 'svc' }).lock).toBeUndefined();
+  });
+
+  it('refuses keep below 2 by name, so there is always a folder to switch back to', async () => {
+    const { repo, stateDir } = fixture();
+    const answer = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo, { keep: 1 }) });
+    expect(answer.outcome).toMatchObject({ state: 'refused, invalid declaration' });
+    expect(String((answer.outcome as { reason?: string }).reason)).toContain('at least 2');
+    expect(currentRelease({ stateDir, service: 'svc' })).toBeNull();
+  });
+
+  it('sweeps what an earlier process left unfinished at start, and leaves a live deploy alone', async () => {
     const { repo, main, stateDir } = fixture();
     mkdirSync(join(stateDir, 'deploy', 'dead'), { recursive: true });
     writeFileSync(join(stateDir, 'deploy', 'dead', 'deploy.lock'),
@@ -150,33 +237,33 @@ describe('deploy driver (#38276)', () => {
     mkdirSync(join(stateDir, 'deploy', 'busy'), { recursive: true });
     writeFileSync(join(stateDir, 'deploy', 'busy', 'deploy.lock'),
       `${JSON.stringify({ deployId: 'live', step: 'check', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: main })}\n`);
-    deploy({ stateDir, service: 'quiet', version: 'main', declaration: declaration(repo) });
+    await deploy({ stateDir, service: 'quiet', version: 'main', declaration: declaration(repo) });
     expect(sweep(stateDir)).toEqual([{ service: 'dead', step: 'switch', deployId: 'died' }]);
     expect(status({ stateDir, service: 'dead' }).lock).toBeUndefined();
     expect(readJournal({ stateDir, service: 'dead' }).some((one) => one.event === 'outcome unknown')).toBe(true);
     expect(status({ stateDir, service: 'busy' }).lock?.deployId).toBe('live');
   });
 
-  it('refuses a second deploy by name with the running deploy id, and reports an unfinished one as outcome unknown', () => {
+  it('refuses a second deploy by name with the running deploy id, and reports an unfinished one as outcome unknown', async () => {
     const { repo, main, stateDir } = fixture();
     const layout = { stateDir, service: 'svc' };
     // A live holder: this process is alive, so the lock is genuinely in use.
     mkdirSync(join(stateDir, 'deploy', 'svc'), { recursive: true });
     writeFileSync(join(stateDir, 'deploy', 'svc', 'deploy.lock'),
       `${JSON.stringify({ deployId: 'running-one', step: 'check', pid: process.pid, startedAt: new Date().toISOString(), from: null, to: main })}\n`);
-    const refused = deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
+    const refused = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
     expect(refused.outcome).toMatchObject({ state: 'refused, deploy running', deployId: 'running-one' });
     expect(status(layout).lock?.deployId).toBe('running-one');
 
     // A holder whose process is gone: never resumed, reported with the step it died in.
     writeFileSync(join(stateDir, 'deploy', 'svc', 'deploy.lock'),
       `${JSON.stringify({ deployId: 'died', step: 'before_switch', pid: 999_999, startedAt: new Date().toISOString(), from: null, to: main })}\n`);
-    const unknown = deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
+    const unknown = await deploy({ stateDir, service: 'svc', version: 'main', declaration: declaration(repo) });
     expect(unknown.outcome).toMatchObject({ state: 'outcome unknown', step: 'before_switch', deployId: 'died' });
     expect(readJournal(layout).some((one) => one.event === 'outcome unknown')).toBe(true);
   });
 
-  it('keeps the current release plus the default number, and prunes the rest by name', () => {
+  it('keeps the current release plus the default number, and prunes the rest by name', async () => {
     const { root, repo, stateDir } = fixture();
     const releases = join(stateDir, 'deploy', 'svc', 'releases');
     mkdirSync(releases, { recursive: true });

@@ -17,7 +17,7 @@
  * ahpd itself is not deployed by this driver (@cto ca6ae480).
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -33,15 +33,36 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { hostname } from 'node:os';
 import { basename, join } from 'node:path';
+
+/** A value that is only ever a reference: the deploy never carries a secret, the machine's vault does. */
+export interface DeploySecret {
+  readonly $secret: string;
+}
 
 /** A command the deploy runs, as the declaration gives it. Secrets reach it only as references. */
 export interface DeployCommand {
   readonly command: string;
   readonly args?: readonly string[];
   readonly cwd?: string;
-  readonly env?: Readonly<Record<string, string>>;
+  /** Variables for this step. A value is `{ $secret: "<scope>:<name>" }`; a plain value is refused, not passed. */
+  readonly env?: Readonly<Record<string, DeploySecret>>;
+  /** How long the step may run before its process group is killed; the step's default when absent. */
+  readonly timeoutMs?: number;
 }
+
+/** How long each checked step may run when the declaration names no timeout (@cto 2026-11-25). */
+export const STEP_TIMEOUT_MS = { build: 30 * 60_000, before_switch: 10 * 60_000, check: 5 * 60_000 } as const;
+
+/** The variables a step inherits besides the ones its declaration names. Nothing else from ahpd's environment. */
+const MINIMAL_ENV = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const;
+
+/** Reads a `$secret` reference from the machine's vault; `undefined` when it has no value. */
+export type SecretReader = (ref: string) => undefined | string | Promise<undefined | string>;
+
+/** Sysexits' EX_NOINPUT, which `ahpd secrets exec` also answers a missing value with. */
+export const EXIT_NO_VALUE = 78;
 
 /** One service's deploy declaration. Absent steps are absent on purpose; a missing check is reported, not assumed. */
 export interface DeployDeclaration {
@@ -72,7 +93,10 @@ export interface DeployStepResult {
   readonly ok: boolean;
   readonly ms: number;
   readonly code?: number | null;
+  /** The step's own last words, kept for the journal's reader. Never handed to a remote caller: a build may print a secret. */
   readonly output?: string;
+  /** True when the step was killed at its timeout, so the report says "timed out after N" rather than an exit code. */
+  readonly timedOut?: boolean;
 }
 
 export type DeployStep = 'resolve' | 'fetch' | 'build' | 'before_switch' | 'switch' | 'check';
@@ -104,7 +128,8 @@ export type DeployState =
       readonly step: DeployStep;
       readonly reason: string;
     }
-  | { readonly state: 'refused, deploy running'; readonly deployId: string };
+  | { readonly state: 'refused, deploy running'; readonly deployId: string }
+  | { readonly state: 'refused, invalid declaration'; readonly reason: string };
 
 export interface DeployResult {
   readonly service: string;
@@ -144,6 +169,8 @@ export interface DeployLock {
   readonly deployId: string;
   readonly step: DeployStep;
   readonly pid: number;
+  /** The pid's own start time (Linux), so a reused pid cannot pass for the deploy that held the lock. */
+  readonly pidStart?: string;
   readonly startedAt: string;
   readonly from: string | null;
   readonly to: string;
@@ -264,16 +291,66 @@ export const currentRelease = (layout: DeployLayout): string | null => {
   }
 };
 
-const runStep = (step: DeployStep, command: DeployCommand | undefined, cwd: string): DeployStepResult => {
+/**
+ * Runs one step in its own process group, with a minimal environment and a timeout (@cto 2026-11-25).
+ *
+ * Three rules, each a hole that was open: a build inherited every token ahpd holds, so the environment is PATH, HOME,
+ * LANG and TMPDIR plus the step's own `$secret` references, read from the vault; a build with no timeout can hold the
+ * lock forever, so each step has one and its expiry kills the whole group rather than the one process; and a missing
+ * secret starts nothing, answering 78 with the reference named - the same answer `ahpd secrets exec` gives.
+ */
+const runStep = async (
+  step: DeployStep, command: DeployCommand | undefined, cwd: string, secrets: SecretReader | undefined, machine: string,
+): Promise<DeployStepResult> => {
   if (command === undefined) return { step, ok: true, ms: 0 };
   const started = Date.now();
-  const ran = spawnSync(command.command, [...(command.args ?? [])], {
-    cwd: command.cwd === undefined ? cwd : join(cwd, command.cwd),
-    encoding: 'utf8',
-    env: { ...process.env, ...command.env },
+  const env: Record<string, string> = {};
+  for (const key of MINIMAL_ENV) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(command.env ?? {})) {
+    const read = secrets === undefined ? undefined : await secrets(value.$secret);
+    if (read === undefined) {
+      // Starting the command without the variable would be a program that half works; nothing runs instead.
+      return { step, ok: false, ms: Date.now() - started, code: EXIT_NO_VALUE, output: `secret ${value.$secret} has no value on ${machine}; nothing was started` };
+    }
+    env[key] = read;
+  }
+  const timeout = command.timeoutMs ?? (step === 'build' || step === 'before_switch' || step === 'check' ? STEP_TIMEOUT_MS[step] : undefined);
+  return await new Promise<DeployStepResult>((resolve) => {
+    let output = '';
+    const collect = (chunk: Buffer): void => { output = `${output}${chunk.toString('utf8')}`.slice(-4000); };
+    const child = spawn(command.command, [...(command.args ?? [])], {
+      cwd: command.cwd === undefined ? cwd : join(cwd, command.cwd),
+      env,
+      // Its own group, so expiry can kill what the step started as well as the step.
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    let timedOut = false;
+    const timer = timeout === undefined ? undefined : setTimeout(() => {
+      timedOut = true;
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // The group is already gone; `close` still fires and says how it ended.
+      }
+    }, timeout);
+    child.on('error', (error) => {
+      if (timer !== undefined) clearTimeout(timer);
+      resolve({ step, ok: false, ms: Date.now() - started, code: null, output: `${output}${error.message}`.trim() });
+    });
+    child.on('close', (code, signal) => {
+      if (timer !== undefined) clearTimeout(timer);
+      const ms = Date.now() - started;
+      const text = timedOut ? `${output}timed out after ${String(timeout)} ms`.trim() : output.trim();
+      resolve({ step, ok: code === 0 && signal === null && !timedOut, ms, code, output: text, ...(timedOut ? { timedOut: true } : {}) });
+    });
   });
-  const output = `${ran.stdout ?? ''}${ran.stderr ?? ''}`.trim();
-  return { step, ok: ran.status === 0, ms: Date.now() - started, code: ran.status, output: output.slice(-4000) };
 };
 
 /** Exactly one atomic rename: the temporary link is built beside `current` and renamed over it. */
@@ -334,17 +411,45 @@ export interface DeployOptions extends DeployLayout {
    * never a bare false, because the journal and the report say why by name.
    */
   readonly permit?: (step: DeployStep, command: DeployCommand) => string | undefined;
+  /** The machine's vault, for a command's `$secret` references; absent refuses every reference by name. */
+  readonly secrets?: SecretReader;
+  /** The machine's name as a missing-secret sentence says it; the host name by default. */
+  readonly machine?: string;
 }
 
-/** Whether a process still runs, which is what separates a live deploy's lock from a dead one's. */
-const alive = (pid: number): boolean => {
-  if (pid <= 0) return false;
+/**
+ * When a process started, from `/proc/<pid>/stat` field 22, or undefined where there is no /proc (macOS).
+ *
+ * A pid alone is not identity: a machine that has deployed a few times can hand the same number to another process
+ * between two reads, and a lock would then read as live for something that never held it (@cto 2026-11-25).
+ */
+const pidStart = (pid: number): string | undefined => {
   try {
-    process.kill(pid, 0);
-    return true;
+    const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8');
+    // The second field is the command in parentheses and may contain spaces, so fields count from the last ')'.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/u);
+    return fields[19];
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Whether the deploy named by a lock still runs, which separates a live lock from a dead one's.
+ *
+ * The pid must be alive AND still the process that wrote the lock: where a start time was recorded, it must match.
+ * Where none was (macOS, or a lock written before this check) the pid is all there is, and that is said, not guessed.
+ */
+const alive = (lock: Pick<DeployLock, 'pid' | 'pidStart'>): boolean => {
+  if (lock.pid <= 0) return false;
+  try {
+    process.kill(lock.pid, 0);
   } catch {
     return false;
   }
+  if (lock.pidStart === undefined) return true;
+  const now = pidStart(lock.pid);
+  return now === undefined ? true : now === lock.pidStart;
 };
 
 /** A claim's lock, when it took one; or the answer the whole-call path would have given instead. */
@@ -363,7 +468,7 @@ export type Claim =
 export const claim = (layout: DeployLayout, deployId: string = randomUUID()): Claim => {
   const before = readLock(layout);
   if (before !== undefined) {
-    if (alive(before.pid)) {
+    if (alive(before)) {
       journal(layout, { event: 'refused', deployId: before.deployId, holder: before.deployId, step: before.step });
       const outcome: DeployState = { state: 'refused, deploy running', deployId: before.deployId };
       return { ok: false, result: { service: layout.service, deployId: before.deployId, sha: before.to, from: before.from, steps: [], outcome } };
@@ -376,7 +481,8 @@ export const claim = (layout: DeployLayout, deployId: string = randomUUID()): Cl
   }
 
   const from = currentRelease(layout);
-  const lock: DeployLock = { deployId, step: 'resolve', pid: process.pid, startedAt: new Date().toISOString(), from, to: '' };
+  const start = pidStart(process.pid);
+  const lock: DeployLock = { deployId, step: 'resolve', pid: process.pid, ...(start === undefined ? {} : { pidStart: start }), startedAt: new Date().toISOString(), from, to: '' };
   if (!takeLock(layout, lock)) {
     const holder = readLock(layout);
     const outcome: DeployState = { state: 'refused, deploy running', deployId: holder?.deployId ?? 'unknown' };
@@ -391,8 +497,16 @@ export const claim = (layout: DeployLayout, deployId: string = randomUUID()): Cl
  *
  * `claimed` is for a caller that already took the lock through {@link claim} so it could answer before the steps.
  */
-export const deploy = (options: DeployOptions): DeployResult => {
+export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
   const layout: DeployLayout = { stateDir: options.stateDir, service: options.service };
+  if (options.declaration.keep !== undefined && options.declaration.keep < 2) {
+    // One kept release is a folder with no way back by hand (@cto 2026-11-25).
+    journal(layout, { event: 'refused', deployId: options.deployId ?? 'none', reason: `keep must be at least 2, so a person can always switch back; it was ${String(options.declaration.keep)}` });
+    return {
+      service: options.service, deployId: options.deployId ?? '', sha: '', from: currentRelease(layout), steps: [],
+      outcome: { state: 'refused, invalid declaration', reason: `keep must be at least 2, so a person can always switch back; it was ${String(options.declaration.keep)}` },
+    };
+  }
   let lock: DeployLock;
   if (options.claimed === undefined) {
     const taken = claim(layout, options.deployId);
@@ -402,6 +516,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
     lock = options.claimed;
   }
   const { deployId, from } = lock;
+  const machine = options.machine ?? hostname();
   let sha: string;
   try {
     sha = resolveVersion(layout, options.declaration, options.version);
@@ -414,19 +529,36 @@ export const deploy = (options: DeployOptions): DeployResult => {
   writeFileSync(paths(layout).lock, `${JSON.stringify(resolving)}\n`);
 
   const steps: DeployStepResult[] = [];
+  // What a remote reader needs: which steps ran, how long, and how each ended - never the output, which a build may
+  // print a secret into (@cto 2026-11-25).
+  const summary = () => steps.map(({ step, ok, ms, code, timedOut }) => ({ step, ok, ms, code, ...(timedOut === true ? { timedOut } : {}) }));
   const finish = (outcome: DeployState): DeployResult => {
-    journal(layout, { event: 'finished', deployId, sha, from, outcome: outcome.state });
+    journal(layout, { event: 'finished', deployId, sha, from, outcome: outcome.state, steps: summary() });
     releaseLock(layout);
     return { service: options.service, deployId, sha, from, steps, outcome };
   };
   const fail = (step: DeployStep, reason: string): DeployState => {
-    journal(layout, { event: 'failed', deployId, sha, step, reason });
+    journal(layout, { event: 'failed', deployId, sha, step, reason, steps: summary() });
     return { state: 'failed, new release live', sha, from, step, reason };
   };
 
   /** A step's command runs only when the machine's gate accepts it; nothing is read about that here. */
   const rejected = (step: DeployStep, command: DeployCommand | undefined): string | undefined =>
     command === undefined ? undefined : options.permit?.(step, command);
+
+  // Every gate first, before the lock says `started`: a refused check after the switch left an unchecked release
+  // live, which is the hole this closes (@cto 2026-11-25). A refused step now means the deploy never began.
+  for (const [step, command] of [
+    ['build', options.declaration.build],
+    ['before_switch', options.declaration.beforeSwitch],
+    ['check', options.declaration.check],
+  ] as const) {
+    const why = rejected(step, command);
+    if (why === undefined) continue;
+    journal(layout, { event: 'refused', deployId, step, reason: why });
+    releaseLock(layout);
+    return { service: options.service, deployId, sha, from, steps, outcome: { state: 'refused, command not allowed', step, reason: why } };
+  }
 
   try {
     // The ruling's first line: "started <from>-><to>" is written before any step runs.
@@ -449,25 +581,14 @@ export const deploy = (options: DeployOptions): DeployResult => {
     steps.push({ step: 'fetch', ok: true, ms: 0 });
 
     lock = setLockStep(layout, lock, 'build');
-    const buildRefusal = rejected('build', options.declaration.build);
-    if (buildRefusal !== undefined) {
-      // Nothing has been switched, so the refusal names the step and the machine says why, and current stays put.
-      journal(layout, { event: 'refused', deployId, step: 'build', reason: buildRefusal });
-      return finish({ state: 'refused, command not allowed', step: 'build', reason: buildRefusal });
-    }
-    const built = runStep('build', options.declaration.build, release);
+    const built = await runStep('build', options.declaration.build, release, options.secrets, machine);
     steps.push(built);
-    if (!built.ok) return finish(fail('build', `build exited ${String(built.code)}`));
+    if (!built.ok) return finish(fail('build', built.timedOut === true ? `build ${built.output ?? 'timed out'}` : `build exited ${String(built.code)}${built.code === EXIT_NO_VALUE ? `: ${built.output ?? ''}` : ''}`));
 
     lock = setLockStep(layout, lock, 'before_switch');
-    const hookRefusal = rejected('before_switch', options.declaration.beforeSwitch);
-    if (hookRefusal !== undefined) {
-      journal(layout, { event: 'refused', deployId, step: 'before_switch', reason: hookRefusal });
-      return finish({ state: 'refused, command not allowed', step: 'before_switch', reason: hookRefusal });
-    }
-    const hooked = runStep('before_switch', options.declaration.beforeSwitch, release);
+    const hooked = await runStep('before_switch', options.declaration.beforeSwitch, release, options.secrets, machine);
     steps.push(hooked);
-    if (!hooked.ok) return finish(fail('before_switch', `before_switch exited ${String(hooked.code)}`));
+    if (!hooked.ok) return finish(fail('before_switch', hooked.timedOut === true ? `before_switch ${hooked.output ?? 'timed out'}` : `before_switch exited ${String(hooked.code)}${hooked.code === EXIT_NO_VALUE ? `: ${hooked.output ?? ''}` : ''}`));
 
     lock = setLockStep(layout, lock, 'switch');
     switchTo(layout, sha);
@@ -481,20 +602,16 @@ export const deploy = (options: DeployOptions): DeployResult => {
     }
 
     lock = setLockStep(layout, lock, 'check');
-    const checkRefusal = rejected('check', options.declaration.check);
-    if (checkRefusal !== undefined) {
-      // The folder is live and nothing checked it: that is `switched, unchecked`, said plainly rather than hidden.
-      journal(layout, { event: 'refused', deployId, step: 'check', reason: checkRefusal });
-      return finish({ state: 'switched, unchecked', sha, from });
-    }
-    const checked = runStep('check', options.declaration.check, release);
+    const checked = await runStep('check', options.declaration.check, release, options.secrets, machine);
     steps.push(checked);
     if (checked.ok) {
       pruneReleases(layout, options.declaration.keep);
       return finish({ state: 'switched, checked', sha, from });
     }
 
-    const reason = `check exited ${String(checked.code)}`;
+    const reason = checked.timedOut === true
+      ? `check ${checked.output ?? 'timed out'}`
+      : `check exited ${String(checked.code)}${checked.code === EXIT_NO_VALUE ? `: ${checked.output ?? ''}` : ''}`;
     if (options.declaration.migrations === 'expand-only' && from !== null) {
       // The migration is already applied, so the folder goes back and the report says the migration stays.
       switchTo(layout, from);
@@ -505,7 +622,7 @@ export const deploy = (options: DeployOptions): DeployResult => {
     return finish(fail('check', reason));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    journal(layout, { event: 'failed', deployId, sha, step: lock.step, reason });
+    journal(layout, { event: 'failed', deployId, sha, step: lock.step, reason, steps: summary() });
     releaseLock(layout);
     const outcome: DeployState = { state: 'failed, new release live', sha, from, step: lock.step, reason };
     return { service: options.service, deployId, sha, from, steps, outcome };
@@ -513,8 +630,8 @@ export const deploy = (options: DeployOptions): DeployResult => {
 };
 
 // #38276 slice 2: the package is also an ahpd plugin, `x-ahpd/deploy/run` and `x-ahpd/deploy/report` (plugin.ts).
-export { apply, deployMethods, METHODS, name, title } from './plugin.js';
-export type { DeployHost, DeployMethod, DeployRefusal, DeployRefusalCode, DeployMethodsOptions, Permit } from './plugin.js';
+export { apply, deployMethods, METHODS, name, title, startChild, REQUEST_FILE } from './plugin.js';
+export type { DeployHost, DeployMethod, DeployRefusal, DeployRefusalCode, DeployMethodsOptions, DeployRequest, HandedRequest } from './plugin.js';
 
 /** The journal, oldest first, for a reader that shows what happened without running anything. */
 export const readJournal = (layout: DeployLayout): readonly Readonly<Record<string, unknown>>[] => {
@@ -548,7 +665,7 @@ export const sweep = (stateDir: string): readonly SweptDeploy[] => {
     if (!entry.isDirectory()) continue;
     const layout: DeployLayout = { stateDir, service: entry.name };
     const lock = readLock(layout);
-    if (lock === undefined || alive(lock.pid)) continue;
+    if (lock === undefined || alive(lock)) continue;
     journal(layout, { event: 'outcome unknown', deployId: lock.deployId, step: lock.step, pid: lock.pid, found: 'at start' });
     releaseLock(layout);
     swept.push({ service: entry.name, step: lock.step, deployId: lock.deployId });
