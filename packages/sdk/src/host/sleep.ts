@@ -93,7 +93,7 @@ export function createSleep(ctx: HostContext): Sleep {
   const {
     options, sessions, byChat, connections, restarting, kept, owners, wheres, moves,
     hasActiveTurn, log, activeSessionsChanged, markSummaryDirty, getOverlaySessionSummaries, dirOf, stopUnwatched, sessionFor, sessionHolding,
-    unavailableProvider, restoreSession, nameOf, storedConfig, charged, charge, recordedChats, spawn, recordSessionProvider, dispatch, leadOf,
+    unavailableProvider, restoreSession, adoptListed, nameOf, storedConfig, charged, charge, recordedChats, spawn, recordSessionProvider, dispatch, leadOf,
     heldStates,
   } = ctx;
 
@@ -385,6 +385,23 @@ export function createSleep(ctx: HostContext): Sleep {
     const seed = await restoreSession(id);
     if (!seed) throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${asked}`);
     /*
+     * #38259 (@cto b41e5443): a row no record names that two harnesses list is
+     * nobody's, so nothing opens it as the one that listed it first. The caller
+     * says whose it is - the plugin a turn comes through starts exactly one
+     * agent, and that is the seat's own record - and the open is what makes the
+     * row that agent's, recorded so a restart binds it the same way. A caller
+     * that names no such agent leaves the row nobody's, and is refused below.
+     */
+    const unowned = owners.get(nameOf(id));
+    let adopted = false;
+    if (unowned === undefined && kept.provider(id) === undefined) {
+      const plugin = sender?.principal?.plugin;
+      const mine = plugin === undefined
+        ? []
+        : [...ctx.agents.values()].filter((agent) => options.agentStarts?.[agent.provider]?.by === plugin);
+      if (mine.length === 1 && mine[0] !== undefined) adopted = adoptListed(id, mine[0]);
+    }
+    /*
      * Named again, because `restoreSession` is what learned whose session this is - and
      * what this host will call it. Asking with the name computed beforehand
      * found nothing for a row no listing had reached yet. The session wakes
@@ -393,7 +410,10 @@ export function createSleep(ctx: HostContext): Sleep {
      * https://github.com/microsoft/vscode/blob/58a595f76bdc150460d7e0d279d26cc6fc577b0a/src/vs/platform/agentHost/node/agentService.ts#L14083
      */
     const named = nameOf(id);
-    if (named !== asked) throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${asked}`);
+    // The caller asked by the name the catalogue published before this call
+    // adopted the row; the name it answers by from here is the adopting
+    // agent's, and the conversation is the same one.
+    if (named !== asked && !adopted) throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${asked}`);
     const live = sessions.get(named);
     if (live !== undefined) return { uri: named, chat: picked(named, chat) as Session };
     const owner = owners.get(named);

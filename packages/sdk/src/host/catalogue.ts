@@ -36,6 +36,16 @@ export interface MoveRefusal {
 }
 
 /**
+ * What a row's `provider` says when no record and no single harness can name
+ * one: the catalogue's own word for "nobody's" (#38259).
+ *
+ * A row two harnesses list that this host has no record for is a conversation
+ * whose CLI wrote the transcript and whose starter is not in it, so naming
+ * either reader would be a guess that opens it under the wrong agent's record.
+ */
+export const NO_PROVIDER = '';
+
+/**
  * The root's `showExternalSessions` values, `ChatExternalSessionsMode`'s five,
  * and the bounds each reads, VS Code's agent service's.
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L204-L206
@@ -136,6 +146,12 @@ export interface Catalogue {
    * which is what names an old row in its provider's scheme.
    */
   registerListedSession(agent: Agent, row: Listed, waiting?: string, stored?: boolean): Summary;
+  /**
+   * A listed row nobody's, made one agent's by the open that names it: its
+   * owner, its provider in the store, and the name a client holds it by, all
+   * written as a session this host ran has them (#38259).
+   */
+  adoptListedSession(id: string, agent: Agent, row: Summary): Summary | undefined;
   /** Announce to every client a listed session this host did not have. */
   announceSurfacedSession(summary: Summary): void;
   /**
@@ -1411,15 +1427,41 @@ export function createCatalogue(ctx: HostContext): Catalogue {
        * the reader's id it would be opened by whichever agent answered, and a
        * conversation would move to another endpoint on a daemon that merely
        * failed to load one plugin. It waits for its agent, and no owner is
-       * recorded, so nothing can open it here. A session recorded before anything was has no agent to wait
-       * for and still goes to the first one that listed it.
+       * recorded, so nothing can open it here.
+       *
+       * A row recorded before anything was has no agent to be given to
+       * either, and two harnesses reading one folder cannot say whose it is:
+       * answering with the one that listed it first is a guess, and on a host
+       * where two seats share an account it hands one seat's conversation to
+       * the other's record, whose ACP process is configured for a different
+       * session and refuses the open (#38259, @cto b41e5443). So such a row is
+       * nobody's: it keeps the name it is listed by, no owner is recorded, and
+       * the open that names an agent is what makes it that agent's
+       * (`adoptListedSession`). One harness alone is not a guess - its answer
+       * is the only one there is - and stays as it was.
        */
       const recorded = kept.provider(id);
       const waiting = recorded !== undefined && !agents.has(recorded) ? recorded : undefined;
-      const one = waiting === undefined ? both.find((it) => it.agent.provider === recorded) ?? both[0] : both[0];
-      // Never empty: an id is in the map only because an agent listed it.
-      if (one === undefined) continue;
-      found.push(registerListedSession(one.agent, one.row, waiting, stored.has(id)));
+      // One harness, however many times it read the folder: a row a backend
+      // lists twice is still that backend's only answer.
+      const listers = new Set(both.map((it) => it.agent.provider));
+      const one = waiting !== undefined
+        ? both[0]
+        : both.find((it) => it.agent.provider === recorded) ?? (listers.size === 1 ? both[0] : undefined);
+      if (one !== undefined) {
+        found.push(registerListedSession(one.agent, one.row, waiting, stored.has(id)));
+        continue;
+      }
+      /*
+       * Nobody's, and listed all the same: a conversation a person can see
+       * reads differently from one nothing found. The row is registered under
+       * the reader's id so the transcript it was listed from still titles it,
+       * and the empty provider says what the catalogue cannot answer - which
+       * agent runs it - rather than naming one of them.
+       */
+      const reader = both[0];
+      if (reader === undefined) continue;
+      found.push(registerListedSession(reader.agent, reader.row, NO_PROVIDER, stored.has(id), false));
     }
     /*
      * The nested sessions, from what this host recorded of them.
@@ -1632,19 +1674,25 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    * Register one listed session, its name, owner, folders, dates and `_meta`
    * recorded, and project its row, as VS Code's registry registers a session
    * its listing found and the listing projects its entry.
+   *
+   * `mine` is whether anything here may open the row: a row two harnesses
+   * list that no record names is registered with no owner, so the answer to
+   * "which agent runs it" stays the empty provider rather than a guess.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSessionRegistry.ts#L92-L99
    */
-  const registerListedSession = (agent: Agent, row: Listed, waiting?: string, stored = false): Summary => {
+  const registerListedSession = (agent: Agent, row: Listed, waiting?: string, stored = false, mine = true): Summary => {
     const provider = waiting ?? agent.provider;
     const keptName = kept.uri?.(row.id);
-    const resource = keptName ?? (stored ? `${provider}:/${row.id}` : uriFor(row.id));
+    // A row nobody's is named by its id alone: there is no provider to name it
+    // under, and a name with an empty one in front of it is not a name.
+    const resource = keptName ?? (stored && provider !== NO_PROVIDER ? `${provider}:/${row.id}` : uriFor(row.id));
     // An old row keeps the name its clients already hold, and stores it so the
     // next listing does not derive it again. A row this host has none for is
     // named but not remembered: a listing must not write a file per session it
     // finds on the machine.
     if (keptName === undefined && stored) kept.setUri?.(row.id, resource);
     names.set(row.id, resource);
-    if (waiting === undefined) owners.set(resource, agent);
+    if (waiting === undefined && mine) owners.set(resource, agent);
     wheres.set(resource, row.workingDirectories);
     const folder = row.workingDirectories[0];
     if (folder !== undefined && kept.provider(row.id) !== undefined && kept.workingDirectory?.(row.id) === undefined) {
@@ -1893,6 +1941,51 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       else sessionAdded(uri);
     }
     void reconcileExternalSessions();
+  };
+  /**
+   * A listed row nobody's, made one agent's by the open that names it.
+   *
+   * #38259 (@cto b41e5443): the host may not decide from a listing order
+   * which of two harnesses reading one folder a transcript it never ran
+   * belongs to - on a host where seats share an account, the record it guessed
+   * is configured for another session and refuses the open. The caller knows
+   * what the listing cannot: the plugin a turn comes through starts exactly
+   * one agent, and `agent` is that one. Adopting the row under it writes the
+   * owner, the name a client holds it by, and the provider through the same
+   * record write a running session makes, so the next restart reads the
+   * provider and binds the row to this record instead of guessing again.
+   *
+   * Only a row the catalogue holds with no owner and no provider can be
+   * adopted, and only under the neutral name it was listed by: a row a record
+   * already names is opened as that record's, and one already adopted is.
+   */
+  const adoptListedSession = (id: string, agent: Agent, row: Summary): Summary | undefined => {
+    const neutral = names.get(id);
+    if (neutral === undefined || neutral !== row.resource || neutral !== uriFor(id)) return undefined;
+    if (owners.has(neutral) || kept.provider(id) !== undefined || kept.uri?.(id) !== undefined) return undefined;
+    const listed: Listed = {
+      id,
+      title: row.title,
+      createdAt: row.createdAt,
+      modifiedAt: row.modifiedAt,
+      workingDirectories: row.workingDirectories,
+    };
+    // Named as a session this host ran is named, which is the spelling the
+    // caller asked with and the one its ACP process is configured for, so the
+    // open that adopts this row is not also a move of it.
+    const held = `${agent.provider}:/${id}`;
+    // The record first, so registering the row reads a provider and does not
+    // mark this host's own session external.
+    kept.setProvider(id, agent.provider);
+    kept.setExternal?.(id, false);
+    kept.setUri?.(id, held);
+    const found = registerListedSession(agent, listed, undefined, true);
+    // One name per row: the keys the neutral spelling left behind are dropped,
+    // so nothing answers for a session by the name it had before an agent
+    // named it.
+    for (const map of [wheres, births, moves, listedMeta, externalSessions]) map.delete(neutral);
+    if (found.resource !== held) return undefined;
+    return found;
   };
   /**
    * A held listed session's summary with what this host knows about it read
@@ -2245,6 +2338,6 @@ export function createCatalogue(ctx: HostContext): Catalogue {
     activityOf, markSessionProvisional, sessionAdded, provisional: (uri: string) => provisionalSessionKeys.has(uri), materialized, failSessionCreationIfStillCreating,
     markSummaryDirty, flushPendingSessionSummaries, refreshSessionChangesSummary, removeNotifiedSummary, activeSessionsChanged, setAgentModels, publishAgentInfos, publishAccountInfo,
     listing, registerListedSession, announceSurfacedSession, getOverlaySessionSummaries, listSessions, publishSurfacedSessions, unavailableProvider, readStored,
-    isExternal: (uri: string) => externalSessions.has(uri), adoptExternalSession, reconcileExternalSessions,
+    isExternal: (uri: string) => externalSessions.has(uri), adoptExternalSession, adoptListedSession, reconcileExternalSessions,
   };
 }

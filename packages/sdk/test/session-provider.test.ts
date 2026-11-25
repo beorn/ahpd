@@ -8,6 +8,7 @@ import type { Agent, Start } from '../src/types/agent.js';
 import type { Peer } from '../src/types/rpc.js';
 import type { Session } from '../src/types/session.js';
 import type { SessionStore } from '../src/types/sessions.js';
+import type { Principal } from '../src/types/users.js';
 
 /*
  * Which harness a session runs on.
@@ -109,10 +110,21 @@ function keeping(provider: string): Agent {
       base.create(start.chatId === undefined ? start : { ...start, resume: start.chatId }),
   };
 }
-/** A host on one store, with the backend behind it. */
-function serving(store: SessionStore, agents: Agent[], given: Peer = peer()) {
-  const host = createHost({ path: DIR, agents, sessions: store });
-  const client = host.accept(given);
+/**
+ * A host on one store, with the backend behind it.
+ *
+ * `starts` and `who` make the connection one a plugin of the host's own holds,
+ * which is what a wake from a seat comes through: the host reads the plugin to
+ * answer which agent the caller's turn runs on (#38259).
+ */
+function serving(
+  store: SessionStore,
+  agents: Agent[],
+  given: Peer = peer(),
+  options: { starts?: Record<string, { by: string }>; who?: Principal } = {},
+) {
+  const host = createHost({ path: DIR, agents, sessions: store, ...(options.starts === undefined ? {} : { agentStarts: options.starts }) });
+  const client = host.accept(given, options.who);
   void (async () => {
     await client.handle({
       method: 'initialize',
@@ -424,19 +436,92 @@ describe('a row two harnesses both list', () => {
     }
   });
 
-  it('goes to the first harness that lists it when nothing was recorded', async () => {
+  /*
+   * #38259: a row from before the host recorded providers, listed by two
+   * harnesses, is nobody's. Answering with the one that listed it first is a
+   * guess, and on a host where two seats share one account it hands a seat's
+   * conversation to another seat's record, whose ACP process is configured for
+   * a different conversation and refuses the open (@cto b41e5443).
+   */
+  it('is nobody\'s when nothing was recorded, and a turn refuses rather than guessing', async () => {
+    const refusals: unknown[] = [];
     const one: string[] = [];
     const two: string[] = [];
-    const store = memorySessions();
+    const store = counting();
     const { client } = serving(store, [
       harness('one', ['unrecorded'], one),
       harness('two', ['unrecorded'], two),
-    ]);
+    ], {
+      ...peer(),
+      notify: (_method, params) => {
+        const refused = (params as Record<string, unknown>)['rejectionReason'];
+        if (refused !== undefined) refusals.push(refused);
+      },
+    });
     await settle();
     await showExternal(client);
-    // A session from before this was recorded, and one whose harness is gone,
-    // both open somewhere rather than nowhere.
+    // Listed, because a person can still see a conversation nobody owns.
     expect(await catalogue(client)).toEqual(['ahp-session:/unrecorded']);
+
+    client.handle({
+      method: 'dispatchAction',
+      params: { channel: chatUriFor('ahp-session:/unrecorded'), action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { origin: { kind: 'user' }, text: 'go' } } },
+    });
+    await settle();
+
+    expect(refusals).toEqual(['No agent for session: ahp-session:/unrecorded']);
+    expect(one).toEqual([]);
+    expect(two).toEqual([]);
+    // Nothing was written, so nothing was guessed durably either.
+    expect(store.writes).toEqual([]);
+    expect(store.provider('unrecorded')).toBeUndefined();
+  });
+
+  /*
+   * The other half of #38259: nobody's is not stranded. A plugin starts one
+   * agent, and a turn that comes through it says whose the conversation is -
+   * the seat's own record, never a listing order. The provider written then is
+   * the write a running session makes, so a restart binds the row the same way.
+   */
+  it('is the asking plugin\'s agent once it opens the row, and stays that way across a restart', async () => {
+    const one: string[] = [];
+    const two: string[] = [];
+    const store = counting();
+    const seat = { id: 'plugin:hab', roles: [] as string[], plugin: 'hab-plugin-ag' } as unknown as Principal;
+    const refusals: unknown[] = [];
+    const { client } = serving(store, [
+      harness('one', ['unrecorded'], one),
+      harness('two', ['unrecorded'], two),
+    ], {
+      ...peer(),
+      notify: (_method, params) => {
+        const refused = (params as Record<string, unknown>)['rejectionReason'];
+        if (refused !== undefined) refusals.push(refused);
+      },
+    }, { starts: { two: { by: 'hab-plugin-ag' }, one: { by: 'someone-else' } }, who: seat });
+    await settle();
+    await showExternal(client);
+    expect(await catalogue(client)).toEqual(['ahp-session:/unrecorded']);
+
+    await talk(client, chatUriFor('ahp-session:/unrecorded'), 't1');
+
+    expect(refusals).toEqual([]);
+    // The agent the caller names, recorded through the write a session that ran makes.
+    expect(store.provider('unrecorded')).toBe('two');
+    expect(store.writes).toEqual(['unrecorded']);
+    expect(one).toEqual([]);
+    expect(two).toEqual(['unrecorded']);
+
+    // A restart: a fresh host over the same store lists the row as `two`'s,
+    // with one harness or two reading the folder.
+    const after = memorySessions();
+    after.setProvider('unrecorded', 'two');
+    const restarted = serving(after, [
+      harness('one', ['unrecorded'], []),
+      harness('two', ['unrecorded'], []),
+    ]);
+    await settle();
+    expect(await catalogue(restarted.client)).toEqual(['two:/unrecorded']);
   });
 
   /*

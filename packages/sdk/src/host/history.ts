@@ -43,6 +43,12 @@ export interface History {
   /** A session deleted here, removed from the listed sessions this host holds, by id. */
   removeListedSession(resource: string): void;
   /**
+   * A listed row nobody's, adopted by the agent the opening caller names
+   * (#38259), and held under the name that agent's sessions are named by.
+   * False where there is no such row to adopt.
+   */
+  adoptListed(id: string, agent: Agent): boolean;
+  /**
    * A session this host stopped running, its state evicted and its summary
    * listed from here.
    *
@@ -484,10 +490,16 @@ export function createHistory(ctx: HostContext): History {
         return [];
       }
       const owner = owners.get(nameOf(id));
-      if (!row || !owner?.transcript)
+      /*
+       * A row nobody's is read by whichever agent listed the folder, as
+       * `recordSeed` reads one: its turns are what a person browses, and a
+       * read starts nothing and records no owner (#38259).
+       */
+      const reader = owner ?? (row === undefined ? undefined : ctx.first);
+      if (!row || !reader?.transcript)
         return undefined;
       titles.set(id, row.title);
-      const built = replayed?.turns ?? await ctx.transcriptOf(owner, ctx.sessionBackendId(id), launchWorkingDirectory(id), nameOf(id), own);
+      const built = replayed?.turns ?? await ctx.transcriptOf(reader, ctx.sessionBackendId(id), launchWorkingDirectory(id), nameOf(id), own);
       if (!built)
         return undefined;
       /*
@@ -525,9 +537,26 @@ export function createHistory(ctx: HostContext): History {
     listedSummaries = [...listedSummaries.filter((one) => idFor(one.resource) !== id), row];
   };
 
+  /**
+   * A listed row nobody's, adopted by the agent its opening caller names.
+   *
+   * Read here because this is where the held summaries are: the row is
+   * replaced by the one the catalogue registers for the adopting agent, so the
+   * listing, the session's state and every later open answer with one name,
+   * one owner and one provider.
+   */
+  const adoptListed = (id: string, agent: Agent): boolean => {
+    const row = listedSummaries.find((one) => idFor(one.resource) === id);
+    const found = row === undefined ? undefined : ctx.adoptListedSession(id, agent, row);
+    if (found === undefined) return false;
+    listedSummaries = [...listedSummaries.filter((one) => idFor(one.resource) !== id), found];
+    ctx.announceSurfacedSession(found);
+    return true;
+  };
+
   return {
     history, subHistory, titles, restoredSubagents, launchWorkingDirectory, restoredParentChat, linkedTurns, refresh,
-    listedSessions, restoreSession, removeListedSession, evictSessionState,
+    listedSessions, restoreSession, removeListedSession, evictSessionState, adoptListed,
     catalogueRow: (id) => catalogueRow(id, listingEpoch),
   };
 }

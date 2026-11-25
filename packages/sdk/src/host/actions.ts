@@ -70,8 +70,14 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
    * Whether this host knows a session: running, listed in the catalogue, or
    * recorded in the store as one it started. A session the catalogue finds
    * when it is read is listed by that read.
+   *
+   * A row listed by name is known even where no record and no owner names its
+   * agent (#38259): an action on it is answered - refused by name with no
+   * agent to run it, or adopted by the agent its opening caller names - rather
+   * than dropped as an action on a chat this host cannot place.
    */
-  const knownSession = (uri: string): boolean => sessions.has(uri) || owners.has(uri) || kept.provider(idOf(uri)) !== undefined;
+  const knownSession = (uri: string): boolean => sessions.has(uri) || owners.has(uri)
+    || names.has(idOf(uri)) || kept.provider(idOf(uri)) !== undefined;
 
   /**
    * One client action, applied.

@@ -13,8 +13,12 @@ import { uriOf } from '../src/resources/fileuri.js';
  * with a Claude, an OpenRouter variant and a build variant of the same CLI paid
  * for the same `~/.claude/projects` three times over. `Promise.all` over the
  * agents is the whole of it, and the fold is kept in load order rather than in
- * the order the answers arrived - the order decides whose row an id is, and
- * changing it would move a conversation to another endpoint.
+ * the order the answers arrived - the order decides which backend's copy of a
+ * row is the one held, and changing it would have a conversation list
+ * differently on the same machine between two passes. One thing the fold no
+ * longer decides is whose row an id is: a transcript two backends read that
+ * this host has no provider recorded for is nobody's, whatever order they
+ * answered in (#38259, @cto b41e5443).
  */
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('./support/claude-sdk.js')).fake);
@@ -73,7 +77,7 @@ const started = async (agents: Agent[], together: ReturnType<typeof counting>) =
 
 const listed = async (client: { handle(request: unknown): Promise<unknown> }) =>
   await client.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } }) as {
-    items: { resource: string; title: string; provider: string }[];
+    items: { resource: string; title: string; provider: string; modifiedAt: string }[];
   };
 
 describe('the backends are asked at once', () => {
@@ -109,11 +113,15 @@ describe('the backends are asked at once', () => {
     await showExternal(client);
 
     const answer = await listed(client);
-    // One row, whose provider is the first backend's - which is the answer a
-    // host gave when it asked the backends in turn, and is what stops the same
-    // sessions listing under a different provider on a machine where the
-    // faster store happened to be configured second.
+    // One row, and nobody's: a transcript both backends read that this host has
+    // no provider recorded for is not given to the one that listed it first,
+    // because on a host where two seats share an account that record is
+    // configured for another conversation and refuses the open.
     expect(answer.items.map((one) => one.resource)).toEqual(['ahp-session:/shared']);
-    expect(answer.items[0]?.provider).toBe('first-loaded');
+    expect(answer.items[0]?.provider).toBe('');
+    // The fold is still in load order rather than in the order the answers
+    // arrived: the row held is the first-loaded backend's copy, which is the
+    // one written earlier, so the same machine lists the same row twice.
+    expect(answer.items[0]?.modifiedAt).toBe(new Date(written).toISOString());
   });
 });
