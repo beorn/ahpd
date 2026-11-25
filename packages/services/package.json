@@ -1,6 +1,6 @@
 {
-  "name": "@ahpd/services",
-  "version": "0.15.0",
+  "name": "@hallohuman/hightea-services",
+  "version": "0.16.0",
   "type": "module",
   "os": ["linux", "darwin"],
   "description": "A machine's services for ahpd: the process-compose driver, and the machine-local switches only the machine can set.",
@@ -30,7 +30,7 @@
   "ahpd": {
     "entry": "./dist/index.js",
     "title": "Services",
-    "description": "This machine's programs under process-compose: list, change the machine's own file, start, stop, restart, read logs and back up, with drift alerts.",
+    "description": "This machine's programs under process-compose, as the x-hh-services:// channel: watch them, change the machine's own file, start, stop and restart them, accept an edit made on the machine, and read their raw output, the listing and the change log, with drift alerts.",
     "categories": [],
     "contracts": {
       "methods": [
@@ -44,11 +44,18 @@
         "x-ahpd/services/acknowledge",
         "x-ahpd/services/backup"
       ],
+      "channels": [
+        "x-hh-services"
+      ],
+      "resourceProviders": [
+        "hh-service",
+        "hh-services"
+      ],
       "closers": [
         "the five-minute drift check"
       ],
       "grants": [
-        "services"
+        "service"
       ]
     },
     "optionsSchema": {

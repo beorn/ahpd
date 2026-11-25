@@ -11,14 +11,14 @@
  * decided before answering is what can be decided cheaply and truthfully - another deploy running, an unknown
  * service, a version the declared ref cannot reach, and the machine's own gate over build and hook commands.
  *
- * The gate is `@ahpd/services`' `machineSwitches`, read fresh on every call: one reader for `allowRemoteCommands`,
+ * The gate is `@hallohuman/hightea-services`' `machineSwitches`, read fresh on every call: one reader for `allowRemoteCommands`,
  * never a copy here, and a throw is a refusal with its own sentence rather than a quiet "off".
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@ahpd/services';
+import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@hallohuman/hightea-services';
 import { readJournal, resolveVersion, status, writeJournalEntry } from './index.js';
 import type { DeployCommand, DeployDeclaration, DeployLayout } from './index.js';
 

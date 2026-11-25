@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listServices } from '../src/compose.js';
 import { localServices } from '../src/local.js';
-import { machineOf, servicesMethods } from '../src/plugin.js';
+import { servicesChannel, servicesState } from '../src/channel.js';
+import { machineOf } from '../src/plugin.js';
 import { REMOTE_COMMANDS_OFF } from '../src/switches.js';
 
 /*
@@ -31,7 +32,7 @@ beforeEach(async () => {
     port: 9187,
     plugins: [
       { source: '/opt/ahpd/node_modules/@ahpd/agent-acp' },
-      { source: '/opt/ahpd/node_modules/@ahpd/services', options: { files: [local], socket } },
+      { source: '/opt/ahpd/node_modules/@hallohuman/hightea-services', options: { files: [local], socket } },
     ],
   }));
 });
@@ -47,13 +48,15 @@ const version = (): string => {
 };
 
 describe('localServices', () => {
-  it('adds a raw command with allowRemoteCommands off, where the same put through the daemon method is refused', async () => {
+  it('adds a raw command with allowRemoteCommands off, where the same put through the channel is refused', async () => {
     const read = machineOf(dir, { files: [local], socket });
     if (typeof read === 'string') throw new Error(read);
     mkdirSync(join(dir, 'services'), { recursive: true }); // what the plugin's apply makes at start
-    const viaMethod = await servicesMethods(read.machine)['x-ahpd/services/put']!.handle(
-      { service: { name: 'api', command: 'serve --port 8080' }, ifVersion: version() }, undefined, 'c1', 'plugin:hightea-pipe');
-    expect(viaMethod).toMatchObject({ ok: false, message: REMOTE_COMMANDS_OFF });
+    const channel = servicesChannel({
+      machine: read.machine, state: () => servicesState('m', listServices(read.machine), undefined, []), wrote: () => {}, changed: () => {},
+    });
+    await expect(channel.operations.run({ id: 'put' }, undefined, { service: { name: 'api', command: 'serve --port 8080' }, ifVersion: version() }, undefined, { client: 'c1', owner: 'plugin:hightea-pipe' }))
+      .rejects.toMatchObject({ message: REMOTE_COMMANDS_OFF, data: { code: 'REMOTE_COMMANDS_OFF' } });
     expect(readFileSync(local, 'utf8')).not.toContain('api');
 
     const person = localServices(dir, 'bjorn');
@@ -72,19 +75,19 @@ describe('localServices', () => {
   it('names why there is no local driver: no config, no services entry, two entries, bad options', () => {
     expect(localServices(join(dir, 'nowhere'))).toMatch(/cannot read .*config\.json/);
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ plugins: [{ source: '/opt/x/@ahpd/agent-acp' }] }));
-    expect(localServices(dir)).toMatch(/has no @ahpd\/services plugin entry/);
+    expect(localServices(dir)).toMatch(/has no services plugin entry \(@hallohuman\/hightea-services\)/);
     const entry = { source: '/opt/ahpd/node_modules/@ahpd/services', options: { files: [local], socket } };
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ plugins: [entry, entry] }));
-    expect(localServices(dir)).toMatch(/has 2 @ahpd\/services plugin entries; keep one/);
+    expect(localServices(dir)).toMatch(/has 2 services plugin entries; keep one/);
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ plugins: [{ source: entry.source, options: { files: ['relative.yaml'], socket } }] }));
     expect(localServices(dir)).toMatch(/"files" must list process-compose's -f files as absolute paths/);
   });
 });
 
 describe('localServices is for callers on the machine only (@cto ed929bd7)', () => {
-  it('is reachable from no daemon method, plugin hook or pipe path: plugin.ts and drift.ts never import local.ts', () => {
+  it('is reachable from no operation, read, plugin hook or pipe path: plugin.ts, channel.ts and drift.ts never import local.ts', () => {
     const src = join(import.meta.dirname, '..', 'src');
-    for (const file of ['plugin.ts', 'drift.ts', 'compose.ts']) {
+    for (const file of ['plugin.ts', 'channel.ts', 'drift.ts', 'compose.ts']) {
       const text = readFileSync(join(src, file), 'utf8');
       expect(text, file).not.toMatch(/from '\.\/local(\.js)?'|localServices/);
     }
