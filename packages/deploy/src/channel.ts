@@ -65,11 +65,10 @@ export interface DeployOperation {
 const schema = (properties: Record<string, unknown>, required: string[]): Record<string, unknown> => ({ type: 'object', properties, required });
 
 /**
- * The one operation. `service` and `version` are the whole call @cto named; the
- * declaration fields beside them are the ones the driver already reads, and
- * they are marked transitional: they move onto the service's own record, and
- * this input shrinks to {service, version}, in the slice that adds the deploy
- * axis to that record (@cto 2026-11-25).
+ * The one operation. `service` and `version` are the whole call: the
+ * declaration (repository, ref and the steps) is the service's own record, under
+ * its `x-hh-deploy` key (#38549, @cto 2026-11-25). Holding `deploy:deploy`
+ * therefore chooses what to place live, never a command to run as the host.
  */
 export const OPERATION: DeployOperation = {
   id: 'deploy',
@@ -80,15 +79,8 @@ export const OPERATION: DeployOperation = {
   grant: `${SUBJECT}:deploy`,
   status: 'idle',
   input: schema({
-    service: { type: 'string', description: 'The service on this machine, as the services channel lists it.' },
-    version: { type: 'string', description: 'A branch, a tag or a commit sha the declared ref can reach.' },
-    repo: { type: 'string', description: 'Transitional: the repository to fetch. Moves to the service record.' },
-    ref: { type: 'string', description: 'Transitional: the ref the version must be reachable from. Moves to the service record.' },
-    migrations: { type: 'string', enum: ['expand-only'], description: 'Transitional: the only migration value, which allows a switch-back. Moves to the service record.' },
-    build: { type: 'object', description: 'Transitional: the build command. Moves to the service record.' },
-    before_switch: { type: 'object', description: 'Transitional: the command before the switch. Moves to the service record.' },
-    check: { type: 'object', description: 'Transitional: the check after the switch. Moves to the service record.' },
-    keep: { type: 'number', description: 'Transitional: how many release folders to keep (2 to 60). Moves to the service record.' },
+    service: { type: 'string', description: 'The service on this machine, as the services channel lists it; its record carries the deploy declaration.' },
+    version: { type: 'string', description: 'A branch, a tag or a commit sha the declared ref can reach from the record.' },
   }, ['service', 'version']),
 };
 

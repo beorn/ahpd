@@ -65,9 +65,9 @@ describe('the deploy channel (#38276, @cto 2026-11-25)', () => {
     expect(channel.operations.offers('web', 'deploy')).toBe(true);
     expect(channel.operations.offers('mailer', 'deploy')).toBe(false);
     expect(channel.operations.offers('web', 'remove')).toBe(false);
-    await channel.operations.run(OPERATION as unknown as { id: string }, 'web', { version: 'main', repo: '/src/web' }, undefined, { client: 'cli' });
-    // The target is the record; the input repeats it so a caller that fills either gets the same call.
-    expect(asked[0]).toMatchObject({ service: 'web', version: 'main', repo: '/src/web' });
+    await channel.operations.run(OPERATION as unknown as { id: string }, 'web', { version: 'main' }, undefined, { client: 'cli' });
+    // #38549: the input is the service and the version; the declaration is the record's.
+    expect(asked[0]).toMatchObject({ service: 'web', version: 'main' });
     await expect(channel.operations.run({ id: 'remove' }, 'web', {}, undefined, { client: 'cli' })).rejects.toThrow('No operation called remove');
   });
 
