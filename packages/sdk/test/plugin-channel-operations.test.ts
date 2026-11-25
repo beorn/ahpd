@@ -122,3 +122,25 @@ it('refuses a registration whose operations side is missing a function', () => {
     operations: { operations: () => [], begin: () => {}, settle: () => {} } as unknown as NonNullable<PluginChannel['operations']>,
   })).toThrow('operations.run');
 });
+
+it('tells run who sent the command, from the host and never from the input', async () => {
+  const callers: unknown[] = [];
+  const one = served({
+    run: async (_operation, _target, input, _reader, caller) => {
+      callers.push({ caller, input });
+      return {};
+    },
+  });
+  const params = { channel: 'x-svc://', operationId: 'svc/restart', target: { id: 'web' } };
+  // A relaying plugin's connection: the host resolved the person it acts for.
+  await one.method.handle(params, holding(['svc:restart']), 'pipe-1', 'user:ana');
+  // An owner planted in the input is the input's, and changes nothing about who sent it.
+  await one.method.handle({ ...params, input: { owner: 'user:mallory' } }, holding(['svc:restart']), 'pipe-1', 'user:ana');
+  // A host with no users directory has no owner.
+  await one.method.handle(params, undefined, 'c2');
+  expect(callers).toEqual([
+    { caller: { client: 'pipe-1', owner: 'user:ana' }, input: undefined },
+    { caller: { client: 'pipe-1', owner: 'user:ana' }, input: { owner: 'user:mallory' } },
+    { caller: { client: 'c2' }, input: undefined },
+  ]);
+});
