@@ -9,7 +9,7 @@ import type { AcpConnection, AcpOptions } from '../types.js';
 import { messageOf } from './common.js';
 import { admitCustody } from './custody.js';
 import type { Custody, CustodyIdentity } from './custody.js';
-import type { SessionContext } from './context.js';
+import type { HostToolsAnswer, SessionContext } from './context.js';
 import type { Bag, LogLevel } from '@ahpd/sdk';
 
 /** Spawning the server, signing in and opening the one session on it. */
@@ -208,6 +208,7 @@ const serversFor = async (
   say: (line: string) => void,
   leftOut: (name: string, why: string) => void = () => {},
   proxied: (name: string, server: { url: string; headers?: Record<string, string> }) => ProxyEndpoint | undefined = () => undefined,
+  toolsAnswer: (answer: HostToolsAnswer) => void = () => {},
 ): Promise<AcpMcpServer[]> => {
   const taken: AcpMcpServer[] = [];
   const mcp = capabilities?.mcpCapabilities;
@@ -261,15 +262,24 @@ const serversFor = async (
       env: Object.entries(one.env ?? {}).map(([variable, value]) => ({ name: variable, value })),
     });
   }
-  if (!hostTools || start.toolsServer === undefined) return taken;
+  // A host that offers its sessions no tools has nothing to answer about them.
+  if (start.toolsServer === undefined) return taken;
+  if (!hostTools) {
+    toolsAnswer({ available: false, reason: 'Host tools are turned off for this agent.' });
+    return taken;
+  }
   // The host's own tools are one HTTP server among the rest, so a server that
   // takes none over HTTP is not told about this one either.
   if (mcp?.http !== true) {
     say(`${HOST_TOOLS}: this ACP server takes no MCP server over HTTP, so it was left out`);
+    toolsAnswer({ available: false, reason: 'This ACP server takes no MCP server over HTTP.' });
     return taken;
   }
   const endpoint = own();
-  if (endpoint === undefined) return taken;
+  if (endpoint === undefined) {
+    toolsAnswer({ available: false, reason: 'The host opened no tools endpoint for this session.' });
+    return taken;
+  }
   /*
    * The URL the machine uses for the daemon, where its port answers one.
    *
@@ -281,6 +291,7 @@ const serversFor = async (
   const url = await reachedFrom(endpoint.url);
   if (url === undefined) {
     say(`host tools: computer://${String(machine)} cannot reach the daemon at ${addressOf(endpoint.url)}, so they were left out`);
+    toolsAnswer({ available: false, reason: `computer://${String(machine)} cannot reach the host's tools.` });
     return taken;
   }
   // ACP spells an HTTP server as a URL and a list of headers, so the token goes
@@ -291,6 +302,7 @@ const serversFor = async (
     url,
     headers: [{ name: 'authorization', value: `Bearer ${endpoint.token}` }],
   });
+  toolsAnswer({ available: true });
   return taken;
 };
 
@@ -736,6 +748,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         (line: string, level?: LogLevel) => options.log?.(line, level),
         (name, why) => left.set(name, why),
         (name, server) => proxyOf(ctx, name, server),
+        (answer) => { ctx.hostTools = answer; },
       );
       /*
        * The configured servers as customizations, so a targeted token can name

@@ -200,6 +200,7 @@ export function acpSession(
     successfulOpening: undefined,
     acpSessionId: undefined,
     openedMeta: undefined,
+    hostTools: undefined,
     closes: false,
     loads: false,
     resumes: false,
@@ -341,8 +342,14 @@ export function acpSession(
         // where each one sits. The schema carries the server's modes once they
         // are known, so `permissionMode` has an enum exactly when it can have one.
         config: { schema: ctx.schemaOf(), values: { ...values } },
-        // The server's own word on opening the conversation, untouched (#37272).
-        ...(ctx.openedMeta !== undefined ? { _meta: structuredClone(ctx.openedMeta) } : {}),
+        // The server's own word on opening the conversation, untouched (#37272),
+        // beside the host's own answer on whether the session was offered its tools.
+        ...(ctx.openedMeta !== undefined || ctx.hostTools !== undefined ? {
+          _meta: {
+            ...(ctx.openedMeta === undefined ? {} : structuredClone(ctx.openedMeta)),
+            ...(ctx.hostTools === undefined ? {} : { 'ahpd/hostTools': { ...ctx.hostTools } }),
+          },
+        } : {}),
       };
     },
 

@@ -256,6 +256,17 @@ it('passes the _meta the server answered opening the conversation through on the
   expect((await start(silent, 'meta-none')).session.sessionState()._meta).toBeUndefined();
 });
 
+// #38499: whether the session was offered the host's tools sits beside the server's own word, which stays untouched.
+it('puts the host-tools answer beside the server\'s own opening _meta, never into it', async () => {
+  const { agent } = backend(['--says-meta']);
+  const tools = { url: 'http://127.0.0.1:4242/ahp-mcp/one', token: 't-kn', setTools: () => {}, close: () => {} };
+  const opened = await start(agent, 'meta-tools', { toolsServer: () => tools });
+  expect(opened.session.sessionState()._meta).toEqual({
+    fixture: { answered: 'session/new' },
+    'ahpd/hostTools': { available: true },
+  });
+});
+
 it('tells the host once the server has named its models', async () => {
   const { agent } = backend();
   let told = 0;
@@ -406,6 +417,8 @@ describe('the MCP servers a session is opened with', () => {
       url: 'http://127.0.0.1:4242/ahp-mcp/one',
       headers: [{ name: 'authorization', value: 'Bearer t-kn' }],
     }]);
+    // The session says so itself, for a client deciding whether to count on them (#38499).
+    expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools']).toEqual({ available: true });
   });
 
   it('leaves the host\'s tools out where the deployment said hostTools: false', async () => {
@@ -416,6 +429,8 @@ describe('the MCP servers a session is opened with', () => {
     await until(() => watch.endings().length > before);
 
     expect(opened(log)).toEqual([]);
+    expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools'])
+      .toEqual({ available: false, reason: 'Host tools are turned off for this agent.' });
   });
 
   it('leaves the host\'s own tools out of a server that takes none over HTTP, and says which', async () => {
@@ -429,6 +444,8 @@ describe('the MCP servers a session is opened with', () => {
     // refuses the others refuses this one, and says so the same way.
     expect(opened(log)).toEqual([]);
     expect(said).toEqual(['host: this ACP server takes no MCP server over HTTP, so it was left out']);
+    expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools'])
+      .toEqual({ available: false, reason: 'This ACP server takes no MCP server over HTTP.' });
   });
 
   it('keeps one endpoint of the host\'s own across a server that died', async () => {
