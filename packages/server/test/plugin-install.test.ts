@@ -59,7 +59,9 @@ const registryName = /^(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*$/i
  * An install's own sources land too, as npm leaves them: every registry name
  * after the `--` gets a manifest with an `ahpd` field, because npm really does
  * put one in `node_modules`. An update's argv has no `--`, so its cases land
- * only what `lands` names and a package npm did not move stays where it was.
+ * only what `lands` names and a package npm did not move stays where it was;
+ * what it lands is the package's own `package.json`, so it carries the `ahpd`
+ * field a plugin's does unless the case says otherwise.
  */
 const fake = (
   answers: Record<string, Ran> = {},
@@ -82,13 +84,22 @@ const fake = (
       }
       for (const [name, version] of landed) {
         mkdirSync(join(into, 'node_modules', name), { recursive: true });
-        // A manifest this case names is written as it is; one the fake lands on
-        // its own is a plugin, which is what a registry install leaves behind.
-        const said = options.manifests?.[name];
+        // A source written `name@version` lands that version, as npm does, so a
+        // put-back is a real one.
+        const asked = argv.find((one) => one.startsWith(`${name}@`));
+        // A tag such as `@latest` is what npm is asked for, not the version it
+        // resolves to, so only a version written as one is landed as written.
+        const named = asked === undefined ? undefined : asked.slice(name.length + 1);
+        const exact = named !== undefined && /^\d/u.test(named) ? named : undefined;
+        // A manifest this case names is written as it is, for the version the
+        // case lands; a version written back is the one that was there before,
+        // so it carries the plain `ahpd` field a plugin's did.
+        const written = lands[name] === undefined || exact === undefined || exact === lands[name];
+        const said = written ? options.manifests?.[name] : undefined;
         writeFileSync(join(into, 'node_modules', name, 'package.json'), JSON.stringify({
           name,
-          version,
-          ...(said === undefined ? { ahpd: { entry: './index.js' } } : said),
+          version: exact ?? version,
+          ...(said ?? { ahpd: { entry: './index.js' } }),
         }));
       }
       if (options.added !== undefined) {
@@ -622,7 +633,13 @@ const installed = (packages: Record<string, string>, dir: string = configDir): v
   writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ dependencies }, null, 2)}\n`);
   for (const [name, version] of Object.entries(packages)) {
     mkdirSync(join(dir, 'node_modules', name), { recursive: true });
-    writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({ name, version }));
+    // The package.json npm left there, which for a plugin carries its `ahpd`
+    // field; the sdk is not a plugin and has none.
+    writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({
+      name,
+      version,
+      ...(name === '@ahpd/sdk' ? {} : { ahpd: { entry: './index.js' } }),
+    }));
   }
 };
 
@@ -805,6 +822,104 @@ it('runs no npm when every package came from outside the registry, and says ther
   expect(await updatePlugins('all', { configDir, sdk: '0.8.0', run: runner, say, fetch: registryHolding({}) })).toEqual([]);
   expect(calls).toEqual([]);
   expect(said).toEqual(['mine: file:../mine, left as installed', 'Nothing to update.']);
+});
+
+it('puts back the version it moved from when the new manifest holds a list the loader would refuse', async () => {
+  // npm replaces the package before anything can read it, so the check runs on
+  // what landed: a list the loader refuses at the next start would leave a
+  // plugin that worked yesterday broken today, with no way back but a manual
+  // install.
+  installed({ '@ahpd/probe-grants': '0.1.0' });
+  write({ plugins: [{ source: '@ahpd/probe-grants', grants: ['probe:read'] }] });
+  said.length = 0;
+  const { runner, calls } = fake({}, { '@ahpd/probe-grants': '0.2.0' }, {
+    manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: 'probe:read' } } },
+  });
+  const failed = await updatePlugins('all', {
+    configDir, sdk: '0.8.0', run: runner, say, fetch: registryHolding({ '@ahpd/probe-grants': '0.2.0 >=0.8' }),
+  }).then(() => undefined, (error: unknown) => String(error));
+  expect(failed).toContain('is not a list of grants');
+  expect(calls.some((one) => one.argv[0] === 'install' && one.argv.includes('@ahpd/probe-grants@0.1.0'))).toBe(true);
+  expect(failed).toContain('The version it moved from was put back');
+  // The put-back is a real one: the version on disk is the one that worked,
+  // and nothing says the move it undid.
+  expect(JSON.parse(readFileSync(join(configDir, 'node_modules', '@ahpd/probe-grants', 'package.json'), 'utf8')).version).toBe('0.1.0');
+  expect(said.join('\n')).not.toContain('to 0.2.0');
+});
+
+it('carries what one package moved when another is refused in the same call', async () => {
+  // A refusal ends the command, and the package that moved before it is on disk
+  // and not running: the error names it, so a command can import it again.
+  installed({ '@ahpd/probe-one': '0.1.0', '@ahpd/probe-two': '0.1.0' });
+  said.length = 0;
+  const { runner } = fake({}, { '@ahpd/probe-one': '0.2.0', '@ahpd/probe-two': '0.2.0' }, {
+    manifests: { '@ahpd/probe-two': { ahpd: { entry: './index.js', grants: 'probe:read' } } },
+  });
+  const failed = await updatePlugins('all', {
+    configDir, sdk: '0.8.0', run: runner, say,
+    fetch: registryHolding({ '@ahpd/probe-one': '0.2.0 >=0.8', '@ahpd/probe-two': '0.2.0 >=0.8' }),
+  }).then(() => undefined, (error: unknown) => error as { moved?: { name: string; to?: string }[] });
+  expect(String(failed)).toContain('is not a list of grants');
+  expect(failed?.moved?.map((one) => [one.name, one.to])).toEqual([['@ahpd/probe-one', '0.2.0']]);
+});
+
+it('puts back the version it moved from when the new version is not a plugin at all', async () => {
+  installed({ '@ahpd/probe-grants': '0.1.0' });
+  write({ plugins: [{ source: '@ahpd/probe-grants' }] });
+  said.length = 0;
+  const { runner } = fake({}, { '@ahpd/probe-grants': '0.2.0' }, { manifests: { '@ahpd/probe-grants': { bin: {} } } });
+  const failed = await updatePlugins('all', {
+    configDir, sdk: '0.8.0', run: runner, say, fetch: registryHolding({ '@ahpd/probe-grants': '0.2.0 >=0.8' }),
+  }).then(() => undefined, (error: unknown) => String(error));
+  expect(failed).toContain('is not an ahpd plugin');
+  expect(JSON.parse(readFileSync(join(configDir, 'node_modules', '@ahpd/probe-grants', 'package.json'), 'utf8')).version).toBe('0.1.0');
+});
+
+it('checks nothing about a package npm left at the version it was', async () => {
+  // The version on disk is the one that was there, so there is no new manifest
+  // to hold to anything: a list the loader would refuse stays where it is,
+  // because this call is not what put it there.
+  installed({ '@ahpd/probe-grants': '0.2.0' });
+  said.length = 0;
+  const { runner, calls } = fake({}, { '@ahpd/probe-grants': '0.2.0' }, {
+    manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: 'probe:read' } } },
+  });
+  await updatePlugins('all', {
+    configDir, sdk: '0.8.0', run: runner, say, fetch: registryHolding({ '@ahpd/probe-grants': '0.2.0 >=0.8' }),
+  });
+  expect(said.join('\n')).not.toContain('is not a list of grants');
+  // Nothing was put back over it: one npm call, which installed the version
+  // that was already there.
+  expect(calls).toHaveLength(1);
+  expect(JSON.parse(readFileSync(join(configDir, 'node_modules', '@ahpd/probe-grants', 'package.json'), 'utf8')).ahpd.grants).toBe('probe:read');
+});
+
+it('holds a package npm left where it was to the integrity its list names', async () => {
+  // A call that moved nothing still has to answer for what is on disk: the
+  // record that says this package came from that list is written only when the
+  // list's own value is the one npm installed.
+  installed({ '@ahpd/agent-acp': '0.13.0' });
+  await listed(OURS, [acp([listedVersion('0.13.0')])]);
+  const { runner, calls } = locking({ '@ahpd/agent-acp': { integrity: 'sha512-other' } }, { '@ahpd/agent-acp': '0.13.0' });
+  await expect(updatePlugins('all', {
+    configDir, sdk: '0.15.0', run: runner, fetch: aPlugin, say, marketplaces: [OURS],
+  })).rejects.toThrow(`@ahpd/agent-acp 0.13.0 is not the one ${OURS} lists`);
+  expect(calls.map((one) => one.argv.at(-1))).toEqual(['@ahpd/agent-acp@0.13.0', '@ahpd/agent-acp@0.13.0']);
+});
+
+it('says what a moved version asks its entry for, and what the entry holds that it no longer asks for', async () => {
+  installed({ '@ahpd/probe-grants': '0.1.0' });
+  write({ plugins: [{ source: '@ahpd/probe-grants', grants: ['probe:read', 'probe:delete'] }] });
+  said.length = 0;
+  const { runner } = fake({}, { '@ahpd/probe-grants': '0.2.0' }, {
+    manifests: { '@ahpd/probe-grants': { ahpd: { entry: './index.js', grants: ['probe:read', 'probe:write'] } } },
+  });
+  await updatePlugins('all', {
+    configDir, sdk: '0.8.0', run: runner, say, fetch: registryHolding({ '@ahpd/probe-grants': '0.2.0 >=0.8' }),
+  });
+  const lines = said.join('\n');
+  expect(lines).toContain('@ahpd/probe-grants asks for probe:write, which its entry does not hold');
+  expect(lines).toContain('@ahpd/probe-grants holds probe:delete, which its manifest no longer asks for');
 });
 
 it('reports an sdk the update moved while no plugin did', async () => {

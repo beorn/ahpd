@@ -851,6 +851,12 @@ export const manifestGrants = (
   return lists;
 };
 
+/** Why a package's grants are not a list the loader would take, or nothing when they are. */
+export const grantsProblem = (manifest: Record<string, unknown>, path: string): string | undefined => {
+  const read = manifestGrants(manifest, path);
+  return 'problem' in read ? read.problem : undefined;
+};
+
 /**
  * The manifest a package.json declares, when it declares any of the manifest
  * fields, or `undefined`.

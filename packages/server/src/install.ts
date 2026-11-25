@@ -24,7 +24,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { holds, launch, readJsonObject, writeJsonAtomic } from '@ahpd/sdk';
 import type { Grant, PluginSpec } from '@ahpd/sdk';
 import { asSpec } from './config.js';
-import { hasScheme, isNamed, manifestGrants, sourceOf, pluginIdOf } from './plugins.js';
+import { grantsProblem, hasScheme, isNamed, manifestGrants, sourceOf, pluginIdOf } from './plugins.js';
 import { isOffered, newestFitting, type Offered } from './compat.js';
 import { fittingListed, forgetInstalled, installedListing, listedVersions, recordInstalled } from './pluginlist.js';
 import type { Listing, ListedVersion } from './pluginlist.js';
@@ -937,6 +937,13 @@ export interface UpdateOptions {
   say(line: string): void;
   /** The plugin lists a listed package takes its versions from, in order; absent reads none, and npm decides. */
   marketplaces?: readonly string[] | undefined;
+  /**
+   * The configuration file the `plugins` entries are read from.
+   *
+   * Absent means the daemon's own, `config.json` beside the configuration
+   * directory; a caller that keeps its entries in another file names it.
+   */
+  configFile?: string | undefined;
 }
 
 /** A package `plugin update` moved, with its version on disk before and after npm; absent is not installed. */
@@ -973,6 +980,7 @@ export interface Moved {
  */
 export async function updatePlugins(names: 'all' | readonly string[], options: UpdateOptions): Promise<Moved[]> {
   const root = pluginRoot(options.configDir);
+  const configFile = options.configFile ?? join(options.configDir, 'config.json');
   const dependencies = dependenciesIn(root);
   const specs = new Map(dependencies);
   if (names !== 'all') {
@@ -1036,11 +1044,52 @@ export async function updatePlugins(names: 'all' | readonly string[], options: U
   let reason: Ran | undefined;
   /** What a list refused after npm ran, one sentence for each package put back. */
   const differed: string[] = [];
+  /** The packages a put-back could not restore: what is on disk is the version npm left, not the one that worked. */
+  const unput = new Set<string>();
+  /** Put the version npm moved from back, or take a fresh install out. */
+  const putBack = async (name: string, before: string | undefined): Promise<Ran> => before === undefined
+    ? options.run('npm', ['uninstall', '--prefix', root, '--legacy-peer-deps', '--', name])
+    : options.run('npm', ['install', '--prefix', root, ...daemonsSdk(options.sdk), `${name}@${before}`]);
   for (const [at, one] of kept.entries()) {
     options.say(`Updating ${one.target} with npm.`);
     const done = await options.run('npm', ['install', '--prefix', root, ...daemonsSdk(options.sdk), one.target]);
     if (done.code === 0) {
       const name = packageOf(one.name);
+      // A call that moved nothing landed the version that was already there -
+      // including no version at all where none was installed - so there is no
+      // new manifest to hold to anything. What a list names is not what npm
+      // installed, so that check below still runs.
+      const to = installedVersion(root, name);
+      const stayed = to === from[at];
+      /*
+       * What the version npm landed says about itself, read the way install and
+       * the loader read it: a package with no `ahpd` field, or with a grants
+       * list the loader would refuse, is one the loader refuses at the next
+       * start. The version the package moved from goes back here for the same
+       * reason a list that refuses a version puts it back - an update that
+       * lands something that cannot load is not an update.
+       */
+      // A manifest that cannot be read is the same answer as one that is not
+      // there: the loader would refuse the package, so it does not stay.
+      const asks = stayed ? undefined : ((): string | undefined => {
+        let landed: Record<string, unknown> | undefined;
+        try {
+          landed = manifestIn(root, name);
+        }
+        catch (error) {
+          return `its package.json could not be read (${error instanceof Error ? error.message : String(error)}).`;
+        }
+        if (landed === undefined || !('ahpd' in landed)) return 'it is not an ahpd plugin: its package.json has no "ahpd" field.';
+        return grantsProblem(landed, join(root, 'node_modules', name, 'package.json'));
+      })();
+      if (asks !== undefined) {
+        const back = await putBack(name, from[at]);
+        if (back.code !== 0) unput.add(name);
+        differed.push(back.code === 0
+          ? `${name}: ${asks} The version it moved from was put back.`
+          : `${name}: ${asks} npm could not put ${name} back as it was.`);
+        continue;
+      }
       const differs = one.listed === undefined ? undefined : listedMismatch(root, name, one.listed);
       if (differs === undefined) {
         if (one.listed !== undefined) recordInstalled(options.configDir, name, { marketplace: one.listed.listing.marketplace, source: one.listed.listing.plugin.source });
@@ -1048,10 +1097,8 @@ export async function updatePlugins(names: 'all' | readonly string[], options: U
       }
       // The version the package moved from goes back, so a list that refuses
       // a version leaves the plugin as it was and not uninstalled.
-      const before = from[at];
-      const back = before === undefined
-        ? await options.run('npm', ['uninstall', '--prefix', root, '--legacy-peer-deps', '--', name])
-        : await options.run('npm', ['install', '--prefix', root, ...daemonsSdk(options.sdk), `${name}@${before}`]);
+      const back = await putBack(name, from[at]);
+      if (back.code !== 0) unput.add(name);
       differed.push(back.code === 0 ? differs : `${differs} npm could not put ${name} back as it was.`);
       continue;
     }
@@ -1071,11 +1118,74 @@ export async function updatePlugins(names: 'all' | readonly string[], options: U
     moved.push({ name: SDK, ...(sdkFrom === undefined ? {} : { from: sdkFrom }), ...(sdkTo === undefined ? {} : { to: sdkTo }) });
     options.say(`${SDK}: ${sdkFrom ?? 'not installed'} to ${sdkTo ?? 'not installed'}`);
   }
+  /*
+   * What a moved package's entry holds against what its new manifest asks for.
+   *
+   * The update only reads a manifest it has landed, so a version that asks for
+   * more says so now rather than when a caller is refused, and one that stopped
+   * asking for a grant says the entry still holds it: a grant is a decision a
+   * person made, and an update is not the place to take it away.
+   */
+  /*
+   * A configuration this cannot read is said once and the update stands: the
+   * packages already moved, and refusing now would leave them moved with
+   * nothing said about it.
+   */
+  let saidConfig = false;
+  for (const one of moved) {
+    if (one.name === SDK) continue;
+    let spec: PluginSpec | undefined;
+    try {
+      spec = pluginEntry(configFile, one.name);
+    }
+    catch (error) {
+      if (!saidConfig) {
+        saidConfig = true;
+        options.say(`The packages above moved, and ${configFile} could not be read to compare their grants (${error instanceof Error ? error.message : String(error)}).`);
+      }
+      continue;
+    }
+    if (spec === undefined) continue;
+    const held: readonly string[] = typeof spec === 'object' ? spec.grants ?? [] : [];
+    let landed: Record<string, unknown> | undefined;
+    try {
+      landed = manifestIn(root, one.name);
+    }
+    catch (error) {
+      options.say(`${one.name} moved, and its package.json could not be read to compare its grants (${error instanceof Error ? error.message : String(error)}).`);
+      continue;
+    }
+    // Reached only when a package put back did not go back: the refusal above
+    // has already said why the landed one is not kept.
+    if (landed === undefined || !('ahpd' in landed)) continue;
+    const read = manifestGrants(landed, join(root, 'node_modules', one.name, 'package.json'));
+    if ('problem' in read) {
+      options.say(`${one.name} moved, and its manifest's grants are not a list the loader would take (${read.problem}).`);
+      continue;
+    }
+    const asks = read.grants ?? [];
+    const missing = asks.filter((grant) => !holds(new Set(held), grant as Grant));
+    if (missing.length > 0) {
+      options.say(`${one.name} asks for ${missing.join(', ')}, which its entry does not hold; re-run ahpd plugin install ${one.name} --grant, or add ${missing.length === 1 ? 'it' : 'them'} to the entry`);
+    }
+    const dropped = held.filter((grant) => !asks.some((ask) => holds(new Set([grant as Grant]), ask as Grant)));
+    if (dropped.length > 0) {
+      options.say(`${one.name} holds ${dropped.join(', ')}, which its manifest no longer asks for; nothing removed ${dropped.length === 1 ? 'it' : 'them'}`);
+    }
+  }
   // "Nothing to update." is left unsaid when npm refused some, because the
   // refusal that follows says why nothing did.
   if (moved.length === 0 && reason === undefined && differed.length === 0) options.say('Nothing to update.');
-  if (reason !== undefined) throw npmFailed(`npm could not update ${refused.join(', ')}`, reason);
-  if (differed.length > 0) throw new Error(differed.join(' '));
+  /*
+   * A refusal does not undo the packages already moved, and they are on disk
+   * and not running. What a caller can import again rides on the error, so a
+   * command can say what moved before it stops. A package a put-back could not
+   * restore is left out: what is on disk there is the version the loader
+   * refuses, and importing it would ask a daemon to run what it just said no to.
+   */
+  const reloadable = moved.filter((one) => !unput.has(one.name));
+  if (reason !== undefined) throw Object.assign(npmFailed(`npm could not update ${refused.join(', ')}`, reason), { moved: reloadable });
+  if (differed.length > 0) throw Object.assign(new Error(differed.join(' ')), { moved: reloadable });
   return moved;
 }
 
