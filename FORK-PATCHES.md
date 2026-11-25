@@ -52,8 +52,8 @@ Upstream status is one of:
 - Of the 16 named shas that are not ancestors of `main`, 9 are hh/integration twins already paired
   with their main commit on the row itself; the rest are the five #38233 commits, `c6f74e9d0` and
   `535303cf5`, each already marked awaiting its author's PR.
-- 3 more hh/integration-only fixups have no row: `173a6ff76` (the durable-file registry repair, named
-  under Rebase below), and `7eb7aae9a` and `c24cccacf` (test-only, rowed below). @dev/1 opens the PRs.
+- 3 more hh/integration-only fixups had no row and landed in this pass: `7eb7aae9a` with the #38233
+  row (PR #22), `173a6ff76` and `c24cccacf` under Rebase repairs and test-only fixups (PR #24).
 - The 29 newly rowed commits split 24 `upstream ask not written` and 5 `not upstreamable` (2 of them
   the users-read census harness, 3 our own process and ledger docs). No new upstream card is implied.
 
@@ -111,7 +111,7 @@ Upstream status is one of:
 - `31d558b65`, `2a73aba1b`, `ab933f119`, `f3f3f3937`, `0ac4f15c2` · re-derive the usage JSONL append source from Ag (three provenance pins), preserve the zero-tail repair, and re-read the append boundary so a later record is never glued to a zero tail · #35067, #33944 · not upstreamable: reads hh's inhab JSONL journals and pins an Ag commit (`inhab-jsonl.provenance.json`), a format upstream does not have
 
 ### Host: a record's writes and a person's delegation
-- not on main: `6dc16d309`, `ef7eb440a`, `50af536bbc`, `25d15c7dec`, `d6e8b735d`, awaiting its author's PR · count every write on an agent record and let a write say which revision it read; keep the secrets a saved row shows; let a plugin write a `user:`-owned record only while that owner lists it in `delegates` on the record, keeping the owner, logged after the write lands · #38233 (@cto dea0a98b) · upstream ask not written (host-side owner rule and write count; no upstream issue names either)
+- `326837da6` (PR #22; hh/integration `6dc16d309`, `ef7eb440a`, `50af536bbc`, `25d15c7dec`, `d6e8b735d`, `7eb7aae9a`) · count every write on an agent record and let a write say which revision it read; keep the secrets a saved row shows; let a plugin write a `user:`-owned record only while that owner lists it in `delegates` on the record, keeping the owner, logged after the write lands · #38233 (@cto dea0a98b) · upstream ask not written (host-side owner rule and write count; no upstream issue names either)
 
 ### Services: machine-local switches
 - `d82d697ed` (hh/integration `67799d139`) · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
@@ -134,8 +134,8 @@ Upstream status is one of:
 - `c17289eb2`, `4c403b657` · every upstream post gets `/pro` and an independent Fable critique first, and prior art is checked before any ahpd change · #38236 · not upstreamable: our review process
 - `594b14cc8` · this file moves to `main`, since `main` is the release line · #463 · not upstreamable: the fork's own ledger
 
-### Test-only fixups not yet on main
-- not on main: `7eb7aae9a`, `c24cccacf`, awaiting their author's PR · a channel test answers without narrowing first, and each plugin-route daemon gets its own `XDG_CONFIG_HOME` so the store's one-writer fence does not refuse the other three · #38233, #38185 · upstream ask not written (test-only)
+### Rebase repairs and test-only fixups
+- `dae7f13d4` (PR #24; hh/integration `173a6ff76`, `c24cccacf`) · `@bearly/durable-file` from the registry, and each plugin-route daemon with its own `XDG_CONFIG_HOME` so the store's one-writer fence does not refuse the other three · #38185 · upstream ask not written (test-only; the durable-file change is a rebase repair named under Rebase below)
 
 ### Superseded
 - `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 (@cto ruling C 1e5710d0) · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0); not on main: `535303cf5`, awaiting its author's PR. Upstream's test "shows a file a shell command wrote in the session's own changeset" (packages/sdk/test/changes-refresh.test.ts) needs these checkpoints and is skipped on `main` with this reason (#463 sync, `0f92e1c41`), so the next sync shows it again
