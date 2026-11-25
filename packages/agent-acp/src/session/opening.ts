@@ -447,7 +447,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
           held.release();
           throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
         }
-        if (!held.write('spawning', null)) {
+        // The turn open now is the one this child is spawned to serve: its start was logged before this write (#38456).
+        const spawningTurn = ctx.active === undefined ? undefined : String(ctx.active.id);
+        if (!held.write('spawning', null, spawningTurn)) {
           held.release();
           throw new Error(`${provider}: could not record ACP custody at ${prefix}.custody; nothing was spawned`);
         }

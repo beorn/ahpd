@@ -22,7 +22,7 @@ import { memorySessions } from '../../sdk/src/sessions/sessions.js';
 import { foldHostOptions, pluginHost } from '../../sdk/src/plugins/plugins.js';
 import { loggerOf } from '../../sdk/src/log.js';
 import { sdkVersion } from '../../sdk/src/version.js';
-import { admitCustody } from '../src/session/custody.js';
+import { admitCustody, readCustody as readRecord } from '../src/session/custody.js';
 import * as connectionPort from '../src/connection.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/acp-server.mjs', import.meta.url));
@@ -119,6 +119,7 @@ type Custody = {
   v: number; bootId: string; opening: string; seq: number; state: 'spawning' | 'running' | 'ended';
   host: { pid: number; stat: string }; child: { pid: number; stat: string } | null;
   serviceSession?: { sessionId: string; generation: number };
+  spawnedAt?: string; spawningTurnId?: string;
 };
 
 const bootId = (): string => readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
@@ -385,4 +386,43 @@ it.skipIf(!linux)('another process sees the seat locked while its child lives, a
   await session.close();
   await until(() => readCustody(prefix).state === 'ended');
   expect(probe()).toBe('free');
+});
+
+// #38456: hab fences a child's turn events at spawnedAt and admits the turn that opened it by id, so both must be
+// stamped by the spawning write and survive every later write of that opening; the file's mtime moves on each one.
+it.skipIf(!linux)('stamps spawnedAt once and the turn that opened a respawn, kept through running and ended (#38456)', async () => {
+  const { session, prefix, log, options } = await start([]);
+  const created = readCustody(prefix);
+  expect(created.state).toBe('running');
+  expect(Number.isFinite(Date.parse(created.spawnedAt ?? ''))).toBe(true);
+  expect(created.spawningTurnId).toBeUndefined();
+  options.env = { ...options.env, REFRESHED: 'yes' };
+  session.sendMessage('turn-38456', 'respawn for this turn');
+  await until(() => initializes(log).length === 2 && readCustody(prefix).opening !== created.opening
+    && readCustody(prefix).state === 'running');
+  const respawned = readCustody(prefix);
+  expect(respawned.spawningTurnId).toBe('turn-38456');
+  expect(Date.parse(respawned.spawnedAt!)).toBeGreaterThanOrEqual(Date.parse(created.spawnedAt!));
+  await session.close();
+  await until(() => readCustody(prefix).state === 'ended');
+  expect(readCustody(prefix)).toMatchObject({ opening: respawned.opening, spawnedAt: respawned.spawnedAt, spawningTurnId: 'turn-38456' });
+});
+
+it('reads spawnedAt and spawningTurnId, and refuses a malformed pair (#38456)', () => {
+  const folder = mkdtempSync(join(tmpdir(), 'ahpd-custody-38456-'));
+  folders.push(folder);
+  const prefix = join(folder, 'child');
+  const stat = `${process.pid} (node) S 1 ${'0 '.repeat(40)}`;
+  const base = { v: 1, bootId: 'boot', host: { pid: process.pid, stat }, opening: 'o1', seq: 2, state: 'ended', child: null };
+  const read = (record: Record<string, unknown>) => {
+    writeFileSync(`${prefix}.custody`, `${JSON.stringify(record)}\n`);
+    return readRecord(prefix);
+  };
+  expect(read({ ...base, spawnedAt: '2026-11-25T11:00:00.000Z', spawningTurnId: 't1' }))
+    .toMatchObject({ spawnedAt: '2026-11-25T11:00:00.000Z', spawningTurnId: 't1' });
+  expect(read(base)).not.toHaveProperty('spawnedAt');
+  expect(read({ ...base, spawnedAt: 'not a time' })).toBe('malformed');
+  expect(read({ ...base, spawnedAt: 5 })).toBe('malformed');
+  expect(read({ ...base, spawningTurnId: 't1' })).toBe('malformed');
+  expect(read({ ...base, spawnedAt: '2026-11-25T11:00:00.000Z', spawningTurnId: '' })).toBe('malformed');
 });

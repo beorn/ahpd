@@ -72,6 +72,7 @@ Upstream status is one of:
 - `4ec4c8a2f` · retain shared capabilities with isolated launch options · #32996 · upstream ask not written
 - `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · not upstreamable as written: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
 - `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · not upstreamable as written: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
+- `4ba34f69e` · the custody record carries `spawnedAt` and the spawning turn id from its `spawning` write through `ended`, so hab fences a hosted child's turn events without the file's mtime · #38456 · not upstreamable as written: same `HAB_ACP_*` custody record
 - `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · upstream ask not written (`openedMeta` absent upstream)
 
 ### acp / server: failure handling and retries
