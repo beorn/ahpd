@@ -128,7 +128,7 @@ it('with no user directory a plugin peer without terminal:write cannot type into
  */
 it("a plugin's host.connect() connection always carries principal.plugin as the entry's name, with and without a user directory", async () => {
   for (const users of [false, true]) {
-    let seen: { id?: string; plugin?: string; frozen: boolean } | undefined;
+    let seen: { id: string | undefined; plugin: string | undefined; frozen: boolean } | undefined;
     const probe = pluginHost('probe', context(), { grants: [] });
     probe.host.registerMethod('x-probe/who', {
       grant: 'probe:read', describe: () => ({ title: 'who' }),
