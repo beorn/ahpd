@@ -1,7 +1,7 @@
 import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServerState } from '@microsoft/agent-host-protocol';
-import { pluginPartsOf, uriOf, withSkillArgumentHintMeta } from '@ahpd/sdk';
+import { mcpServerCustomization, pluginPartsOf, uriOf, withSkillArgumentHintMeta } from '@ahpd/sdk';
 import type { Bag, OnWire } from '@ahpd/sdk';
 import { bag, list, str } from './common.js';
 import { frontmatterOf, projectDirOf } from './disk.js';
@@ -510,11 +510,7 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
                 },
               })
             : { kind: 'starting' };
-    out.push({
-      type: 'mcpServer',
-      id: `${uri.replaceAll('#', '%23')}#mcp=${encodeURIComponent(name)}`,
-      name,
-      uri,
+    out.push(mcpServerCustomization(uri, name, state, {
       /*
        * `enablement`, not `enabled`.
        *
@@ -531,8 +527,7 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
        * leaves the enabled intent where it was.
        */
       enablement: [{ kind: 'session', enabled: reported === 'disabled' ? stopRequested?.has(name) === true : reported !== 'failed' }],
-      state,
-    });
+    }));
   }
 
   return out;
