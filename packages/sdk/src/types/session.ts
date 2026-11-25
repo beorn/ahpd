@@ -944,6 +944,17 @@ export interface Session {
   authenticated?(resource: string, token: string, server?: string): Promise<boolean>;
 
   /**
+   * A client's token aimed at one MCP server ran out, as the host's clock says.
+   *
+   * `server` is the customization id the token's `target` named. The spec has
+   * no `auth/required` notification for an MCP server: the backend says it as
+   * that server's customization state, `authRequired` with reason `expired`,
+   * and stops using the token. Optional: for a backend without it the host
+   * keeps sending `auth/required` on the session, and logs that once.
+   */
+  expired?(resource: string, server: string): Promise<boolean>;
+
+  /**
    * The OAuth resources this session's MCP servers need signing into.
    *
    * What `authenticate` is checked against: the protocol says a client's
