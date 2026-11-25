@@ -35,7 +35,7 @@
  * that names one is refused.
  *
  * Three commands serve a connector. `x-ahpd/connectors/put` takes
- * `{ id, adapter, owner, title?, config }`, checks `config` against the
+ * `{ id, adapter, owner, title?, tags?, config }`, checks `config` against the
  * adapter's schema, closes the connector with that id, writes the record, calls
  * the adapter's `open` with each secret read back, and waits for its `check`.
  * `x-ahpd/connectors/remove` takes `{ id }`, closes it, takes its secrets out
@@ -114,6 +114,7 @@ import { recordsChannel, type RecordsChannel } from '../resources/recordschannel
 import { recordViews } from '../plugins/views.js';
 import { alertList, dropOpenAlerts, raiseOpenAlerts } from '../plugins/alerts.js';
 import { bag, isRecord, reason } from '../utils/values.js';
+import { tagsOf, tagsProblem } from '../utils/tags.js';
 import type { ActionCall, CheckResult, Connector, ConnectorModels, ConnectorOwner, ConnectorRef, DeviceSignIn, DeviceSignInPoll, ProviderConnector, ServedAdapter } from '../types/connectors.js';
 import type { AlertList } from '../plugins/alerts.js';
 import { hostOperationText, withOperations, type OperationChannel } from '../kinds/operations.js';
@@ -275,6 +276,8 @@ interface Prepared {
   owner: ConnectorOwner;
   /** What the client calls it, when it said. */
   title: string | undefined;
+  /** Its tags, each once, when the client sent some. */
+  tags: string[] | undefined;
   /** The config as the client sent it. */
   config: Record<string, unknown>;
   /** The record the id held, when it held one. */
@@ -358,6 +361,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
     adapter: String(record.adapter),
     owner: asOwner(record.owner),
     ...(typeof record.title === 'string' ? { title: record.title } : {}),
+    ...(tagsOf(record.tags).length === 0 ? {} : { tags: tagsOf(record.tags) }),
   });
   /** The references as one string, so a change is said only when there is one. */
   const refsKey = (): string => JSON.stringify([...known.values()].sort((left, right) => left.id.localeCompare(right.id)));
@@ -728,6 +732,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
       adapter: adapter.name,
       owner,
       ...(typeof record.title === 'string' ? { title: record.title } : {}),
+      ...(tagsOf(record.tags).length === 0 ? {} : { tags: tagsOf(record.tags) }),
       config: await resolvedRecord(config, owner, options.vault(), CONNECTOR_SECRETS),
     };
     await close(record.id);
@@ -898,6 +903,9 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
     if (title !== undefined && typeof title !== 'string') {
       throw new RpcError(INVALID_PARAMS, `${asked.command} takes title as a string`);
     }
+    const refused = params.tags === undefined ? undefined : tagsProblem(params.tags);
+    if (refused !== undefined) throw new RpcError(INVALID_PARAMS, `${asked.command} takes ${refused}`);
+    const tags = params.tags === undefined ? undefined : tagsOf(params.tags);
     const { before, was } = await ownerChecks(id, owner, reader);
     // Nothing of an old owner's is kept, so nothing of it is read either.
     const kept = before !== undefined && was === owner ? configOf(before) : {};
@@ -929,7 +937,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
       throw new RpcError(INVALID_PARAMS, reason(error));
     }
     checkAutomationLinks(adapter, config, owner);
-    return { id, adapter, owner, title, config, before, was, kept };
+    return { id, adapter, owner, title, tags, config, before, was, kept };
   };
 
   /**
@@ -944,7 +952,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
     reader: Principal | undefined,
   ): Promise<Record<string, unknown>> => {
     const ready = await prepare(params, reader, { command: PUT });
-    const { id, adapter, owner, title, config, before, was, kept } = ready;
+    const { id, adapter, owner, title, tags, config, before, was, kept } = ready;
     const moving = before !== undefined && was !== owner;
     const moved = await moveRecordSecrets({
       rules: CONNECTOR_SECRETS,
@@ -961,6 +969,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
       adapter: adapter.name,
       owner,
       ...(title === undefined ? {} : { title }),
+      ...(tags === undefined || tags.length === 0 ? {} : { tags }),
       config: moved,
       // An edit keeps the switch where it was, as an agent's put does.
       ...(before?.enabled === undefined ? {} : { enabled: before.enabled }),
@@ -1245,6 +1254,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
         adapter: adapterName,
         owner: ready.owner,
         ...(ready.title === undefined ? {} : { title: ready.title }),
+        ...(ready.tags === undefined ? {} : { tags: ready.tags }),
         config,
       },
       caller,
@@ -1316,6 +1326,7 @@ export function connectorsChannel(options: ConnectorsChannelOptions): Connectors
           adapter: adapterName,
           owner: ready.owner,
           ...(ready.title === undefined ? {} : { title: ready.title }),
+          ...(ready.tags === undefined ? {} : { tags: ready.tags }),
           config,
         },
         caller,

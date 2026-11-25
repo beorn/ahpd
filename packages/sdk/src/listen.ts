@@ -1,4 +1,5 @@
 import { createPeer, receive } from './rpc.js';
+import { watchClient } from './liveness.js';
 import type {
   Admission, Bounds, Connected, Door, DoorOptions, Listener, ListenOptions, NodeRequestListener, OnConnect, Opened, Raw, RequestHandler, RequestsListener, RequestsOptions, Runtime, StdioOptions, Tap,
 } from './types/listen.js';
@@ -37,6 +38,8 @@ interface Bound {
   peer: ReturnType<typeof createPeer>;
   connected: Connected | Raw;
   seen: ReturnType<typeof tapping>;
+  /** The check that the client is still there. */
+  alive: ReturnType<typeof watchClient>;
 }
 
 /**
@@ -342,6 +345,7 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
               origin: arrival?.origin,
             })),
             seen,
+            alive: watchClient(peer, { close: () => ws.close(), isOpen: () => ws.readyState === 1 }),
           });
         },
         message(ws: BunSocket, raw: string | Uint8Array) {
@@ -349,12 +353,14 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
           if (!held) return;
           const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
           held.seen.in(text);
+          held.alive.heard(text);
           take(held.connected, held.peer, text);
         },
         close(ws: BunSocket) {
           const held = bound.get(ws);
           // The peer first: a question this host asked is still pending, and
           // the socket that would have answered it is gone.
+          held?.alive.stop();
           held?.peer.close();
           held?.connected.close();
           bound.delete(ws);
@@ -422,6 +428,7 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
             url: request.url, node: identity.node, socket: number, address, forwardedFor, userAgent, origin,
           })),
           seen,
+          alive: watchClient(peer, { close: () => socket.close(), isOpen: () => socket.readyState === 1 }),
         };
       };
       socket.onmessage = (event) => {
@@ -429,9 +436,10 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
         if (!open) return;
         const text = String(event.data);
         open.seen.in(text);
+        open.alive.heard(text);
         take(open.connected, open.peer, text);
       };
-      socket.onclose = () => { sockets.delete(socket); held?.peer.close(); held?.connected.close(); held = undefined; };
+      socket.onclose = () => { sockets.delete(socket); held?.alive.stop(); held?.peer.close(); held?.connected.close(); held = undefined; };
       return response;
     });
     return {
@@ -528,12 +536,14 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
       origin: request.headers.origin,
     }));
     decided.delete(request);
+    const alive = watchClient(peer, { close: () => socket.close(), isOpen: () => socket.readyState === 1 });
     socket.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : raw.toString('utf8');
       seen.in(text);
+      alive.heard(text);
       take(connected, peer, text);
     });
-    socket.on('close', () => { peer.close(); connected.close(); });
+    socket.on('close', () => { alive.stop(); peer.close(); connected.close(); });
   });
 
   await new Promise<void>((resolve, reject) => {

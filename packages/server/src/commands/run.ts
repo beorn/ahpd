@@ -15,7 +15,8 @@ import { pathToFileURL } from 'node:url';
 import { JOINED_SESSION_ENV, joinedSession, joinedSessions } from '../joined-session.js';
 import { canonicalFromCli, check, createRegistry, optionTable, optionsOf, tokenize } from '@cofold/commands';
 import type { Command, JsonSchema, Registry } from '@cofold/commands';
-import type { Agent, Alert, LogLevel, AutomationStore, AutomationsOptions, ClientCounts, ClientRegistry, CommandSplitter, Connected, Contribution, DoorOptions, HostEventOf, HostHandlers, HostOptions, Loaded, Opened, Peer, PluginContext, Principal, Raw, RequestHandler, Route, ServedAdapter, ServedEngine, ServedTunnelKind, SessionStore, Tap, TunnelsChannel, Usage, Users, Vault } from '@ahpd/sdk';
+import type { Agent, Alert, LogLevel, AutomationStore, AutomationsOptions, ClientCounts, ClientRegistry, CommandSplitter, Connected, Contribution, DoorOptions, HostEventOf, HostHandlers, HostOptions, Loaded, Opened, Peer, PluginContext, Principal, Raw, RequestHandler, Route, ServedAdapter, ServedEngine, ServedTunnelKind, OperationChannel, SessionStore, Tap, TunnelsChannel, Usage, Users, Vault } from '@ahpd/sdk';
+import { sweep } from '@ahpd/deploy';
 import { parseYaml, stringifyYaml } from '@cofold/yaml';
 import {
   adaptersChannel,
@@ -29,6 +30,7 @@ import {
   COMPLETIONS_COMMAND,
   invokeOperation,
   OPERATION_COMMAND,
+  pluginOperationChannels,
   tunnelsChannel,
   createHost,
   createMinuteMeter,
@@ -80,7 +82,7 @@ import { controlIn, controlServer } from '../control.js';
 import type { ControlServer } from '../control.js';
 import { here } from '../ask.js';
 import { offerConfigure, askToServe } from './configure.js';
-import { agentPluginsDir, automationsDir, automationsPath, automationStatePath, configDir, configPath, customizationStatePath, daemonLog, hostId, isIdentifier, namedIssuer, policiesPath, rootConfigPath, sessionsDir, sessionsPath, signInIdentifier, urlHost, vaultPath } from '../config.js';
+import { agentPluginsDir, automationsDir, automationsPath, automationStatePath, configDir, configPath, customizationStatePath, daemonLog, hostId, isIdentifier, namedIssuer, policiesPath, rootConfigPath, sessionsDir, sessionsPath, signInIdentifier, urlHost, vaultPath, worktreeRemovalsPath } from '../config.js';
 import { API_PREFIX, PROXY_PREFIX, apiHandler, isUnder, json, listenApi, plainRequests, pluginRoutes, withoutApi, type ApiListener, type ApiOrigins } from '../http.js';
 import { isRootPath } from '../proxy/dialects.js';
 import { mcpHandler } from '../mcp.js';
@@ -117,6 +119,8 @@ import {
 } from './restart.js';
 import type { RestartOutcome } from './restart.js';
 import type { Options } from './options.js';
+import { holdIdleSleep, oncePerProcess } from '../keepawake.js';
+import { fileWorktreeRemovals } from '../worktreeremovals.js';
 
 /** The listener an HTTP surface is on: the daemon's, the API's own or the model API's own. */
 type Place = 'daemon' | 'api' | 'model';
@@ -380,6 +384,8 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     if (written(level, options.logLevel)) process.stderr.write(`${logLine(line, level, options.logTime, process.stderr)}\n`);
   };
   for (const warning of options.warnings) stamp(warning, 'warn');
+  /** The keep-awake helper's log, which says each kind of failure once. */
+  const keepAwakeLog = oncePerProcess({ warn: (line) => { stamp(line, 'warn'); }, debug: (line) => { stamp(line, 'debug'); } });
 
   /*
    * What this host calls its own sign-in resource.
@@ -469,6 +475,18 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
    * daemon's own record is swept where it is written, in `claim`.
    */
   sweepTemps(wholeFiles(options.users));
+
+  /*
+   * Deploys an earlier process left unfinished, said once at the start.
+   *
+   * The lock is what a second deploy of a service is refused by, so a lock
+   * whose process is gone is dropped here - and the step it died in is said out
+   * loud, because the one thing this must never do is quietly resume a deploy
+   * whose result nobody knows.
+   */
+  for (const left of sweep(configDir())) {
+    stamp(`deploy ${left.service}: outcome unknown: ${left.step} (deploy ${left.deployId})`, 'warn');
+  }
 
   /*
    * The HTTP API, when the configuration asked for one.
@@ -731,6 +749,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     // The provider lists are kept below, once the channel they read exists.
     catalog: () => catalogue,
     note: (id, outcome) => { connectorLists.note(id, outcome); },
+    connectorTags: (id) => connectorLists.refs().find((one) => one.id === id)?.tags ?? [],
     ...(token === undefined ? {} : { token }),
     ...(users === undefined ? {} : { users }),
     policies,
@@ -1090,17 +1109,28 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     onProblem: listProblem,
   });
   /*
-   * The one command over every channel that offers operations. The tunnels,
-   * clients, agents and connectors channels are its four now; a computers
-   * channel joins them later without another command being served.
+   * The one command over every channel that offers operations: the daemon's
+   * tunnels, clients, agents and connectors channels, and every plugin channel
+   * registered with an operations side, at `<scheme>://`. The plugins' are read
+   * each time the load folds them in. The fold refuses a plugin channel on a
+   * scheme the daemon's own serves, and the daemon's are spread last, so a
+   * plugin can never stand in for one of the daemon's.
+   *
+   * The daemon's are read through a closure, as before: the agents channel is
+   * built below this point.
    */
+  const daemonOperations = (): Record<string, OperationChannel> => ({
+    [tunnels.operations.uri]: tunnels.operations,
+    [clients.operations.uri]: clients.operations,
+    [agentLists.operations.uri]: agentLists.operations,
+    [connectorLists.operations.uri]: connectorLists.operations,
+  });
+  let pluginOperations: Record<string, OperationChannel> = {};
+  const servePluginOperations = (channels: HostOptions['channels']): void => {
+    pluginOperations = pluginOperationChannels(channels, listProblem);
+  };
   const channelOperations = invokeOperation({
-    channels: () => ({
-      [tunnels.operations.uri]: tunnels.operations,
-      [clients.operations.uri]: clients.operations,
-      [agentLists.operations.uri]: agentLists.operations,
-      [connectorLists.operations.uri]: connectorLists.operations,
-    }),
+    channels: () => ({ ...pluginOperations, ...daemonOperations() }),
     check: (value, schema, label) => { check(value, schema as JsonSchema, label); },
     onProblem: listProblem,
   });
@@ -1603,6 +1633,10 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
      * the host only shows what it is given and hands writes on.
      */
     rootConfig: daemonRootConfig(options, typed, openWire, (servers) => { mcpServers = servers as typeof mcpServers; }, async () => (await applyNow()).restart),
+    // The machine's idle sleep held while a chat works, as `keepAwakeWhileWorking` says.
+    keepAwake: (allowOnBattery) => holdIdleSleep(allowOnBattery, keepAwakeLog),
+    // The worktree removals still to make, kept beside the configuration so a restart tries them again.
+    worktreeRemovals: fileWorktreeRemovals(worktreeRemovalsPath(), (line) => { stamp(line, 'warn'); }),
     /*
      * The root config a client pushed, kept between restarts, as VS Code's
      * host keeps its own: a daemon restarted for an upgrade comes back with
@@ -1684,6 +1718,11 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     // Whether that is one record per turn or one per report, which `usage.per`
     // in the configuration file chose.
     usagePer: options.usagePer,
+    // The tags each record copies, from the agent records and the connectors.
+    usageTags: {
+      agent: (id) => agentLists.tagsOf(id),
+      connector: (id) => connectorLists.refs().find((one) => one.id === id)?.tags ?? [],
+    },
     // The zone the store below keeps its days in, so a period walked for a
     // limit reads the days the store wrote.
     ...(options.usageTimezone === undefined ? {} : { usageTimezone: options.usageTimezone }),
@@ -1935,6 +1974,8 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     // An engine a plugin brought or took away is what the stored records are read
     // against, so the list is replaced before they are opened again.
     engines = now.engines ?? {};
+    // A plugin's operations come and go with its channel.
+    servePluginOperations(now.channels);
     liveRoutes = answer.routes;
     liveEvents = now.events;
     // A plugin loaded later acts on the host as its own client, as one loaded
@@ -1967,6 +2008,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
   tunnelKinds = folded.tunnelKinds ?? {};
   // And the engines a stored agent record is read against when it is opened below.
   engines = folded.engines ?? {};
+  servePluginOperations(folded.channels);
   // The trigger types a save is now checked against: the host's own two are the
   // store's, and these are what the plugins brought.
   pluginTypes = pluginTriggerTypes(folded.pluginTriggers);
@@ -2187,6 +2229,7 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     tunnelKinds = now.tunnelKinds ?? {};
     pluginTypes = pluginTriggerTypes(now.pluginTriggers);
     engines = now.engines ?? {};
+    servePluginOperations(now.channels);
     const refused = host.replace({ ...now, connectors: { refs: () => connectorLists.refs(), run: connectorLists.run } });
     if (refused !== undefined) throw new Error(refused);
     recordAgents = agents;

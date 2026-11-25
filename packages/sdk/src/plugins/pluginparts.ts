@@ -32,6 +32,7 @@ import { basename, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { readJsonObject } from '../utils/jsonfile.js';
 import { isRecord, strings } from '../utils/values.js';
 import type { Bag } from '../types/common.js';
+import { mcpServerCustomization } from './mcpserver.js';
 
 /** One part as it was found: what it is called, and the file it came out of. */
 interface Found {
@@ -475,16 +476,7 @@ export function partsOf(dir: string, uri: string): Bag[] | undefined {
    * The state is the one a declared server is in: no backend has started it, and
    * `stopped` is what says so without claiming a turn is coming.
    */
-  const server = (one: Found): Bag => {
-    const where = at(one.path);
-    return {
-      type: 'mcpServer',
-      id: `${where.replace(/#/g, '%23')}#mcp=${encodeURIComponent(one.name)}`,
-      uri: where,
-      name: one.name,
-      state: { kind: 'stopped' },
-    };
-  };
+  const server = (one: Found): Bag => mcpServerCustomization(at(one.path), one.name, { kind: 'stopped' });
 
   const agents = markdownIn(placesFor(dir, 'agents', manifest.agents));
   const skills = skillsOf(dir, placesFor(dir, 'skills', manifest.skills));

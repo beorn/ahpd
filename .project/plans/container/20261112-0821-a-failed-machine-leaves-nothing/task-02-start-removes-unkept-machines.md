@@ -1,6 +1,6 @@
 ---
 title: Start removes unkept machines
-status: implemented
+status: done
 depends: []
 layer: "computer"
 refs:

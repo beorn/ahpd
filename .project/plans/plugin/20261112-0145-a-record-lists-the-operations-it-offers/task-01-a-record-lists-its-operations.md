@@ -1,6 +1,6 @@
 ---
 title: A record lists the operations it offers
-status: implemented
+status: done
 depends: []
 layer: "sdk, tunnel-devtunnel"
 refs:

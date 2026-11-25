@@ -1,6 +1,6 @@
 ---
 title: A setting for turns nobody sent
-status: implemented
+status: done
 depends: [task-01-the-owners-turns-get-the-approvals.md]
 layer: sdk, server
 refs:

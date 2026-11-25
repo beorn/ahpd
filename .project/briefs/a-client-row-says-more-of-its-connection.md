@@ -34,7 +34,7 @@ refs:
   - https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW - PostgreSQL `pg_stat_activity`
 ---
 
-# A client row says more of its connection
+# A client row says more of its connections
 
 Softov wants the client page in ahpw to say more about a connection than its id, address, protocol, connect time and counters.
 This brief covers the ahpd half: what the host collects about each connection, and what `x-ahpd-clients://` sends in each row.

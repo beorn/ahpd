@@ -1,6 +1,6 @@
 ---
 title: viewUnreviewedComments asks first
-status: implemented
+status: done
 depends:
   - task-01-five-comment-tools.md
 layer: "sdk"

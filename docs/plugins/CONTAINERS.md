@@ -106,17 +106,19 @@ The paths are the container's view of the mount, and the Dev Container CLI mount
 
 ## The surface
 
-Six methods, all in the reference client's own names, and four notifications back.
+Eight methods, all in the reference client's own names, and six notifications back. Two of the methods are for [a container from an image](#a-container-from-an-image).
 A client that does not know `_meta['vscode.devContainers']` ignores all of it, and nothing else on this host changes.
 
 | method | | needs |
 | --- | --- | --- |
 | `vscode/devContainers/isDockerAvailable` | whether Docker can be resolved | nothing |
-| `vscode/devContainers/connect` | `{ connectionId, workspaceFolder, name }`, answered with `{ connectionId, address, name, remoteWorkspaceFolder, hostWorkspaceFolder? }` | `container:connect` |
+| `vscode/devContainers/connect` | `{ connectionId, workspaceFolder, name, resume?, persistUserState?, sandboxEnabled? }`, answered with `{ connectionId, address, name, remoteWorkspaceFolder, hostWorkspaceFolder?, sandboxSupported }` | `container:connect` |
 | `vscode/devContainers/relaySend` | `{ connectionId, data }`: one frame, written to the host inside | `container:relay` |
 | `vscode/devContainers/disconnect` | `{ connectionId }`: end the relay | `container:disconnect` |
 | `vscode/devContainers/stop` | `{ workspaceFolder }`: end this connection's relay, then stop the container the folder is | `container:stop`, `computer:write` |
 | `vscode/devContainers/remove` | `{ workspaceFolder }`: the same, and the container's record goes with it | `container:remove`, `computer:write` |
+| `vscode/devContainers/connectEnvironment` | `{ connectionId, environmentId, image, name, resume?, persistUserState?, sandboxEnabled? }`, answered as `connect` is | `container:connect` |
+| `vscode/devContainers/removeEnvironment` | `{ environmentId }`: end every relay to it, then remove its container and its volumes | `container:remove` |
 
 A `workspaceFolder` is an absolute path on this host; on Windows a host URI's path, `/c:/work`, is read as the file it names.
 A connect whose folder is not one, or whose name is empty, is refused `-32602` "workspaceFolder must be an absolute host path and name must be non-empty", and a stop or a removal "workspaceFolder must be an absolute host path", as [VS Code's protocol](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/devContainerAgentHostProtocol.ts#L88-L149) checks them.
@@ -129,6 +131,8 @@ Before a container is started, stopped or removed, the window asking vouches for
 | `vscode/devContainers/output` | `{ connectionId, data }`: the CLI's and the container's own output, which is what a person watches while an image builds |
 | `vscode/devContainers/relayClose` | `{ connectionId }`: the relay ended, and it was not this client that ended it |
 | `vscode/devContainers/closeConnection` | `{ connectionId }`: the connection is gone; forget it |
+| `vscode/devContainers/userState` | `{ connectionId, stage, outcome, ... }`: one stage of a connect that keeps the user's state |
+| `vscode/devContainers/sandboxSupport` | `{ connectionId, supported }`: whether the running container can run the command sandbox |
 
 `connectionId` is the client's own name for the connection and is namespaced per connection: nothing one client can spell reaches another's container, and a socket that drops stops the relays it opened.
 `address` is `devcontainer:<containerId>`, which is a name a client shows and stores rather than something it can dial.
@@ -142,10 +146,23 @@ The four that hold a relay ask for the container operation of their own - `conta
 Their parameters name a workspace folder rather than a `computer://` URI.
 Starting a container is this host's Docker access by proxy.
 
+A stopped container is started again only by a connect that says `resume: true`. Any other is refused with "Dev Container for '<name>' is stopped."
+With `persistUserState: true`, a second volume keeps `.config/ahpd`, `.claude`, `.pi` and `.config/cofold` when the container is made again. The volume names the person who made it, and no other person's connect uses it.
+With `sandboxEnabled: true`, a new container is made with the options the command sandbox needs. `sandboxSupported` is read from the running container, since one made earlier keeps the options it was made with.
+
+### A container from an image
+
+`vscode/devContainers/connectEnvironment` makes a container with no folder on this host. Its workspace is a Docker volume mounted at `/workspaces` and labelled with `environmentId`, so a later connect with the same id reaches the same one. `_meta['vscode.devContainerEnvironments']` is `true` when the host serves it.
+
+- `image` is one of VS Code's list, which is `mcr.microsoft.com/devcontainers/base:ubuntu`. Any other is refused.
+- `environmentId` is lowercase letters, digits and dashes, 64 at most.
+- On a host with users, only the person who made an environment can connect to it or remove it. Anyone can connect to one whose volume names nobody, and only the host's own root connection can remove it.
+- `removeEnvironment` deletes the workspace. The host refuses a connect that names a removed environment while its daemon runs.
+
 ## How the host inside runs
 
 1. The folder must be a dev container: `.devcontainer/devcontainer.json` or `.devcontainer.json`, refused with a sentence naming the folder if neither is there.
-2. A computer already labelled with the folder is reused, and so is one that is stopped: `devcontainer up` starts it and keeps its id.
+2. A computer already labelled with the folder is reused, and so is one that is stopped, when the connect says `resume: true`: `devcontainer up` starts it and keeps its id.
    When there is none of ours, `devcontainer up --log-level debug --workspace-folder <dir> --id-label ahpd.computer=1 --id-label ahpd.devcontainer.folder=<dir>` makes it, and the CLI's own JSON is read off whichever line carries it - the CLI logs as it works, so the result is one line among several.
    The result counts only with the CLI's exit 0 beside it. Anything else is refused as VS Code refuses it, `Dev Container CLI returned an invalid result: <what the CLI wrote>`, its standard output where it wrote any and its standard error otherwise, with each environment value in it masked, a JSON line's value by value.
    The labels are the CLI's own way of finding a container, so a second connect, or a connect after a session made one, reaches the same container rather than a second one.

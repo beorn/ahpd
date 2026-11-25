@@ -2527,6 +2527,11 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
   };
 
   /** What `docker inspect` says about one machine, or an empty record. */
+  /** Where a machine is, and its record where the lookup read it: none for a container `ps` found. */
+  type Located = { at: string; record?: Record<string, unknown> };
+  /** Where a machine is, and its record. */
+  type Held = { at: string; record: Record<string, unknown> };
+
   const recordOf = async (id: string): Promise<Record<string, unknown>> =>
     rows((await ran(options, ['inspect', '--format', '{{json .}}', id])).stdout)[0] ?? {};
 
@@ -2552,14 +2557,14 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
    * already answers for a container Docker does not have, so nothing here
    * tells a caller whether some other container holds the name.
    */
-  const containerOf = async (id: string): Promise<string | undefined> => {
+  const locate = async (id: string): Promise<Located | undefined> => {
     const found = await recordOf(id);
     /*
      * The id itself, for a container that is this host's: one carrying this
      * host's own label, or one the record beside the configuration says a
      * connect adopted.
      */
-    if (Object.keys(found).length > 0 && (ours(found, options.label) || adoptedIds().includes(id))) return id;
+    if (Object.keys(found).length > 0 && (ours(found, options.label) || adoptedIds().includes(id))) return { at: id, record: found };
     /*
      * Otherwise the name a create gave it, which is the one label both routes
      * share: a machine made under a name of its own is found above, and a dev
@@ -2573,15 +2578,27 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
       '--format', '{{json .}}',
     ]), ['Names']);
     const name = text(held[0]?.Names);
-    if (name !== '') return name;
+    // A `ps` row carries no labels or mounts, so a caller that needs the record reads it.
+    if (name !== '') return { at: name };
     /*
      * Nothing of this host's answers, and something else does - another
      * container, an image, a volume: not a computer here, and no name for
      * Docker to be handed either.
      */
     if (Object.keys(found).length > 0) return undefined;
-    // Nothing by that name at all: the verb's own refusal is Docker's to say.
-    return id;
+    // Nothing by that name at all: the verb's own refusal is Docker's to say,
+    // and the record is the empty one Docker answered.
+    return { at: id, record: found };
+  };
+
+  /** The container a caller's id names, as `locate` finds it. */
+  const containerOf = async (id: string): Promise<string | undefined> => (await locate(id))?.at;
+
+  /** The container and its record, read once: the one `locate` read, or one read now for a container `ps` found. */
+  const heldOf = async (id: string): Promise<Held | undefined> => {
+    const located = await locate(id);
+    if (located === undefined) return undefined;
+    return { at: located.at, record: located.record ?? await recordOf(located.at) };
   };
 
   /**
@@ -2592,10 +2609,13 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
    * anything, so it refuses and says why rather than handing Docker a name that
    * would run against whatever holds it.
    */
-  const containerOrFail = async (id: string): Promise<string> => {
-    const at = await containerOf(id);
-    if (at === undefined) throw new Error(`${id} names a container this host did not make, and no computer is named that`);
-    return at;
+  const containerOrFail = async (id: string): Promise<string> => (await heldOrFail(id, false)).at;
+
+  /** `heldOf`, refused for a container this host did not make. `read` false leaves a `ps` find's record unread and empty. */
+  const heldOrFail = async (id: string, read = true): Promise<Held> => {
+    const located = await locate(id);
+    if (located === undefined) throw new Error(`${id} names a container this host did not make, and no computer is named that`);
+    return { at: located.at, record: located.record ?? (read ? await recordOf(located.at) : {}) };
   };
 
   /**
@@ -2607,8 +2627,11 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
    * not there, whichever of them is asked.
    */
   const look = async (id: string): Promise<Record<string, unknown> | undefined> => {
-    const at = await containerOf(id);
-    if (at === undefined) return undefined;
+    const located = await locate(id);
+    if (located === undefined) return undefined;
+    // The record `locate` read is this host's own container, or Docker's empty answer for none.
+    if (located.record !== undefined) return Object.keys(located.record).length > 0 ? located.record : undefined;
+    const at = located.at;
     const held = await ran(options, ['inspect', '--format', '{{json .}}', at]);
     // A machine that is not there is docker exiting non-zero, which is an
     // answer rather than a failure: the provider turns it into `-32008`.
@@ -2747,10 +2770,10 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
    * What a machine committed, brought back by fetch: `bringBack` in
    * `machinegit.ts`, through `docker exec`.
    */
-  const bringBackOfMachine = async (id: string): Promise<BroughtBack | undefined> => {
-    const at = await containerOf(id);
-    if (at === undefined) return undefined;
-    const found = await recordOf(at);
+  const bringBackOfMachine = async (id: string, held?: Held): Promise<BroughtBack | undefined> => {
+    const read = held ?? await heldOf(id);
+    if (read === undefined) return undefined;
+    const { at, record: found } = read;
     if (Object.keys(found).length === 0) return undefined;
     // A machine with no git directory of its own has nothing to bring back,
     // and one whose guard left the host's own mounted wrote in the host's
@@ -2788,9 +2811,9 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
    * left there, and this only says which commit that is.
    */
   const followOfMachine = async (id: string): Promise<void> => {
-    const at = await containerOf(id);
-    if (at === undefined) return;
-    const found = await recordOf(at);
+    const read = await heldOf(id);
+    if (read === undefined) return;
+    const { at, record: found } = read;
     if (Object.keys(found).length === 0) return;
     // A machine with no git directory of its own already answers from the
     // host's - its git *is* the host's - and one whose guard left the host's
@@ -3565,8 +3588,8 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
      * machine that is not up is started again for the commands that read it.
      */
     remove: async (id) => {
-      const at = await containerOrFail(id);
-      const found = await recordOf(at);
+      const held = await heldOrFail(id);
+      const { at, record: found } = held;
       const labels = labelsOf(found);
       const named = namedOf(found) ?? id;
       const mounts = mountsOf(found);
@@ -3581,7 +3604,7 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
        */
       try {
         if ((fetching || keeping) && !running(found)) await must(['start', at]);
-        if (fetching) await bringBackOfMachine(id);
+        if (fetching) await bringBackOfMachine(id, held);
         if (keeping && working !== undefined) await keepUncommitted(gitOf(id, at, found, working));
       }
       catch (error) {
@@ -3600,14 +3623,14 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
     },
 
     exec: async (id, command, env) => {
-      const at = await containerOrFail(id);
+      const { at, record } = await heldOrFail(id);
       /*
        * A dev container is reached by the same `docker exec` as any other
        * machine, with the user and environment its own definition asks for -
        * which is exactly what the CLI's own exec builds - decision
        * `a-dev-container-is-reached-by-docker-exec`.
        */
-      const into = await argvInto(id, at, await recordOf(at), command, env ?? {});
+      const into = await argvInto(id, at, record, command, env ?? {});
       const held = await ran(options, into.argv, undefined, into.env);
       // Not tolerated and not thrown: a command that failed is the tool
       // working, and its exit code is what the caller asked for.
@@ -3650,7 +3673,7 @@ export function dockerRuntime(options: DockerOptions): ComputerRuntime {
     },
 
     /** What a machine committed, brought back by fetch: `bringBackOfMachine`. */
-    bringBack: bringBackOfMachine,
+    bringBack: (id) => bringBackOfMachine(id),
 
     /** The host's branch, handed to the machine: `followOfMachine`. */
     follow: followOfMachine,

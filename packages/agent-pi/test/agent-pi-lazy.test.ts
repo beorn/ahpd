@@ -1,10 +1,12 @@
-import { WAIT_MS } from '../../../tools/wait.ts';
+import { IMPORT_CASE_MS } from '../../../tools/wait.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Engine } from '../../sdk/src/types/index.js';
 import type { Bag, PluginHost, Start } from '../../sdk/src/types/index.js';
+
+vi.setConfig({ testTimeout: IMPORT_CASE_MS });
 
 /*
  * The plugin loads without importing pi.
@@ -53,6 +55,9 @@ vi.mock('@earendil-works/pi-coding-agent', async () => {
     SettingsManager: { create: () => ({}) },
     createAgentSessionServices: async () => ({}),
     createAgentSessionFromServices: async () => ({ session }),
+    // Read by `loadPi` whether or not a session asks for a shell of its own.
+    createBashToolDefinition: () => ({}),
+    createPowerShellToolDefinition: () => ({}),
     defineTool: (tool: unknown) => tool,
     ModelRuntime: { create: async () => ({ getAvailable: async () => [] }) },
     // Read by `loadPi` whether or not a suite registers an endpoint.
@@ -80,9 +85,10 @@ const within = <T>(work: Promise<T>, ms: number): Promise<T | 'timed out'> =>
 const settled = async (): Promise<void> => { await new Promise((done) => { setTimeout(done, 5); }); };
 
 it('applies without waiting for pi, imports it once for the first list and session, and answers stateFile once it has loaded', async () => {
-  // A module that imported pi when it loaded never finishes, so this waits
-  // only as long as a cold import of the plugin can take on a slow runner.
-  const entry = await within(import('../src/index.js'), WAIT_MS);
+  // A module that imported pi when it loaded never finishes, so this waits the
+  // budget a first import of a plugin gets: vite's transform, not a condition.
+  // An eager import still hangs and fails within the case's own time.
+  const entry = await within(import('../src/index.js'), IMPORT_CASE_MS);
   expect(entry).not.toBe('timed out');
   if (entry === 'timed out') return;
 

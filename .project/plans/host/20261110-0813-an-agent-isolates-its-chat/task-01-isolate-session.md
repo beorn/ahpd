@@ -1,6 +1,6 @@
 ---
 title: isolate_session moves the chat to a worktree
-status: implemented
+status: done
 depends: []
 layer: "sdk, docs"
 refs:

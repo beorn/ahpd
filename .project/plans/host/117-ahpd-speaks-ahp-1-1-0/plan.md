@@ -1,43 +1,37 @@
 ---
 title: ahpd speaks AHP 1.1.0
 domain: host
-status: draft
-priority: medium
+status: built
+priority: high
 created: 2026-10-22
-revalidated: 2026-10-22
+revalidated: 2026-11-21
 requires:
   - plans/host/44-ahpd-speaks-ahp-1-0-0/plan.md
 refs:
-  - "[code://packages/sdk/src/host/handshake.ts#L132-L176](../../../../packages/sdk/src/host/handshake.ts#L132-L176) - `initialize`, which negotiates with the package and adds the `0.10.0` alias"
-  - "[code://packages/sdk/src/host/chatactions.ts#L680-L1058](../../../../packages/sdk/src/host/chatactions.ts#L680-L1058) - the `session/configChanged` case, with its refusals, `undo`, `remember` and the `scope` split"
-  - "[code://packages/sdk/src/host/chatactions.ts#L1145-L1180](../../../../packages/sdk/src/host/chatactions.ts#L1145-L1180) - `chat/pendingMessageSet`, which hands a steering message to `session.steer`"
-  - "[code://packages/sdk/src/host/chatactions.ts#L1394-L1402](../../../../packages/sdk/src/host/chatactions.ts#L1394-L1402) - `chat/pendingMessageRemoved` and `chat/queuedMessagesReordered`"
-  - "[code://packages/sdk/src/host/sessionconfig.ts#L261-L377](../../../../packages/sdk/src/host/sessionconfig.ts#L261-L377) - `propertyOf`, `published` and `runningSchema`, where a schema key is read and published"
-  - "[code://packages/sdk/src/host/snapshots.ts#L310-L335](../../../../packages/sdk/src/host/snapshots.ts#L310-L335) - the chat snapshot, where the host lays its own per-chat flags over the backend's state"
-  - "[code://packages/sdk/src/sessions/sessions.ts#L166-L173](../../../../packages/sdk/src/sessions/sessions.ts#L166-L173) - `chatFlags`, the per-chat value the store already keeps"
-  - "[code://packages/sdk/src/types/agent.ts#L625-L648](../../../../packages/sdk/src/types/agent.ts#L625-L648) - `schema()`, which documents `scope` as this library's own per-chat flag"
-  - "[code://packages/agent-claude/src/session/turns.ts#L484-L503](../../../../packages/agent-claude/src/session/turns.ts#L484-L503) - `steer`, which holds one steering slot"
-  - "[code://packages/agent-claude/src/session/query.ts#L186-L200](../../../../packages/agent-claude/src/session/query.ts#L186-L200) - the input loop, which clears the slot on each message it reads"
-  - "[code://packages/sdk/src/host/catalogue.ts#L664-L686](../../../../packages/sdk/src/host/catalogue.ts#L664-L686) - `learnModels`, which compares model ids only"
-  - "[code://UPSTREAM.md#L11-L16](../../../../UPSTREAM.md#L11-L16) - Pass 7, the three Protocol 1.1.0 boxes and the experimental note"
-  - "npm://@microsoft/agent-host-protocol@1.0.0 - the latest published version on 2026-10-22; 1.1.0 is not published"
-  - "git://github.com/microsoft/agent-host-protocol@dbbd1217 - per-chat config: `ChatState.config`, `chat/configChanged` with `replace`, `chatMutable`"
-  - "git://github.com/microsoft/agent-host-protocol@5d542f9e - steering and queued messages share `queuedMessages`, told apart by `PendingMessage.kind`"
-  - "git://github.com/microsoft/agent-host-protocol@65114f22 - optional `SessionModelInfo.vendor`"
-  - "git://github.com/microsoft/agent-host-protocol@1ef06429 - `CreateChatParams.title`, in 1.1.0 development and not in the VS Code pin"
-  - "git://github.com/microsoft/vscode@e941aa12741 - per-chat configuration: the effective order, the chat-mutable keys, the refusals in `agentService.ts`"
-  - "git://github.com/microsoft/vscode@0b4e0632b1f - several pending steering messages, read by `getPendingSteeringMessages`"
-  - "git://github.com/microsoft/vscode@e646868227c - VS Code 1.143.1, pinned to AHP `5d542f9e`; the window offers `1.0.0`, `0.10.0` and `0.9.0`"
+  - git://88251f665 - main when the plan was checked again against AHP 1.1.0
+  - npm://@microsoft/agent-host-protocol@1.1.0 - published 2026-11-13; `SUPPORTED_PROTOCOL_VERSIONS` is still `1.0.0` and `0.9.0`, and `PROTOCOL_VERSION` is `1.1.0`
+  - git://github.com/microsoft/agent-host-protocol@v1.1.0 - the 1.1.0 types and `CHANGELOG.md`
+  - git://github.com/microsoft/vscode@ddbdd50a9ed1 - VS Code main on 2026-11-21, which names annotations channels `ahp-annotations:`
+  - "[code://packages/sdk/src/host/handshake.ts#L34-L49](../../../../packages/sdk/src/host/handshake.ts#L34-L49) - the `0.10.0` alias and the accepted list, built from the package"
+  - "[code://packages/sdk/src/vscode/chatconfig.ts](../../../../packages/sdk/src/vscode/chatconfig.ts) - the per-chat config types vendored from VS Code, which 1.1.0 now ships"
+  - "[code://packages/sdk/src/host/canvases.ts#L150-L165](../../../../packages/sdk/src/host/canvases.ts#L150-L165) - a canvas's `state.url`, checked as a web URL"
+  - "[code://packages/sdk/src/host/channels.ts#L39-L43](../../../../packages/sdk/src/host/channels.ts#L39-L43) - `ANNOTATIONS_PATH_SEGMENT`, the `<session>/annotations` shape"
+  - "[code://packages/sdk/src/host/sessionmethods.ts#L1775](../../../../packages/sdk/src/host/sessionmethods.ts#L1775) - `createChat` already reads `params.title`"
+  - "[code://packages/agent-claude/src/session/turns.ts#L474-L500](../../../../packages/agent-claude/src/session/turns.ts#L474-L500) - `steer`, which still holds one slot in `ctx.steering`"
+  - "[code://packages/sdk/src/host/catalogue.ts](../../../../packages/sdk/src/host/catalogue.ts) - `learnModels`, which compares model ids only"
+  - "[code://UPSTREAM.md#L11-L17](../../../../UPSTREAM.md#L11-L17) - Pass 8, the 1.1.0 items and the note that a chat's config inherits on purpose"
+  - git://7f7a74ffe - per-chat config and `chatMutable`, built on the vendored types
+  - git://20e812035 - a chat's sandbox switch on the chat-scoped config
 ---
 
 ## Goal
 
-ahpd speaks AHP 1.1.0 once the 1.1.0 package is on npm.
-A chat can hold its own value for a config key and leave the rest to its session.
+ahpd installs AHP 1.1.0 and speaks its wire.
+The per-chat config that main already has reads its types from the package.
 Several steering messages can wait at once, beside the queued ones, in one list.
 A model can name its vendor.
-The experimental windowed delivery and the TCP channel stay out of this plan.
-A client-selected `CreateChatParams.title` stays out too, for the pass that takes the next VS Code pin.
+A canvas says its `uri`, and a session's annotations channel is `ahp-annotations:/<uuid>`.
+The rest of 1.1.0 waits in the 1.1.0 brief (`git://a3118737e`, now the six `20261124` plans).
 
 ## Reconnaissance
 
@@ -45,100 +39,90 @@ The files read and the patterns to reuse are the `refs` above, each with its not
 
 ### Searches performed
 
-- `npm view @microsoft/agent-host-protocol versions` on 2026-10-22 - 0.2.0 to 0.9.0 and 1.0.0. The latest is 1.0.0, published 2026-10-03. 1.1.0 is not published.
-- `git log 5f16d81b..1ef06429` in the AHP repository - the 1.1.0 changes after the 1.0.0 release. `CHANGELOG.md` has an empty `1.1.0 - Unreleased` section.
-- `rg "chatMutable" common/ node/` in VS Code 1.143.1 - the platform keys `permissions`, `sandboxEnabled`, `autoApprove` and `mode`, Claude's `permissionMode`, eight Codex keys and Copilot's `effectiveApprovalMode`.
-- `rg "scope" packages/sdk/src/host packages/agent-*/src` - ahpd's own per-chat flag. `effortLevel` is the only `scope: 'chat'` key in a backend.
-- `rg "steeringMessage|queuedMessages" packages/*/src` - agent-claude holds one slot. `tooling.ts`, `wakes.ts`, `sleep.ts`, `owners.ts`, `spawn.ts` and `nested.ts` read or forward the two fields.
-- `rg "vendor" packages/*/src` - no backend sets `SessionModelInfo.vendor`.
-
-### Runtime path
-
-```
-1.143 window -> chat/configChanged on ahp-chat:// -> chatactions.ts -> chat session setConfig -> ChatState.config in the chat snapshot
-1.143 window -> chat/pendingMessageSet kind steering -> session.steer -> queuedMessages entry with kind steering -> removed when the backend reads it
-```
+- `npm view @microsoft/agent-host-protocol time` on 2026-11-21 - 1.1.0 was published on 2026-11-13.
+- `negotiateProtocolVersion` of the 1.1.0 package - an offer of `1.1.0` gets `1.1.0`, `1.2.0` gets `1.2.0`, and `0.10.0` gets nothing.
+- `rg "chat/configChanged|chatMutable" packages/*/src` - per-chat config is built in the sdk and agent-acp, on the types in `vscode/chatconfig.ts`.
+- `rg "ctx.steering" packages/agent-claude/src` - agent-claude keeps one steering slot.
+- `rg "vendor" packages/sdk/src` - no model code reads `SessionModelInfo.vendor`.
+- `rg '"@microsoft/agent-host-protocol"' --glob package.json` - nine package files and the root name `^1.0.0`.
+- `rg "AHP-1.0.0" --glob README.md` - 14 README files carry the badge.
+- `git grep "ahp-annotations" origin/main -- src/vs/platform/agentHost` in VS Code - `buildAnnotationsUri` gives `ahp-annotations:/<uuid>` for an `ahp-session:/<uuid>` session.
+- `rg "state.url" ../ahpw/src` - ahpw reads a canvas's `url` in `SessionHeader.tsx:114`.
 
 ### Gaps
 
-- The installed 1.0.0 package has no `ChatState.config`, no `chat/configChanged` and no `chatMutable`.
-- A 1.143 window sends `chat/configChanged` for any `chatMutable` key, on any agreed version. It gates by schema, not by version.
-- ahpd has a per-chat key (`scope: 'chat'`), but it publishes no `chatMutable` and drops `scope` on the wire.
-- Two steers before the Claude CLI reads leave the first id in the list for good. The slot keeps the second id, and the read removes only that one.
-- The Claude snapshot sends steering only in `steeringMessage`, with no `kind` entry in `queuedMessages`.
-- An offer of `1.1.0` already gets `1.1.0` from the 1.0.0 package, by its caret rule, before ahpd serves 1.1.0.
-- On AHP main, `SUPPORTED_PROTOCOL_VERSIONS` stays `1.0.0` and `0.9.0`, so the `-32005` refusal would not list `1.1.0`.
-- `Not found: a VS Code agent that sets SessionModelInfo.vendor - searched "vendor" in src/vs/platform/agentHost/node.`
+- The installed package is 1.0.0, so its types have no `ChatState.config`, no `chatMutable` and no `PendingMessage.kind`.
+- The 1.1.0 package does not list `1.1.0` in `SUPPORTED_PROTOCOL_VERSIONS`. A `-32005` refusal says "server's version 1.1.0" and lists `1.0.0, 0.9.0, 0.10.0`.
+- 1.1.0 says a chat's config does not inherit from its session. ahpd keeps a session's value for the chats that set none. Softov chose this on 2026-11-10.
+- ahpd sends a canvas's `url`, which 1.1.0 renames to `uri`.
+- ahpd's annotations channel is `<session>/annotations`, the shape 1.1.0 and VS Code main replace.
 
 ## Answers
 
 | What | Source | Task |
 | --- | --- | --- |
-| Plan protocol 1.1.0: per-chat config and the pending-message list; the plan waits for the published 1.1.0 package | Softov, 2026-10-22, chose "Protocol 1.1.0: per-chat config and the pending-message list; waits for the published 1.1.0 package." | 01 |
-| Windowed delivery and the TCP channel stay out | Softov, 2026-10-22, the same answer (defaulted: Pass 7 says both are experimental and the window uses neither) | - |
-| The ranges move to `^1.1.0` in the same files and the same way as 1.0.0 did | (defaulted: sibling [task 02 of 44-p1](../44-p1-ahpd-speaks-1-0-0-and-0-9-0/plan.md)) | 01 |
-| The handshake keeps the package negotiation and the `0.10.0` alias; it adds no version of its own | (defaulted: [plan 88](../88-a-0-10-0-offer-gets-the-1-0-0-contract/plan.md) runs the package negotiation first) | 01 |
-| A chat's overlay is the chat's own values over the session's config, as `ChatState.config.values` | (defaulted: AHP `dbbd1217` reducer) | 02 |
-| `chat/configChanged` merges, and `replace` sets the whole overlay; a key left out of a replace takes the session's value | (defaulted: AHP `dbbd1217` reducer and its fixtures) | 02 |
-| A key that is not `chatMutable` is refused with "cannot be set for a chat" | (defaulted: upstream `e941aa12741`, `validateChatConfigWrite`) | 02 |
-| A subagent or worker chat refuses its own config, since it inherits from the chat that spawned it | (defaulted: upstream `e941aa12741`, `_prepareChatConfigAction`) | 02 |
-| A refused write is undone with the same `undo` the session case uses | (defaulted: sibling `session/configChanged` case in `chatactions.ts`) | 02 |
-| A `session/configChanged` for a chat-mutable key skips the chats whose overlay holds that key | (defaulted: upstream `e941aa12741`, effective order chat, then session, then host) | 02 |
-| The overlay is kept per chat in the session store, beside `chatFlags` | (defaulted: sibling `chatFlags` in `sessions.ts`) | 02 |
-| `chat/configChanged` needs the `session:configure` grant | (defaulted: sibling `session/configChanged` in `gate.ts`) | 02 |
-| No connection filter for `chat/configChanged`; every subscriber gets it, as the window sends it on 1.0.0 too | (defaulted: upstream keeps no version filter; plan 88 keeps no version on the `Connection`) | 02 |
-| Steering and queued entries share `queuedMessages`; `steeringMessage` mirrors the latest steering entry | (defaulted: AHP `5d542f9e` reducer, upstream `0b4e0632b1f`) | 04 |
+| Rewrite the plan small, with a brief for the rest of 1.1.0 | Softov, 2026-11-21, chose "Rewrite it small + a brief" | - |
+| The canvas `uri`, the annotations channel and `CreateChatParams.title` go in this plan | Softov, 2026-11-21, chose "In host/117" | 07, 08, 09 |
+| Every range moves to `^1.1.0` in the same files and the same way as 1.0.0 did | (defaulted: sibling [task 02 of 44-p1](../44-p1-ahpd-speaks-1-0-0-and-0-9-0/plan.md)) | 01 |
+| The handshake keeps the package's list and the `0.10.0` alias, and adds no version of its own | (defaulted: VS Code builds its list from the package; an offer of `1.1.0` already gets `1.1.0`) | 01 |
+| A chat's config keeps inheriting a session's value where the chat set none | Softov, 2026-11-10, recorded in UPSTREAM.md Pass 8 | 07 |
+| Tasks 02 and 03 are dropped: per-chat config and `chatMutable` are on main | `7f7a74ffe`, `20e812035` | 02, 03 |
+| `vscode/chatconfig.ts` gives way to the package's `ChatConfigState`, `ChatConfigChangedAction` and `chatMutable` | (defaulted: the package ships the types the file vendored) | 07 |
+| `CreateChatParams.title` is read already, from the untyped `params` every session method reads | `code://packages/sdk/src/host/sessionmethods.ts#L1775` | 07 |
+| `chat/configChanged` goes to a client on any version, though 1.1.0 registers it at `1.1.0` | VS Code `ddbdd50a9ed1` `protocolServerHandler.ts` L4944, which holds back only `chat/moved` | 07 |
+| Steering and queued entries share `queuedMessages`; `steeringMessage` mirrors the latest steering entry | (defaulted: AHP 1.1.0 `CHANGELOG.md`, *Changed*) | 04 |
 | agent-claude holds a list of steering entries, and each read of the CLI input removes the oldest | (defaulted: upstream `0b4e0632b1f`; the input loop in `query.ts` is first in, first out) | 04 |
 | A backend that submits a steer at once (cofold, pi, bot) emits no pending entry, as today | (defaulted: no pending state to show) | 04 |
-| The chat-mutable keys are every `scope: 'chat'` key (`effortLevel` today), plus Claude's `permissionMode` and `permissions`, as VS Code marks them | Softov, 2026-10-22 | 03 |
-| The `schema()` doc in `agent.ts` no longer says a permission mode is the session's | Softov, 2026-10-22 | 03 |
-| `scope` stays: `scope: 'chat'` goes out as `chatMutable: true`, and a backend can also set `chatMutable` on a shared key, shared by default and changeable per chat | Softov, 2026-10-22 | 03 |
-| A chat write that its backend cannot apply (no `setConfig`, or a key fixed at start such as pi's `projectTrust`) is refused with the reasons of the session case | Softov, 2026-10-22 | 02 |
-| `CreateChatParams.title` is out of scope, left for the pass that takes the next VS Code pin | Softov, 2026-10-22 | - |
-| No backend fills `vendor` yet; task 05 only passes it through | Softov, 2026-10-22 | 05 |
-| `SessionModelInfo.vendor` passes through from `models()`, and a changed vendor is a changed list | (defaulted: Pass 7 lists it in the Protocol 1.1.0 section) | 05 |
-| `docs/sdk/AHP.md`, the README badge and the Pass 7 boxes move with the package | (defaulted: sibling task 04 of 44-p1) | 06 |
+| No backend fills `vendor` yet; the host passes it through from `models()`, and a changed vendor is a changed list | Softov, 2026-10-22 | 05 |
+| A canvas says `uri`, an absolute content URI, and the host sends the same value as `url` beside it | VS Code `ddbdd50a9ed1` `withLegacyCanvasState`; a 1.145.2 window reads only `url` | 08 |
+| ahpw reads `uri` in its own PR, after this one | (defaulted: ahpw `SessionHeader.tsx:114` reads `url`; a change scoped to ahpd touches no other repo) | 08 |
+| A session's annotations channel is `ahp-annotations:/<uuid>` with the session's id, and the session's `annotations.resource` names it | (defaulted: AHP 1.1.0 and VS Code main `ddbdd50a9ed1`) | 09 |
+| The old `<session>/annotations` name keeps working beside it | (defaulted: VS Code 1.145.2 `c4453f8ea430` builds the old name itself) | 09 |
+| `CreateChatParams.title` has no task of its own | (defaulted: `createChat` reads it already) | 07 |
+| The README badges, `docs/sdk/AHP.md` and the UPSTREAM.md boxes move with the package | (defaulted: sibling task 04 of 44-p1) | 06 |
 
 ## Proposed architecture
 
-- **Data flow** - a chat write goes to that chat's backend session only. A session write goes to every chat that does not override the key.
-- **Event flow** - the host dispatches `chat/configChanged` on the chat channel when the backend accepts. The pending list moves by the 1.1.0 reducer rules.
-- **State flow** - the store keeps each chat's overlay. The chat snapshot lays it over the backend's state as `config`, the way it lays `chatFlags` over `status`.
-- **Layer responsibilities** - sdk: the action, the validation, the store and the snapshot · agent-claude: the steering list and the snapshot shape · backends: which keys are chat-mutable.
-- **Source-of-truth files** - [`code://packages/sdk/src/host/chatactions.ts`](../../../../packages/sdk/src/host/chatactions.ts), [`code://packages/sdk/src/host/sessionconfig.ts`](../../../../packages/sdk/src/host/sessionconfig.ts)
+- **Data flow** - the package's types replace the vendored ones. No value changes on the wire except `uri` and the annotations channel.
+- **Event flow** - the pending list moves by the 1.1.0 reducer rules.
+- **State flow** - a chat's config stays where `7f7a74ffe` keeps it.
+- **Layer responsibilities** - workspace: the ranges · sdk: the types, the handshake, `vendor`, the canvas, the annotations channel · agent-claude: the steering list · docs: the badges.
+- **Source-of-truth files** - [`code://packages/sdk/src/host/handshake.ts`](../../../../packages/sdk/src/host/handshake.ts), [`code://packages/sdk/src/host/channels.ts`](../../../../packages/sdk/src/host/channels.ts)
 
 ## Tasks
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The 1.1.0 package is installed](task-01-the-1-1-0-package-is-installed.md) | blocked | - |
-| [02 - A chat keeps its own config](task-02-a-chat-keeps-its-own-config.md) | todo | 01 |
-| [03 - Backend keys are chat-mutable](task-03-backend-keys-are-chat-mutable.md) | todo | 02 |
-| [04 - Steering messages share the list](task-04-steering-messages-share-the-list.md) | todo | 01 |
-| [05 - A model names its vendor](task-05-a-model-names-its-vendor.md) | todo | 01 |
-| [06 - The documents say 1.1.0](task-06-the-documents-say-1-1-0.md) | todo | 02, 03, 04, 05 |
+| [01 - The 1.1.0 package is installed](task-01-the-1-1-0-package-is-installed.md) | done | - |
+| [02 - A chat keeps its own config](task-02-a-chat-keeps-its-own-config.md) | dropped | - |
+| [03 - Backend keys are chat-mutable](task-03-backend-keys-are-chat-mutable.md) | dropped | - |
+| [04 - Steering messages share the list](task-04-steering-messages-share-the-list.md) | done | 01 |
+| [05 - A model names its vendor](task-05-a-model-names-its-vendor.md) | done | 01 |
+| [06 - The documents say 1.1.0](task-06-the-documents-say-1-1-0.md) | done | 04, 05, 07, 08, 09 |
+| [07 - The chat config reads the package](task-07-the-chat-config-reads-the-package.md) | done | 01 |
+| [08 - A canvas says its uri](task-08-a-canvas-says-its-uri.md) | done | 01 |
+| [09 - The annotations channel is ahp-annotations](task-09-the-annotations-channel-is-ahp-annotations.md) | done | 01 |
 
 ## Risks and tradeoffs
 
-- The published 1.1.0 can differ from AHP main. Task 01 compares the package with the refs above before any other task starts.
-- The 1.0.0 package already answers an offer of `1.1.0` with `1.1.0`.
-  ahpd serves the 1.0.0 wire to that client until this plan is built. The caret rule is the package's, and a refusal would answer a version the client did not offer.
-- A window sends `chat/configChanged` on a 1.0.0 connection once a key is chat-mutable. Task 03 marks no key until task 02 handles the action.
-- `scope: 'chat'` and `chatMutable` are two names for close ideas. A shared key with `chatMutable` is the one case where they differ.
+- The old `url` stays on the wire until VS Code drops its transition layer. A later change removes it then.
+- VS Code 1.145.2 builds `<session>/annotations` itself, so task 09 serves both names. One action goes to every name a client subscribed to.
+- The package's own list leaves out `1.1.0`, so a refusal names a version that its list does not hold. The plan keeps the package's words.
+- A chat's config inherits, unlike 1.1.0. A 1.1.0 client that expects a schema default where the session has a value reads the session's value.
 
 ## Resume state
 
-- **Done so far:** the plan, 2026-10-22. Softov deferred the plan on 2026-10-28. AHP 1.1.0 is not on npm on that date, and the newest version is 1.0.0.
-- **Next action:** none until Softov takes the plan back up. Then [task-01-the-1-1-0-package-is-installed.md](task-01-the-1-1-0-package-is-installed.md), when `npm view @microsoft/agent-host-protocol@1.1.0` answers.
-- **Open questions:** none.
-- **Watch out for:** `isActionKnownToVersion` says `chat/configChanged` is 1.1.0. Do not use it to hold the action back, since the window sends it on 1.0.0.
+- **Done so far:** built and closed on 2026-11-21, on Softov's word; see [implemented.md](implemented.md).
+- **Next action:** none.
 
 ## Final verification checklist
 
 - [ ] The ranges say `^1.1.0`, and the lockfile resolves 1.1.0.
-- [ ] A test: `chat/configChanged` merges, replaces, and resets a key left out of a replace.
-- [ ] A test: a key that is not chat-mutable and a subagent chat are both refused.
-- [ ] A test: the chat snapshot carries `config`, and it survives a restart.
+- [ ] A test: an offer of `1.1.0` gets `1.1.0`, and an offer of `0.10.0` gets `0.10.0`.
+- [ ] `vscode/chatconfig.ts` is gone, and the per-chat config tests pass on the package's types.
 - [ ] A test: two steers before a read leave no stale entry.
-- [ ] The conformance test replays the new actions through the 1.1.0 reducers.
+- [ ] A test: a model's `vendor` reaches the root state, and a changed vendor is a changed list.
+- [ ] A test: a canvas says `uri`, and `url` beside it.
+- [ ] A test: a session's annotations channel is `ahp-annotations:/<uuid>`, and `annotations.resource` names it.
+- [ ] The conformance test replays the actions through the 1.1.0 reducers.
 - [ ] The gates pass: typecheck, boundary, schema and vitest.

@@ -1,6 +1,6 @@
 ---
 title: copapo is a shipped ACP agent
-status: implemented
+status: done
 depends: []
 layer: "sdk, agent-acp, computer"
 refs:

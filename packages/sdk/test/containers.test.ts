@@ -107,7 +107,7 @@ const launcher = (options: { available?: boolean; fail?: string; halts?: boolean
       sink.output(`$ devcontainer up --workspace-folder ${one.workspaceFolder}\n`);
       if (options.fail !== undefined) throw new Error(options.fail);
       sinks.set(one.connectionId, sink);
-      return { address: 'devcontainer:abc123', remoteWorkspaceFolder: `/workspaces/${one.name}` };
+      return { address: 'devcontainer:abc123', remoteWorkspaceFolder: `/workspaces/${one.name}`, sandboxSupported: false };
     },
     send: (id, data) => { sent.push({ connectionId: id, data }); },
     disconnect: (id) => { stopped.push(id); sinks.delete(id); },
@@ -188,6 +188,8 @@ it('answers the reference shape, and carries frames both ways', async () => {
     name: 'Box',
     address: 'devcontainer:abc123',
     remoteWorkspaceFolder: '/workspaces/Box',
+    // Read from the running container on every connect, as VS Code's host does.
+    sandboxSupported: false,
   });
   // What the CLI printed on the way is already on the wire.
   expect(peer.seen).toContainEqual({

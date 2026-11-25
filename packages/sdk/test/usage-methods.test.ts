@@ -159,14 +159,14 @@ it('refuses a param of the wrong type, and a bound that is not a date with the r
   await expect(ask('records', { pool: 'user:ana', from: 'yesterday' })).rejects.toMatchObject({ code: -32602, message: notADate });
   await expect(ask('groups', { from: 'yesterday' })).rejects.toMatchObject({ code: -32602, message: notADate });
 
-  const notAKey = 'by takes user, team, project, not model';
+  const notAKey = 'by takes user, team, project, tag, not model';
   await expect(provider.read('usage://groups?by=model', undefined, ADMIN)).rejects.toMatchObject({ message: notAKey });
   await expect(ask('groups', { by: ['model'] })).rejects.toMatchObject({ code: -32602, message: notAKey });
 
   await expect(ask('totals', {})).rejects.toMatchObject({ code: -32602, message: 'x-ahpd/usage/totals needs pool, a pool key such as user:ana' });
   await expect(ask('totals', { pool: 7 })).rejects.toMatchObject({ code: -32602, message: 'x-ahpd/usage/totals takes pool as a string' });
   await expect(ask('range', { pool: 'user:ana', until: 3 })).rejects.toMatchObject({ code: -32602, message: 'x-ahpd/usage/range takes until as a string' });
-  await expect(ask('groups', { by: 'user' })).rejects.toMatchObject({ code: -32602, message: 'x-ahpd/usage/groups takes by as a list of user, team and project' });
+  await expect(ask('groups', { by: 'user' })).rejects.toMatchObject({ code: -32602, message: 'x-ahpd/usage/groups takes by as a list of user, team, project and tag' });
 });
 
 it('the host lets a member ask for her own pool and refuses another person\'s', async () => {

@@ -188,6 +188,22 @@ export interface ShellCommandAsk {
    * it is over: the manager keeps the shell busy until then.
    */
   stillRunning?(how: { commandId?: string; sentinel?: string }): void;
+  /**
+   * Settles when the caller lets the command go on in the background, which
+   * ends the call as a client narrowing the claim does. Ignored with
+   * `untilItEnds`, where no call waits.
+   */
+  letGo?: Promise<void>;
+  /**
+   * The command's real end, after the call was answered `background`.
+   *
+   * Without it the execution stops listening once it answers, and the shell's
+   * manager hears the end through `stillRunning`. With it, the execution goes
+   * on listening for the end it would have answered - the mark, the sentinel
+   * or the shell's exit, with the output - and hands that over here. Nothing
+   * else ends it then: not the timeout, not the alternate screen.
+   */
+  afterwards?(result: ShellCommandResult): void;
 }
 
 /**
@@ -267,17 +283,35 @@ export async function executeShellCommand(asked: ShellCommandAsk): Promise<Shell
   };
 
   const result = new Promise<ShellCommandResult>((resolve) => {
+    /** Whether the call has its answer. */
     let done = false;
+    /** Whether the command is over, or no longer watched. */
+    let over = false;
     const stops: (() => void)[] = [];
+    /** The timeout's own stop, which a command gone on in the background drops alone. */
+    let untimed: (() => void) | undefined;
     /** The command this execution started, once the shell has said it began. */
     let commandId: string | undefined;
     const finish = (answer: ShellCommandResult): void => {
-      if (done) return;
+      if (over) return;
+      if (done) {
+        // Gone on in the background: only the command's own end counts now.
+        if (answer.status !== 'completed' && answer.status !== 'shellExited') return;
+        over = true;
+        for (const stop of stops) stop();
+        asked.afterwards?.(answer);
+        return;
+      }
       done = true;
-      for (const stop of stops) stop();
+      const goesOn = answer.status === 'background' && asked.afterwards !== undefined;
+      if (goesOn) untimed?.();
+      else {
+        over = true;
+        for (const stop of stops) stop();
+      }
       // Still running in the shell, so the manager hears its actual end rather
       // than treating the shell as idle the moment the call is answered.
-      if (answer.status === 'background' || answer.status === 'altBuffer') {
+      if (!goesOn && (answer.status === 'background' || answer.status === 'altBuffer')) {
         asked.stillRunning?.({
           ...(commandId === undefined ? {} : { commandId }),
           ...(sentinel === undefined ? {} : { sentinel }),
@@ -335,8 +369,14 @@ export async function executeShellCommand(asked: ShellCommandAsk): Promise<Shell
         log(`the command in ${terminal.uri} ran past ${String(asked.timeoutMs)} ms`, 'warn');
         finish({ status: 'timeout', output: partial(commandId) });
       }, asked.timeoutMs);
-      stops.push(() => { clearTimeout(timer); });
+      untimed = () => { clearTimeout(timer); };
+      stops.push(untimed);
     }
+    if (asked.untilItEnds !== true) void asked.letGo?.then(() => {
+      if (done) return;
+      log(`the command in ${terminal.uri} goes on in the background, as its caller asked`);
+      finish({ status: 'background', output: '' });
+    });
     /*
      * The reference's `registerAltBufferHandler`, which settles at once on a
      * screen already showing the alternate one.

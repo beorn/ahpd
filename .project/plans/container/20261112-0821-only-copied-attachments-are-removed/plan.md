@@ -1,7 +1,7 @@
 ---
 title: Only copied attachments are removed from a machine
 domain: container
-status: planned
+status: built
 priority: low
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -59,7 +59,7 @@ removeSession -> teardown -> takeOut(machine, uri) -> computers.takeOut -> docke
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - takeOut names what putIn copied](task-01-takeout-names-what-putin-copied.md) | implemented | - |
+| [01 - takeOut names what putIn copied](task-01-takeout-names-what-putin-copied.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -68,7 +68,7 @@ removeSession -> teardown -> takeOut(machine, uri) -> computers.takeOut -> docke
 ## Resume state
 
 - **Done so far:** task 01 implemented. [implemented.md](implemented.md) says what exists, what was checked and where the work left the plan.
-- **Next action:** review and merge the PR, then the [Windows check](../../../pending/windows-machine-paths-checks.md). The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the `leave` after `takeOut` decides the removal. Teardown asks `leavesWith` before it, from the disposable machines the host recorded and the sessions `enteredIn` holds.
 

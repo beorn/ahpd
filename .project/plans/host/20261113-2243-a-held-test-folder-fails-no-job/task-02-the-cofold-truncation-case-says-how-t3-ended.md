@@ -1,6 +1,6 @@
 ---
 title: The cofold truncation case says how t3 ended
-status: implemented
+status: done
 depends: []
 layer: "agent-cofold tests"
 refs:

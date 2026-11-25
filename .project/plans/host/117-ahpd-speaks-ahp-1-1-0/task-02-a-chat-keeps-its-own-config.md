@@ -1,7 +1,7 @@
 ---
 title: A chat keeps its own config
-status: todo
-depends: [01]
+status: dropped
+depends: []
 layer: "sdk"
 refs:
   - "[code://packages/sdk/src/host/chatactions.ts#L680-L1058](../../../../packages/sdk/src/host/chatactions.ts#L680-L1058) - the `session/configChanged` case, whose refusals and `undo` this task reuses"
@@ -13,6 +13,8 @@ refs:
   - "git://github.com/microsoft/agent-host-protocol@dbbd1217 - the reducer and its four fixtures"
   - "git://github.com/microsoft/vscode@e941aa12741 - `_prepareChatConfigAction` and `validateChatConfigWrite` in `agentService.ts`"
 ---
+
+Built on main by `7f7a74ffe` and `20e812035`, on types vendored from VS Code. Task 07 moves it to the package types.
 
 ## Objective
 

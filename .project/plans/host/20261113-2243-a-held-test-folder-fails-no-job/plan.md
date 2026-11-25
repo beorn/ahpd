@@ -1,7 +1,7 @@
 ---
 title: A held test folder fails no job, and the cofold truncation case says how its turn ended
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -63,8 +63,8 @@ vitest ends -> globalSetup teardown -> rmSync(run) -> EBUSY on Windows -> the jo
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The teardown warns for a held folder](task-01-the-teardown-warns-for-a-held-folder.md) | implemented | - |
-| [02 - The cofold truncation case says how t3 ended](task-02-the-cofold-truncation-case-says-how-t3-ended.md) | implemented | - |
+| [01 - The teardown warns for a held folder](task-01-the-teardown-warns-for-a-held-folder.md) | done | - |
+| [02 - The cofold truncation case says how t3 ended](task-02-the-cofold-truncation-case-says-how-t3-ended.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -74,7 +74,7 @@ vitest ends -> globalSetup teardown -> rmSync(run) -> EBUSY on Windows -> the jo
 ## Resume state
 
 - **Done so far:** tasks 01 and 02 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the cofold problem file names a fix that does not apply. It is updated in this plan.
 

@@ -1,6 +1,6 @@
 ---
 title: The entrypoint seeds plugins and runs ahpd
-status: implemented
+status: done
 depends: [task-01-the-image-builds-from-the-checkout.md]
 layer: "image"
 refs:

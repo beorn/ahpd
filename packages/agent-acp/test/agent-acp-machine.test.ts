@@ -2,8 +2,8 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it, vi } from 'vitest';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { machinePathOf } from '@ahpd/sdk';
 import type { Engine, AgentView, Bag, MachineNeed, OpenedTerminal, OpenTerminal, Session, SpawnOptions, Vault } from '@ahpd/sdk';
 import { loadPlugins } from '../../server/src/plugins.js';
@@ -30,6 +30,16 @@ import { readParts } from '../../computer/src/parts.js';
 const REPO = join(import.meta.dirname, '../../..');
 const SOURCE = './packages/agent-acp/src/index.ts';
 const COMPUTER = './packages/computer/src/index.ts';
+
+/*
+ * The computer plugin's source, imported once before the cases: its first
+ * import took most of a 20 s case on a Windows runner, which then timed out
+ * although the case's own work took 2.5 s there. The cases import the same
+ * module and so measure only their own work.
+ */
+beforeAll(async () => {
+  await import(pathToFileURL(join(REPO, COMPUTER)).href);
+}, 120_000);
 const DOCKER = fileURLToPath(new URL('../../computer/test/fixtures/docker.mjs', import.meta.url));
 
 /** Everything this file made, so each case leaves nothing behind. */
@@ -251,18 +261,13 @@ it('hands a machine port none of the machine env with the command it runs there'
   expect(asked.map((one) => one.env)).toEqual([{ HOST_SIDE: '1' }]);
 });
 
-/*
- * The whole path: a record's machine block, opened as the record's `machine()`,
- * read by the computer plugin when it makes a disposable machine for a session
- * of that record. The plain variable is given when the machine is made; the
- * `$secret` is read for the session's owner, never given at create, and passed
- * by name on each command run in the machine.
+/**
+ * A host with the computer plugin and two records, codex and copilot, whose
+ * disposable machines are made by the scripted `docker`.
  */
-it('reaches a disposable machine: plain values at create, a $secret by name on each command', async () => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+const disposableHost = async () => {
   const dir = scratch();
   const state = join(dir, 'docker.json');
-  process.env.AHPD_TEST_CODEX_KEY = 'daemon-codex-key';
   const lines: string[] = [];
   const { kind } = await load({});
   const codex = kind.open(viewOf('codex', () => ({ machine: CODEX_MACHINE })));
@@ -285,8 +290,28 @@ it('reaches a disposable machine: plain values at create, a $secret by name on e
     log: (line: string) => { lines.push(line); },
   });
   expect(problems).toEqual([]);
-
   const create = options.computers?.create as NonNullable<NonNullable<typeof options.computers>['create']>;
+  return { dir, state, lines, codex, options, create };
+};
+
+/** The PATH a machine's parts are put ahead of. */
+const BASE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
+/*
+ * The whole path: a record's machine block, opened as the record's `machine()`,
+ * read by the computer plugin when it makes a disposable machine for a session
+ * of that record. The plain variable is given when the machine is made; the
+ * `$secret` is read for the session's owner, never given at create, and passed
+ * by name on each command run in the machine.
+ *
+ * Each machine is several spawns of the scripted `docker`. With both records'
+ * machines in it this case took 6.5 s on Linux and ran out of its 20 s on a
+ * busy Windows runner, so the second record's machine is a case of its own.
+ */
+it('reaches a disposable machine: plain values at create, a $secret by name on each command', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  process.env.AHPD_TEST_CODEX_KEY = 'daemon-codex-key';
+  const { dir, state, lines, codex, options, create } = await disposableHost();
   // The copy's source is this host's file, which the test does not have, so
   // the machine is made from the record's env needs.
   const needs = Object.fromEntries(Object.entries(codex.machine?.() ?? {}).filter(([key]) => !key.includes('.copy.')));
@@ -294,7 +319,6 @@ it('reaches a disposable machine: plain values at create, a $secret by name on e
 
   const held = JSON.parse(readFileSync(state, 'utf8')) as { machines: { env?: Record<string, string> }[]; calls: string[][] };
   // The codex part is on the machine's PATH ahead of the Node it runs on.
-  const BASE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
   expect(held.machines[0]?.env).toEqual({
     CODEX_HOME: '/ahpd/codex',
     CODEX_API_KEY: 'daemon-codex-key',
@@ -311,21 +335,18 @@ it('reaches a disposable machine: plain values at create, a $secret by name on e
   expect(args.join(' ')).not.toContain('vault-codex-key');
   expect(readFileSync(join(dir, 'computers.json'), 'utf8')).not.toContain('vault-codex-key');
   expect(lines.join('\n')).not.toMatch(/vault-codex-key|daemon-codex-key/u);
+}, 20_000);
 
-  // The other record's machine gets its own env, and nothing of codex's.
+it('gives another record\'s disposable machine its own env, and nothing of codex\'s', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  process.env.AHPD_TEST_CODEX_KEY = 'daemon-codex-key';
+  const { state, create } = await disposableHost();
   const other = String(await create({ source: 'disposable:codex', session: 'ahp-session:/two', provider: 'copilot', owner: 'user:ada' }));
-  const again = JSON.parse(readFileSync(state, 'utf8')) as { machines: { name: string; env?: Record<string, string> }[] };
-  expect(again.machines.find((one) => one.name === other)?.env).toEqual({
+  const held = JSON.parse(readFileSync(state, 'utf8')) as { machines: { name: string; env?: Record<string, string> }[] };
+  expect(held.machines.find((one) => one.name === other)?.env).toEqual({
     COPILOT_HOME: '/ahpd/copilot',
     PATH: `/opt/ahpd/copilot/bin:/opt/ahpd/node/bin:${BASE_PATH}`,
   });
-  /*
-   * Four times the default, because this case is not waiting on a timer: it
-   * makes two machines and asks how one of them runs a command, and every one
-   * of those is a spawn of the fixture's own processes. Alone it takes about
-   * five seconds - the default exactly - so on a machine running the rest of
-   * the package beside it, it fails for being busy rather than for being wrong.
-   */
 }, 20_000);
 
 /*
@@ -503,6 +524,61 @@ it('runs a terminal a session in a machine asks for in the machine', async () =>
   expect(prose).toContain('term=hello from the machine|exit=0');
 });
 
+/*
+ * A machine whose port refuses to start the server: by default the turn says
+ * one short sentence with no host path, and the log holds the port's own
+ * message; with `portFailures: "message"` the port's message is the error.
+ */
+const refusedIn = async (portFailures?: 'spawn' | 'message') => {
+  const actions: Bag[] = [];
+  const logged: string[] = [];
+  const agent = acpAgent({
+    command: process.execPath,
+    args: [SERVER],
+    provider: 'codex',
+    log: (line: string) => { logged.push(line); },
+    ...(portFailures === undefined ? {} : { portFailures }),
+  });
+  /*
+   * This fork opens the server before a session is answered, so a machine
+   * that cannot start the agent refuses the creation, and that refusal is
+   * what is said (#463 sync; upstream says it on the first turn's error).
+   */
+  const session = await agent.create({
+    uri: `ahp-session:/refused-${String(portFailures)}`,
+    chatUri: `ahp-chat:/refused-${String(portFailures)}`,
+    workingDirectory: join(REPO, 'packages', 'agent-acp'),
+    settings: { computer: 'computer://box' },
+    trusted: () => true,
+    computers: {
+      how: async () => { throw new Error('cannot connect to /var/run/docker.sock: image registry.example.com/box:1'); },
+    },
+    schema: () => ({ type: 'object', properties: {} }),
+    emit: (_channel: string, action: Bag) => { actions.push(action); },
+  } as never).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+  if (session instanceof Error) return { said: [session.message], logged };
+  started.push(session);
+  session.sendMessage('t1', 'hello');
+  const over = (): boolean => actions.some((one) => one.type === 'chat/turnComplete' || one.type === 'chat/error');
+  for (let i = 0; i < 3000 && !over(); i++) await new Promise((resolve) => { setTimeout(resolve, 1); });
+  return { said: actions.filter((one) => one.type === 'chat/error').map((one) => String(((one.part as Bag | undefined)?.['error'] as Bag | undefined)?.['message'])), logged };
+};
+
+it('says a machine that could not start the agent in one short sentence, and logs the port\'s message', async () => {
+  const { said, logged } = await refusedIn();
+  expect(said).toHaveLength(1);
+  expect(said[0]).toContain('The agent could not start in computer://box.');
+  expect(said[0]).not.toContain('docker.sock');
+  expect(said[0]).not.toContain('registry.example.com');
+  expect(logged.some((line) => line.includes('computer://box') && line.includes('/var/run/docker.sock'))).toBe(true);
+});
+
+it('passes the port\'s own message on with portFailures message', async () => {
+  const { said } = await refusedIn('message');
+  expect(said).toHaveLength(1);
+  expect(said[0]).toContain('cannot connect to /var/run/docker.sock');
+});
+
 it('keeps a terminal of a session on this host on the host, without asking the port', async () => {
   const { asked, opened, folder, ended, prose, said } = await terminalIn(false);
   expect(said).toEqual([]);
@@ -613,7 +689,7 @@ it('ships a part and a state directory for every row, each seeded from the agent
       part: 'copapo',
       env: ['XDG_CONFIG_HOME=/ahpd/copapo/config', 'XDG_DATA_HOME=/ahpd/copapo/data', 'COFOLD_HOME=/ahpd/copapo/home'],
       state: '/ahpd/copapo',
-      seed: ['~/.config/copapo/config.json'],
+      seed: ['~/.config/cofold/config.json'],
     },
     devin: {
       part: 'devin',

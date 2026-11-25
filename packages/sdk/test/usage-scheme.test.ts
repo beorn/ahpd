@@ -489,6 +489,36 @@ it('sums the records by user, team and project, each record once', async () => {
   expect(await provider.resolve('usage://groups?by=user')).toMatchObject({ type: 'file' });
 });
 
+it('sums the records by tag, a record in each of its tags, and keeps only the tags asked for', async () => {
+  const usage = fileUsage({ folder });
+  const tagged = (at: string, amount: number, tags?: string[]): ModelUse =>
+    modelUse(at, ['user:soft'], { owner: 'user:soft', cost: { amount, currency: 'usd', from: 'harness' }, ...(tags === undefined ? {} : { tags }) });
+  for (const one of [
+    tagged('2026-10-02T10:00:00.000Z', 1, ['work', 'main']),
+    tagged('2026-10-03T10:00:00.000Z', 2, ['work']),
+    tagged('2026-10-04T10:00:00.000Z', 4, ['backup']),
+    tagged('2026-10-05T10:00:00.000Z', 8),
+  ]) await usage.record(one);
+  const provider = usageProvider({ usage, timezone: 'UTC' });
+  const october = 'from=2026-10-01&until=2026-10-07';
+
+  const byTag = await json(`usage://groups?by=tag&${october}`, undefined, provider);
+  expect(byTag).toEqual([
+    { keys: { tag: 'backup' }, names: { tag: 'backup' }, total: { usd: 4, providerUsd: 4, calls: 1 } },
+    { keys: { tag: 'main' }, names: { tag: 'main' }, total: { usd: 1, providerUsd: 1, calls: 1 } },
+    { keys: { tag: 'work' }, names: { tag: 'work' }, total: { usd: 3, providerUsd: 3, calls: 2 } },
+  ]);
+
+  // By user, the record with two tags counts once, and so does the one with none.
+  expect(await json(`usage://groups?by=user&${october}`, undefined, provider))
+    .toEqual([{ keys: { user: 'user:soft' }, names: { user: 'soft' }, total: { usd: 15, providerUsd: 15, calls: 4 } }]);
+
+  // Only the records with every tag asked for.
+  expect((await json(`usage://groups?tag=work,main&${october}`, undefined, provider))[0].total.usd).toBe(1);
+  expect((await json(`usage://groups?tag=work&${october}`, undefined, provider))[0].total.usd).toBe(3);
+  expect(await json(`usage://groups?tag=nobody&${october}`, undefined, provider)).toEqual([]);
+});
+
 /*
  * The limits a person may see, which is the one read here that is a person's
  * rather than a pool's: a row holds them when its scope holds them, and an

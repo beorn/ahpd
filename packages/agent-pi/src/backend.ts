@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import type {
   AgentSession,
   AgentSessionEvent,
+  BashSpawnContext,
   ExtensionAPI,
   InlineExtension,
   LoadExtensionsResult,
@@ -192,6 +193,16 @@ export interface BackendOptions {
   /** The custom tools pi offers the model, on top of its own. */
   tools?: ToolDefinition[];
   /**
+   * Variables for the shells pi runs commands in, over the environment it
+   * would otherwise give them.
+   *
+   * pi runs in this process, so there is no agent process to put them on: its
+   * own shell tool is rebuilt with a spawn hook that merges these into the
+   * environment of each command. A host tool already standing in for the
+   * shell - pi's custom tool of the same name - is left as it is.
+   */
+  env?: Record<string, string>;
+  /**
    * What the host wants the model told, appended to pi's own system prompt.
    *
    * Each entry is added after what pi discovered itself, so a project's or a
@@ -302,10 +313,35 @@ export async function openPi(options: BackendOptions): Promise<PiBackend> {
     settingsManager,
     resourceLoaderOptions: loaderOptions,
   });
+  /*
+   * pi's own shell tool, rebuilt when this session's commands need variables
+   * of their own.
+   *
+   * pi runs here rather than as a process, so the variables cannot be put on
+   * an agent process: the tool's spawn hook merges them into each command's
+   * environment. A custom tool of the same name already stands in for pi's
+   * shell - the host's terminal tool does - and that one is left as it is.
+   */
+  const shellWithEnv = ((): ToolDefinition | undefined => {
+    if (options.env === undefined) return undefined;
+    const spawnHook = (context: BashSpawnContext): BashSpawnContext => ({
+      ...context,
+      env: { ...context.env, ...options.env },
+    });
+    const definition = process.platform === 'win32'
+      ? sdk.createPowerShellToolDefinition(options.cwd, { spawnHook })
+      : sdk.createBashToolDefinition(options.cwd, { spawnHook });
+    return options.tools?.some((one) => one.name === definition.name) === true
+      ? undefined
+      : definition as unknown as ToolDefinition;
+  })();
+  const customTools = shellWithEnv === undefined
+    ? options.tools
+    : [...(options.tools ?? []), shellWithEnv];
   const { session } = await sdk.createAgentSessionFromServices({
     services,
     sessionManager,
-    ...(options.tools !== undefined && options.tools.length > 0 ? { customTools: options.tools } : {}),
+    ...(customTools !== undefined && customTools.length > 0 ? { customTools } : {}),
   });
   if (endpoint !== undefined) await registerEndpoint(sdk, session.modelRuntime, endpoint);
   return wrap(sdk, session, found);

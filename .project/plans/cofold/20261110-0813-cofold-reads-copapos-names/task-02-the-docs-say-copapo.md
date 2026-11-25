@@ -1,6 +1,6 @@
 ---
 title: The docs say copapo
-status: implemented
+status: done
 depends:
   - task-01-the-harness-reads-copapos-names.md
 layer: "docs"

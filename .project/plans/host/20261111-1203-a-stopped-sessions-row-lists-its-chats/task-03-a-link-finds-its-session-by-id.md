@@ -1,6 +1,6 @@
 ---
 title: A link finds its session by id
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

@@ -1,6 +1,6 @@
 ---
 title: A gate checks each request
-status: implemented
+status: done
 depends: [task-01-the-plugin-host-checks-a-token.md]
 layer: "tunnel-devtunnel"
 refs:

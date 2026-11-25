@@ -71,27 +71,27 @@ it('Claude leaves the configuration alone when the image carries it', () => {
 
 it('cofold declares its harness configuration, wherever it is read from', () => {
   const before = process.env['XDG_CONFIG_HOME'];
-  const wasPath = process.env['COPAPO_CONFIG'];
+  const wasPath = process.env['COFOLD_CONFIG'];
   try {
-    delete process.env['COPAPO_CONFIG'];
+    delete process.env['COFOLD_CONFIG'];
     process.env['XDG_CONFIG_HOME'] = '/srv/config';
     let needs = cofoldAgent({ memory: true }).machine?.() ?? {};
     // In a state volume, seeded from the file the host reads, at the path the
     // file has under `~/.config`.
     expect(needs.cofoldState).toEqual({
       state: '/ahpd/cofold',
-      seed: [{ source: join('/srv/config', 'copapo', 'config.json'), target: 'copapo/config.json' }],
+      seed: [{ source: join('/srv/config', 'cofold', 'config.json'), target: 'cofold/config.json' }],
       // The seed holds the provider keys, which never go to another box.
       credential: true,
       description: expect.stringMatching(/provider/),
     });
     expect(needs.cofoldConfig).toMatchObject({
-      file: join('/srv/config', 'copapo', 'config.json'),
+      file: join('/srv/config', 'cofold', 'config.json'),
       // Mounted for a profile that keeps state on the host, at the same fixed
-      // target, which `COPAPO_CONFIG` then points at, so a cofold host inside
+      // target, which `COFOLD_CONFIG` then points at, so a cofold host inside
       // the machine finds the same provider keys whatever user the image runs
       // as.
-      target: '/ahpd/cofold/copapo/config.json',
+      target: '/ahpd/cofold/cofold/config.json',
       readOnly: true,
       required: true,
       when: 'host',
@@ -102,7 +102,7 @@ it('cofold declares its harness configuration, wherever it is read from', () => 
     // left alone: it is the nested host's own folder as well, and a machine's
     // mount point is root-owned, so pointing it there stops any image that
     // does not run as root from starting.
-    expect(needs.cofoldConfigPath).toMatchObject({ name: 'COPAPO_CONFIG', default: '/ahpd/cofold/copapo/config.json' });
+    expect(needs.cofoldConfigPath).toMatchObject({ name: 'COFOLD_CONFIG', default: '/ahpd/cofold/cofold/config.json' });
     // The nested host runs from the ahpd part.
     expect(needs.ahpdPart).toMatchObject({ part: 'ahpd', required: true });
     // A provider by variable has no default, so only a profile gives one, the key from the vault.
@@ -114,27 +114,27 @@ it('cofold declares its harness configuration, wherever it is read from', () => 
 
     // Inside a machine the source is the mounted one, so the file the host
     // carries is read from the path its own variable names.
-    process.env['COPAPO_CONFIG'] = '/srv/config/copapo/config.json';
+    process.env['COFOLD_CONFIG'] = '/srv/config/cofold/config.json';
     needs = cofoldAgent({ memory: true, provider: 'cofold2' }).machine?.() ?? {};
-    expect(needs.cofoldConfig).toMatchObject({ file: resolve('/srv/config/copapo/config.json') });
+    expect(needs.cofoldConfig).toMatchObject({ file: resolve('/srv/config/cofold/config.json') });
 
-    delete process.env['COPAPO_CONFIG'];
+    delete process.env['COFOLD_CONFIG'];
     delete process.env['XDG_CONFIG_HOME'];
     needs = cofoldAgent({ memory: true, provider: 'cofold3' }).machine?.() ?? {};
-    expect(needs.cofoldConfig).toMatchObject({ file: join(homedir(), '.config', 'copapo', 'config.json') });
+    expect(needs.cofoldConfig).toMatchObject({ file: join(homedir(), '.config', 'cofold', 'config.json') });
   }
   finally {
     if (before === undefined) delete process.env['XDG_CONFIG_HOME'];
     else process.env['XDG_CONFIG_HOME'] = before;
-    if (wasPath === undefined) delete process.env['COPAPO_CONFIG'];
-    else process.env['COPAPO_CONFIG'] = wasPath;
+    if (wasPath === undefined) delete process.env['COFOLD_CONFIG'];
+    else process.env['COFOLD_CONFIG'] = wasPath;
   }
 });
 
 it('cofold reads the configuration at a directory it is given, and at none when it is false', () => {
   const needs = cofoldAgent({ memory: true, computerConfigDir: '/srv/cofold-home' }).machine?.() ?? {};
-  expect(needs.cofoldConfig).toMatchObject({ target: '/srv/cofold-home/copapo/config.json' });
-  expect(needs.cofoldConfigPath).toMatchObject({ default: '/srv/cofold-home/copapo/config.json' });
+  expect(needs.cofoldConfig).toMatchObject({ target: '/srv/cofold-home/cofold/config.json' });
+  expect(needs.cofoldConfigPath).toMatchObject({ default: '/srv/cofold-home/cofold/config.json' });
 
   // `false` is the image's own configuration, and the machine needs only the
   // part its nested host runs from.

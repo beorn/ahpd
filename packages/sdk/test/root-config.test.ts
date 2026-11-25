@@ -229,16 +229,22 @@ it('declares every key VS Code pushes, as VS Code declares it', async () => {
     'mcpToolRoutingEnabled', 'mcpConnectorsEnabled', 'markdownPlanRichLinksEnabled',
     'workspaceSnapshotEnabled', 'agentOrchestrationLimits', 'artifactTools',
     'canvasesEnabled', 'autoAttachPullRequests', 'overlapProviderPreparation',
-    'migrateLegacyCopilotCliEnabled', 'sessionCatalogEnabled', 'showExternalSessions',
+    'sessionCatalogEnabled', 'showExternalSessions',
     'autoArchiveMergedSessionsAfterDays', 'autoDeleteArchivedMergedSessionsAfterDays',
     'copilotMultiRootEnabled', 'claudeMultiRootEnabled', 'codexMultiRootEnabled',
     'editAutoApprovePatterns', 'terminalAutoApproveRules',
     'agentMerge.enabled', 'agentMerge.addressReviews', 'agentMerge.fixCI',
     'agentMerge.resolveConflicts', 'agentMerge.mergePullRequest', 'agentMerge.mergeMethod',
     'agentMerge.replyAttribution', 'automationsEnabled', 'automationRunTimeoutMinutes',
+    // VS Code main at `ddbdd50a9ed1`.
+    'keepAwakeWhileWorking', 'sessionModelOptions', 'chatResources', 'hooksEnabled', 'mcpSkillsEnabled',
+    'mcpSkillsServerApprovals', 'extensionPermissionApprovals', 'mcpGalleryServiceUrl', 'browserUseEnabled',
+    'assistedApprovalInstructions',
   ];
   // The keys that are missing, rather than a boolean: one left out says which.
   expect(PUSHED.filter((key) => !(key in config.schema.properties))).toEqual([]);
+  // VS Code main no longer declares it.
+  expect(config.schema.properties).not.toHaveProperty('migrateLegacyCopilotCliEnabled');
   expect(config.values).toEqual({});
 
   // `TelemetryConfiguration.ON` and its three siblings, as literals.
@@ -462,6 +468,7 @@ it('serves each person their own approval settings, marked as a person\'s, and k
   const anaRoot = (await rootOf(ana.client)).config as Config;
   expect(anaRoot.values.terminalAutoApproveRules).toEqual(mine.terminalAutoApproveRules);
   expect(anaRoot.schema.properties.terminalAutoApproveRules?.['x-ahpd-scope']).toBe('person');
+  expect(anaRoot.schema.properties.autoApprovePolicyRestricted?.['x-ahpd-scope']).toBe('person');
   expect(anaRoot.schema.properties.defaultShell?.['x-ahpd-scope']).toBeUndefined();
   const boRoot = (await rootOf(bo.client)).config as Config;
   expect(boRoot.values.terminalAutoApproveRules).toBeUndefined();

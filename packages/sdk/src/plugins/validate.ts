@@ -20,6 +20,7 @@
 import type { StartSession } from '../types/automations.js';
 import type { ChatRequest, PluginContracts, PortKey } from '../types/plugin.js';
 import type { Owner } from '../types/usage.js';
+import type { Operation } from '../types/kinds.js';
 import { SUBJECTS, grantProblem, isGrant, isOperationWord } from '../access/users.js';
 import { isSecret, secretFields } from '../channels/owners.js';
 import { RECORD_SLUG, isRecordSlug } from '../resources/records.js';
@@ -474,6 +475,66 @@ export const checkChannel = (scheme: string, value: unknown, by: string): void =
     if (object[member] === undefined) continue;
     if (!right(object[member], expected)) throw new Error(miss(by, 'registerChannel', member, expected));
   }
+  if (object.operations === undefined) return;
+  if (!right(object.operations, 'object')) throw new Error(miss(by, 'registerChannel', 'operations', 'an object'));
+  const side = object.operations as Record<string, unknown>;
+  for (const member of ['operations', 'run']) {
+    if (typeof side[member] !== 'function') throw new Error(miss(by, 'registerChannel', `operations.${member}`, 'a function'));
+  }
+  for (const member of ['begin', 'settle', 'offers']) {
+    if (side[member] !== undefined && typeof side[member] !== 'function') {
+      throw new Error(miss(by, 'registerChannel', `operations.${member}`, 'a function'));
+    }
+  }
+};
+
+/**
+ * What a plugin channel's operations side lists now, with each entry that
+ * cannot be served said rather than served.
+ *
+ * Asked at the fold, so a wrong entry or an undeclared grant is a problem the
+ * load reports, and again at each call, because the list is the plugin's to
+ * change. An entry is served when it has an id no earlier entry has, a list of
+ * scopes, and a grant like `svc:restart`: those are what `invokeOperation`
+ * reads before it runs anything. A list that throws, or is not a list, serves
+ * nothing and says why in `failed`.
+ */
+export const listedOperations = (
+  by: string,
+  uri: string,
+  list: () => unknown,
+): { operations: Operation[]; problems: string[]; failed?: string } => {
+  let listed: unknown;
+  try {
+    listed = list();
+  }
+  catch (error) {
+    const failed = `plugin ${by} could not list its operations at ${uri}: ${error instanceof Error ? error.message : String(error)}`;
+    return { operations: [], problems: [failed], failed };
+  }
+  if (!Array.isArray(listed)) {
+    const failed = `plugin ${by} lists its operations at ${uri} as ${typeof listed}, not a list`;
+    return { operations: [], problems: [failed], failed };
+  }
+  const operations: Operation[] = [];
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const one of listed as unknown[]) {
+    const entry = (typeof one === 'object' && one !== null ? one : {}) as Record<string, unknown>;
+    const id = typeof entry.id === 'string' && entry.id !== '' ? entry.id : undefined;
+    const why = id === undefined ? 'it has no id'
+      : seen.has(id) ? 'an earlier entry has its id'
+        : !Array.isArray(entry.scopes) || !entry.scopes.every((scope) => typeof scope === 'string' && scope !== '') ? 'its scopes are not a list of names'
+          : typeof entry.grant !== 'string' || !isGrant(entry.grant) ? 'its grant is not one like svc:restart'
+            : undefined;
+    if (why !== undefined) {
+      problems.push(`plugin ${by} lists operation ${id ?? '(no id)'} at ${uri}, which is not served: ${why}`);
+      continue;
+    }
+    seen.add(id!);
+    operations.push(one as Operation);
+  }
+  return { operations, problems };
 };
 
 /*

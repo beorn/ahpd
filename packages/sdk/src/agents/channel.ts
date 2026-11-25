@@ -35,7 +35,7 @@
  * not checked: the agents open before the connectors do.
  *
  * Six commands serve an agent. `x-ahpd/agents/put` takes
- * `{ id, engine, owner, name, description?, icon?, model?, config }`, checks
+ * `{ id, engine, owner, name, description?, icon?, tags?, model?, config }`, checks
  * `config` against the engine's schema, writes the record, calls the engine's
  * `open` with each secret read back, and folds the new agent list into the
  * running host. `x-ahpd/agents/remove` takes `{ id }`, ends the sessions that
@@ -43,8 +43,9 @@
  * answer the row a client now holds. `x-ahpd/agents/check` takes `{ id }`,
  * builds the backend again, asks its probe and answers the row with its alerts.
  * `x-ahpd/agents/disable` takes `{ id }` and writes `mode: disabled`, so the
- * record is no longer opened, its sessions are kept, and the row reads
- * `disabled`; `x-ahpd/agents/enable` writes `mode: enabled` and opens it again.
+ * record is no longer opened, its sessions are kept and slept once they are
+ * quiet (never removed), and the row reads `disabled`; `x-ahpd/agents/enable`
+ * writes `mode: enabled` and opens it again.
  * `x-ahpd/agents/pause` writes `mode: paused`: the record stays open and its
  * sessions and alerts are kept, and the host starts nothing new on it. All
  * three answer the row.
@@ -103,6 +104,7 @@ import { recordsChannel, type RecordsChannel } from '../resources/recordschannel
 import { recordViews } from '../plugins/views.js';
 import { alertList, dropOpenAlerts, raiseOpenAlerts } from '../plugins/alerts.js';
 import { bag, isRecord, reason } from '../utils/values.js';
+import { tagsOf, tagsProblem } from '../utils/tags.js';
 import type { Icon } from '@microsoft/agent-host-protocol';
 import { hostOperationText, withOperations, type OperationChannel } from '../kinds/operations.js';
 import type { Agent } from '../types/agent.js';
@@ -163,6 +165,14 @@ export interface AgentsChannelOptions {
   /** End every session running on one agent, before its record is removed. */
   endSessionsOf(id: string): Promise<void>;
   /**
+   * Stop every session running on one agent, without removing it.
+   *
+   * What a disable owes its sessions: a quiet one sleeps now, and one with a
+   * turn in flight sleeps when that turn ends. The row, its chats and the
+   * backend id stay, so the conversation resumes on the next turn.
+   */
+  stopSessionsOf?(id: string): Promise<void>;
+  /**
    * What already serves an agent id this store does not hold, if anything.
    *
    * Answers the daemon, or the plugin that brought the agent, so a put can
@@ -190,6 +200,7 @@ interface OpenView {
   name: string;
   description: string | undefined;
   icon: Icon | undefined;
+  tags: string[];
   model: string | undefined;
   config: Record<string, unknown>;
 }
@@ -241,6 +252,8 @@ export interface AgentsChannel {
    * reads to decide which agents one caller is told about.
    */
   owners(): ReadonlyMap<string, AgentOwner | undefined>;
+  /** The tags of an open agent, read live, so an edit counts from the next record written; empty for any other id. */
+  tagsOf(id: string): readonly string[];
   /**
    * The ids of the stored records whose mode is `disabled`, as the last read
    * of the collection found them.
@@ -546,6 +559,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     name: typeof record.name === 'string' ? record.name : record.id,
     description: typeof record.description === 'string' ? record.description : undefined,
     icon: isRecord(record.icon) ? record.icon as unknown as Icon : undefined,
+    tags: tagsOf(record.tags),
     model: typeof record.model === 'string' ? record.model : undefined,
     config: {},
   });
@@ -564,6 +578,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     view.name = typeof record.name === 'string' ? record.name : record.id;
     view.description = typeof record.description === 'string' ? record.description : undefined;
     view.icon = isRecord(record.icon) ? record.icon as unknown as Icon : undefined;
+    view.tags = tagsOf(record.tags);
     view.model = typeof record.model === 'string' ? record.model : undefined;
     view.config = config;
   };
@@ -640,6 +655,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       name: view.name,
       ...(view.description === undefined ? {} : { description: view.description }),
       ...(view.icon === undefined ? {} : { icon: view.icon }),
+      ...(view.tags.length === 0 ? {} : { tags: [...view.tags] }),
       ...(view.model === undefined ? {} : { model: view.model }),
     };
     return {
@@ -944,6 +960,15 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     return value as unknown as Icon;
   };
 
+  /** The optional tags, each once, refused when one is not fit to keep. */
+  const tagsParam = (params: Record<string, unknown>, command: string): string[] | undefined => {
+    const value = params.tags;
+    if (value === undefined) return undefined;
+    const problem = tagsProblem(value);
+    if (problem !== undefined) throw new RpcError(INVALID_PARAMS, `${command} takes ${problem}`);
+    return tagsOf(value);
+  };
+
   /**
    * Refuse a team's or a person's record that sets a field only the host may.
    *
@@ -1082,6 +1107,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
     const description = optionalString(params, 'description', PUT);
     const model = optionalString(params, 'model', PUT);
     const icon = iconParam(params, PUT);
+    const tags = tagsParam(params, PUT);
     // Before anything of this write is prepared: a stale put has no business
     // moving secrets or opening a backend.
     if (ifRevision !== undefined) refuseStale(id, ifRevision, before);
@@ -1136,6 +1162,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       name,
       ...(description === undefined ? {} : { description }),
       ...(icon === undefined ? {} : { icon }),
+      ...(tags === undefined || tags.length === 0 ? {} : { tags }),
       ...(model === undefined ? {} : { model }),
       ...(delegates === undefined ? keptDelegates(before, was) : delegates.length === 0 ? {} : { delegates }),
       ...keptMode(before),
@@ -1335,10 +1362,11 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
   /**
    * Put one record in one mode, once its turn comes.
    *
-   * A record that is off is not opened, so turning one off leaves the backend a
-   * running session holds alone and ends nothing; turning it on or paused opens
-   * it again, or keeps it open. The record keeps every other field it held. The
-   * answer is the record's row.
+   * A record that is off is not opened, and its sessions are stopped but never
+   * removed: a quiet one sleeps now and one mid-turn sleeps when its turn ends,
+   * so the conversation stays and resumes on the next turn. Turning it on or
+   * paused opens it again, or keeps it open. The record keeps every other field
+   * it held. The answer is the record's row.
    */
   const toggleOne = async (
     command: string,
@@ -1372,6 +1400,16 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       throw new RpcError(INTERNAL_ERROR, `${id} is ${mode}, but the host did not take the new list: ${reason(error)}`);
     }
     await channel.refresh();
+    /*
+     * A record that is off keeps its sessions, but not their work: a quiet one
+     * sleeps now and one mid-turn sleeps when its turn ends, so turning an
+     * agent off does not leave it spending against a record nobody serves. A
+     * stop that failed is said, never swallowed.
+     */
+    if (mode === 'disabled') {
+      try { await options.stopSessionsOf?.(id); }
+      catch (error) { options.onProblem?.(`${id} is disabled, but its sessions could not be stopped: ${reason(error)}`); }
+    }
     return row(record);
   };
 
@@ -1471,6 +1509,7 @@ export function agentsChannel(options: AgentsChannelOptions): AgentsChannel {
       return channel.refresh();
     },
     owners: ownersFor,
+    tagsOf: (id) => open.get(id)?.view.tags ?? [],
     disabled: () => disabledIds,
     paused: () => pausedIds,
     handed,

@@ -1,6 +1,6 @@
 ---
 title: A pi turn runs on the record's endpoint
-status: implemented
+status: done
 depends: []
 layer: "agent-pi"
 refs:

@@ -1,7 +1,7 @@
 ---
 title: Each backend asks what the operator says to ask
 domain: host
-status: planned
+status: built
 priority: high
 created: 2026-11-16
 revalidated: 2026-11-16
@@ -76,10 +76,10 @@ false or absent -> the backend's mode and confirm: false, as today
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the start carries the check](task-01-the-start-carries-the-check.md) | implemented | - |
-| [02 - claude asks about a named host tool](task-02-claude-asks-about-a-named-host-tool.md) | implemented | 01 |
-| [03 - pi and cofold ask in every mode](task-03-pi-and-cofold-ask-in-every-mode.md) | implemented | 01 |
-| [04 - the docs say what false means](task-04-the-docs-say-what-false-means.md) | implemented | 02, 03 |
+| [01 - the start carries the check](task-01-the-start-carries-the-check.md) | done | - |
+| [02 - claude asks about a named host tool](task-02-claude-asks-about-a-named-host-tool.md) | done | 01 |
+| [03 - pi and cofold ask in every mode](task-03-pi-and-cofold-ask-in-every-mode.md) | done | 01 |
+| [04 - the docs say what false means](task-04-the-docs-say-what-false-means.md) | done | 02, 03 |
 
 ## Risks and tradeoffs
 
@@ -88,6 +88,7 @@ false or absent -> the backend's mode and confirm: false, as today
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 to 04 built on 2026-11-16 on branch `host/20261116-2128-backends-ask-what-the-operator-asks`, from the branch of host/20261116-2126, awaiting review.
 - **Next action:** Softov reviews the PR, then the checks of *Final verification checklist* on the test daemon.

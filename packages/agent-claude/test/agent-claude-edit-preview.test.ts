@@ -344,3 +344,40 @@ it('completes an edit with its file edit after its text, its sides as the SDK re
   expect(await readable(source, ((edit.after as Bag).content as Bag).uri)).toBe('one\nTWO\n');
   await session.close();
 });
+
+it('denies a call whose turn was stopped while its preview was made, and releases the preview', async () => {
+  const dir = scratch();
+  const file = join(dir, 'late.md');
+  const input = { file_path: file, content: 'late\n' };
+  sdk.frames = [{
+    type: 'assistant', parent_tool_use_id: null, uuid: 'a1',
+    message: { id: 'msg_1', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_late', name: 'Write', input }] },
+  }];
+  sdk.pushed = [];
+  const source = gitChanges();
+  const settled: string[] = [];
+  let made: (() => void) | undefined;
+  const session = createSession({
+    uri: SESSION,
+    chatUri: CHAT,
+    cwd: dir,
+    emit: () => {},
+    // The preview is held until the turn is stopped.
+    onEditProposed: async (toolCallId, path, apply) => {
+      await new Promise<void>((r) => { made = r; });
+      return await source.propose?.(dir, SESSION, toolCallId, path, apply);
+    },
+    onEditSettled: (toolCallId) => { settled.push(toolCallId); source.settle?.(SESSION, toolCallId); },
+  });
+  await settle();
+  session.sendMessage('t1', 'go');
+  await settle();
+  const asked = sdk.canUseTool?.('Write', input, { toolUseID: 'toolu_late', title: 'Run Write?' });
+  await settle();
+  session.abort();
+  await settle();
+  made?.();
+  expect(await asked).toMatchObject({ behavior: 'deny' });
+  expect(settled).toEqual(['toolu_late']);
+  await session.close();
+});

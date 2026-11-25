@@ -1,14 +1,21 @@
-# @ahpd/sdk
+# <img src="https://raw.githubusercontent.com/ahpio/ahpd/main/docs/public/logo.svg" alt="" height="32"> @ahpd/sdk
 
 [![npm](https://img.shields.io/npm/v/%40ahpd%2Fsdk)](https://www.npmjs.com/package/@ahpd/sdk)
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=24](https://img.shields.io/badge/node-%3E%3D24-5fa04e)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
 
 This owned fork's shared SDK entry requires Node 24/Linux or macOS, or Bun 1.3.13 or newer, including memory-only consumers because the entry loads its native file-writer lock binding. File stores have one writer until close; inspect persisted JSON without opening a competing writer. Native recovery qualification remains specific to the runtime/platform tested.
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
 
-A server library for the [Agent Host Protocol](https://github.com/microsoft/agent-host-protocol). It has no agent in it: you pass one in when you create the host.
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
+
+The library behind ahpd: embed an [Agent Host Protocol](https://microsoft.github.io/agent-host-protocol/) host in your own application. You bring the agents, as ahpd's plugins or your own, and the host handles the protocol, sessions, chats, subscriptions, reconnects and transcript paging, so any AHP client can drive them.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ahpio/ahpd/main/docs/media/hub-01-light.png">
+  <img src="https://raw.githubusercontent.com/ahpio/ahpd/main/docs/media/hub-01-dark.png" alt="Run agents on your own infrastructure, controlled from anywhere">
+</picture>
 
 Part of [ahpd](https://github.com/ahpio/ahpd). The source is in [`packages/sdk`](https://github.com/ahpio/ahpd/tree/main/packages/sdk), and the daemon built on it is [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server).
 

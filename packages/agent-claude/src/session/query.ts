@@ -4,6 +4,7 @@ import { idOf, mergeLogicalTurnUsage, reason, steerPart } from '@ahpd/sdk';
 import type { Bag } from '@ahpd/sdk';
 import type { HookCallback, Options, query, SDKUserMessage, SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { clearFor } from '../catalog.js';
+import { lastCostState } from '../transcript.js';
 import { bag, list, str, UUID } from './common.js';
 import type { PendingSdkMessage, SessionContext } from './context.js';
 import { contextOf } from './contextusage.js';
@@ -153,6 +154,11 @@ export function createQuery(ctx: SessionContext): Query {
    * a call a skill wrote for `Bash` reaches the shell the person can see. A
    * person's denials are the permission check's, which refuses a denied call
    * when the CLI asks about it, as VS Code's Claude leaves them.
+   *
+   * `bash` is aliased too, to whichever shell `Bash` is. A model now and then
+   * writes the name in lower case, and the CLI, whose tool names are
+   * case-sensitive, fails that call where it could have run it. An alias is
+   * one hop, so with the host's shell `bash` names the host's tool directly.
    */
   const denyOption = (): Bag => {
     const deny: string[] = hostHoldsTasks(ctx.values, ctx.offering) ? [...OWN_TASK_TOOLS] : [];
@@ -160,7 +166,7 @@ export function createQuery(ctx: SessionContext): Query {
     if (shell) deny.push('Bash');
     return {
       ...(deny.length > 0 ? { disallowedTools: deny } : {}),
-      ...(shell ? { toolAliases: { Bash: HOST_SHELL_TOOL } } : {}),
+      toolAliases: shell ? { Bash: HOST_SHELL_TOOL, bash: HOST_SHELL_TOOL } : { bash: 'Bash' },
     };
   };
 
@@ -265,7 +271,12 @@ export function createQuery(ctx: SessionContext): Query {
   const signedIn = (base: Bag): Bag => {
     const login = ctx.login;
     if (login === undefined) return { ...base, ...ctx.options.env };
-    const out: Bag = { ...base, CLAUDE_CODE_OAUTH_TOKEN: login.token };
+    /*
+     * The session's own variables stay under a login: they are what the CLI's
+     * process and the commands it runs need, and the login only replaces the
+     * variables it signs in with.
+     */
+    const out: Bag = { ...base, ...ctx.options.env, CLAUDE_CODE_OAUTH_TOKEN: login.token };
     for (const name of BEFORE_TOKEN) delete out[name];
     // The scopes are the login's own, never a value the base environment held.
     delete out['CLAUDE_CODE_OAUTH_SCOPES'];
@@ -358,8 +369,8 @@ export function createQuery(ctx: SessionContext): Query {
       while (mine === bound && toYield[0]?.sdkMessage !== undefined) {
         const next = toYield.shift() as PendingSdkMessage;
         ctx.yielded.set(next.sdkUuid, next);
-        if (next.steeringPendingId !== undefined && str(bag(ctx.steering).id) === next.steeringPendingId) {
-          ctx.steering = undefined;
+        if (next.steeringPendingId !== undefined && ctx.steering.some((one) => str(one.id) === next.steeringPendingId)) {
+          ctx.steering = ctx.steering.filter((one) => str(one.id) !== next.steeringPendingId);
           ctx.emit('chat', { type: 'chat/pendingMessageRemoved', kind: 'steering', id: next.steeringPendingId });
         }
         yield next.sdkMessage as SDKUserMessage;
@@ -409,7 +420,7 @@ export function createQuery(ctx: SessionContext): Query {
     ctx.toYield.length = 0;
     ctx.yielded.clear();
     ctx.parentSdkUuid = undefined;
-    ctx.steering = undefined;
+    ctx.steering = [];
     failTurn(why);
     ctx.sendNext();
   };
@@ -450,6 +461,17 @@ export function createQuery(ctx: SessionContext): Query {
       out.env = env;
     }
     return out;
+  };
+
+  /**
+   * The plugins the CLI starts with: the clients', and the folder of the skills
+   * this session's MCP servers serve, which is there from the start because the
+   * CLI reads which plugins it has only then, and a skill lands in it later.
+   */
+  const pluginsOption = (): Bag => {
+    const served = Object.keys(ctx.mcpServers).length > 0 ? ctx.skills.folder() : undefined;
+    const paths = [...(ctx.options.plugins ?? []).map((one) => one.path), ...(served === undefined ? [] : [served])];
+    return paths.length === 0 ? {} : { plugins: paths.map((path) => ({ type: 'local' as const, path, skipMcpDiscovery: true })) };
   };
 
   /**
@@ -507,9 +529,7 @@ export function createQuery(ctx: SessionContext): Query {
        * Read at startup, so a set that moved reaches a chat by starting it
        * again rather than by anything here.
        */
-      ...(ctx.options.plugins === undefined || ctx.options.plugins.length === 0 ? {} : {
-        plugins: ctx.options.plugins.map((one) => ({ type: 'local' as const, path: one.path, skipMcpDiscovery: true })),
-      }),
+      ...pluginsOption(),
       /*
        * The CLI's own prompt alone, as VS Code's Claude options name it: the
        * CLI's prompt is what makes it the CLI, and what the host wants said
@@ -726,6 +746,25 @@ export function createQuery(ctx: SessionContext): Query {
       if (ctx.unwritten) ctx.sdkSessionId = undefined;
     }
     const options = optionsFor(agent, first, cut);
+    ctx.cliEnv = options.env ?? process.env;
+    /*
+     * Where this CLI's running cost starts.
+     *
+     * A resumed CLI restores the total its transcript's last `cost-state`
+     * saved, and its first `result` reports that total plus the turn's spend.
+     * A fork or a rewind loads the transcript only up to its cut, and a CLI in
+     * a machine keeps its transcript there, so the total each restores is not
+     * one this host can read: the first `result` there sets the baseline and
+     * is charged nothing. A CLI that resumes nothing starts from zero.
+     */
+    const resumed = (options as { resume?: unknown }).resume;
+    const cutAt = (options as { resumeSessionAt?: unknown }).resumeSessionAt;
+    if (typeof resumed !== 'string') ctx.seedCost({});
+    else {
+      const saved = cutAt === undefined && ctx.options.spawn === undefined ? lastCostState(resumed) : undefined;
+      if (saved === undefined) ctx.costUnknown();
+      else ctx.seedCost(saved);
+    }
     /*
      * A CLI named under an id starts on a clean transcript, cleared once the
      * CLIs that could write it have exited: this session's last, which the
@@ -1226,13 +1265,18 @@ export function createQuery(ctx: SessionContext): Query {
           const spawn = id === undefined ? undefined : ctx.spawning.get(id);
           if (spawn !== undefined && typeof message.is_backgrounded === 'boolean') spawn.foreground = !message.is_backgrounded;
           ctx.noteTask(message);
+          // A call that waits on its task is one a person can move to the background.
+          if (id !== undefined && !ctx.completed.has(id)) ctx.offerMove(message);
           continue;
         }
         if (type === 'system' && str(message.subtype) === 'task_updated' && bag(message.patch).is_backgrounded === true) {
           const task = str(message.task_id);
           for (const [call, held] of ctx.tasks) {
-            const spawn = held === task ? ctx.spawning.get(call) : undefined;
+            if (held !== task) continue;
+            const spawn = ctx.spawning.get(call);
             if (spawn !== undefined) spawn.foreground = false;
+            // The call names its row from here, whoever moved it.
+            ctx.noteMoved(call, held);
           }
         }
         /*
@@ -1447,7 +1491,7 @@ export function createQuery(ctx: SessionContext): Query {
               // same place cache writes go, rather than beside them as fields
               // of their own.
               const total: Bag = used ?? {};
-              const meta: Bag = { ...bag(total._meta) };
+              const meta: Bag = { ...bag(ctx.withLogin(total)._meta) };
               if (cost !== undefined) meta['ahpd.cost'] = cost;
               if (figure !== undefined) {
                 meta.contextAttribution = figure.attribution;

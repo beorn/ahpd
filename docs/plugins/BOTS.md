@@ -132,7 +132,7 @@ A person talks to a bot in a **talk**: a session of the `bot-chat` provider, whi
 { "method": "createSession", "params": { "channel": "ahp-session:/<uuid>", "provider": "bot-chat", "config": { "bot": "motion" } } }
 ```
 
-A person has one talk with each bot, so the bot keeps what it did for them from one talk to the next. A second create for the same bot and person is refused with `You already have a session with <name>: <uri>.`, and the client opens that session from its session list. With the plugin's `secondSession` at `allow`, a person may open more than one, and the bot answers the one they used last. A session a plugin makes, such as the webhook's, is no person's and is never refused. A read of `bot://<slug>` answers the bot's record, with `session`, the reader's own talk, where they have one; it starts nothing, as VS Code's reads answer content. The talk is kept in the bot's `fronts/` rows, one for each bot and owner. The root counts as one person: every `root:<host>` owner shares one row, whatever machine the configuration runs on, and so does every talk on a host with no users. A session started again, by a restart or by a client opening its row, is never refused. A person who talked to a bot before the rows were kept has their last used talk with it written down the first time it is asked for.
+A person has one talk with each bot, so the bot keeps what it did for them from one talk to the next. A second create for the same bot and person is refused with `You already have a session with <name>: <uri>.`, and the client opens that session from its session list. With the plugin's `secondSession` at `allow`, a person may open more than one, and the bot answers the one they used last. A session a plugin makes, such as the webhook's, is no person's and is never refused. A read of `bot://<slug>` answers the bot's record, with `session`, the reader's own talk, where they have one; it starts nothing, as VS Code's reads answer content. The talk is kept in the bot's `fronts/` rows, one for each bot and owner. The root counts as one person: every `root:<host>` owner shares one row, whatever machine the configuration runs on, and so does every talk on a host with no users. A session started again, by a restart or by a client opening its row, is never refused. A person who talked to a bot before the rows were kept has their last used talk with it written down the first time it is asked for. A talk counts only while the host keeps its session's record, which names the bot, and can open the session. One nobody said a message in has no log, so after a restart it is no talk. An old log whose session has no record names no bot, so it is no talk either. A read answers none, and a create makes a new one.
 
 The talk runs in the bot's `workspace`, trusted, with none of the settings of the person who runs the daemon, and on the bot's `computer` where it names one, whatever folder the client sent. Its default chat, the **Front**, runs no model, and keeps each turn as one JSON line under `<configDir>/bots/<slug>/logs/`, so a talk is still readable after a daemon restarts. It is titled with the bot's `name`. A turn it begins stays open until the plugin ends it, which is what the work behind the Front answers into.
 
@@ -270,14 +270,14 @@ The channel is in `_meta['ahpd.channels']` on `initialize` and on the root state
 
 ## Commands
 
-A bot is made, edited and deleted with two commands, as every records list is. Each runs the same write or delete as the resource call, with the same refusals, and the catalogue hears both.
+A bot is made, edited and deleted with two commands, as every records list is. They are the only way to change one.
 
 | Command | Params | Grant |
 | --- | --- | --- |
 | `x-ahpd/bots/put` | `{ id, record, createOnly?, ifMatch? }` | `bot:put` |
 | `x-ahpd/bots/remove` | `{ id }` | `bot:delete` |
 
-`record` is the body a `resourceWrite` to `bot://<id>` takes. `ifMatch` is the `updatedAt` the client last read. Both answer `{}`. The commands are in `_meta['ahpd.methods']`. `resourceWrite` and `resourceDelete` on `bot://` keep working in 0.15.
+`record` holds the fields of the bot, as [the example](#an-example) shows. `ifMatch` is the `updatedAt` the client last read. Both answer `{}`. The commands are in `_meta['ahpd.methods']`. `resourceWrite` and `resourceDelete` on `bot://` are refused since 0.16.
 
 ## An example
 

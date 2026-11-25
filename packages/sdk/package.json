@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/sdk",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "A server library for the Agent Host Protocol. No agent inside, you pass one in",
+  "description": "The library behind ahpd. Build your own host with the sessions, chats and clients ahpd serves.",
   "keywords": [
     "ahp",
     "agent-host-protocol",
@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@bearly/flock": "0.2.3",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "optionalDependencies": {
     "ws": "^8.18.0"

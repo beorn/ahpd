@@ -1,6 +1,6 @@
 ---
 title: A key is minted with a scope
-status: implemented
+status: done
 depends: []
 layer: "sdk, server"
 refs:

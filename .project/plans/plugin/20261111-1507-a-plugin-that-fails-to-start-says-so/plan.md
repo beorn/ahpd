@@ -1,7 +1,7 @@
 ---
 title: A plugin that fails to start says so, not when ahpd started
 domain: plugin
-status: planned
+status: built
 priority: low
 created: 2026-11-11
 revalidated: 2026-11-11
@@ -54,7 +54,7 @@ listening raised at start or at an enable -> handler throws -> eventFailed -> se
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The alert says the plugin failed to start](task-01-the-alert-says-the-plugin-failed-to-start.md) | implemented | - |
+| [01 - The alert says the plugin failed to start](task-01-the-alert-says-the-plugin-failed-to-start.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -63,7 +63,7 @@ listening raised at start or at an enable -> handler throws -> eventFailed -> se
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-11; see [implemented.md](implemented.md).
-- **Next action:** Softov reviews the PR. The plan closes as `built` on his word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the problem also asks whether a `stopping` alert stays on an unloaded plugin. That stays open, in [deferred.md](deferred.md).
 

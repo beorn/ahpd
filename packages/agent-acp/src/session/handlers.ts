@@ -30,7 +30,7 @@ import { callPartOf, confirmationOptions, contentOf, mapUpdate, questionsFor, ty
 import type { AcpTurn, PermissionAnswer } from '../types.js';
 import { messageIdOf } from '../transcript.js';
 import { bag } from './common.js';
-import { machineIdOf } from './opening.js';
+import { askMachine, machineIdOf } from './opening.js';
 import { agentTurnOf, notShown } from './turn.js';
 import type { HeldTerminal, SessionContext } from './context.js';
 
@@ -262,7 +262,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
     }
     if (update.sessionUpdate === 'available_commands_update') {
       ctx.commands = commandsIn(update.availableCommands.map(commandLeaf));
-      emit('session', { type: 'session/customizationsChanged', customizations: [...seeds, ...ctx.commands] });
+      emit('session', { type: 'session/customizationsChanged', customizations: ctx.published() });
       return;
     }
 
@@ -410,9 +410,6 @@ export function createHandlers(ctx: SessionContext): Handlers {
       noteCall(bag(action));
       emit('chat', action);
     }
-    // The clients' calls this update started, asked for once the chat holds
-    // each one running: an entry names a call in that state.
-    for (const call of current.opening.splice(0)) ctx.openCall(call, current.turnId);
   };
 
   /**
@@ -511,12 +508,12 @@ export function createHandlers(ctx: SessionContext): Handlers {
       if (computers === undefined) {
         throw new Error(`This session asked to run in ${id}, and this host has no computer plugin to run it in`);
       }
-      const how = await computers.how(id, {
+      const how = await askMachine(ctx.options, id, 'terminal', () => computers.how(id, {
         command: request.command,
         ...(request.args !== undefined && request.args.length > 0 ? { args: request.args } : {}),
         ...(env === undefined ? {} : { env }),
         ...(request.cwd === undefined || request.cwd === null ? {} : { cwd: hostPathOf(request.cwd) }),
-      });
+      }));
       if (how === undefined) throw new Error(`There is no computer called ${id}`);
       // The host's own folder is where the descriptor's program starts; the
       // directory the command itself works in is the machine's, in the argv
@@ -1008,6 +1005,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
       mapped.readied = held.readied;
     }
     if (approved && mapped !== undefined && ctx.mapping !== undefined) {
+      mapped.allowed = true;
       ctx.openCall(mapped, ctx.mapping.turnId);
     }
     const chosen = picked?.id ?? (approved ? held.allow : held.reject);

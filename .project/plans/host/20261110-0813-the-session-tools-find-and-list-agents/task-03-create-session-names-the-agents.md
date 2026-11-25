@@ -1,6 +1,6 @@
 ---
 title: create_session names the agents
-status: implemented
+status: done
 depends:
   - task-02-list-agents-and-list-models.md
 layer: "sdk"

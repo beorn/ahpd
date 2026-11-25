@@ -74,3 +74,59 @@ export interface ChatBackgroundTasks {
   /** Report that a task on the calling chat has ended. */
   remove(id: string): void;
 }
+
+/**
+ * How a running call goes on in the background, answering whether it did:
+ * `false` when the call had already answered or its work could not be let go.
+ *
+ * A move that works reports the row through `moved` before the call
+ * completes, because the completion is where the host writes the row's id on
+ * the call, and a completion that came first would name no row.
+ */
+export type MoveToBackground = () => Promise<boolean>;
+
+/**
+ * The running calls a provider can move to the background, and the calls
+ * whose work already runs there.
+ *
+ * The provider is the one who runs the call - a backend for the agent's own
+ * tools, a host tool for its own - so it is the one that knows how to answer
+ * the call early and keep its work going. The host is the one that knows what
+ * a client reads, so the provider reports and the host writes the call's
+ * `_meta`: `ahpd.backgroundToolCall: true` while an offer stands, and
+ * `ahpd.backgroundWork`, the row's id, once the work runs in the background.
+ * The first goes when the call completes; the second stays on it.
+ *
+ * Every id is the call's own, as its `chat/toolCallStart` carried it, on the
+ * chat that holds the call. An id the host has no record of is a no-op.
+ */
+export interface MovableCalls {
+  /** Offer a running call to move. A second offer replaces the first. */
+  offer(chat: string, toolCallId: string, move: MoveToBackground): void;
+  /** Take an offer back: the call ended, or can no longer move. */
+  withdraw(chat: string, toolCallId: string): void;
+  /**
+   * Report that a call's work runs in the background as the row `row`,
+   * whoever moved it: a move, the model asking from the start, or a client
+   * letting it go in a way of its own. Any offer for the call is taken back.
+   * Reported before the call completes, so its completion names the row.
+   */
+  moved(chat: string, toolCallId: string, row: string): void;
+}
+
+/**
+ * One call's half of the seam, for a host tool.
+ *
+ * The host binds the chat and the call, as it binds the chat for
+ * `ChatBackgroundTasks`: a tool offers the call it is running and no other.
+ * A call the backend named no id for has nothing a client could name back,
+ * so each verb is a no-op there.
+ */
+export interface CallMovable {
+  /** Offer this call to move. */
+  offer(move: MoveToBackground): void;
+  /** Take this call's offer back. */
+  withdraw(): void;
+  /** Report that this call's work runs in the background as the row `row`. */
+  moved(row: string): void;
+}

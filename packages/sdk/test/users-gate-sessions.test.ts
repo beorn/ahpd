@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { ROOT } from '../src/host.js';
 import { uriOf } from '../src/resources/resources.js';
@@ -7,7 +9,9 @@ import { echo } from '../../../examples/echo/agent.js';
 import {
   call, directory, file, hello, host, listingOne, onDisk, peer, root, signIn, withRole,
 } from './users-gate-helpers.js';
+import type { Agent, Start } from '../src/types/agent.js';
 import type { ChangesetSource } from '../src/types/changes.js';
+import type { Session } from '../src/types/session.js';
 import type { Owner } from '../src/types/usage.js';
 
 it('reads a session held under its provider\'s scheme as a session, and a file as a file', async () => {
@@ -41,6 +45,48 @@ it('reads a session held under its provider\'s scheme as a session, and a file a
   expect(await call(admin, 'createChat', { channel: session, chat: 'ahp-chat:/two' })).toHaveProperty('result');
   expect(await call(member, 'subscribe', { channel: 'ahp-chat:/two' })).toHaveProperty('result');
   expect(await call(guest, 'subscribe', { channel: 'ahp-chat:/two' })).toMatchObject({ code: -32009, message: expect.stringContaining('chat:turns') });
+});
+
+it('refuses another person\'s chat a workspace, and moves nothing', async () => {
+  const plain = echo({ path: root, pace: 0 });
+  const starts: string[] = [];
+  const agent: Agent = {
+    ...plain,
+    provider: 'base',
+    displayName: 'Base',
+    multipleDirectories: true,
+    create: (start: Start): Session => {
+      starts.push(start.workingDirectory ?? '');
+      return plain.create(start);
+    },
+  };
+  const made = host({
+    users: directory({ ana: ['session:read', 'session:write'], bo: ['session:read', 'session:write'] }),
+    agents: [agent],
+  });
+  const ana = made.accept(peer());
+  await hello(ana, 'ana'); await signIn(ana, 'ana');
+  const session = 'ahp-session:/ana';
+  expect(await call(ana, 'createSession', { channel: session, provider: 'base', workingDirectories: [uriOf(root)] })).toHaveProperty('result');
+  expect(await call(ana, 'createChat', { channel: session, chat: 'ahp-chat:/ana-chat' })).toHaveProperty('result');
+  const folder = join(root, 'elsewhere');
+  mkdirSync(folder, { recursive: true });
+
+  const bo = made.accept(peer());
+  await hello(bo, 'bo'); await signIn(bo, 'bo');
+  const workspace = { kind: 'folder', folder: uriOf(folder), isolation: 'folder' };
+  await settle();
+  const before = starts.length;
+  // The method, on a chat of the other person's session.
+  expect(await call(bo, 'vscode/setChatWorkspace', { chat: 'ahp-chat:/ana-chat', workspace }))
+    .toMatchObject({ code: -32009, message: "Only the session's owner can give its chats a workspace." });
+  // And a chat made with a workspace in that session.
+  expect(await call(bo, 'createChat', {
+    channel: session, chat: 'ahp-chat:/bo-chat', _meta: { 'vscode.chatWorkspace': workspace },
+  })).toMatchObject({ code: -32009, message: "Only the session's owner can give its chats a workspace." });
+  // Neither started a backend, so the chat was not moved.
+  await settle();
+  expect(starts.slice(before)).toEqual([]);
 });
 
 it('needs a session\'s write group to drive one, and the act it is refused is the one it did', async () => {
@@ -117,7 +163,8 @@ it('needs session:changes as well as file:write to run an operation on a session
   const both = await withRole(made, 'b');
   expect(await call(both.client, 'invokeChangesetOperation', { channel, operationId: 'commit' }))
     .toMatchObject({ result: { message: 'did commit' } });
-  expect(invoked).toEqual(['ahp-session:/one']);
+  // The source is handed the session's id, as every call of the port names it.
+  expect(invoked).toEqual(['one']);
 });
 
 it('asks a session\'s grants for a row a backend keeps on disk, and for a name that is no session here', async () => {

@@ -1,7 +1,7 @@
 ---
 title: An agent sets a new session's folder, trust and computer
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -68,7 +68,7 @@ client createSession(provider: bot-chat, config) -> agent.placeSession(config, r
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - an-agent-places-a-created-session](task-01-an-agent-places-a-created-session.md) | implemented | - |
+| [01 - an-agent-places-a-created-session](task-01-an-agent-places-a-created-session.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -79,7 +79,7 @@ client createSession(provider: bot-chat, config) -> agent.placeSession(config, r
 ## Resume state
 
 - **Done so far:** task 01 is `implemented`, waiting for review.
-- **Next action:** Softov's review.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** find how `createSession` reaches the grants of the agent's plugin. `beginPluginSession` gets them from `PluginStarts`, and a client's create has none today.
 

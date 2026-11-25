@@ -1,7 +1,7 @@
 ---
 title: The context figure follows a long turn
 domain: claude
-status: planned
+status: built
 priority: medium
 created: 2026-11-14
 revalidated: 2026-11-14
@@ -69,7 +69,7 @@ CLI frame (compact_boundary, or assistant on the main chain) -> consume -> follo
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - the figure is asked during a turn](task-01-the-figure-is-asked-during-a-turn.md) | implemented | - |
+| [01 - the figure is asked during a turn](task-01-the-figure-is-asked-during-a-turn.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -83,7 +83,7 @@ CLI frame (compact_boundary, or assistant on the main chain) -> consume -> follo
   - A main-chain reply asks it again once 30 s have passed since the last ask.
   - Each answer goes to clients as `session/metaChanged`.
   - Review: the answer is dropped when the CLI was put away during the ask, as `introduce` does. The agent-claude suite passes, 672 of 672.
-- **Next action:** the PR, then check and check-windows. The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `agent-claude-context.test.ts` expects two asks for a short turn, and still reads two. The mid-turn cases advance `Date` 30 s because the handshake's ask starts the throttle.
 

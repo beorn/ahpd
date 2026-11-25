@@ -1,16 +1,20 @@
 import { posix } from '../../../tools/posix.ts';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { fileResources } from '../../sdk/src/resources/resources.js';
 import { loadPlugins } from '../../server/src/plugins.js';
 import { closeAll, keeping } from './support/closing.js';
 import { profilesOf } from '../src/plugin.js';
 import { checkServer, fixesOf, osOf, reportFrom, SERVER_CHECK, SERVER_ITEMS, serverGate } from '../src/servercheck.js';
 import { sshRuntime } from '../src/ssh.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * The server check: the script a box runs, the report read from its answer,
@@ -29,6 +33,23 @@ afterEach(async () => {
   loose = undefined;
 });
 const temp = (): string => (loose ??= mkdtempSync(join(tmpdir(), 'ahpd-servercheck-')));
+
+/*
+ * A PATH with the tools the script reads a box with, and no `docker` or
+ * `virsh`. Those two ask this host's own daemons, which a busy CI runner can
+ * take seconds to answer. The docker and libvirt lines are read from fixed
+ * output in the cases built on `answer`.
+ */
+const BOX_TOOLS = ['sed', 'tr', 'uname', 'nproc', 'df', 'id', 'ls', 'curl', 'tar', 'xz', 'sha256sum'];
+const boxPath = (): string => {
+  const bin = join(temp(), 'tools');
+  mkdirSync(bin, { recursive: true });
+  for (const tool of BOX_TOOLS) {
+    const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+    if (found !== '' && !existsSync(join(bin, tool))) symlinkSync(found, join(bin, tool));
+  }
+  return bin;
+};
 
 /** What a Debian box with everything answers, with lines a case replaces or drops. */
 const answer = (over: Record<string, string | undefined> = {}): string => {
@@ -147,8 +168,10 @@ it('ignores a key it does not know', () => {
 // Debian is `dash`, the strictest shell a box is likely to have.
 it.skipIf(!posix)('runs its own script under sh, and reads what this host has', async () => {
   const report = await checkServer(async () => {
-    const ran = spawnSync('/bin/sh', ['-s'], { input: SERVER_CHECK.script, encoding: 'utf8' });
+    const ran = spawnSync('/bin/sh', ['-s'], { input: SERVER_CHECK.script, encoding: 'utf8', env: { ...process.env, PATH: boxPath() } });
     expect(ran.status).toBe(0);
+    // This host's own Docker and libvirt are never asked.
+    expect(ran.stdout).not.toMatch(/^(docker|libvirt)=/m);
     return ran.stdout;
   });
   expect(report.items.arch.ok).toBe(true);
@@ -159,7 +182,7 @@ it.skipIf(!posix)('runs its own script under sh, and reads what this host has', 
 
 // POSIX-only: the script is run with this host's own `/bin/sh`.
 it.skipIf(!posix)('asks a box that names its own host command nothing about the install', () => {
-  const ran = spawnSync('/bin/sh', ['-s', '--', 'named'], { input: SERVER_CHECK.script, encoding: 'utf8' });
+  const ran = spawnSync('/bin/sh', ['-s', '--', 'named'], { input: SERVER_CHECK.script, encoding: 'utf8', env: { ...process.env, PATH: boxPath() } });
   expect(ran.status).toBe(0);
   expect(ran.stdout).toContain('\nhost_named=yes\n');
   expect(ran.stdout).not.toContain('kernel=');
@@ -176,7 +199,7 @@ it.skipIf(!posix)('reads an ahpd on the box PATH as nothing of this host install
   const ran = spawnSync('/bin/sh', ['-s'], {
     input: SERVER_CHECK.script,
     encoding: 'utf8',
-    env: { HOME: temp(), XDG_DATA_HOME: join(temp(), 'data'), PATH: `${bin}:/usr/bin:/bin` },
+    env: { HOME: temp(), XDG_DATA_HOME: join(temp(), 'data'), PATH: `${bin}:${boxPath()}` },
   });
   // The script ran to its end, and the item answers for this host's install alone.
   expect(ran.stdout).toContain('\nuser=');
@@ -190,7 +213,7 @@ it.skipIf(!posix)('finds the ahpd this host installed, under the data folder', (
   const ran = spawnSync('/bin/sh', ['-s'], {
     input: SERVER_CHECK.script,
     encoding: 'utf8',
-    env: { HOME: temp(), XDG_DATA_HOME: temp(), PATH: '/usr/bin:/bin' },
+    env: { HOME: temp(), XDG_DATA_HOME: temp(), PATH: boxPath() },
   });
   expect(reportFrom(ran.stdout).items.ahpd).toMatchObject({ ok: true, found: '1.2.3, installed by this host' });
 });

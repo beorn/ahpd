@@ -158,6 +158,7 @@ A proxy adds it to each request to the forge, so the code that runs in the machi
 ## Open points
 
 - Which of the two ways the proxy uses, or whether it offers both as a setting.
+- Whether a sandboxed chat on this host uses the sandbox runtime's own way: `credentials` with `network.tlsTerminate` add the token at the sandbox's proxy. Not checked against this brief's facts. It needs [plans/container/20261121-2250-a-chat-sandbox-trusts-a-host-ca](../plans/container/20261121-2250-a-chat-sandbox-trusts-a-host-ca/plan.md) for the CA that termination signs with.
 - Whether `git push` from the machine goes through the proxy, or the host pushes after bring-back.
 - Where the proxy listens, and how a machine on another box reaches it. Today no route goes from a machine to the host's `/v1`.
 - Whether a token is one per host, per person or per team, and how it is scoped to a repository.

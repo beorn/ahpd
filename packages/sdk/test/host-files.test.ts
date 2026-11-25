@@ -35,7 +35,7 @@ describe('where the agent works', () => {
     vi.stubEnv('USERPROFILE', home);
     onTestFinished(async () => {
       vi.unstubAllEnvs();
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
     return home;
   };
@@ -186,7 +186,9 @@ describe('where the agent works', () => {
     await client.handle({ method: 'createSession', params: { channel: 'ahp-session:/a', provider: 'claude' } });
     await settle();
     const folder = join(home, '.copilot', 'chats', 'a');
-    await rm(folder, { recursive: true });
+    // With retries, as the folders a teardown removes: the host reads the folder
+    // as the session starts, and Windows holds one a process is working in.
+    await rm(folder, { recursive: true, maxRetries: 5, retryDelay: 100 });
 
     await client.handle({ method: 'createChat', params: { channel: 'ahp-session:/a', chat: 'ahp-chat:/side' } });
     await settle();

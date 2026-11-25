@@ -258,9 +258,15 @@ const lockWith = (text = '{}\n') => [
   { name: 'package-lock.json', bytes: Buffer.from(text) },
 ];
 
+/** The ahpd part's four files, its plugins' two with their folder in the name. */
+const ahpdLock = () => [
+  ...lockWith(),
+  ...lockWith('{ "plugins": true }\n').map((one) => ({ name: `plugins/${one.name}`, bytes: one.bytes })),
+];
+
 /** The line a Dockerfile checks one file of a lock with. */
 const checked = (one: { name: string; bytes: Buffer }): string =>
-  `echo "${createHash('sha256').update(one.bytes).digest('hex')}  ${one.name}" | sha256sum --check --strict -`;
+  `echo "${createHash('sha256').update(one.bytes).digest('hex')}  ${one.name.replace('plugins/', '')}" | sha256sum --check --strict -`;
 
 /**
  * The `node` tag a Dockerfile copies from.
@@ -399,7 +405,7 @@ it('keeps each shipped part lock in step with the versions the file names', () =
   const locked = readParts(versionsPath()).filter((one) => one.kind === 'ahpd' || one.packages !== undefined);
   expect(locked.length).toBeGreaterThan(0);
   for (const part of locked) {
-    const [manifest, lock] = (lockOf(part) ?? []).map((one) => JSON.parse(one.bytes.toString('utf8')) as Locked);
+    const [manifest, lock, ...plugins] = (lockOf(part) ?? []).map((one) => JSON.parse(one.bytes.toString('utf8')) as Locked);
     const pinned = part.kind === 'ahpd'
       ? { '@ahpd/sdk': part.version, '@ahpd/server': part.version }
       : Object.fromEntries((part.packages ?? []).map((one) => [packageOf(one).name, packageOf(one).version ?? part.version]));
@@ -407,6 +413,13 @@ it('keeps each shipped part lock in step with the versions the file names', () =
     expect(lock?.packages?.['']?.dependencies, part.id).toEqual(pinned);
     for (const [name, version] of Object.entries(pinned)) {
       expect(lock?.packages?.[`node_modules/${name}`]?.version, `${part.id} ${name}`).toBe(version);
+    }
+    // The ahpd part's plugins have a lock of their own, with the sdk they peer.
+    const beside = part.plugins === undefined ? {} : Object.fromEntries(['@ahpd/sdk', ...part.plugins].map((one) => [one, part.version]));
+    expect(plugins).toHaveLength(part.plugins === undefined ? 0 : 2);
+    for (const one of plugins) expect(one.dependencies ?? one.packages?.['']?.dependencies, part.id).toEqual(beside);
+    for (const [name, version] of Object.entries(beside)) {
+      expect(plugins[1]?.packages?.[`node_modules/${name}`]?.version, `${part.id} ${name}`).toBe(version);
     }
   }
 });
@@ -485,14 +498,19 @@ it('refuses an archive part whose file gives no download for a platform', () => 
 
 it('builds the ahpd part from npm with its own plugins inside it', () => {
   const part = read([node(), ahpd()])[1] as Part;
-  const file = dockerfileOf(part, { from: 'npm', version: '0.8.0', hash: 'abcdef123456' }, lockWith());
+  const lock = ahpdLock();
+  const file = dockerfileOf(part, { from: 'npm', version: '0.8.0', hash: 'abcdef123456' }, lock);
 
   // `@ahpd/sdk` and `@ahpd/server` at the part's version are what its lock holds.
   expect(file).toContain('COPY package.json package-lock.json /opt/ahpd/ahpd/');
   expect(file).toContain('npm ci --no-audit --no-fund --loglevel=error');
-  // The nested backends are installed by the command they will be run through,
-  // because an inner host resolves a package only under its own prefix.
-  expect(file).toContain('AHPD_PLUGIN_ROOT=/opt/ahpd/ahpd/plugins /opt/ahpd/ahpd/node_modules/.bin/ahpd plugin install --no-enable @ahpd/agent-cofold@0.8.0 @ahpd/agent-pi@0.8.0');
+  // The nested backends are installed from their own lock, in the root the
+  // launcher names, because an inner host resolves a package only under it.
+  expect(file).toContain('COPY plugins/package.json plugins/package-lock.json /opt/ahpd/ahpd/plugins/');
+  expect(file).toContain(`RUN cd /opt/ahpd/ahpd/plugins \\\n && ${checked(lock[2]!)} \\\n && ${checked(lock[3]!)} \\\n && npm ci --legacy-peer-deps --no-audit --no-fund --loglevel=error`);
+  // Packages a release has and npm does not are in npm's cache before either install.
+  expect(file.indexOf('npm cache add "./$one"')).toBeGreaterThan(file.indexOf('COPY package.json *.tgz ./'));
+  expect(file.indexOf('npm ci')).toBeGreaterThan(file.indexOf('npm cache add'));
   // And the launcher sets the root, because a `FROM scratch` stage keeps nothing
   // that is not under /opt/ahpd/ahpd - the config dir is not writable here.
   expect(file).toContain(`printf 'exec %s "$@"\\n' "/opt/ahpd/node/bin/node /opt/ahpd/ahpd/node_modules/.bin/ahpd" >> /opt/ahpd/ahpd/bin/ahpd`);
@@ -548,7 +566,7 @@ it('writes every Dockerfile as instructions docker would accept', () => {
 
   const files = [
     ...cases.map((parts) => dockerfileOf(read([...parts])[parts.length - 1] as Part, undefined, lockWith())),
-    dockerfileOf(ahpdPart, { from: 'npm', version: '0.8.0', hash: 'abcdef123456' }, lockWith()),
+    dockerfileOf(ahpdPart, { from: 'npm', version: '0.8.0', hash: 'abcdef123456' }, ahpdLock()),
     dockerfileOf(ahpdPart, workspace),
   ];
 

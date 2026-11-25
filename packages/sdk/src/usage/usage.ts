@@ -18,6 +18,7 @@ import { absentResource, asFile, EPOCH, splitResource, type At as Split } from '
 import { INVALID_PARAMS, RpcError } from '../rpc.js';
 import { mayRead, membership } from './scopes.js';
 import { currentOwner } from '../utils/values.js';
+import { tagsOf } from '../utils/tags.js';
 import type { PolicyLimits } from '../access/policy.js';
 import type { Policies, Policy } from '../types/policies.js';
 import type { Entry, Metadata, Read, ResourceProvider, SchemeDescription } from '../types/resources.js';
@@ -359,7 +360,10 @@ export function fileUsage(options: FileUsageOptions): Usage {
       // An owner or a pool saved under a first-party plugin's old name is read as its id.
       const pools = entry.pools.map((pool) => (typeof pool === 'string' ? currentOwner(pool) : pool));
       const owner = typeof entry.owner === 'string' ? { owner: currentOwner(entry.owner) as typeof entry.owner } : {};
-      placed.push({ entry: { ...entry, ...owner, pools }, day });
+      // A record's tags as `tagsOf` reads them, so a line edited by hand cannot group a record under a value that is not a tag.
+      const { tags: written, ...rest } = entry;
+      const tags = tagsOf(written);
+      placed.push({ entry: { ...rest, ...owner, pools, ...(tags.length === 0 ? {} : { tags }) } as UsageEntry, day });
     }
     return placed;
   };
@@ -464,7 +468,7 @@ export function fileUsage(options: FileUsageOptions): Usage {
       found.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
       return found.slice(0, KEPT);
     },
-    groups: async (by, from, until, keep) => {
+    groups: async (by, from, until, keep, tags = []) => {
       /*
        * Each record of the range read once, from the lines rather than the
        * totals in memory: a total is kept per pool, and a record charged to
@@ -478,11 +482,14 @@ export function fileUsage(options: FileUsageOptions): Usage {
         for (const one of entriesIn(name)) {
           if (one.day < first || one.day > last) continue;
           if (!keep(poolsOf(one.entry))) continue;
-          const keys = keysOf(one.entry, by);
-          const id = JSON.stringify(by.map((key) => keys[key] ?? ''));
-          const row = rows.get(id) ?? { keys, sum: none() };
-          addTo(row.sum, measured(one.entry));
-          rows.set(id, row);
+          const held = one.entry.tags ?? [];
+          if (!tags.every((tag) => held.includes(tag))) continue;
+          for (const keys of keysOf(one.entry, by)) {
+            const id = JSON.stringify(by.map((key) => keys[key] ?? ''));
+            const row = rows.get(id) ?? { keys, sum: none() };
+            addTo(row.sum, measured(one.entry));
+            rows.set(id, row);
+          }
         }
       }
       // Sorted by the key values, and a key the records had none of before any value.
@@ -494,13 +501,14 @@ export function fileUsage(options: FileUsageOptions): Usage {
 }
 
 /**
- * The pool key a record is summed under for each key asked for.
+ * The key sets a record is summed under, for the keys asked for.
  *
  * `user` is the owner, `team` is `team:<team>` and `project` is
  * `project:<team>:<project>`, the spellings `meter.ts` charges the record's
- * pools under. A key the record has none of is left out.
+ * pools under. A key the record has none of is left out. Asked by `tag`, there
+ * is one set for each of the record's tags, and none for a record with no tag.
  */
-const keysOf = (entry: UsageEntry, by: readonly UsageKey[]): UsageGroup['keys'] => {
+const keysOf = (entry: UsageEntry, by: readonly UsageKey[]): UsageGroup['keys'][] => {
   const keys: UsageGroup['keys'] = {};
   const team = typeof entry.team === 'string' && entry.team !== '' ? entry.team : undefined;
   const project = typeof entry.project === 'string' && entry.project !== '' ? entry.project : undefined;
@@ -509,7 +517,8 @@ const keysOf = (entry: UsageEntry, by: readonly UsageKey[]): UsageGroup['keys'] 
     if (key === 'team' && team !== undefined) keys.team = `team:${team}`;
     if (key === 'project' && team !== undefined && project !== undefined) keys.project = `project:${team}:${project}`;
   }
-  return keys;
+  if (!by.includes('tag')) return [keys];
+  return (entry.tags ?? []).map((tag) => ({ ...keys, tag }));
 };
 
 /*
@@ -519,7 +528,7 @@ const keysOf = (entry: UsageEntry, by: readonly UsageKey[]): UsageGroup['keys'] 
  * resource calls a client already uses: `usage://` lists the charged pools the
  * reader may read, a pool reads its kind, name, day, week and month, `range`
  * reads a total between two days, `records` reads what was charged,
- * `usage://groups` sums the records by user, team and project, and
+ * `usage://groups` sums the records by user, team, project and tag, and
  * `usage://limits` answers each policy whose scope holds the reader. There is
  * no manifest and nothing is made here, which is why `describe` has no body for
  * a create form to draw.
@@ -585,7 +594,7 @@ export interface UsageAnswers {
   /** The records charged to a pool over a range, as `usage://<pool>/records`. */
   records(pool: string, from?: string, until?: string): Promise<UsageEntry[]>;
   /** The records this reader may read, summed by these keys, as `usage://groups`. */
-  groups(by: readonly string[], from: string | undefined, until: string | undefined, reader: Principal | undefined): Promise<UsageNamedGroup[]>;
+  groups(by: readonly string[], from: string | undefined, until: string | undefined, reader: Principal | undefined, tags?: readonly string[]): Promise<UsageNamedGroup[]>;
   /** Each active row whose scope holds the reader, with its limits, as `usage://limits`. */
   limits(reader: Principal | undefined): Promise<PolicyLimits[]>;
 }
@@ -671,7 +680,7 @@ const GROUPS = 'groups';
 const LIMITS = 'limits';
 
 /** The keys a grouped read may sum by. */
-const KEYS: readonly UsageKey[] = ['user', 'team', 'project'];
+const KEYS: readonly UsageKey[] = ['user', 'team', 'project', 'tag'];
 
 /**
  * Where a `usage:` URI points, or nothing when it is another scheme's.
@@ -814,16 +823,17 @@ export function usageProvider(options: UsageProviderOptions): UsageProvider {
     keysFrom((asked.get('by') ?? '').split(',').map((one) => one.trim()).filter((one) => one !== ''));
 
   /** One row per set of key values, each named. */
-  const groups = async (written: readonly string[], from: string | undefined, until: string | undefined, reader: Principal | undefined): Promise<UsageNamedGroup[]> => {
+  const groups = async (written: readonly string[], from: string | undefined, until: string | undefined, reader: Principal | undefined, tags: readonly string[] = []): Promise<UsageNamedGroup[]> => {
     const by = keysFrom(written);
     const range = bounds(from, until, new Date());
-    const rows = await store.groups(by, ...range, keeper(reader));
+    const rows = await store.groups(by, ...range, keeper(reader), tags);
     const titles = await titled();
     return rows.map((row) => {
       const names: Partial<Record<UsageKey, string>> = {};
       for (const key of by) {
         const pool = row.keys[key];
-        if (pool !== undefined) names[key] = named(pool, titles).name;
+        // A tag is its own name; every other key is a pool.
+        if (pool !== undefined) names[key] = key === 'tag' ? pool : named(pool, titles).name;
       }
       return { keys: row.keys, names, total: row.total };
     });
@@ -831,7 +841,13 @@ export function usageProvider(options: UsageProviderOptions): UsageProvider {
 
   /** The bytes behind `usage://groups`. */
   const groupsBody = async (held: At, reader: Principal | undefined): Promise<string> =>
-    JSON.stringify(await groups(keysAsked(held.asked), held.asked.get('from') ?? undefined, held.asked.get('until') ?? undefined, reader), null, 2);
+    JSON.stringify(await groups(
+      keysAsked(held.asked),
+      held.asked.get('from') ?? undefined,
+      held.asked.get('until') ?? undefined,
+      reader,
+      (held.asked.get('tag') ?? '').split(',').map((one) => one.trim()).filter((one) => one !== ''),
+    ), null, 2);
 
   /** Whether a row is inside its window at this instant, as `decide` reads its `from` and `until`. */
   const activeAt = (row: Policy, moment: string): boolean =>
@@ -1046,7 +1062,7 @@ const poolParam = (command: string, params: Record<string, unknown>): string => 
  * | `x-ahpd/usage/totals` | `pool` | `usage://<pool>` |
  * | `x-ahpd/usage/range` | `pool`, `from?`, `until?` | `usage://<pool>/range` |
  * | `x-ahpd/usage/records` | `pool`, `from?`, `until?` | `usage://<pool>/records` |
- * | `x-ahpd/usage/groups` | `by?`, `from?`, `until?` | `usage://groups` |
+ * | `x-ahpd/usage/groups` | `by?`, `from?`, `until?`, `tag?` | `usage://groups` |
  *
  * Each needs `usage:read`, and lets in a reader without it by the scheme's own
  * rules: `pools` and `groups` answer only what the reader may read, and the
@@ -1089,14 +1105,18 @@ export const usageMethods = (provider: UsageProvider): Record<string, PluginMeth
       answers.records(pool, textParam(records, params, 'from'), textParam(records, params, 'until'))),
     [groups]: {
       grant: GRANT,
-      describe: () => ({ title: 'Usage by group', description: 'The records you may read, summed by user, team and project.' }),
+      describe: () => ({ title: 'Usage by group', description: 'The records you may read, summed by user, team, project and tag.' }),
       authorize: async () => true,
       handle: async (params, reader) => {
         const by = params.by;
         if (by !== undefined && (!Array.isArray(by) || by.some((one) => typeof one !== 'string'))) {
-          throw new RpcError(INVALID_PARAMS, `${groups} takes by as a list of user, team and project`);
+          throw new RpcError(INVALID_PARAMS, `${groups} takes by as a list of user, team, project and tag`);
         }
-        return answers.groups((by ?? []) as string[], textParam(groups, params, 'from'), textParam(groups, params, 'until'), reader);
+        const tag = params.tag;
+        if (tag !== undefined && (!Array.isArray(tag) || tag.some((one) => typeof one !== 'string'))) {
+          throw new RpcError(INVALID_PARAMS, `${groups} takes tag as a list of strings`);
+        }
+        return answers.groups((by ?? []) as string[], textParam(groups, params, 'from'), textParam(groups, params, 'until'), reader, (tag ?? []) as string[]);
       },
     },
   };

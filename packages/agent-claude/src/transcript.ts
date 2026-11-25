@@ -3,10 +3,12 @@ import type { SessionStore, SessionStoreEntry } from '@anthropic-ai/claude-agent
 import type { ResponsePart, ToolCallCompletedState, ToolResultContent, Turn } from '@microsoft/agent-host-protocol';
 import type { Bag, OnWire, RestoredSubagent, WireTurn } from '@ahpd/sdk';
 import { bag, steerPart, str, toolCallDurationMs, withToolCallDuration } from '@ahpd/sdk';
-import { createReadStream, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { projectOf } from './catalog.js';
 import { getClaudeInvocationMessage, getClaudePastTenseMessage, getClaudeToolInputString, questionAnswers, questionRequest, titleOf } from './input.js';
 import { claudeToolDenialCode, getClaudeToolDisplayName, resultContent, toolMetaOf } from './kinds.js';
 import { ranOn } from './models.js';
@@ -26,6 +28,20 @@ import { ranOn } from './models.js';
  */
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/**
+ * When a thinking block ran, from the CLI's own log.
+ *
+ * The CLI writes a frame as its block ends, so the frame's time is the end and
+ * the time of the frame before it - the prompt, a tool's result or the block
+ * before - is where the wait for this one began. Nothing where either is
+ * missing or they run backwards.
+ */
+const thoughtFor = (from: string | undefined, to: string | undefined): { startedAt?: string; duration?: number } => {
+  const start = Date.parse(from ?? '');
+  const duration = Date.parse(to ?? '') - start;
+  return Number.isFinite(duration) && duration >= 0 ? { startedAt: new Date(start).toISOString(), duration } : {};
+};
 
 function resultText(content: unknown): string | undefined {
   if (typeof content === 'string') return content;
@@ -328,6 +344,49 @@ function sessionFiles(sessionId: string): { project: string; session: string } |
   return undefined;
 }
 
+/**
+ * What the CLI had spent on each model when it last saved its cost, by model.
+ *
+ * The CLI writes `{ type: "cost-state", modelUsage }` to the session's
+ * transcript and restores the last one when it resumes, so the first `result`
+ * after a resume reports the session's whole spend rather than this run's.
+ * Absent when the transcript is not on this host, cannot be read, or holds no
+ * such line.
+ */
+export function lastCostState(sessionId: string): Record<string, number> | undefined {
+  const states = costStates(sessionId);
+  return states[states.length - 1];
+}
+
+/**
+ * Every `cost-state` line of a session's transcript, in the order the CLI
+ * wrote them, each as what it had spent on each model. A model whose
+ * `costUSD` is not a number is left out of its line.
+ */
+export function costStates(sessionId: string): Record<string, number>[] {
+  const files = sessionFiles(sessionId);
+  if (files === undefined) return [];
+  let text: string;
+  try { text = readFileSync(join(files.project, `${files.session}.jsonl`), 'utf8'); }
+  catch { return []; }
+  const out: Record<string, number>[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('"cost-state"')) continue;
+    let entry: unknown;
+    try { entry = JSON.parse(line); }
+    catch { continue; }
+    const found = bag(entry);
+    if (found.type !== 'cost-state') continue;
+    const costs: Record<string, number> = {};
+    for (const [model, usage] of Object.entries(bag(found.modelUsage))) {
+      const cost = bag(usage).costUSD;
+      if (typeof cost === 'number' && Number.isFinite(cost)) costs[model] = cost;
+    }
+    out.push(costs);
+  }
+  return out;
+}
+
 /** One JSON object per line, which is what the CLI writes. */
 function readJsonl(path: string): unknown[] {
   try {
@@ -605,16 +664,30 @@ function buildTurns(messages: unknown[], forkAnchorUuids?: Map<string, string>):
     if (forkAnchorUuids !== undefined && turn !== undefined && entry !== undefined) forkAnchorUuids.set(String(turn.id), entry);
   };
 
+  /** The time of the frame before the one being read. */
+  let previous: string | undefined;
   for (const entry of messages) {
     const frame = bag(entry);
     const role = str(frame.type);
     const message = bag(frame.message);
     const at = str(frame.timestamp) ?? new Date(0).toISOString();
+    const before = previous;
+    previous = str(frame.timestamp) ?? previous;
 
     if (role === 'user') {
       const said = typeof message.content === 'string'
         ? message.content
         : list(message.content).map((b) => str(bag(b).text)).filter(Boolean).join('\n');
+      /*
+       * Whether this frame opens a turn of its own, by the same tests the
+       * branches below apply: a prompt does, and a frame of results, a CLI
+       * echo, a stop or a steer does not.
+       */
+      const opens = said !== ''
+        && frame.isCompactSummary !== true
+        && !isCliEcho(message.content)
+        && !said.startsWith(INTERRUPTED)
+        && frame.isQueuedCommand !== true;
 
       // The turn the results below belong to, which is the one the prompt
       // before them opened.
@@ -692,8 +765,10 @@ function buildTurns(messages: unknown[], forkAnchorUuids?: Map<string, string>):
         if (meta !== undefined) call._meta = meta;
       }
       // A frame of tool results is part of the turn the prompt opened, so the
-      // turn ends when the last of them was written.
-      if (open !== undefined) lastAt.set(open, Date.parse(at));
+      // turn ends when the last of them was written. A prompt opens a turn of
+      // its own and never ends the one in front of it, whose last frame stays
+      // what it answered with.
+      if (!opens && open !== undefined) lastAt.set(open, Date.parse(at));
       if (!said) continue;
       // Written by the CLI rather than said by anybody: it neither shows as a
       // prompt nor ends the exchange it sits in.
@@ -796,7 +871,7 @@ function buildTurns(messages: unknown[], forkAnchorUuids?: Map<string, string>):
       if (kind === 'text') {
         parts.push({ id, kind: 'markdown', content: str(block.text) ?? '' } satisfies OnWire<ResponsePart>);
       } else if (kind === 'thinking') {
-        parts.push({ id, kind: 'reasoning', content: str(block.thinking) ?? '' } satisfies OnWire<ResponsePart>);
+        parts.push({ id, kind: 'reasoning', content: str(block.thinking) ?? '', ...thoughtFor(before, str(frame.timestamp)) } satisfies OnWire<ResponsePart>);
       } else if (kind === 'tool_use') {
         const name = str(block.name) ?? 'tool';
         const given = bag(block.input);
@@ -937,4 +1012,223 @@ function summed(messages: Bag[]): Bag {
     if (typeof one.model === 'string') out.model = one.model;
   }
   return out;
+}
+
+/** `<config>/projects`, where the CLI keeps every conversation it wrote. */
+const projectsFolder = (): string => join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects');
+
+/** One entry of a session file, as the writer builds it. */
+type Frame = Bag;
+
+/** What a frame's message cost, as the usage a turn carries. */
+function usageFrame(usage: Turn['usage'], fallback?: string): Bag {
+  const model = usage?.model ?? fallback;
+  return {
+    ...(usage?.inputTokens === undefined ? {} : { input_tokens: usage.inputTokens }),
+    ...(usage?.outputTokens === undefined ? {} : { output_tokens: usage.outputTokens }),
+    ...(usage?.cacheReadTokens === undefined ? {} : { cache_read_input_tokens: usage.cacheReadTokens }),
+    ...(model === undefined ? {} : { model }),
+  };
+}
+
+/**
+ * A tool call's input as a `tool_use` block carries it.
+ *
+ * The protocol names a call's input as the string the tool was given; Claude
+ * keeps it as the object it was sent with. A string that parses is that object;
+ * the two tools whose string is the one field they take are rebuilt as it; and
+ * anything else is kept under `input`, which is no binding of any tool's but is
+ * the whole of what was written.
+ */
+function claudeInput(toolName: string, given: unknown): unknown {
+  if (given === undefined) return {};
+  if (typeof given !== 'string') return { input: str(bag(given).uri) ?? JSON.stringify(given) };
+  try {
+    const parsed: unknown = JSON.parse(given);
+    if (typeof parsed === 'object' && parsed !== null) return parsed;
+  }
+  catch { /* not JSON */ }
+  if (toolName === 'Bash' || toolName === 'BashOutput' || toolName === 'KillBash') return { command: given };
+  if (toolName === 'Grep' || toolName === 'Glob') return { pattern: given };
+  return { input: given };
+}
+
+/** One tool result's content as text: the blocks Claude has no frame for are written as what they say. */
+function resultTextOf(block: Bag): string {
+  switch (str(block.type)) {
+    case 'embeddedResource': return str(block.data) ?? '';
+    case 'resource': return str(block.uri) ?? '';
+    case 'fileEdit': {
+      const after = bag(block.after);
+      const before = bag(block.before);
+      return str(after.uri) ?? str(before.uri) ?? 'a file edit';
+    }
+    case 'terminal': {
+      const result = bag(block.result);
+      return [str(block.title) ?? 'a terminal', str(result.preview) ?? ''].filter((one) => one !== '').join('\n');
+    }
+    case 'subagent': return str(block.title) ?? str(block.description) ?? 'a subagent';
+    default: return '';
+  }
+}
+
+/** A completed call's content, as the `tool_result` frame carries it. */
+function claudeResult(content: unknown): string | Bag[] {
+  const blocks = list(content).map((raw) => {
+    const block = bag(raw);
+    return str(block.type) === 'text'
+      ? { type: 'text', text: str(block.text) ?? '' }
+      : { type: 'text', text: resultTextOf(block) };
+  });
+  return blocks.length === 0 ? '' : blocks;
+}
+
+/**
+ * The CLI's frames for one conversation, from turns a client imported.
+ *
+ * The shape is the CLI's own and `buildTurns` reads it back: a `user` frame per
+ * turn's message, `assistant` frames for that turn's parts, and a `user` frame
+ * of `tool_result` blocks after each call a part completed. A part with no
+ * Claude frame of its own - a content reference, an error, a question - is
+ * written as text saying what it held.
+ *
+ * Each frame names the one before it, so the conversation is one chain. The
+ * last frame of a turn carries the turn's duration, which is what `buildTurns`
+ * measures a turn by.
+ */
+export function framesFor(turns: Turn[], about: { sessionId: string; cwd: string; model?: string }): Frame[] {
+  const frames: Frame[] = [];
+  let parentUuid: string | null = null;
+  let clock = 0;
+  const base = (): Bag => ({
+    parentUuid,
+    isSidechain: false,
+    userType: 'external',
+    cwd: about.cwd,
+    sessionId: about.sessionId,
+  });
+  const push = (frame: Frame): void => {
+    frames.push(frame);
+    parentUuid = String(frame.uuid);
+  };
+  const at = (ms: number): string => new Date(ms).toISOString();
+
+  for (const turn of turns) {
+    const parsed = Date.parse(turn.startedAt ?? '');
+    const start = Number.isFinite(parsed) ? parsed : clock;
+    const usage = usageFrame(turn.usage, about.model);
+    const messageId = `msg_${randomUUID()}`;
+    const assistant = (blocks: unknown[], id = messageId): Frame => ({
+      ...base(),
+      message: {
+        id,
+        type: 'message',
+        role: 'assistant',
+        ...(usage.model === undefined ? {} : { model: usage.model }),
+        content: blocks,
+        stop_reason: null,
+        stop_sequence: null,
+        ...(Object.keys(usage).length <= (usage.model === undefined ? 0 : 1) ? {} : { usage }),
+      },
+      requestId: `req_${randomUUID()}`,
+      type: 'assistant',
+      uuid: randomUUID(),
+      timestamp: at(start),
+    });
+
+    push({
+      ...base(),
+      type: 'user',
+      message: { role: 'user', content: turn.message.text },
+      uuid: randomUUID(),
+      timestamp: at(start),
+    });
+
+    for (const part of turn.responseParts) {
+      if (part.kind === 'markdown') {
+        push(assistant([{ type: 'text', text: part.content }]));
+      }
+      else if (part.kind === 'reasoning') {
+        push(assistant([{ type: 'thinking', thinking: part.content, signature: '' }]));
+      }
+      else if (part.kind === 'toolCall') {
+        const call = part.toolCall;
+        push(assistant([{
+          type: 'tool_use',
+          id: call.toolCallId,
+          name: call.toolName,
+          input: claudeInput(call.toolName, 'toolInput' in call ? call.toolInput : undefined),
+        }]));
+        // A completed call is the one that has a result to write; a call that
+        // never finished reads back cancelled, as it was.
+        if (call.status === 'completed') {
+          push({
+            ...base(),
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [{
+                type: 'tool_result',
+                tool_use_id: call.toolCallId,
+                content: claudeResult(call.content),
+                is_error: !call.success || call.error !== undefined,
+              }],
+            },
+            uuid: randomUUID(),
+            timestamp: at(start),
+          });
+        }
+      }
+      else if (part.kind === 'systemNotification') {
+        push({
+          ...base(),
+          type: 'system',
+          subtype: 'notification',
+          content: typeof part.content === 'string' ? part.content : part.content.markdown,
+          uuid: randomUUID(),
+          timestamp: at(start),
+        });
+      }
+      else if (part.kind === 'contentRef') {
+        push(assistant([{ type: 'text', text: part.uri }]));
+      }
+      else if (part.kind === 'inputRequest') {
+        push(assistant([{ type: 'text', text: part.request.message ?? part.request.id }]));
+      }
+      else if (part.kind === 'error') {
+        push(assistant([{ type: 'text', text: `${part.error.errorType}: ${part.error.message}` }]));
+      }
+    }
+
+    const end = start + (turn.duration ?? 0);
+    const last = frames[frames.length - 1];
+    if (last !== undefined) last.timestamp = at(end);
+    clock = end;
+  }
+  return frames;
+}
+
+/**
+ * Write a conversation's turns as one of the CLI's own session files.
+ *
+ * The file is where the CLI would have written it: `<config>/projects/
+ * <directory>/<id>.jsonl`, with the directory named as `projectOf` names it. A
+ * session started from it resumes the conversation as the CLI wrote it.
+ *
+ * @returns the file written.
+ */
+export function writeImportedHistory(
+  turns: Turn[],
+  about: { sessionId: string; folder: string; model?: string },
+): string {
+  const project = join(projectsFolder(), projectOf(about.folder));
+  mkdirSync(project, { recursive: true });
+  const file = join(project, `${about.sessionId}.jsonl`);
+  const frames = framesFor(turns, {
+    sessionId: about.sessionId,
+    cwd: about.folder,
+    ...(about.model === undefined ? {} : { model: about.model }),
+  });
+  writeFileSync(file, frames.map((one) => `${JSON.stringify(one)}\n`).join(''));
+  return file;
 }

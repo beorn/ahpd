@@ -429,7 +429,10 @@ export function createStream(ctx: SessionContext): Stream {
         const kindOf = toolMetaOf(name);
         const meta = kindOf === undefined && Object.keys(described).length === 0 ? undefined : { ...kindOf, ...described };
         // A client's own tool by the name it announced.
-        const shown = ctx.clientToolOf(name)?.name ?? name;
+        const ofClient = ctx.clientToolOf(name);
+        const shown = ofClient?.name ?? name;
+        // Reported already, and waiting for its handler: the message again.
+        if (ofClient !== undefined && ctx.reportedCall(id)) continue;
         const call: Bag = open !== undefined ? bag(open.toolCall) : {
           toolCallId: id,
           toolName: shown,
@@ -451,19 +454,28 @@ export function createStream(ctx: SessionContext): Stream {
           confirmed: 'not-needed',
           ...(input !== undefined ? { toolInput: input } : {}),
         } satisfies OnWire<ToolCallRunningState>;
-        if (open === undefined) {
-          const part: Bag = { kind: 'toolCall', toolCall: call };
-          scope.parts.set(id, part);
-          ctx.holdPart(turn, part);
-        }
-        else {
-          // The half-written json is what `toolInput` now says properly, and
-          // a client that kept both would draw the arguments twice.
+        /** The call as it runs, over the half-written json, which `toolInput` now says properly. */
+        const toRunning = (): void => {
           call.status = 'running';
           call.invocationMessage = line;
           call.confirmed = 'not-needed';
           delete call.partialInput;
           if (input !== undefined) call.toolInput = input;
+        };
+        // A client's call has not started: see `reportCall`, below.
+        if (ofClient !== undefined && open === undefined) {
+          call.status = 'streaming';
+          delete call.invocationMessage;
+          delete call.confirmed;
+          delete call.toolInput;
+        }
+        if (open === undefined) {
+          const part: Bag = { kind: 'toolCall', toolCall: call };
+          scope.parts.set(id, part);
+          ctx.holdPart(turn, part);
+        }
+        else if (ofClient === undefined) {
+          toRunning();
           if (spawned !== undefined) call._meta = { ...bag(call._meta), ...described };
         }
         /*
@@ -490,38 +502,49 @@ export function createStream(ctx: SessionContext): Stream {
             ...(meta ? { _meta: meta } : {}),
           });
         }
+        const ready = (): void => {
+          /*
+           * When it starts running, on this plugin's clock, which is the ready
+           * for a call nobody is asked about. A call `canUseTool` asks about is
+           * stamped again when it is approved, so the wait is not counted.
+           */
+          ctx.stampStart(call);
+          ctx.emitOn(scope, {
+            type: 'chat/toolCallReady',
+            turnId: turn.id,
+            toolCallId: id,
+            ...(contributor ? { contributor } : {}),
+            // What the call does, as the same call read back from its
+            // transcript is drawn.
+            invocationMessage: line,
+            // Nothing is being asked here - `canUseTool` is what asks. Without
+            // this the reducer moves every tool call in the transcript into
+            // `pending-confirmation` and draws it as a question nobody put.
+            confirmed: 'not-needed',
+            ...(input !== undefined ? { toolInput: input } : {}),
+            // The whole bag, because an action's `_meta` replaces the call's.
+            _meta: bag(call._meta),
+          });
+        };
+        if (ofClient === undefined) {
+          ready();
+          ctx.openCall(name, str(turn.id) ?? '', id, line, input);
+          continue;
+        }
         /*
-         * When it starts running, on this plugin's clock, which is the ready
-         * for a call nobody is asked about. A call `canUseTool` asks about is
-         * stamped again when it is approved, so the wait is not counted.
-         */
-        ctx.stampStart(call);
-        ctx.emitOn(scope, {
-          type: 'chat/toolCallReady',
-          turnId: turn.id,
-          toolCallId: id,
-          ...(contributor ? { contributor } : {}),
-          // What the call does, as the same call read back from its
-          // transcript is drawn.
-          invocationMessage: line,
-          // Nothing is being asked here - `canUseTool` is what asks. Without
-          // this the reducer moves every tool call in the transcript into
-          // `pending-confirmation` and draws it as a question nobody put.
-          confirmed: 'not-needed',
-          ...(input !== undefined ? { toolInput: input } : {}),
-          // The whole bag, because an action's `_meta` replaces the call's.
-          _meta: bag(call._meta),
-        });
-        /*
-         * A client's call, raised on the session and held for its owner.
+         * A client's call is readied when the CLI runs its handler.
          *
-         * Here, and not where the call is first announced: a call
-         * `canUseTool` asks about is not running until the person approves it,
-         * and an entry raised then would tell a client to run a tool nobody
-         * has allowed. This is the same moment the ready goes out, so the
-         * entry and the chat agree about the call being under way.
+         * The CLI may ask about the call after this message, and a client runs
+         * a call it reads as running. So the call stays `streaming` until its
+         * handler starts, which is after the CLI has settled the permission,
+         * or until the person allows it. A call the question has moved on, or
+         * that ended, is left as it is.
          */
-        ctx.openCall(name, str(turn.id) ?? '', id, line, input);
+        ctx.reportCall(name, str(turn.id) ?? '', id, line, input, () => {
+          if (str(call.status) !== 'streaming') return;
+          toRunning();
+          ready();
+        });
       }
     }
   };
@@ -602,6 +625,18 @@ export function createStream(ctx: SessionContext): Stream {
         ctx.pastLines.delete(id);
         edited(id);
         settleSpawn(id);
+        continue;
+      }
+      /*
+       * A client's call that ends with no handler, such as one a rule refuses.
+       *
+       * The reducer completes only a call that was readied, and a client runs
+       * one that is, so it is left as it is until its turn ends, as VS Code's
+       * host leaves a client's call nobody runs.
+       * https://github.com/microsoft/vscode/blob/7f668a4988e528b6fe5f13fd8e9890affeae678c/src/vs/platform/agentHost/node/agentSideEffects.ts#L1792-L1796
+       */
+      if (ctx.dropReport(id)) {
+        ctx.pastLines.delete(id);
         continue;
       }
       // A call a person declined is already `cancelled`, and it never ran, so
@@ -724,6 +759,15 @@ export function createStream(ctx: SessionContext): Stream {
       // declined never ran, so it keeps none.
       if (ran) ctx.stampEnd(call);
       edited(id);
+      /*
+       * A call whose work goes on in the background names its row, before
+       * the completion the host writes the row's id on: a `Bash` result says
+       * its task, and a worker that runs in the background is its spawn's.
+       * Said here as well as on `task_updated`, because the two arrive in no
+       * fixed order.
+       */
+      const backgroundTaskId = str(bag(structured).backgroundTaskId);
+      if (id !== undefined && (backgroundTaskId !== undefined || ctx.spawning.get(id)?.foreground === false)) ctx.noteMoved(id, backgroundTaskId);
       ctx.emitOn(scope, {
         type: 'chat/toolCallComplete',
         turnId: scope.turn?.id,

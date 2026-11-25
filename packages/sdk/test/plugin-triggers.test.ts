@@ -218,6 +218,45 @@ it('runs an automation a plugin names by a URI in the ahp-automation scheme', as
   await until(() => (store.get(resource)?.runs ?? []).length === 1, 'the run the plugin asked for');
 });
 
+/*
+ * A run a plugin asks for is an event's, as a fire is: it counts against the
+ * twenty an hour, and obeys what the automation says about running twice.
+ */
+it('starts twenty runs an hour for a plugin\'s asks under parallel, and drops the rest', async () => {
+  const lines: string[] = [];
+  const { plugin, store, client } = offered([WEATHER], { ...BATTEN, _meta: { ahpd: { overlap: 'parallel' } } }, { onEvent: (line) => { lines.push(line); } });
+  await client.handle(hello(['0.9.0'], { clientId: 'probe', initialSubscriptions: [ROOT] }));
+
+  for (let i = 0; i < 25; i++) plugin.runAutomation(AUTOMATION, { where: `coast ${i}` });
+  await until(() => lines.filter((line) => line.includes('so this wake was dropped')).length === 5, 'the five drops');
+  await until(() => runs(store).length === 20, 'the twenty runs');
+  expect(runs(store)).toHaveLength(20);
+});
+
+it('starts one run for a plugin\'s asks under queue, and holds the rest while it runs', async () => {
+  const { plugin, store, client } = offered([WEATHER], { ...BATTEN, _meta: { ahpd: { overlap: 'queue' } } });
+  await client.handle(hello(['0.9.0'], { clientId: 'probe', initialSubscriptions: [ROOT] }));
+
+  plugin.runAutomation(AUTOMATION, { where: 'the coast' });
+  await until(() => runs(store).length === 1, 'the first run');
+  plugin.runAutomation(AUTOMATION, { where: 'the bay' });
+  plugin.runAutomation(AUTOMATION, { where: 'the harbour' });
+  // The two asks are held behind the run that is going, and start nothing of their own.
+  await new Promise((done) => { setTimeout(done, 200); });
+  expect(runs(store)).toHaveLength(1);
+});
+
+it('starts nothing for a plugin\'s ask under skip while a run is going', async () => {
+  const { plugin, store, client } = offered([WEATHER], { ...BATTEN, _meta: { ahpd: { overlap: 'skip' } } });
+  await client.handle(hello(['0.9.0'], { clientId: 'probe', initialSubscriptions: [ROOT] }));
+
+  plugin.runAutomation(AUTOMATION, { where: 'the coast' });
+  await until(() => runs(store).length === 1, 'the first run');
+  plugin.runAutomation(AUTOMATION, { where: 'the bay' });
+  await new Promise((done) => { setTimeout(done, 200); });
+  expect(runs(store)).toHaveLength(1);
+});
+
 /** BATTEN, with its trigger's `config` set to `config`. */
 const battenWith = (config: Bag): Bag => ({
   ...BATTEN,

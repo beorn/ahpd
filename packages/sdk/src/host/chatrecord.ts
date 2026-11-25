@@ -54,7 +54,7 @@ export interface ChatRecord {
    */
   keepChat(
     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
-    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
+    provider?: string | null, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
   ): void;
   /**
    * The values a chat of a session set for itself, as VS Code's
@@ -154,7 +154,7 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
 
   const keepChat = (
     uri: string, chatUri: string, backendId: string | undefined, isDefault: boolean,
-    provider?: string, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
+    provider?: string | null, config?: Record<string, unknown>, sessionConversation?: boolean, neverSpoken?: boolean,
   ): void => {
     const id = idOf(uri);
     const list = stored(id);
@@ -172,8 +172,9 @@ export function createChatRecord(ctx: HostContext): ChatRecord {
     // The backend of its own this chat runs on, if it is not the session's,
     // and the config it runs on there. A call that names neither is one about
     // a chat that has not changed backend, so the row keeps what it had.
-    const served = provider ?? was?.provider;
-    const settings = config ?? was?.config;
+    // `null` is a chat that came to run on its session's, which has neither.
+    const served = provider === null ? undefined : provider ?? was?.provider;
+    const settings = provider === null ? undefined : config ?? was?.config;
     const conversation = sessionConversation ?? was?.sessionConversation;
     const unspoken = neverSpoken ?? was?.neverSpoken;
     // Built field by field, so a chat that is being started is open: the mark

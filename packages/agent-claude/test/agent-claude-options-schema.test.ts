@@ -74,3 +74,25 @@ it('names the values a record may hold, not only their types', async () => {
   expect(properties['thinking']).toMatchObject({ type: 'string', enum: ['adaptive', 'disabled'] });
   expect(properties['sandbox']).toMatchObject({ enum: ['default', 'on', 'off'] });
 });
+
+/*
+ * The options and a record's fields in the order a form draws them, by
+ * purpose: the model, the prompt, the tools, the run, the machine, and the
+ * tuning last. A new field goes in its group.
+ */
+it('lists its options and a record\'s fields by purpose', async () => {
+  const manifest = (await import('../package.json', { with: { type: 'json' } })).default as { ahpd: { optionsSchema: { properties: Record<string, unknown> } } };
+  expect(Object.keys(manifest.ahpd.optionsSchema.properties)).toEqual([
+    'model', 'hostTools', 'computerExecutable', 'computerCli', 'computerCliFallback', 'computerConfigDir', 'handshakeTimeoutMs',
+  ]);
+  expect(Object.keys((await engineOf()).schema.properties ?? {})).toEqual([
+    'models', 'modelSources', 'keepCliModels',
+    'outputStyle', 'thinking',
+    'hostTools', 'hostTasks', 'enableTasks',
+    'env', 'logins', 'extraArgs', 'sandbox', 'autoAllowBashIfSandboxed',
+    'computerConfigDir',
+    'cliStart', 'stopEnds', 'dontAsk', 'portFailures', 'subagentsFrom',
+    'taskOutputFirstWaitMs', 'taskOutputLongestWaitMs', 'taskOutputQuietReads', 'subagentTitleMax', 'subagentStartTimeoutMs',
+    'maxShellInitScript', 'maxTerminalOutputBytes', 'keepFramed', 'watchWaitMs', 'fileMostBytes', 'ruleDepth', 'ruleMost',
+  ]);
+});

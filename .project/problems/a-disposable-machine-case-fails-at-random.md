@@ -6,7 +6,6 @@ severity: minor
 refs:
   - "[code://packages/computer/test/computer-disposable.test.ts#L755](../../packages/computer/test/computer-disposable.test.ts#L755) - \"keeps a session's machine across a restart, and lets it go when the session is disposed\""
   - "[code://packages/computer/test/computer-disposable.test.ts#L1628](../../packages/computer/test/computer-disposable.test.ts#L1628) - \"mounts the repository root for a session in a subfolder, and starts it in the subfolder\""
-  - problems/three-cases-fail-at-random-on-windows.md - a third case of the same file, which timed out on Windows
 ---
 
 ## Symptom

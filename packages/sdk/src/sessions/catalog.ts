@@ -11,6 +11,7 @@
 
 import type { Bag } from '../types/common.js';
 import type { Emit } from '../types/session.js';
+import { joinTags, tagsOf } from '../utils/tags.js';
 
 /**
  * `SessionStatus`, as values.
@@ -235,8 +236,15 @@ export const mergeLogicalTurnUsage = (previous: Bag | undefined, current: Bag | 
       if (sum !== undefined) cost[key] = sum;
     }
   }
+  // The connectors each run named, joined: a turn that failed over ran on both logins.
+  const connectors = joinTags(tagsOf(before?.['ahpd.connectors']), tagsOf(after?.['ahpd.connectors']));
   const meta = before !== undefined || after !== undefined
-    ? { ...before, ...after, ...(cost === undefined ? {} : { 'ahpd.cost': cost }) }
+    ? {
+      ...before,
+      ...after,
+      ...(cost === undefined ? {} : { 'ahpd.cost': cost }),
+      ...(connectors.length === 0 ? {} : { 'ahpd.connectors': connectors }),
+    }
     : undefined;
   const model = current.model ?? previous.model;
   return {

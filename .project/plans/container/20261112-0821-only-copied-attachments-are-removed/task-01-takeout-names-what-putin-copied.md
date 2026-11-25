@@ -1,6 +1,6 @@
 ---
 title: takeOut names what putIn copied
-status: implemented
+status: done
 depends: []
 layer: "sdk"
 refs:

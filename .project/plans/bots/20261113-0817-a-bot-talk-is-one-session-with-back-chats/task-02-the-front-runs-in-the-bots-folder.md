@@ -1,6 +1,6 @@
 ---
 title: The Front runs in the bot's folder
-status: implemented
+status: done
 depends: []
 layer: "bot"
 refs:

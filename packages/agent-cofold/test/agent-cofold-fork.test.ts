@@ -552,8 +552,19 @@ it('keeps the chat going when the store cannot truncate the conversation', async
   // starts while it is held ends with `writer_busy`.
   release();
   const store = createFileStore({ root });
-  await untilAsync(async () => (await store.runs.list({ sessionId: 'one' })).every((run) => run.status !== 'running')
-    && (await store.sessions.get({ sessionId: 'one' }))?.activeWriterRunId === undefined);
+  // The read opens `writer.lock`, which the stopped run deletes as it lets go.
+  // Windows refuses to open a file that is being deleted, so that read is a
+  // "not yet", and the next tick reads again.
+  await untilAsync(async () => {
+    try {
+      return (await store.runs.list({ sessionId: 'one' })).every((run) => run.status !== 'running')
+        && (await store.sessions.get({ sessionId: 'one' }))?.activeWriterRunId === undefined;
+    }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return false;
+      throw error;
+    }
+  });
   await say(through, through.chatUri, 't3', 'question three');
   // How t3 ended comes first, with an error's own words, so a failure says which end it was.
   const ends = told(through.notes, through.chatUri)

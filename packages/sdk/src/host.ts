@@ -17,6 +17,7 @@
  *   the host reporting what it did.
  */
 
+import { slotted } from './repo/diskusage.js';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { filePersonRules } from './access/personrules.js';
@@ -35,8 +36,6 @@ import { idFor, idOf, mergeLogicalTurnUsage, uriFor, Status } from './sessions/c
 import { memorySessions } from './sessions/sessions.js';
 import { meter } from './usage/meter.js';
 import { debugLogs } from './sessions/debuglogs.js';
-import { reduceChatConfigChanged } from './vscode/chatconfig.js';
-import type { ChatConfigChangedAction } from './vscode/chatconfig.js';
 import type { Terminal } from './types/terminals.js';
 import type { SessionConfigAnswerer, SessionConfigAsk } from './types/completions.js';
 import type { MessageAttachment, MessageFrom } from './types/session.js';
@@ -55,13 +54,15 @@ import type { ChannelSubscriber, PublishOptions } from './types/plugin.js';
 import { bag, ownerFilter, ownerOfPrincipal } from './utils/values.js';
 import { reason } from './host/common.js';
 import { clientQueueBytes, replayBytes } from './host/limits.js';
+import { annotationsSummaryOf } from './host/annotationssummary.js';
 import {
   ROOT, RESTART_NEEDED, isRootChannel, AUTOMATIONS, AUTOMATIONS_ME, spaceOf, servedIn, methodIn, named,
   chatUriFor, subagentChatUri, WORKER_ACTIONS, toolCallOfSubagentChat, isAutomations, automationOwner,
-  parseResourceWatchChannelUri, schemeOf, ANNOTATIONS_PATH_SEGMENT, SHARED_SCHEME,
+  parseResourceWatchChannelUri, schemeOf, annotationsChannelOf, annotationsChannelsOf, sessionOfAnnotations, SHARED_SCHEME,
 } from './host/channels.js';
 import type { Space } from './host/channels.js';
 import { DELTA_WINDOW_MS, merger } from './host/deltas.js';
+import { reasoningTimer } from './host/reasoning.js';
 import { Claiming } from './host/state.js';
 import type { Claimed, Held, HeldState, Learned, LiveSubagent, NameKind, Origin } from './host/state.js';
 import { GREETINGS, UNGATED, seesAccount, seesConfig, DECLARED, ownIn, ACTION_NEEDS } from './host/gate.js';
@@ -83,11 +84,13 @@ import { createSpawn } from './host/spawn.js';
 import { createBackground } from './host/background.js';
 import { createCanvases } from './host/canvases.js';
 import { createSandbox } from './host/sandbox.js';
+import { createKeepAwake, KEEP_AWAKE_KEY } from './host/keepawake.js';
 import { TOOL_RESULT_RESOURCE_LIMIT, toolResultResources } from './resources/toolresults.js';
 import { localPath, uriOf } from './resources/fileuri.js';
 import { createLifecycle } from './host/lifecycle.js';
 import { createTooling } from './host/tooling.js';
 import { createAsking } from './host/asking.js';
+import { createShellAuthentication } from './host/shellauth.js';
 import { createTerminalMethods, createTerminals } from './host/terminals.js';
 import { createShells } from './host/shells.js';
 import { createOutputs } from './host/outputs.js';
@@ -100,6 +103,7 @@ import { createSessionLifecycle } from './host/sessionlifecycle.js';
 import { createWakes } from './host/wakes.js';
 import { createAgentMerge } from './host/agentmerge.js';
 import { createQueueDrain } from './host/queuedrain.js';
+import { dropImports, noStagedImports } from './host/sessionimport.js';
 import { createTelemetry } from './host/telemetry.js';
 import { createAuth } from './host/auth.js';
 import { createAdmission } from './host/admission.js';
@@ -357,6 +361,8 @@ export function createHost(options: HostOptions): Host {
   /** How a person may use each chat whose maker said, and the tools it alone is offered. */
   const chatInteractivity = new Map<string, 'full' | 'read-only' | 'hidden'>();
   const chatTools = new Map<string, string[]>();
+  /** The chats a client is giving a workspace to, while each move runs. */
+  const chatWorkspaceMoves = new Set<string>();
   /** The title each chat's backend said last, so a move of it is noticed. */
   const described = new Map<string, string>();
 
@@ -521,15 +527,12 @@ export function createHost(options: HostOptions): Host {
   /**
    * One action through the protocol's reducer for the kind of state it lands
    * on. A type the reducer does not know is said in this host's log, which is
-   * where the reducer's own warning goes. A chat's `chat/configChanged`, which
-   * VS Code's protocol adds ahead of the package, goes through VS Code's own
-   * case for it.
+   * where the reducer's own warning goes.
    */
   const reduced = (open: HeldState, action: Bag): Bag => {
     const said = (message: string): void => { log(message); };
     if (open.kind === 'root') return rootReducer(open.state as unknown as RootState, action as unknown as RootAction, said) as unknown as Bag;
     if (open.kind === 'session') return sessionReducer(open.state as unknown as SessionState, action as unknown as SessionAction, said) as unknown as Bag;
-    if (action.type === 'chat/configChanged') return reduceChatConfigChanged(open.state, action as unknown as ChatConfigChangedAction);
     return chatReducer(open.state as unknown as ChatState, action as unknown as ChatAction, said) as unknown as Bag;
   };
   /** Everything subscribed to a channel, which is not everything connected. */
@@ -637,6 +640,18 @@ export function createHost(options: HostOptions): Host {
   const marksOf = (id: string): AnnotationsState =>
     marks.get(id) ?? (kept.annotations?.(id) as AnnotationsState | undefined) ?? { annotations: [] };
 
+  /*
+   * The session's summary of its marks, on its held state and its row, kept
+   * as each mark lands, as VS Code's host keeps `SessionState.annotations`.
+   * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostStateManager.ts#L2765-L2772
+   */
+  const summarizeAnnotations = (uri: string): void => {
+    const held = states.get(uri);
+    if (held?.kind !== 'session') return;
+    held.state = { ...held.state, annotations: annotationsSummaryOf(uri, marksOf(idOf(uri))) };
+    ctx.markSummaryDirty(uri);
+  };
+
   /**
    * One mark on a session, kept and said.
    *
@@ -654,7 +669,9 @@ export function createHost(options: HostOptions): Host {
     const next = annotationsReducer(marksOf(id), action);
     marks.set(id, next);
     kept.setAnnotations?.(id, next as unknown as Bag);
-    dispatch(`${uri}${ANNOTATIONS_PATH_SEGMENT}`, action as unknown as Record<string, unknown>, origin);
+    // Said on both names, AHP 1.1.0's and the one a VS Code 1.145 window makes.
+    for (const channel of annotationsChannelsOf(uri)) dispatch(channel, action as unknown as Record<string, unknown>, origin);
+    summarizeAnnotations(uri);
     // The file's channel shows every session's comments on it.
     if (typeof resource === 'string' && resource !== '') emit(resourceAnnotations.channelOf(resource), action as unknown as Record<string, unknown>, origin);
   };
@@ -781,8 +798,15 @@ export function createHost(options: HostOptions): Host {
      * keeps everything.
      */
     const { action } = envelope;
+    /*
+     * `chat/configChanged` is the one exception. AHP 1.1.0 registers it at
+     * `1.1.0`, but VS Code's window sends and reads it on `1.0.0` too, and
+     * VS Code's host holds back only `chat/moved` by version.
+     * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/protocolServerHandler.ts#L4944-L4947
+     */
     if (connection.protocolVersion !== undefined
       && PROTOCOL_ACTIONS.has(String(action.type))
+      && action.type !== 'chat/configChanged'
       && !isActionKnownToVersion(action as unknown as StateAction, connection.protocolVersion)) return undefined;
     if (!isRootChannel(envelope.channel)) {
       if (!visible(connection, envelope.channel)) return undefined;
@@ -959,7 +983,12 @@ export function createHost(options: HostOptions): Host {
    * sequence number yet, which is why everything that answers a client with
    * state - a snapshot, a replay, a disposal - goes through `flush` first.
    */
-  const deltas = merger({ windowMs: options.deltaWindowMs ?? DELTA_WINDOW_MS, send: emit });
+  const deltas = merger({
+    windowMs: options.deltaWindowMs ?? DELTA_WINDOW_MS,
+    send: (channel, action, origin) => { for (const one of reasoning.timed(channel, action)) emit(channel, one, origin); },
+  });
+  /** Times the reasoning of every chat, on the road each action goes out by. */
+  const reasoning = reasoningTimer();
   /**
    * The dispatches answered already, by the origin each carries: its echo or
    * its refusal. A dispatch is answered once, and a host that said one and then
@@ -1118,6 +1147,10 @@ export function createHost(options: HostOptions): Host {
       if (states.get(channel)?.kind === 'chat') ctx.observed(channel, action, origin);
       return;
     }
+    // A run of reasoning this action ends is said ended first, as this host's own.
+    const timed = reasoning.timed(channel, action);
+    for (const ended of timed.slice(0, -1)) emit(channel, ended, undefined);
+    action = timed.at(-1) as typeof action;
     emit(channel, action, origin, requestAudience(channel, action, origin));
     // A turn's error before its backend had it fails the creation of a
     // session still provisional, said after the error.
@@ -1642,7 +1675,7 @@ export function createHost(options: HostOptions): Host {
     // A session's channel goes through the session's own path, as its marks do; one with an audience is said to that audience alone.
     emit: (channel, action, origin, audience) => {
       if (audience !== undefined) emit(channel, action, origin, audience);
-      else (channel.endsWith(ANNOTATIONS_PATH_SEGMENT) ? dispatch : emit)(channel, action, origin);
+      else (sessionOfAnnotations(channel) !== undefined ? dispatch : emit)(channel, action, origin);
     },
     hasSession: (connection, session) => (sessions.has(session) || owners.has(session)) && visible(connection, session),
     sessionCommentsOn: (resource) => [...new Set([...kept.sessions(), ...marks.keys()])]
@@ -1655,8 +1688,9 @@ export function createHost(options: HostOptions): Host {
       const open = new Set<string>();
       for (const connection of connections) {
         for (const channel of connection.activeSubscriptions) {
-          if (!channel.endsWith(ANNOTATIONS_PATH_SEGMENT) || !sessionChannel(channel)) continue;
-          if (resourceAnnotations.within(resource, placesOf(channel.slice(0, -ANNOTATIONS_PATH_SEGMENT.length)))) open.add(channel);
+          const owning = sessionOfAnnotations(channel);
+          if (owning === undefined || !sessionChannel(owning)) continue;
+          if (resourceAnnotations.within(resource, placesOf(owning))) open.add(channel);
         }
       }
       return [...open];
@@ -1677,9 +1711,9 @@ export function createHost(options: HostOptions): Host {
         : options.catalogs?.agents?.[provider],
       HOST_CATALOGS,
     ],
-    replayable, releaseActiveClientForSession, attachWatch, projectActionForClient, claims, agents, first: options.agents[0], connections, clientsChanged, relays: new Map(), holders, sessions, byChat, subagents, owners, names,
+    replayable, releaseActiveClientForSession, attachWatch, projectActionForClient, claims, agents, first: options.agents[0], connections, clientsChanged, relays: new Map(), diskUsage: { scans: new Map(), slot: slotted(2), kept: new Map(), queues: new Map() }, holders, sessions, byChat, subagents, owners, names,
     leadOf, wheres, worktrees, worktreeOf, githubFacts, kept, offered, decided, about, terminals,
-    madeFrom, chatInteractivity, chatTools, origins, births, moves, listedMeta, browsable, broadcast, presence, beside, marks, lives, lifeOf, restarting, relaunches: new Map(), chatRelaunches: new Map(), baselineCheckpoints: new Map(), resumedTurns: new Map(), cancelledTurns: new Map(), inputTurns: new Map(), learned, starting,
+    madeFrom, chatInteractivity, chatTools, chatWorkspaceMoves, origins, births, moves, listedMeta, browsable, broadcast, presence, beside, marks, lives, lifeOf, restarting, relaunches: new Map(), chatRelaunches: new Map(), baselineCheckpoints: new Map(), resumedTurns: new Map(), cancelledTurns: new Map(), inputTurns: new Map(), learned, starting,
     logs, detached, refuse,
     serverSeq: 0,
     closed: false, shutdown: () => host.close(), refusing: undefined, bareSessions: new Set<string>(), startedWorkspaceless: new Set<string>(), commandTurns: new Set<string>(), described, links,
@@ -1759,7 +1793,15 @@ export function createHost(options: HostOptions): Host {
   Object.assign(ctx, createMachines(ctx));
   Object.assign(ctx, createSessionConfig(ctx));
   Object.assign(ctx, createRoot(ctx));
+  /*
+   * The socket a command's prompt comes through. Built after the root, which
+   * is where the setting that turns it on lives, and off until that setting
+   * is on: the default has nothing listening.
+   */
+  ctx.shellAuth = createShellAuthentication(ctx);
+  void ctx.shellAuth.update();
   Object.assign(ctx, createCatalogue(ctx));
+  ctx.keepAwake = createKeepAwake(options.keepAwake, () => ctx.rootConfig[KEEP_AWAKE_KEY], () => ctx.activeCount() > 0);
   Object.assign(ctx, createSpawn(ctx));
   // Under its own name rather than spread flat, because `heldTasks`, `rows`
   // and `forgetSession` are words other areas could reach for.
@@ -1809,7 +1851,7 @@ export function createHost(options: HostOptions): Host {
     spaceHere, nameOf, sessionOfChat, sessionFor, meantBy,
     sessionHolding, channelKind, sessionChannel, homeOf,
     projectSnapshot, visible, sessionVisible, chatShown, claimable, unheld, ownId, clients, clientResources, heard, clientGone,
-    dirOf, catalogueOf, changesetAt, changesetOf, operationsOf, operationsMoved, contentMoved,
+    dirOf, catalogueOf, changesetAt, changesetOf, operationsOf, operationsMoved, contentMoved, editingMoved,
     changesetsOf, operationContext, opKey, shown,
     describes, setArtifacts, captureBaseline, recordPullRequest, metaChanged, dirOfFile, wroteThrough,
     refreshWatched, startWatchingDir, stopUnwatched, refreshPullRequests, readFacts, refreshFacts,
@@ -1852,6 +1894,9 @@ export function createHost(options: HostOptions): Host {
   }
 
   options.automations?.onChanged?.(changed);
+  // A deletion the last daemon had started is finished here, once this host has
+  // a catalogue to find its sessions in.
+  void ctx.resumeAutomationDeletions().catch(() => {});
 
   /**
    * Ask one backend what it offers, and tell the root when the answer lands.
@@ -2227,6 +2272,20 @@ export function createHost(options: HostOptions): Host {
         catch (error) { log.error(`ending ${uri} for ${provider} failed: ${reason(error)}`); }
       }
     },
+    stopSessionsOf: async (agent) => {
+      const provider = typeof agent === 'string' ? agent : agent.provider;
+      for (const uri of [...sessions.keys()]) {
+        const held = sessions.get(uri);
+        if (held === undefined) continue;
+        const onIt = held.agent.provider === provider
+          || [...held.backends.values()].some((backend) => backend.agent.provider === provider);
+        if (!onIt) continue;
+        // Slept, not removed: the row and the conversation stay, and a turn in
+        // flight ends before the session goes quiet. A stop that fails is said.
+        try { await ctx.stopWhenQuiet(uri); }
+        catch (error) { log.error(`stopping ${uri} for ${provider} failed: ${reason(error)}`); }
+      }
+    },
     connections: () => connections.size,
     localeOf: ctx.localeOf,
     close: () => {
@@ -2243,6 +2302,8 @@ export function createHost(options: HostOptions): Host {
         ctx.stopWakes();
         ctx.agentMerge.stop();
         ctx.disposeSessionLifecycle();
+        ctx.keepAwake.stop();
+        ctx.worktreeRemovals.stop();
         ctx.closed = true;
         ctx.stopLapses();
         // Refusals still being counted are written now, and their minute ends with the host.
@@ -2262,6 +2323,9 @@ export function createHost(options: HostOptions): Host {
           catch (error) { log.error(`closing ${what} failed: ${reason(error)}`); }
         };
         const going: Promise<void>[] = [];
+        // The helpers first: a prompt waits on a person the closing host will
+        // not ask, and the socket and the files go with it.
+        going.push(step('shell authentication', () => ctx.shellAuth.close()));
         // Stopped rather than disposed: a daemon going down is a host that
         // comes back, and it resumes these sessions from the store. A backend
         // running nested in a machine is told to end its transport alone, so
@@ -2416,7 +2480,9 @@ export function createHost(options: HostOptions): Host {
       if (principal !== undefined) principals.set(ownerOfPrincipal(principal), principal);
       connections.add(connection);
 
-      const conn = { connection, alive: true, containers: new Map(), subscriptions: new Map() } as ConnectionContext;
+      const conn = {
+        connection, alive: true, containers: new Map(), subscriptions: new Map(), imports: noStagedImports(),
+      } as ConnectionContext;
       // Held beside `connections`, and for the same span: `stop` and `remove`
       // ask across every live connection's relays, and a map there is the one
       // this connection's own methods write.
@@ -2665,6 +2731,9 @@ export function createHost(options: HostOptions): Host {
           // drops takes its relays with it rather than leaving a host running
           // in a container for nobody.
           conn.alive = false;
+          // A conversation staged for a session this connection never asked
+          // for goes with it.
+          dropImports(conn.imports);
           if (options.containers !== undefined) {
             for (const id of [...conn.containers.keys()]) {
               conn.containers.delete(id);
@@ -2682,6 +2751,9 @@ export function createHost(options: HostOptions): Host {
           // The relays above were ended one by one; the view across
           // connections drops this one with the connection itself.
           ctx.relays.delete(connection);
+          // Its disk usage scans stop with it, as VS Code's host cancels them on a disconnect.
+          for (const scan of ctx.diskUsage.scans.get(connection)?.values() ?? []) scan.abort();
+          ctx.diskUsage.scans.delete(connection);
           void fire({ type: 'client_disconnect', client: connection.clientId || 'anonymous' });
           /*
            * And the git watch of a directory this was the last watcher of. The

@@ -258,6 +258,9 @@ const statusOf = (error: unknown): number | undefined =>
  */
 export const notFound = (error: unknown): boolean => statusOf(error) === 404;
 
+/** Whether the service refused the connector's token, which a new token may cure. */
+export const unauthorized = (error: unknown): boolean => statusOf(error) === 401;
+
 /** The service over the SDK, with one management client and one host for each connector. */
 export function sdkService(options: ServiceOptions): Service {
   interface Entry {

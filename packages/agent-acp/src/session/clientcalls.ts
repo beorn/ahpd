@@ -1,6 +1,6 @@
 import { createClientCalls as holder } from '@ahpd/sdk';
 import type { Bag, BoundTool, ClientCalls as Held, RunClientTool } from '@ahpd/sdk';
-import { HOST_SERVER } from '../mapping.js';
+import { HOST_SERVER, ready, started } from '../mapping.js';
 import type { AcpCall, ClientTool } from '../types.js';
 import { bag } from './common.js';
 import type { SessionContext } from './context.js';
@@ -191,6 +191,30 @@ export function createClientCalls(ctx: SessionContext): ClientCalls {
   };
 
   /**
+   * The calls of one client's tool the agent has started, which no request has
+   * been for yet: one a person is still asked about, or has refused, is none.
+   */
+  const reported = (owner: string, name: string): AcpCall[] => [...(ctx.mapping?.calls.values() ?? [])].filter((call) =>
+    call.contributor === owner && call.toolName === name && call.taken !== true && call.declined !== true
+    && call.status !== 'completed' && call.status !== 'failed'
+    && (call.asked ? call.allowed === true : started(call.status)));
+
+  /**
+   * One reported call, for the request it is found to be for: said running and
+   * its owner asked, unless the person's approval did both.
+   */
+  const take = (call: AcpCall): string => {
+    if (ctx.cancelRequested) throw new Error('The turn was stopped');
+    call.taken = true;
+    const turn = ctx.mapping;
+    if (call.allowed !== true && turn !== undefined) {
+      ctx.emit('chat', ready(turn, call, call.input));
+      openCall(call, turn.turnId);
+    }
+    return call.toolCallId;
+  };
+
+  /**
    * The call one `tools/call` is for, opening one of this bridge's own when
    * the agent reported none.
    *
@@ -214,7 +238,18 @@ export function createClientCalls(ctx: SessionContext): ClientCalls {
     const id = typeof said === 'string' && said !== '' ? said : undefined;
     // Only one of this owner's own calls: an id that names another client's
     // call, or one already answered, says nothing about this request.
+    const waiting = reported(owner, name);
+    const named = id === undefined ? undefined : waiting.find((call) => call.toolCallId === id);
+    if (named !== undefined) return take(named);
     if (id !== undefined && calls.owner(id) === owner) return id;
+    if (waiting.length === 1) return take(waiting[0] as AcpCall);
+    if (waiting.length > 1) {
+      const written = JSON.stringify(input);
+      const found = waiting.find((call) => call.input === written);
+      if (found !== undefined) return take(found);
+      throw new Error(`${waiting.length} calls of ${owner}__${name} are open and the request names no call; nothing says which one this is for`);
+    }
+    // None is left, so the request is one made again, or one nothing reported.
     const open = calls.entries()
       .filter((entry) => String(entry.clientId) === owner)
       .map((entry) => bag(entry.toolCall))

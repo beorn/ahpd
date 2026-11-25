@@ -54,7 +54,7 @@ it('declares every option its README lists, and no other', () => {
 });
 
 it.each<[string, unknown]>([
-  ['paths', 'x'],
+  ['model', 5],
   ['computerExecutable', 5],
   ['computerConfigDir', true],
   ['computerCli', 'image'],

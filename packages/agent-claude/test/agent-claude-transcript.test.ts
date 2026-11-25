@@ -436,3 +436,26 @@ it('says a restored call\'s duration on VS Code\'s key alone', async () => {
   const call = (turns[0]?.responseParts as Bag[])[0]?.toolCall as Bag;
   expect(Object.keys(call._meta as Bag)).toEqual(['vscode.toolCallDurationMs']);
 });
+
+/*
+ * The CLI writes a frame as its block ends, so a thinking block ran from the
+ * frame before it to its own. A frame with no time, or one that runs
+ * backwards, says neither.
+ */
+it('says when a restored thinking block ran, and nothing where the log does not', async () => {
+  const at = (seconds: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
+  const thought = (uuid: string, timestamp: string | undefined) => ({ ...said(uuid, uuid, [{ type: 'thinking', thinking: uuid }]), timestamp });
+  const turns = await read([
+    { ...prompt('u1', 'think'), timestamp: at(0) },
+    thought('a1', at(4)),
+    { ...said('a2', 'a2', [{ type: 'text', text: 'slow words' }]), timestamp: at(30) },
+    thought('a3', at(20)),
+    thought('a4', undefined),
+  ]);
+  const thoughts = (turns[0]?.responseParts as Bag[]).filter((one) => one.kind === 'reasoning');
+  expect(thoughts.map(({ startedAt, duration }) => ({ startedAt, duration }))).toEqual([
+    { startedAt: at(0), duration: 4000 },
+    { startedAt: undefined, duration: undefined },
+    { startedAt: undefined, duration: undefined },
+  ]);
+});

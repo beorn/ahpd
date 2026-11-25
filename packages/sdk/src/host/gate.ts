@@ -64,6 +64,11 @@ export const NEEDS: Record<string, Grant> = {
   resolveSessionConfig: 'session:state',
   sessionConfigCompletions: 'session:state',
   createSession: 'session:create',
+  // A conversation staged for a session that is not made yet is part of making
+  // it, so it asks what the session itself asks.
+  'vscode/stageCreateSessionImportChunk': 'session:create',
+  // Importing one adopts it, which makes the session this host's own.
+  'vscode/importSession': 'session:create',
   disposeSession: 'session:dispose',
   /*
    * The reference client's own methods, which were served and classified
@@ -75,6 +80,13 @@ export const NEEDS: Record<string, Grant> = {
   'vscode/getAgentHostSessionStateFile': 'session:state',
   'vscode/createAgentHostDetachedWorktree': 'session:worktree',
   'vscode/claimAgentHostDetachedWorktree': 'session:worktree',
+  'vscode/sessionWorktreeCleanup': 'session:worktree',
+  'vscode/measureWorktreeDiskUsage': 'file:list',
+  'vscode/moveSession': 'chat:move',
+  'vscode/cancelWorktreeDiskUsage': 'file:list',
+  'vscode/prepareSessionWorktreeCleanup': 'session:worktree',
+  'vscode/listManagedWorktrees': 'session:worktree',
+  'vscode/cleanupManagedWorktree': 'session:worktree',
   'vscode/setAgentHostDetachedWorktreeArchived': 'session:worktree',
   'vscode/deleteAgentHostDetachedWorktree': 'session:worktree',
   'vscode/reconcileAgentHostDetachedWorktrees': 'session:worktree',
@@ -85,9 +97,23 @@ export const NEEDS: Record<string, Grant> = {
    * kill the shell a turn started either.
    */
   'vscode/stopBackgroundWork': 'chat:cancel',
+  /*
+   * An answer to a shell's prompt is what `chat/inputCompleted` is, said on
+   * the chat and outside its state, so it asks the same grant.
+   */
+  'vscode/answerShellAuthentication': 'chat:answer',
+  /*
+   * Moving a call to the background ends nothing: the work goes on and the
+   * turn goes on without the call's real answer, which is what a steering
+   * message does to a turn, so it asks what `chat/pendingMessageSet` asks.
+   * Stopping the row it becomes still asks for `chat:cancel`.
+   */
+  'x-ahpd/backgroundToolCall': 'chat:send',
 
   // chat
   createChat: 'chat:create',
+  // A chat's workspace is its folder, and the folders are what `chat:folders` grants.
+  'vscode/setChatWorkspace': 'chat:folders',
   disposeChat: 'chat:dispose',
   /*
    * `chat:move` rather than the `session:write` the plan named, because
@@ -107,6 +133,10 @@ export const NEEDS: Record<string, Grant> = {
   listAutomationTriggerDefinitions: 'automation:list',
   fetchAutomationRuns: 'automation:list',
   runAutomation: 'automation:run',
+  // A deletion is the catalogue's remove action, and the acknowledgement only
+  // drops the receipt it left.
+  'vscode/deleteAutomation': 'automation:remove',
+  'vscode/acknowledgeAutomationDeletion': 'automation:remove',
 
   // container
   //
@@ -114,6 +144,8 @@ export const NEEDS: Record<string, Grant> = {
   // by proxy, so it is a grant of its own rather than the machine scheme's
   // operations: the params name a workspace folder, not a `computer://` URI.
   'vscode/devContainers/connect': 'container:connect',
+  'vscode/devContainers/connectEnvironment': 'container:connect',
+  'vscode/devContainers/removeEnvironment': 'container:remove',
   'vscode/devContainers/disconnect': 'container:disconnect',
   'vscode/devContainers/relaySend': 'container:relay',
   /*
@@ -128,6 +160,9 @@ export const NEEDS: Record<string, Grant> = {
   'vscode/collectAgentHostDebugLogs': 'diagnostics:logs',
   'vscode/cancelAgentHostDebugLogs': 'diagnostics:logs',
   'vscode/readAgentHostDebugLogsChunk': 'diagnostics:logs',
+  // A window's timing records become the host's diagnostic spans.
+  'vscode/reportAgentHostFirstResponse': 'diagnostics:logs',
+  'vscode/reportChatUserInteraction': 'diagnostics:logs',
   getNetworkDiagnosticsInfo: 'diagnostics:network',
   // The window asks this beside `getNetworkDiagnosticsInfo`, for the same
   // troubleshooting pane, so it needs the same grant.

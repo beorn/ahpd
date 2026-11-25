@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
@@ -10,7 +10,7 @@ import type { ProviderConfiguration, SandboxConfigValue, Spawn, SpawnOptions } f
  * The agent sandbox as this plugin hosts it: the root `sandbox` property it
  * declares, how a machine is made to host the sandbox runtime and checked,
  * and how a command and an MCP server are started inside
- * `@vscode/sandbox-runtime`, the runtime VS Code's terminal sandbox runs.
+ * `@ahpio/sandbox-runtime`, ahpio's fork of the runtime VS Code's terminal sandbox runs.
  */
 
 /** One platform's filesystem lists, the fields of `SandboxFileSystemSetting`. */
@@ -148,7 +148,7 @@ export const isSandboxSupported = (output: string): boolean => {
 export interface SandboxPlace {
   /** The Node the CLI runs on. */
   execPath: string;
-  /** The runtime's CLI, `dist/cli.js` of `@vscode/sandbox-runtime`, or `srt` where it is on the `PATH`. */
+  /** The runtime's CLI, `dist/cli.js` of `@ahpio/sandbox-runtime`, or `srt` where it is on the `PATH`. */
   srtPath?: string;
   /** The folder holding the runtime's package, which a sandboxed command reads. */
   appRoot?: string;
@@ -162,7 +162,7 @@ export interface SandboxPlace {
 
 /** This host's runtime: the package this plugin depends on, run with this daemon's Node. */
 export const hostSandboxPlace = (scope: string, configDir: string): SandboxPlace => {
-  const appRoot = dirname(createRequire(import.meta.url).resolve('@vscode/sandbox-runtime/package.json'));
+  const appRoot = dirname(createRequire(import.meta.url).resolve('@ahpio/sandbox-runtime/package.json'));
   return {
     execPath: process.execPath,
     srtPath: join(appRoot, 'dist', 'cli.js'),
@@ -205,12 +205,12 @@ export const sandboxSettingsOf = (sandbox: SandboxConfigValue, place: SandboxPla
   const allowWrite = unique([cwd, place.tempDir, ...(fileSystem.allowWrite ?? []).map(expand)]).filter((one) => one !== configPath);
   const allowRead = unique([...(fileSystem.allowRead ?? []).map(expand), ...runtimeReads, ...allowWrite]);
   const denyRead = unique([...(fileSystem.denyRead ?? []).map(expand), configPath, place.platform === 'win32' ? undefined : place.home]);
-  const denyWrite = fileSystem.denyWrite === undefined ? undefined : unique(fileSystem.denyWrite.map(expand));
+  const denyWrite = unique((fileSystem.denyWrite ?? []).map(expand));
   const settings: Record<string, unknown> = {
     network: sandbox.allowNetwork === true
       ? { allowedDomains: [], deniedDomains: [], enabled: false }
       : { allowedDomains: sandbox.allowedNetworkDomains ?? [], deniedDomains: sandbox.deniedNetworkDomains ?? [] },
-    filesystem: { denyRead, allowRead, allowWrite, ...(denyWrite === undefined ? {} : { denyWrite }) },
+    filesystem: { denyRead, allowRead, allowWrite, denyWrite },
   };
   const merge = (target: Record<string, unknown>, added: Record<string, unknown>): void => {
     for (const [key, value] of Object.entries(added)) {
@@ -285,11 +285,14 @@ export const sandboxedServer = (place: SandboxPlace, configPath: string, options
  * Why this host cannot run the sandbox runtime, or nothing when it can: the
  * runtime's own dependency check, in its words, and on Linux VS Code's check
  * that bubblewrap can make the namespace the sandbox needs, in VS Code's.
+ * Then on Linux a command started through the runtime with a chat's settings,
+ * as `MACHINE_SANDBOX_CHECK` starts one in a machine, because bubblewrap alone
+ * passes where the runtime's seccomp helper cannot run.
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/sandbox/node/sandboxHelper.ts#L96-L113
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts#L1001-L1005
  */
-export const hostSandboxRefusal = async (): Promise<string | undefined> => {
-  const { SandboxManager } = await import('@vscode/sandbox-runtime');
+export const hostSandboxRefusal = async (configDir: string): Promise<string | undefined> => {
+  const { SandboxManager } = await import('@ahpio/sandbox-runtime');
   const { errors } = SandboxManager.checkDependencies();
   if (errors.length > 0) return `Sandbox dependencies not available: ${errors.join(', ')}`;
   if (process.platform !== 'linux') return undefined;
@@ -298,8 +301,42 @@ export const hostSandboxRefusal = async (): Promise<string | undefined> => {
       done(error === null && stdout.trim() === 'ok');
     });
   });
-  return usable ? undefined : 'Bubblewrap is installed but cannot create the required sandbox namespace on this system.';
+  if (!usable) return 'Bubblewrap is installed but cannot create the required sandbox namespace on this system.';
+  return await hostRuntimeRefusal(hostSandboxPlace('sandbox-check', configDir));
 };
+
+/** Ubuntu's AppArmor profile for `/usr/bin/bwrap`, which denies every capability to what bubblewrap starts. */
+export const BWRAP_PROFILE = '/etc/apparmor.d/bwrap-userns-restrict';
+
+/** Why a command started through the runtime at `place` failed, or nothing when it ran. */
+const hostRuntimeRefusal = async (place: SandboxPlace): Promise<string | undefined> => {
+  const configPath = writeSandboxSettings(place, (path) => sandboxSettingsOf({}, place, undefined, path));
+  const env = Object.fromEntries(Object.entries(process.env).filter((one): one is [string, string] => one[1] !== undefined));
+  const spawned = sandboxedCommand(place, configPath, { command: 'true', env }, false);
+  try {
+    const out = await new Promise<string | undefined>((done) => {
+      execFile(spawned.command, spawned.args, { encoding: 'utf8', timeout: 20_000, env: spawned.env, cwd: spawned.cwd }, (error, stdout, stderr) => {
+        done(error === null ? undefined : `${stdout}${stderr}`.trim() || error.message);
+      });
+    });
+    return out === undefined ? undefined : runtimeRefusalOf(out, existsSync(BWRAP_PROFILE));
+  }
+  finally {
+    rmSync(configPath, { force: true });
+  }
+};
+
+/**
+ * The refusal for a runtime start that failed with `out`: the AppArmor profile
+ * and the commands that lift it when the profile is loaded and the seccomp
+ * helper is what failed, else the runtime's own last lines.
+ */
+export const runtimeRefusalOf = (out: string, profiled: boolean): string =>
+  (profiled && out.includes('apply-seccomp')
+    ? `The sandbox cannot run on this host: the AppArmor profile ${BWRAP_PROFILE} stops the sandbox runtime's seccomp helper. `
+      + `An administrator can unload it with \`sudo apparmor_parser -R ${BWRAP_PROFILE}\`, `
+      + `and keep it unloaded with \`sudo ln -s ${BWRAP_PROFILE} /etc/apparmor.d/disable/\`.`
+    : `The sandbox cannot run on this host: ${out.split('\n').slice(-4).join('\n')}`);
 
 /**
  * The check a machine is asked, run inside it by `sh -c`: the runtime's own

@@ -4,7 +4,7 @@ import { idOf, uriFor } from '../sessions/catalog.js';
 import type { Connection } from '../types/host.js';
 import type { Bag } from '../types/common.js';
 import {
-  ROOT, SHARED_SCHEME, isRootChannel, isAutomations, automationsChannel, schemeOf, spaceOf, ownerUriOf,
+  ROOT, SHARED_SCHEME, isRootChannel, isAutomations, automationsChannel, schemeOf, spaceOf, ownerUriOf, AHP_ANNOTATIONS_SCHEME, annotationsChannelOf,
   chatOfCanvas, chatUriFor, nonPtyShellTerminalOf, toolCallOfSubagentChat, shapedSession,
 } from './channels.js';
 import type { ChannelKind, Space } from './channels.js';
@@ -38,7 +38,7 @@ export interface Routing {
   chatShown(connection: Connection, chat: unknown, session: string): boolean;
   claimable(name: string, kind: NameKind): void;
   unheld(uri: string): void;
-  openedBy(channel: string, client: string): void;
+  openedBy(channel: string, client: string, owner?: string): void;
 }
 
 export function createRouting(ctx: HostContext): Routing {
@@ -181,7 +181,10 @@ export function createRouting(ctx: HostContext): Routing {
     const owner = ownerUriOf(channel);
     if (spaceHere(owner) === 'session') {
       const published = names.get(idOf(owner)) ?? ctx.kept.uri?.(idOf(owner));
-      return published === undefined ? channel : `${published}${channel.slice(owner.length)}`;
+      if (published === undefined) return channel;
+      // AHP 1.1.0's annotations name does not start with its session's URI, so it is made again from the published one.
+      if (schemeOf(channel) === AHP_ANNOTATIONS_SCHEME) return annotationsChannelOf(published);
+      return `${published}${channel.slice(owner.length)}`;
     }
     // A worker's chat is the name its records hold.
     if (ctx.workerOf(channel) !== undefined) return channel;
@@ -330,17 +333,19 @@ export function createRouting(ctx: HostContext): Routing {
    * hold, is nothing to note: only a session a plugin could reach with a
    * message is worth one.
    */
-  const openedBy = (channel: string, client: string): void => {
+  const openedBy = (channel: string, client: string, owner?: string): void => {
     if (client === '') return;
     // A session's own channel, or the session a chat, an annotation or a
     // changeset of it belongs to. `ownerUriOf` is what keeps a session's marks
     // from being raised as a session of their own.
     const session = spaceOf(channel) === 'chat' ? sessionFor(channel) : ownerUriOf(channel);
     if (spaceOf(session) === 'chat' || !sessionChannel(session)) return;
-    const key = `${session}\u0000${client}`;
+    // The owner is part of the pair: a second person who gives the same id
+    // opens the session as somebody else.
+    const key = `${session}\u0000${client}\u0000${owner ?? ''}`;
     if (opened.has(key)) return;
     opened.add(key);
-    void fire({ type: 'session_opened', session, client });
+    void fire({ type: 'session_opened', session, client, ...(owner === undefined ? {} : { owner }) });
   };
   /** The kind of channel a channel is, as `ACTION_HOMES` names it, or nothing an action belongs on. */
   const homeOf = (channel: string): Home | undefined => {

@@ -205,7 +205,7 @@ it('opens a record holding every declared field and the models it names', async 
 
 it('builds a session query from the declared values of its own record', async () => {
   const options = await queried({ sandbox: 'on', thinking: 'disabled' });
-  expect(options.settings).toEqual({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } });
+  expect(options.settings).toEqual({ sandbox: { enabled: true } });
   expect(options.thinking).toEqual({ type: 'disabled' });
 });
 

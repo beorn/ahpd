@@ -64,6 +64,56 @@ export type Health =
   | { readonly exec: string }
   | { readonly http: { readonly port: number; readonly host?: string; readonly path?: string; readonly scheme?: 'http' | 'https' } };
 
+/** One step of a deploy: a command, and only secrets by reference. */
+export interface ServiceDeployCommand {
+  readonly command: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly env?: Readonly<Record<string, SecretRef>>;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * A service's deploy declaration (#38549, @cto 2026-11-25): this machine's own
+ * answer to how the service's version is fetched, built, switched and checked.
+ *
+ * Written on the entry as `x-hh-deploy`, the extension key process-compose
+ * ignores (measured with 1.122.0 --dry-run: a bare `deploy:` key is refused,
+ * `x-hh-deploy:` validates). That is what lets the deploy operation take
+ * {service, version} and nothing that chooses a command, so holding
+ * `deploy:deploy` no longer means holding arbitrary execution.
+ */
+export interface ServiceDeployDeclaration {
+  /** The repository the version must be reachable from: a local path or a URL git can fetch. */
+  readonly repo: string;
+  /** The declared ref. Reachability is checked against it, never against main by accident. */
+  readonly ref: string;
+  /** `expand-only` is the only value, and the only one that permits an automatic switch-back. */
+  readonly migrations?: 'expand-only';
+  readonly build?: ServiceDeployCommand;
+  /** Runs on the new release while `current` still points at the old one. */
+  readonly before_switch?: ServiceDeployCommand;
+  /** Runs after the switch. Its absence is what makes a deploy `switched, unchecked`. */
+  readonly check?: ServiceDeployCommand;
+  /** How many release folders to keep, current included. */
+  readonly keep?: number;
+}
+
+/** What put a service on this machine: the four places one can come from (#38278, @cto b6ff041e). */
+export const SOURCE_KINDS = ['file', 'program', 'agent', 'ci'] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
+
+/**
+ * Who a service belongs to: the file, program, agent or CI job that declared
+ * it, and its id there. Written on the entry as `x-hh-source`, beside
+ * `x-hh-deploy` and for the same reason (process-compose ignores `x-` keys).
+ * An entry without one is not ours to prune.
+ */
+export interface ServiceSource {
+  readonly kind: SourceKind;
+  readonly id: string;
+}
+
 /** One service, as the driver reads it and Hightea sees it. */
 export interface ServiceRecord {
   readonly name: string;
@@ -74,6 +124,8 @@ export interface ServiceRecord {
   readonly restart?: Restart;
   readonly depends_on?: readonly Dependency[];
   readonly health?: Health;
+  readonly deploy?: ServiceDeployDeclaration;
+  readonly source?: ServiceSource;
 }
 
 /**
@@ -90,10 +142,18 @@ export interface ServicePatch {
   readonly restart?: Restart | null;
   readonly depends_on?: readonly Dependency[] | null;
   readonly health?: Health | null;
+  readonly deploy?: ServiceDeployDeclaration | null;
+  readonly source?: ServiceSource | null;
 }
 
 /** The neutral fields, in the order they are written; `list` answers them as the capability list. */
-export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health'] as const;
+export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source'] as const;
+
+/** The native key a deploy declaration is written under: process-compose ignores `x-` extensions. */
+export const DEPLOY_KEY = 'x-hh-deploy';
+
+/** The native key a service's source is written under, beside the deploy declaration. */
+export const SOURCE_KEY = 'x-hh-source';
 
 /** The wrapper's fixed words. */
 export const WRAPPER = 'ahpd secrets exec';
@@ -115,6 +175,87 @@ export interface Invalid {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/** The deploy declaration's fields, in the order a refusal lists them. */
+const DEPLOY_KEYS = ['repo', 'ref', 'migrations', 'build', 'before_switch', 'check', 'keep'] as const;
+/** The steps of a deploy, each one a command. */
+const DEPLOY_STEPS = ['build', 'before_switch', 'check'] as const;
+
+/** One deploy step as the record carries it, or the sentence saying why it is not one. */
+function readDeployStep(value: unknown, where: string): ServiceDeployCommand | string {
+  if (!isObject(value)) return `${where} is an object { command, args?, cwd?, env?, timeoutMs? }`;
+  const fields = 'command, args, cwd, env, timeoutMs';
+  for (const key of Object.keys(value)) if (!fields.split(', ').includes(key)) return `${where}.${key} is not a step field; the fields are ${fields}`;
+  const command = value['command'];
+  if (typeof command !== 'string' || command.trim() === '') return `${where}.command is a non-empty string`;
+  if (command.includes('{{')) return `${where}.command holds "{{", which process-compose reads as a template`;
+  const args = value['args'];
+  if (args !== undefined && (!Array.isArray(args) || args.some((one) => typeof one !== 'string' || one.includes('{{')))) {
+    return `${where}.args is a list of strings, none holding "{{"`;
+  }
+  const cwd = value['cwd'];
+  if (cwd !== undefined && (typeof cwd !== 'string' || cwd.trim() === '' || cwd.includes('{{'))) return `${where}.cwd is a non-empty path without "{{"`;
+  const timeoutMs = value['timeoutMs'];
+  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1)) return `${where}.timeoutMs is a whole number of milliseconds`;
+  const out: Record<string, unknown> = { command };
+  if (args !== undefined) out['args'] = args;
+  if (cwd !== undefined) out['cwd'] = cwd;
+  if (timeoutMs !== undefined) out['timeoutMs'] = timeoutMs;
+  const env = value['env'];
+  if (env !== undefined) {
+    if (!isObject(env)) return `${where}.env is an object of NAME: {"$secret": "<scope>:<name>"}`;
+    const refs: Record<string, SecretRef> = {};
+    for (const [key, held] of Object.entries(env)) {
+      if (!VARIABLE.test(key)) return `${where}.env name "${key}" is not a variable name`;
+      const ref = isObject(held) && Object.keys(held).length === 1 ? held['$secret'] : undefined;
+      if (typeof ref !== 'string' || !REFERENCE.test(ref)) return `${where}.env ${key} must be a secret reference {"$secret":"<scope>:<name>"}; a plain value is never written to the machine's file`;
+      refs[key] = { $secret: ref };
+    }
+    out['env'] = refs;
+  }
+  return out as unknown as ServiceDeployCommand;
+}
+
+/** One deploy declaration, or the sentence saying why the value is not one. */
+export function readDeploy(value: unknown): ServiceDeployDeclaration | string {
+  if (!isObject(value)) return 'it is not an object';
+  for (const key of Object.keys(value)) {
+    if (!(DEPLOY_KEYS as readonly string[]).includes(key)) return `${key} is not a deploy field; the fields are ${DEPLOY_KEYS.join(', ')}`;
+  }
+  const repo = value['repo'];
+  if (typeof repo !== 'string' || repo.trim() === '' || repo.includes('{{')) return 'repo is the repository the version is fetched from: a path or a URL git can fetch';
+  const ref = value['ref'];
+  if (typeof ref !== 'string' || ref.trim() === '' || ref.includes('{{')) return 'ref is a non-empty ref name';
+  const migrations = value['migrations'];
+  if (migrations !== undefined && migrations !== 'expand-only') return `migrations knows one value, expand-only; it was given ${String(migrations)}`;
+  const keep = value['keep'];
+  if (keep !== undefined && (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 2 || keep > 60)) {
+    return 'keep is a whole number of release folders from 2 to 60: one kept release is a folder with no way back';
+  }
+  const out: Record<string, unknown> = { repo, ref };
+  if (migrations !== undefined) out['migrations'] = 'expand-only';
+  if (keep !== undefined) out['keep'] = keep;
+  for (const step of DEPLOY_STEPS) {
+    const held = value[step];
+    if (held === undefined) continue;
+    const read = readDeployStep(held, step);
+    if (typeof read === 'string') return read;
+    out[step] = read;
+  }
+  return out as unknown as ServiceDeployDeclaration;
+}
+
+/** One source, or the sentence saying why the value is not one. */
+export function readSource(value: unknown): ServiceSource | string {
+  if (!isObject(value)) return 'it is an object { kind, id }';
+  for (const key of Object.keys(value)) if (key !== 'kind' && key !== 'id') return `${key} is not a source field; the fields are kind, id`;
+  const kind = value['kind'];
+  if (!(SOURCE_KINDS as readonly unknown[]).includes(kind)) return `kind must be one of ${SOURCE_KINDS.join(', ')}`;
+  const id = value['id'];
+  if (typeof id !== 'string' || id.trim() === '') return 'id is a non-empty string';
+  if (id.includes('{{')) return 'id holds "{{", which process-compose reads as a template';
+  return { kind: kind as SourceKind, id };
+}
+
 /**
  * Whether a patch is one the driver will write, or the first reason it is not.
  *
@@ -129,7 +270,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   for (const key of Object.keys(patch)) {
     if (!(FIELDS as readonly string[]).includes(key)) return bad(`"${key}" is not a service field; the fields are ${FIELDS.join(', ')}`);
   }
-  const { name, command, cwd, env, schedule, restart, depends_on: depends, health } = patch;
+  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source } = patch;
   if (typeof name !== 'string' || !SAFE_NAME.test(name)) return bad('name must be letters, digits, "_", "." or "-", starting with a letter or digit');
   const text = (field: string, value: unknown): Invalid | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return bad(`${field} must be a non-empty string`);
@@ -196,6 +337,14 @@ export function checkPatch(patch: unknown): Invalid | undefined {
       if (http['scheme'] !== undefined && http['scheme'] !== 'http' && http['scheme'] !== 'https') return bad('health.http.scheme must be http or https');
     }
     else return bad('health must be {exec: "<command>"} or {http: {port, host?, path?, scheme?}}');
+  }
+  if (deploy !== undefined && deploy !== null) {
+    const read = readDeploy(deploy);
+    if (typeof read === 'string') return bad(`deploy: ${read}`);
+  }
+  if (source !== undefined && source !== null) {
+    const read = readSource(source);
+    if (typeof read === 'string') return bad(`source: ${read}`);
   }
   return undefined;
 }
@@ -337,13 +486,27 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
     }
     else return 'its readiness_probe is neither an exec command nor an http_get';
   }
+
+  const deployed = entry[DEPLOY_KEY];
+  if (deployed !== undefined && deployed !== null) {
+    const read = readDeploy(deployed);
+    if (typeof read === 'string') return `its ${DEPLOY_KEY} is not a declaration the driver knows: ${read}`;
+    record['deploy'] = read;
+  }
+
+  const source = entry[SOURCE_KEY];
+  if (source !== undefined && source !== null) {
+    const read = readSource(source);
+    if (typeof read === 'string') return `its ${SOURCE_KEY} is not a source the driver knows: ${read}`;
+    record['source'] = read;
+  }
   return record as unknown as ServiceRecord;
 }
 
 /** Remove the native subtree at this path. */
 export const REMOVE = Symbol('remove');
 /** A native value: a scalar, or (for a new key) a mapping of them. */
-export type NativeValue = string | number | boolean;
+export type NativeValue = string | number | boolean | readonly string[];
 /** One native change: a path under the entry, and the scalar it becomes or REMOVE. */
 export type NativeChange = readonly [readonly string[], NativeValue | typeof REMOVE];
 
@@ -393,6 +556,35 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
       leaf(['readiness_probe', 'http_get', 'port'], health.http.port);
       leaf(['readiness_probe', 'http_get', 'path'], health.http.path);
       leaf(['readiness_probe', 'http_get', 'scheme'], health.http.scheme);
+    }
+  }
+  if (changed('deploy')) {
+    const deploy = after.deploy;
+    if (deploy === undefined) leaf([DEPLOY_KEY], undefined);
+    else {
+      leaf([DEPLOY_KEY, 'repo'], deploy.repo);
+      leaf([DEPLOY_KEY, 'ref'], deploy.ref);
+      leaf([DEPLOY_KEY, 'migrations'], deploy.migrations);
+      leaf([DEPLOY_KEY, 'keep'], deploy.keep);
+      for (const step of DEPLOY_STEPS) {
+        const held = deploy[step];
+        const at = [DEPLOY_KEY, step];
+        if (held === undefined) { leaf(at, undefined); continue; }
+        leaf([...at, 'command'], held.command);
+        leaf([...at, 'args'], held.args);
+        leaf([...at, 'cwd'], held.cwd);
+        leaf([...at, 'timeoutMs'], held.timeoutMs);
+        const kept = new Set(Object.keys(held.env ?? {}));
+        for (const gone of Object.keys(before?.deploy?.[step]?.env ?? {})) if (!kept.has(gone)) leaf([...at, 'env', gone], undefined);
+        for (const [key, ref] of Object.entries(held.env ?? {})) leaf([...at, 'env', key, '$secret'], ref.$secret);
+      }
+    }
+  }
+  if (changed('source')) {
+    if (after.source === undefined) leaf([SOURCE_KEY], undefined);
+    else {
+      leaf([SOURCE_KEY, 'kind'], after.source.kind);
+      leaf([SOURCE_KEY, 'id'], after.source.id);
     }
   }
   if (changed('schedule')) {

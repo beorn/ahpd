@@ -1,4 +1,7 @@
+import { MULTIPLE_CHAT_PROVIDERS } from '../vscoderootconfig.js';
 import { APPROVAL_KEYS, filePersonRules } from '../access/personrules.js';
+import { oneTimeProblem, oneTimeRunOf } from '../automations/onetime.js';
+import { targetProblem } from '../automations/targets.js';
 import { isDeepStrictEqual } from 'node:util';
 import { IS_CLIENT_DISPATCHABLE } from '@microsoft/agent-host-protocol';
 import type { AnnotationsAction } from '@microsoft/agent-host-protocol';
@@ -7,7 +10,7 @@ import { disableConditionsProblem } from '../automations/automations.js';
 import { localPath } from '../resources/fileuri.js';
 import { reason } from '../utils/values.js';
 import { computerNeeds, dispatchNeeds, heldToGrants, ownAgentExcused, pushedPermissionsNeed, ACTION_HOMES, ACTION_NEEDS, HOME_WORDS, ownIn } from './gate.js';
-import { ANNOTATIONS_PATH_SEGMENT, AUTOMATIONS, chatUriFor, isAutomationResource, isRootChannel, ROOT, schemeOf, spaceOf, toolCallOfSubagentChat, WORKER_ACTIONS } from './channels.js';
+import { AUTOMATIONS, sessionOfAnnotations, chatUriFor, isAutomationResource, isRootChannel, ROOT, schemeOf, spaceOf, toolCallOfSubagentChat, WORKER_ACTIONS } from './channels.js';
 import { chatAction, chatFlag, readAggregate, sessionFlag } from './chatactions.js';
 import { HOSTS_OWN } from './common.js';
 import { AUTO_ARCHIVE_KEY, AUTO_DELETE_KEY } from './sessionlifecycle.js';
@@ -15,12 +18,14 @@ import { accountKey, RESTART_KEY } from './root.js';
 import { claimOf } from './terminals.js';
 import { writerOf } from './resourceannotations.js';
 import { SANDBOX_ROOT_KEY } from '../types/sandbox.js';
+import { KEEP_AWAKE_KEY } from './keepawake.js';
 import type { HeldCopies, TemplatePlugin } from '../types/clientplugins.js';
 import type { Bag } from '../types/common.js';
 import type { Grant } from '../types/users.js';
 import type { Origin } from './state.js';
 import type { ConnectionContext, HostContext } from './context.js';
 import { refusalsOf } from './refusals.js';
+import type { Owner } from '../types/usage.js';
 
 /**
  * The protocol's own answer to "may a client send this?", by action type.
@@ -270,11 +275,11 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L14267-L14295
      */
     if (type.startsWith('annotations/')) {
-      if (!channel.endsWith(ANNOTATIONS_PATH_SEGMENT)) {
-        no(`${type} belongs on a session's ${ANNOTATIONS_PATH_SEGMENT} channel, not ${channel}`);
+      const owning = sessionOfAnnotations(channel);
+      if (owning === undefined) {
+        no(`${type} belongs on a session's annotations channel, not ${channel}`);
         return;
       }
-      const owning = channel.slice(0, -ANNOTATIONS_PATH_SEGMENT.length);
       const id = idOf(owning);
       const mark = (): void => {
         /*
@@ -481,6 +486,9 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
           for (const key of Object.keys(rootConfig)) delete rootConfig[key];
         }
         into(rootConfig, ours);
+        // The shell authentication setting moved: a socket that was open is
+        // closed, and one that was closed opens, before anything new starts.
+        if (Object.hasOwn(config, 'shellAuthentication') || action.replace === true) void ctx.shellAuth.update();
         // The external sessions mode moved: what it shows is said again, as
         // VS Code reconciles its listing on a change of mode.
         // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L1560-L1571
@@ -505,12 +513,19 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
         // after each push a client makes.
         // https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentService.ts#L13661-L13662
         ctx.persistRootConfig();
-        // Moving chats turned on or off moves every chat's offer of a move.
-        if (Object.hasOwn(config, 'chatMoves.enabled')) for (const chat of byChat.keys()) ctx.updateChatMovability(chat);
+        // Moving chats, or chats with their own agents, turned on or off moves
+        // every chat's offer of a move.
+        if (Object.hasOwn(config, 'chatMoves.enabled') || Object.hasOwn(config, MULTIPLE_CHAT_PROVIDERS)) {
+          for (const chat of byChat.keys()) ctx.updateChatMovability(chat);
+          // And each session's `vscode.movable`, which reads the same setting.
+          for (const uri of ctx.sessions.keys()) ctx.changesetsAndMetaChanged(uri);
+        }
         // The root sandbox settings moved: every session's floor published
         // and every chat's sandbox applied again, as VS Code's host does on a
         // root change.
         if (Object.hasOwn(config, SANDBOX_ROOT_KEY) || action.replace === true) ctx.sandbox.rootChanged();
+        // The keep-awake mode moved: the hold follows it at once.
+        if (Object.hasOwn(config, KEEP_AWAKE_KEY) || action.replace === true) ctx.keepAwake.update();
       };
       /*
        * The daemon's keys, which are not this host's to keep.
@@ -674,14 +689,14 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
       }
       return (async () => {
         const holding = shown.get(channel)?.files
-          ?? (await options.changes?.state(at.dir, at.owner, at.scope, at.base))?.files;
+          ?? (await options.changes?.state(at.dir, idOf(at.owner), at.scope, at.base))?.files;
         if (holding === undefined) {
           no(`No changeset at ${channel}`);
           return;
         }
         const held = new Set(holding.map((file) => file.id));
         const named = new Set(files.filter((file) => held.has(file)));
-        const moved = review(at.dir, at.owner, at.scope, [...named], on);
+        const moved = review(at.dir, idOf(at.owner), at.scope, [...named], on);
         if (typeof moved === 'string') {
           no(moved);
           return;
@@ -773,6 +788,37 @@ export function createActions(ctx: HostContext, conn: ConnectionContext): Action
       if (type === 'automation/updateRequested' && existing === undefined) {
         no(`Automation not found: ${resource}`);
         return;
+      }
+      /*
+       * A one-time automation, checked on the definition it would become, in
+       * VS Code's words: one trigger and no end date, and no edit once its
+       * trigger has run.
+       * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostAutomationService.ts#L408-L415
+       * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/agentHostAutomationService.ts#L1820-L1826
+       */
+      const started = existing === undefined ? undefined : oneTimeRunOf(existing.definition);
+      if (type === 'automation/updateRequested' && started !== undefined) {
+        no(`One-time automation has already started: ${started}`);
+        return;
+      }
+      const becomes = type === 'automation/createRequested' ? written : { ...existing?.definition, ...written };
+      const oneTimeRefusal = oneTimeProblem(becomes) ?? targetProblem(becomes);
+      if (oneTimeRefusal !== undefined) { no(oneTimeRefusal); return; }
+      /*
+       * A chat target names a chat this host has, which the automation's owner
+       * may drive, and the host says which session owns it, replacing what the
+       * client sent, as AHP 1.2.0 asks.
+       * https://github.com/microsoft/agent-host-protocol/blob/e36b0a20/types/channels-automation/state.ts#L360-L392
+       */
+      const aimed = keyed(written['target']);
+      if (aimed['kind'] === 'chat') {
+        const chat = String(aimed['chat']);
+        const session = ctx.sessionFor(chat);
+        const known = session !== chat && knownSession(session) && (ctx.defaultChatFor(session) === chat || sessions.get(session)?.chats.has(chat) === true);
+        if (!known) { no(`Automation chat target not found: ${chat}`); return; }
+        const owner = type === 'automation/createRequested' ? ownerFor(connection) : (typeof existing?._meta?.['ahpd.owner'] === 'string' ? existing._meta['ahpd.owner'] as Owner : undefined);
+        if (owner !== undefined && kept.owner(idOf(session)) !== owner) { no(`Automation chat target may not be driven by this automation: ${chat}`); return; }
+        written['target'] = { kind: 'chat', session, chat };
       }
       /*
        * Client plugins on the template, copied while the client that named

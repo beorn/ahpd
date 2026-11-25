@@ -19,7 +19,9 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import type { Spawn, SpawnOptions } from '@ahpd/sdk';
-import { HOST_INSTALL_COMMAND, hostInstallOf, isHostInstall } from './hostinstall.js';
+import { copyFolder, tarOf } from './hostcopy.js';
+import type { CopyOptions } from './hostcopy.js';
+import { copyCommand, HOST_INSTALL_COMMAND, hostInstallOf, isHostInstall } from './hostinstall.js';
 import type { Part, Tarball } from './parts.js';
 import type { ComputerRuntime, ExecResult, Machine, MachineStats, RuntimeCapabilities } from './runtime.js';
 import { checkServer, SERVER_CHECK } from './servercheck.js';
@@ -115,6 +117,8 @@ export interface SshOptions {
   parts?: Part[];
   /** The ahpd part's lock that install runs `npm ci` from, the one beside `versions.json` when absent. */
   lock?: Tarball[];
+  /** How the files a box cannot download are held, the user's cache folder and npm when absent. */
+  copy?: CopyOptions;
   /** Where an ahpd installed on a box, or one run in its place, is said. */
   log?: (line: string, level?: LogLevel) => void;
 }
@@ -237,12 +241,16 @@ const ran = (options: SshProgram, args: string[], timeout: number, input?: strin
     // write that failed on the way.
     child.stdin?.on('error', () => {});
     if (input instanceof Readable) {
+      // A file that could not be read on the way ends the process, which would
+      // otherwise wait for the rest of it, and is what the caller is told.
+      input.on('error', (error) => { clearTimeout(timer); child.kill('SIGKILL'); reject(error); });
       if (child.stdin !== null) input.pipe(child.stdin);
     }
     else child.stdin?.end(input);
   }
   child.on('close', (code) => {
     clearTimeout(timer);
+    if (input instanceof Readable) input.destroy();
     resolve({ code: code ?? 0, stdout, stderr, timedOut });
   });
 });
@@ -494,7 +502,8 @@ export const sshRuntime = (options: SshOptions): ComputerRuntime => {
    * host's that one script on the box makes or finds (`hostinstall.ts`), its
    * folder checked to be one, given its own plugin root. Two sessions starting
    * on one box at once wait for one install, as two VMs on one server wait for
-   * one template.
+   * one template. A box that could not download it and has no other install
+   * that runs is sent the files, and the same script installs from them.
    */
   const installing = new Map<string, Promise<string[]>>();
   const installedOn = async (name: string): Promise<string[]> => {
@@ -502,12 +511,33 @@ export const sshRuntime = (options: SshOptions): ComputerRuntime => {
     if (held !== undefined) return held;
     const made = (async () => {
       const install = hostInstallOf(options.parts, options.lock);
-      const ran = await reachOf(name).ran([...HOST_INSTALL_COMMAND, ...install.args], Buffer.from(install.script));
-      if (ran.timedOut) throw new Error(`ahpd ${install.version} was not installed on ${name} within ${TRANSFER_MS}ms`);
-      const said = new Map(ran.stdout.split('\n').filter((line) => line.includes('='))
-        .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
-      const why = lastLine(ran.stderr) || lastLine(ran.stdout) || `ssh exited ${ran.code}`;
-      if (ran.code !== 0) throw new Error(`ahpd ${install.version} was not installed on ${name}: ${why}`);
+      const reach = reachOf(name);
+      const run = async () => {
+        const ran = await reach.ran([...HOST_INSTALL_COMMAND, ...install.args], Buffer.from(install.script));
+        if (ran.timedOut) throw new Error(`ahpd ${install.version} was not installed on ${name} within ${TRANSFER_MS}ms`);
+        const said = new Map(ran.stdout.split('\n').filter((line) => line.includes('='))
+          .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+        return { code: ran.code, said, why: lastLine(ran.stderr) || lastLine(ran.stdout) || `ssh exited ${ran.code}` };
+      };
+      let { code, said, why } = await run();
+      // A box that names its platform got as far as its download. One that
+      // names none was refused before it, or not reached, and a copy is no help.
+      const platform = said.get('platform');
+      if (code !== 0 && platform !== undefined) {
+        options.log?.(`ahpd ${install.version} was not installed on ${name}, so this host sends it the files: ${why}`, 'warn');
+        try {
+          const sent = await reach.ran(copyCommand(install), tarOf(await copyFolder(install, platform, options.copy)));
+          if (sent.timedOut) throw new Error(`the files were not sent within ${TRANSFER_MS}ms`);
+          if (sent.code !== 0) throw new Error(lastLine(sent.stderr) || `ssh exited ${sent.code}`);
+          const first = why;
+          ({ code, said, why } = await run());
+          if (code !== 0) why = `${first}; and not from this host's files: ${why}`;
+        }
+        catch (error) {
+          throw new Error(`ahpd ${install.version} was not installed on ${name}: ${why}; and this host could not send its files: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (code !== 0) throw new Error(`ahpd ${install.version} was not installed on ${name}: ${why}`);
       const dir = said.get('install') ?? '';
       if (!isHostInstall(dir, said.get('root') ?? '')) {
         throw new Error(`ahpd ${install.version} was not installed on ${name}: the box answered ${JSON.stringify(dir)}, which is not one of this host's installs`);

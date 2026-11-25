@@ -1,7 +1,7 @@
 ---
 title: The sandbox schema names every value
 domain: container
-status: active
+status: built
 priority: medium
 created: 2026-11-15
 revalidated: 2026-11-15
@@ -77,7 +77,7 @@ computer apply -> registerProviderConfiguration(sandboxConfiguration) -> schemaG
 ## Resume state
 
 - **Done so far:** tasks 01 and 02, 2026-11-15, uncommitted in the worktree.
-- **Next action:** Softov reimports the computer plugin and reads the report.
+- **Next action:** none, the plan is built.
 - **Open questions:** none.
 - **Watch out for:** the plugin is built from this worktree, `/github/ahpd.worktrees/sandbox-schema-gaps`, on branch `computer/sandbox-schema-gaps`.
 

@@ -1,6 +1,6 @@
 ---
 title: A tunnel can require a real token
-status: implemented
+status: done
 depends: [task-03-tunnel-streams-come-into-the-process.md]
 layer: "tunnel-devtunnel"
 refs:

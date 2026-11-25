@@ -132,6 +132,45 @@ describe('what the harness offers', () => {
   });
 
   /*
+   * AHP 1.1.0's `SessionModelInfo.vendor` reaches the root as the backend
+   * said it, and a vendor that moves alone is a list that moved.
+   * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/CHANGELOG.md
+   */
+  it('says a model\'s vendor, and says the list again when only the vendor moves', async () => {
+    let models: { id: string; name: string; vendor?: string }[] = [{ id: 'a', name: 'A', vendor: 'Anthropic' }];
+    let handshake: (() => void) | undefined;
+    const base = echo({ path: WORK, pace: 0 });
+    const host = createHost({
+      path: WORK,
+      agents: [{
+        ...base,
+        create: (start) => {
+          handshake = start.onHandshake;
+          return { ...base.create(start), models: () => models };
+        },
+      }],
+    });
+    const p = peer();
+    const client = host.accept(p);
+    await client.handle(hello(['0.9.0'], { initialSubscriptions: ['ahp-root://'] }));
+    await client.handle({ method: 'createSession', params: { channel: 'ahp-session:/v', provider: 'echo' } });
+    const said = () => p.notes.filter((n) => n.method === 'action'
+      && (n.params as { action: { type: string } }).action.type === 'root/agentsChanged')
+      .map((n) => ((n.params as { action: { agents: { models: { id: string; vendor?: string }[] }[] } }).action.agents[0]?.models ?? [])
+        .map((one) => `${one.id}:${one.vendor ?? '-'}`));
+
+    handshake?.();
+    expect(said().at(-1)).toEqual(['a:Anthropic']);
+    const before = said().length;
+    handshake?.();
+    expect(said()).toHaveLength(before);
+    models = [{ id: 'a', name: 'A', vendor: 'OpenRouter' }];
+    handshake?.();
+    expect(said().at(-1)).toEqual(['a:OpenRouter']);
+    await host.close();
+  });
+
+  /*
    * A backend whose handshake is reported inside `create`, before the host
    * holds the session it answers, as one does that opens its server before it
    * answers: the models it answered are learned once the session is held, as

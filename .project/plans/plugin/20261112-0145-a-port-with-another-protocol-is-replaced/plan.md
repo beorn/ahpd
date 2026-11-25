@@ -1,7 +1,7 @@
 ---
 title: A tunnel port with another protocol is replaced
 domain: plugin
-status: planned
+status: built
 priority: high
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -56,7 +56,7 @@ kind start -> service.host().add(port) -> createOrUpdateTunnelPort -> service re
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A refused protocol is written again](task-01-a-refused-protocol-is-written-again.md) | implemented | - |
+| [01 - A refused protocol is written again](task-01-a-refused-protocol-is-written-again.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -69,7 +69,7 @@ kind start -> service.host().add(port) -> createOrUpdateTunnelPort -> service re
   `sdkService.add` and `sdkService.access` remove a port and write it again when the service refuses its protocol.
   The tests stand the refusal in with a `refuse` text on the fake `Host`.
   Nothing is committed; the diff is in the worktree.
-- **Next action:** review task 01 and run `packages/tunnel-devtunnel`'s suite.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Watch out for:** plugin/20261112-0145-a-tunnel-visitor-is-the-named-person builds on this branch and changes the same file.
   The recovery is in `sdkService` over the `Host`, not in `sdkCloud`, so that the stand-in client can exercise it.
   A second `updateTunnelPort` would fail after the delete, because the SDK sends `If-Match: *`; the retry writes with `Host.add`.

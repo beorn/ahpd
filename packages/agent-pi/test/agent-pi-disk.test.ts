@@ -20,7 +20,8 @@ it('rebuilds a session it never watched from pi file, with the parts a live turn
   expect(turns?.map((one) => [one.id, one.message.text, one.state]))
     .toEqual([[disk.first, 'read a.ts', 'complete'], [disk.second, 'again', 'error']]);
   expect(turns?.[0]?.responseParts).toEqual([
-    { id: `${disk.first}:1:0`, kind: 'reasoning', content: 'I should read it.' },
+    // pi times a message as it begins to stream, and nothing says when its thinking ended.
+    { id: `${disk.first}:1:0`, kind: 'reasoning', content: 'I should read it.', startedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT.*Z$/) },
     { id: `${disk.first}:1:1`, kind: 'markdown', content: 'Reading it.' },
     {
       kind: 'toolCall',
@@ -86,6 +87,8 @@ it('rebuilds a session it never watched from pi file, with the parts a live turn
   for (const parts of [live as Bag[], back]) {
     for (const part of parts) {
       if (part.kind === 'toolCall') delete (part.toolCall as Bag)._meta;
+      // Live, a reasoning part's times are the host's to say.
+      delete part.startedAt;
     }
   }
   expect(JSON.parse(JSON.stringify(live).replaceAll('t1:', `${disk.first}:`))).toEqual(back);

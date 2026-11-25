@@ -162,7 +162,9 @@ export interface Worktrees {
    * answered no. The links at the `linked` folder names are taken out first,
    * and put back when git refuses the rest.
    */
-  remove(repository: string, path: string, branch?: string, linked?: readonly string[]): Promise<void>;
+  remove(repository: string, path: string, branch?: string, linked?: readonly string[], force?: boolean): Promise<void>;
+  /** A repository's linked worktrees, the primary checkout left out, each with its branch where it is on one. */
+  list?(repository: string): Promise<{ path: string; branch?: string }[]>;
 
   /**
    * Commit every change in it, untracked files included, on the branch it

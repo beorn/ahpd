@@ -1,6 +1,6 @@
 ---
 title: A chat request names its origin, interactivity and tools
-status: implemented
+status: done
 depends: []
 layer: "sdk host"
 refs:

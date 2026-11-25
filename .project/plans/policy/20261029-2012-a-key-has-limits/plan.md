@@ -78,8 +78,8 @@ pi -> /v1 with the key -> policyFor -> decide: the store's rows + the key's row
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A key is minted with limits](task-01-a-key-is-minted-with-limits.md) | implemented | - |
-| [02 - A call is held to its key's limits](task-02-a-call-is-held-to-its-key-limits.md) | implemented | 01 |
+| [01 - A key is minted with limits](task-01-a-key-is-minted-with-limits.md) | done | - |
+| [02 - A call is held to its key's limits](task-02-a-call-is-held-to-its-key-limits.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -89,7 +89,7 @@ pi -> /v1 with the key -> policyFor -> decide: the store's rows + the key's row
 ## Resume state
 
 - **Done so far:** both tasks are implemented (task-01 and task-02), and [implemented.md](implemented.md) is written.
-- **Next action:** review, then set the tasks to done.
+- **Next action:** none. The plan is `built`, and its tasks closed on 2026-11-20 with the 0.15.0 release, which Softov counted as their review.
 - **Open questions:** none.
 - **Watch out for:** the plans `proxy/20261029-2010-a-key-carries-its-scope` and `usage/20261029-2011-a-record-names-its-key-and-meta` also change `TokenRecord`, `mintToken` and `ahpd token mint`. Rebase on them when they merge first.
 

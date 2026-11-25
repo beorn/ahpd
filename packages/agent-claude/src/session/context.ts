@@ -1,5 +1,5 @@
 import type { query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { BackgroundTasks, Bag, BoundTool, LogLevel, OutputTerminals, Session, SessionOptions, ShellEnv, Start, SubagentChat, SubagentRequest, TerminalOutputs } from '@ahpd/sdk';
+import type { BackgroundTasks, Bag, MovableCalls, BoundTool, LogLevel, OutputTerminals, Session, SessionOptions, ShellEnv, Start, SubagentChat, SubagentRequest, TerminalOutputs } from '@ahpd/sdk';
 import type { AgentLogins } from '../logins.js';
 import type { OfferedModel } from '../models.js';
 import type { Asked, SpawnedProcess } from '../spawn.js';
@@ -198,6 +198,12 @@ export interface ClaudeSessionOptions extends SessionOptions {
    */
   backgroundTasks?: BackgroundTasks;
   /**
+   * The host's seam for the calls this session can move to the background,
+   * carried from `Start`. Absent where a session is built by hand, which then
+   * offers nothing.
+   */
+  movableCalls?: MovableCalls;
+  /**
    * The host's output-terminal factory, carried from `Start`.
    *
    * A background shell's output is text the harness already holds, so the host
@@ -321,16 +327,19 @@ export interface SessionContext extends Omit<Config, 'methods'>, Omit<ClientTool
    */
   additionalDirectories: string[];
   /**
-   * A steering message, for as long as it is waiting to be read.
+   * The steering messages waiting to be read, oldest first.
    *
    * The protocol's `ChatState.steeringMessage` is "a message to inject into
    * the current turn at a convenient point", and the convenient point is when
    * the CLI next reads its prompt. Between the two there is a real window - a
    * turn mid-tool-call has not read anything for some time - and this is what
-   * fills it. Cleared where the generator hands the message over, because that
-   * is the moment it stops waiting.
+   * fills it. Each leaves where the generator hands it over, because that is
+   * the moment it stops waiting. A list, as AHP 1.1.0 keeps steering messages
+   * in `queuedMessages`: a second steer before the CLI reads the first must
+   * not hide the first one's removal, as VS Code keeps several pending
+   * steering messages since `0b4e0632b1f` (`getPendingSteeringMessages`).
    */
-  steering: Bag | undefined;
+  steering: Bag[];
   /**
    * Every prompt the CLI was handed that no result has named yet: VS Code's
    * yielded list, the second of the two the pending messages go through.
@@ -422,6 +431,8 @@ export interface SessionContext extends Omit<Config, 'methods'>, Omit<ClientTool
   gone: string | undefined;
   /** What this session has been told the CLI can do, by customization. */
   customizations: Bag[];
+  /** The environment the running CLI was started with, once one was. */
+  cliEnv?: NodeJS.ProcessEnv;
   /** The models the CLI offered, as this session offers them, each with the thinking control it supports. */
   models: OfferedModel[];
   /*

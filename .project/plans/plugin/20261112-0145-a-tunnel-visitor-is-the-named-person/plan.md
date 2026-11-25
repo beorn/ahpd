@@ -1,7 +1,7 @@
 ---
 title: A tunnel visitor is the person the tunnel names
 domain: plugin
-status: planned
+status: built
 priority: high
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -81,11 +81,11 @@ tunnel relay -> forwardedPortConnecting stream -> request rewrite (derived token
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - A plugin admits a person by a key in memory](task-01-a-plugin-admits-a-person-by-a-key.md) | implemented | - |
-| [02 - A tunnel record names a person](task-02-a-tunnel-record-names-a-person.md) | implemented | - |
-| [03 - Tunnel streams come into the process](task-03-tunnel-streams-come-into-the-process.md) | implemented | 01, 02 |
-| [04 - The docs say who a visitor is](task-04-the-docs-say-who-a-visitor-is.md) | implemented | 03 |
-| [05 - A tunnel can require a real token](task-05-a-tunnel-can-require-a-token.md) | implemented | 03 |
+| [01 - A plugin admits a person by a key in memory](task-01-a-plugin-admits-a-person-by-a-key.md) | done | - |
+| [02 - A tunnel record names a person](task-02-a-tunnel-record-names-a-person.md) | done | - |
+| [03 - Tunnel streams come into the process](task-03-tunnel-streams-come-into-the-process.md) | done | 01, 02 |
+| [04 - The docs say who a visitor is](task-04-the-docs-say-who-a-visitor-is.md) | done | 03 |
+| [05 - A tunnel can require a real token](task-05-a-tunnel-can-require-a-token.md) | done | 03 |
 
 ## Risks and tradeoffs
 
@@ -97,7 +97,7 @@ tunnel relay -> forwardedPortConnecting stream -> request rewrite (derived token
 ## Resume state
 
 - **Done so far:** [task-01](task-01-a-plugin-admits-a-person-by-a-key.md), [task-02](task-02-a-tunnel-record-names-a-person.md), [task-03](task-03-tunnel-streams-come-into-the-process.md), [task-04](task-04-the-docs-say-who-a-visitor-is.md) and [task-05](task-05-a-tunnel-can-require-a-token.md), implemented 2026-11-11 and 2026-11-12 in the worktree; [implemented.md](implemented.md) says what exists and where the work departed. Task-01: the SDK answers `personKey`, the daemon mints and holds the keys and answers `personOf`, and `identify` reads them before the directory. Task-02: the kind's schema and `start` read `person` as `user:<id>`, and the system tunnel takes it from the plugin's options. Task-03: the relay host hands each stream to the kind with no local listener, a `tkn` equal to the derived token becomes the named person's key, and a host with users and no person answers 401 with an alert. A person whose record requires the issuer is refused at the start, before the port is added, with an alert naming them (Softov, 2026-11-12: "Refuse such a person"). Task-04: the plugin's page and the release notes say all of it, and the guide teaches one tunnel on 31546 with `person` or `requireToken` (Softov, 2026-11-12: "Docs: one tunnel is enough"). Task-05, added by Softov on 2026-11-12: the record's `requireToken` (off by default) makes the tunnel map no token at all, the system tunnel takes the option, and a saved change applies to the next request on the running port.
-- **Next action:** review the worktree: the suites, and `ss -ltnp` on a running system tunnel.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the daemon runs on Node, Bun and Deno. The loopback dial works on all three; a stream handed to the server itself works on Node alone.
 

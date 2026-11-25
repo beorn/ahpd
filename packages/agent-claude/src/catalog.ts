@@ -87,7 +87,7 @@ const projectFolderName = (path: string): string => {
  * The project folder of `folder`, spelled the way the SDK spells it: from its
  * real path where it has one and as given where it does not.
  */
-const projectOf = (folder: string): string => {
+export const projectOf = (folder: string): string => {
   let real = folder;
   try { real = realpathSync(folder); }
   catch { /* a folder that is gone keeps its transcript under the name it had */ }

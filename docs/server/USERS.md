@@ -27,7 +27,7 @@ ahpd user token ana --url
 | `ahpd user rm <id>` | Remove them, and their tokens |
 | `ahpd user member <id> <team[:project]>...` | Teams and projects their work may be charged to |
 | `ahpd user primary <id> [team[:project]]` | Where work that names none is charged |
-| `ahpd team add <id>`, `ahpd project add <id>` | Name a team or project |
+| `ahpd team add <id>`, `ahpd project add <id>` | Name a team or project. See [Teams and projects](TEAMS.md) |
 | `ahpd token mint [--user <id>] [--team <team>] [--scope <team[:project]>]` | Mint a token of their own, shown once |
 | `ahpd token list [--user <id>] [--team <team>]` | Show tokens, without any secret or hash |
 | `ahpd token rm <token id> [--user <id>] [--team <team>]` | Revoke one token |
@@ -113,11 +113,11 @@ A host with no users file offers VS Code's options: the session's level and the 
 
 ## Whose approval settings apply
 
-VS Code pushes three settings from the window at every connect: `terminalAutoApproveRules`, `terminalAutoApproveEnabled` and `editAutoApprovePatterns`. They decide which commands run and which files are written without a question. On a host with users each person's push of them is their own, kept in `permissions/<person>.json` beside their "for Me" rules, and the root config keeps the host's value. Each person's window reads their own values back in the root config, in place of the host's, and the schema it reads marks the three keys `x-ahpd-scope: "person"`. A person's push of only these settings is not said on the root, so their other windows read it at their next connect.
+VS Code pushes four settings from the window at every connect: `terminalAutoApproveRules`, `terminalAutoApproveEnabled`, `editAutoApprovePatterns` and `autoApprovePolicyRestricted`. The first three decide which commands run and which files are written without a question. The window pushes `autoApprovePolicyRestricted` from its policy, and where it is `true` a session's auto-approve and Allow All are off. On a host with users each person's push of them is their own, kept in `permissions/<person>.json` beside their "for Me" rules, and the root config keeps the host's value. Each person's window reads their own values back in the root config, in place of the host's, and the schema it reads marks the four keys `x-ahpd-scope: "person"`. A person's push of only these settings is not said on the root, so their other windows read it at their next connect.
 
 A question in a session reads the session owner's value of each setting, and the host's where the owner keeps none. A session with no owner, or one the host's own connection made, reads the host's. So an admin's window changes the admin's own sessions and nobody else's, and a member's window applies to the member's sessions.
 
-A push of only these settings needs a sign-in. A terminal rule written `/.../` that VS Code's default table does not carry still needs `config:change`, because every expression runs in the daemon for every person. A push of `null` for a setting takes the person's value back, so the host's applies again. A push from the host's own connection, and any push on a host with no users file, sets the host's value as VS Code's host does. On a host with users no window sets the host's value of these three settings.
+A push of only these settings needs a sign-in. A terminal rule written `/.../` that VS Code's default table does not carry still needs `config:change`, because every expression runs in the daemon for every person. A push of `null` for a setting takes the person's value back, so the host's applies again. A push from the host's own connection, and any push on a host with no users file, sets the host's value as VS Code's host does. On a host with users no window sets the host's value of these four settings.
 
 ## Sign in with GitHub or OpenID Connect
 

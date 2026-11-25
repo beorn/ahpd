@@ -1,6 +1,6 @@
 ---
 title: The docs say what a gate does
-status: implemented
+status: done
 depends: [task-02-a-gate-checks-each-request.md]
 layer: "docs"
 refs:

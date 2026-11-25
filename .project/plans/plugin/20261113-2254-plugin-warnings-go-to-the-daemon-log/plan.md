@@ -1,7 +1,7 @@
 ---
 title: Plugin warnings go to the daemon's log
 domain: plugin
-status: planned
+status: built
 priority: medium
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -65,9 +65,9 @@ a session or the engine has a line -> console.warn -> the daemon's stderr -> a b
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The sdk, claude and pi lines use their logger](task-01-the-sdk-claude-and-pi-lines-use-their-logger.md) | implemented | - |
-| [02 - The engine's lines reach the plugin's log](task-02-the-engines-lines-reach-the-plugins-log.md) | implemented | - |
-| [03 - A console call fails a test](task-03-a-console-call-fails-a-test.md) | implemented | 01, 02 |
+| [01 - The sdk, claude and pi lines use their logger](task-01-the-sdk-claude-and-pi-lines-use-their-logger.md) | done | - |
+| [02 - The engine's lines reach the plugin's log](task-02-the-engines-lines-reach-the-plugins-log.md) | done | - |
+| [03 - A console call fails a test](task-03-a-console-call-fails-a-test.md) | done | 01, 02 |
 
 ## Risks and tradeoffs
 
@@ -77,7 +77,7 @@ a session or the engine has a line -> console.warn -> the daemon's stderr -> a b
 ## Resume state
 
 - **Done so far:** tasks 01 to 03 implemented, 2026-11-13; see [implemented.md](implemented.md).
-- **Next action:** review of the PR. The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the engine runs its source with the types stripped, so a runtime import in it names a `.ts` file.
 

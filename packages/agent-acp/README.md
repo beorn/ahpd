@@ -4,7 +4,9 @@
 [![CI](https://github.com/ahpio/ahpd/actions/workflows/ci.yml/badge.svg)](https://github.com/ahpio/ahpd/actions/workflows/ci.yml)
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node >=22](https://img.shields.io/badge/node-%3E%3D22-5fa04e)
-![Agent Host Protocol 0.9.0](https://img.shields.io/badge/AHP-0.9.0-0b7285)
+![Agent Host Protocol 1.1.0](https://img.shields.io/badge/AHP-1.1.0-0b7285)
+
+[ahpio.com](https://ahpio.com) · [Docs](https://ahpio.github.io/ahpd/)
 
 An [Agent Client Protocol](https://agentclientprotocol.com) backend for [`@ahpd/sdk`](https://www.npmjs.com/package/@ahpd/sdk), and a plugin for the [`@ahpd/server`](https://www.npmjs.com/package/@ahpd/server) daemon.
 
@@ -59,16 +61,21 @@ The shipped rows are `codex`, `gemini`, `copilot`, `opencode`, `kilo`, `goose`, 
 
 | Field | Default | What it does |
 | --- | --- | --- |
+| `hostTools` | the plugin-wide `hostTools` | Whether this agent's sessions are offered the host's own tools |
+| `toolsChanged` | the plugin-wide `toolsChanged` | How this agent hears that the tools it listed have moved |
 | `base` | the row the id names | The shipped row this record takes, for a record id that is not itself one. **Host records only** |
 | `command` | the row's | The program to spawn as the ACP server. Required for a record that names no row and no `base`. **Host records only** |
 | `args` | the row's | The arguments to give it, replacing the row's own. **Host records only** |
+| `install` | the row's | How to install this agent, by system, as the vendor's own docs give it. **Host records only** |
+| `page` | the row's | The vendor's install page, for a system the install lines do not cover |
 | `env` | none | Environment variables merged over the daemon's own for the child, by variable name. A value written `{ "$secret": "host:<name>" }` is read from the vault |
 | `cwd` | the session's working directory, else a scratch folder of the session's own | The directory the server runs in. **Host records only** |
 | `authenticate` | the row's | `{ "methodId": "<id>" }`, the sign-in to send after the handshake, for a server that refuses a session until one has happened |
-| `hostTools` | the plugin-wide `hostTools` | Whether this agent's sessions are offered the host's own tools |
 | `honoursTrust` | the row's, else `false` | Whether this agent asks before it loads a project's own settings and hooks. Absent, a session in a folder the host did not vouch for is refused, because ACP carries no trust field |
-| `toolsChanged` | the plugin-wide `toolsChanged` | How this agent hears that the tools it listed have moved |
+| `machine` | the row's | What a machine needs to run this agent, laid over the row's by key. **Host records only** |
+| `portFailures` | `spawn` | How a machine that could not start this agent or its terminal is said: `spawn` says `The agent could not start in computer://<id>.` and logs the machine's own message, which can name a socket path, a registry or an image; `message` passes that message on, as VS Code's host shows a failed send's |
 | `cutTurns` | `error` | How a turn the server stopped at `max_tokens`, `max_turn_requests` or by a refusal ends: `error` ends it in `chat/error` typed by the reason, `complete` completes it, as VS Code's agents do |
+| `stderrTail` | `sentence` | Where the last of a failed server's stderr goes: `sentence` puts it under the failure in the error a client is shown, `log` leaves it to the daemon's log, as VS Code's agents do; each line is logged either way. A server that could not open its session is named with the PATH it ran with under `sentence` only |
 | `modes` | `refreshed` | Where this agent's modes come from: `refreshed` lists the row's until a session hears its server's, then the modes the last session's server named; `preset` keeps the row's as declared, as VS Code's agents do |
 | `unreportedClientCalls` | `row` | What a request for a client's tool that no reported call matched gets: `row` holds it in a row of its own and asks its owner, `error` answers it with an error result, as VS Code's client tool server does |
 | `findFreshMs` | `2000` | How long, in milliseconds, the listing a find made answers the finds after it, a failed one included, so a server that did not start is not spawned again for each id; `0` joins only the listing in flight, as VS Code's agents share a listing |
@@ -78,10 +85,6 @@ The shipped rows are `codex`, `gemini`, `copilot`, `opencode`, `kilo`, `goose`, 
 | `stderrBytes` | `8192` | How much of the server's stderr, in bytes, a failure carries, as VS Code keeps the last 8192 of a helper's stderr |
 | `killGraceMs` | `5000` | How long, in milliseconds, the server's process group has between SIGTERM and SIGKILL, VS Code's grace for ending a process tree |
 | `closeGraceMs` | `1000` | How long, in milliseconds, a session waits for the server to answer `session/close` before the connection goes |
-| `stderrTail` | `sentence` | Where the last of a failed server's stderr goes: `sentence` puts it under the failure in the error a client is shown, `log` leaves it to the daemon's log, as VS Code's agents do; each line is logged either way |
-| `install` | the row's | How to install this agent, by system, as the vendor's own docs give it. **Host records only** |
-| `page` | the row's | The vendor's install page, for a system the install lines do not cover |
-| `machine` | the row's | What a machine needs to run this agent, laid over the row's by key. **Host records only** |
 
 `base`, `command`, `args`, `cwd`, `machine` and `install` are host-only: a team's or a person's record that sets one is refused, because a command is where a program would come from. The engine's key variables are the vendors' own - `AMP_API_KEY`, `CLINE_API_KEY`, `CODEX_API_KEY`, `COPILOT_GITHUB_TOKEN`, `CURSOR_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOSE_PROVIDER__API_KEY`, `KILO_API_KEY`, `OMP_AUTH_BROKER_TOKEN`, `OPENAI_API_KEY` and `WINDSURF_API_KEY` - so any owner may set them in `env`; every other `env` variable is the host's alone, because a free environment can run a program.
 

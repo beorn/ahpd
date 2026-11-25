@@ -28,6 +28,7 @@ import { API_PREFIX } from '../http.js';
 import { declareAutomation } from './automation.js';
 import { declareConfig, declareConfigWrite } from './config.js';
 import { declareConfigure } from './configure.js';
+import { declareDeploy } from './deploy.js';
 import { declareDoctor } from './doctor.js';
 import { declareJoin } from './join.js';
 import { declarePaths } from './paths.js';
@@ -82,6 +83,7 @@ export const cliRegistry = (): Registry<object> => {
   declareUsage(registry);
   declareVault(registry);
   declareAutomation(registry);
+  declareDeploy(registry);
   return registry;
 };
 

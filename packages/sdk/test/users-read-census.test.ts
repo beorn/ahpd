@@ -20,10 +20,15 @@ import { gitSync } from '../../../tools/git.ts';
  *              wiring the directory up; no grant is decided.
  *
  * Keyed by file and the line's text, so moving a line keeps its entry and
- * editing one asks for it to be looked at again.
+ * editing one asks for it to be looked at again. An entry names how many times
+ * its exact line appears (1 unless said), so a copy of a classified line is
+ * one more read to classify, not a read the entry already covers (@dev/1,
+ * @cto c054f77a).
  */
 type Kind = 'grant' | 'identity';
-const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: string])[] = [
+type Entry = readonly [file: string, line: string, kind: Kind, why: string, times?: number];
+const ALLOWED: readonly Entry[] = [
+  ['access/personrules.ts', 'const folder = options.users === undefined ? undefined : options.personPermissionsDir;', 'identity', "where a session owner's own approval settings are kept (#463 sync, upstream approvalSetting)"],
   ['host.ts', 'const directory = options.users !== undefined;', 'grant', 'fed to seesConfig/seesAccount, which ask heldToGrants'],
   ['host.ts', '? options.users?.watch?.(() => {', 'identity', 'watches the directory file for sign-in changes'],
   ['host/actions.ts', 'if (heldToGrants(connection, options.users !== undefined)) {', 'grant', 'the action gate, through heldToGrants'],
@@ -36,7 +41,8 @@ const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: 
   ['host/auth.ts', 'if (options.users !== undefined) out.add(authenticationResource());', 'identity', 'advertises the sign-in resource'],
   ['host/automations.ts', "if (requester !== undefined && options.users !== undefined && owner?.startsWith('user:') === true && person !== undefined && !person.can('session:create')) {", 'grant', "an automation's owner, not a connection (806f0ee5)"],
   ['host/automations.ts', "if (options.users !== undefined && computerSource(config.computer) !== undefined && owner?.startsWith('user:') === true) {", 'grant', "an automation's owner, not a connection (806f0ee5)"],
-  ['host/automations.ts', "if (options.users !== undefined && owner?.startsWith('user:') === true) {", 'identity', 'whether an automation has a person as owner'],
+  ['host/automations.ts', "if (options.users !== undefined && owner?.startsWith('user:') === true) {", 'identity', 'whether an automation has a person as owner', 2],
+  ['host/automations.ts', 'if (owner === undefined && options.users !== undefined) return [];', 'identity', "whose windows an automation owner's MCP sign-in is asked of; no grant is decided (#463 sync, upstream connectionsOf)"],
   ['host/chatactions.ts', 'const keeps = store !== undefined && (!heldToGrants(connection, ctx.options.users !== undefined)', 'grant', 'keeping a decision, through heldToGrants'],
   ['host/chatactions.ts', "if (allowsAll && heldToGrants(connection, ctx.options.users !== undefined) && connection.principal?.can('session:configure') !== true) {", 'grant', 'Allow All, through heldToGrants'],
   ['host/chatactions.ts', 'if (ctx.options.users === undefined || folder === undefined || person === undefined) break;', 'identity', "where a person's rules are kept"],
@@ -47,7 +53,7 @@ const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: 
   ['host/handshake.ts', 'if (target === undefined && connection.root === true && options.users !== undefined && resource === authenticationResource()) return {};', 'identity', 'sign-in on the root'],
   ['host/handshake.ts', 'if (target === undefined && options.users !== undefined && resource === authenticationResource()) {', 'identity', 'sign-in'],
   ['host/handshake.ts', 'const held = await options.users.verify(token);', 'identity', 'sign-in'],
-  ['host/handshake.ts', 'resources: [options.users.resource],', 'identity', 'where to sign in'],
+  ['host/handshake.ts', 'resources: [options.users.resource],', 'identity', 'where to sign in', 2],
   ['host/lifecycle.ts', 'if (!heldToGrants(sender, options.users !== undefined)) return true;', 'grant', 'a transcript excerpt, through heldToGrants'],
   ['host/lifecycle.ts', 'const checked = { hasDirectory: ctx.options.users !== undefined };', 'grant', 'mayUseAgent; with no directory every agent is the host’s'],
   ['host/owners.ts', 'if (options.users === undefined) return undefined;', 'identity', 'a session records no owner with no directory'],
@@ -55,15 +61,34 @@ const ALLOWED: readonly (readonly [file: string, line: string, kind: Kind, why: 
   ['host/relay.ts', 'if (ctx.options.users === undefined || one.root === true) return true;', 'identity', 'claimsId: who holds a client id (806f0ee5)'],
   ['host/root.ts', '(options.users !== undefined && connection !== undefined && connection.root !== true ? connection.principal?.id : undefined);', 'identity', 'the person a connection is'],
   ['host/root.ts', 'const directory = options.users !== undefined;', 'grant', 'fed to seesConfig/seesAccount, which ask heldToGrants'],
-  ['host/sessionmethods.ts', 'hasDirectory: options.users !== undefined,', 'grant', 'mayUseAgent; with no directory every agent is the host’s'],
+  ['host/sessionmethods.ts', 'hasDirectory: options.users !== undefined,', 'grant', 'mayUseAgent; with no directory every agent is the host’s', 2],
   ['host/sessionmethods.ts', 'if (heldToGrants(connection, options.users !== undefined) && computerSource(placed.computer) !== undefined', 'grant', 'placing a session on a computer, through heldToGrants'],
   ['host/spawn.ts', 'const personRules = options.users === undefined || options.personPermissionsDir === undefined ? undefined : filePersonRules(options.personPermissionsDir);', 'identity', "where a person's rules are kept"],
-  ['host/spawn.ts', 'if (options.users === undefined) return true;', 'grant', "a session's owner, not a connection (806f0ee5)"],
+  ['host/spawn.ts', 'if (options.users === undefined) return true;', 'grant', "a session's owner, not a connection (806f0ee5)", 3],
   ['host/spawn.ts', 'people: options.users !== undefined,', 'identity', 'whether the host has people'],
   ['host/tooling.ts', 'if (options.users === undefined) return undefined;', 'identity', "the person a chat's turn acts for"],
   ['host/tooling.ts', 'const hasDirectory = options.users !== undefined;', 'grant', 'mayUseAgent; with no directory every agent is the host’s'],
   ['host/tooling.ts', 'if (options.users === undefined || caller.root === true) return true;', 'grant', 'callerMay: a tool caller, not a connection (806f0ee5)'],
 ];
+
+const key = (file: string, line: string): string => `${file}\u0000${line}`;
+
+/**
+ * Each read the allowlist does not cover, once per copy, and each entry that
+ * names more copies than there are: what the tests below refuse.
+ */
+const census = (found: readonly (readonly [string, string])[], allowed: readonly Entry[]): { unclassified: string[]; stale: string[] } => {
+  const left = new Map<string, number>();
+  for (const [file, line, , , times = 1] of allowed) left.set(key(file, line), (left.get(key(file, line)) ?? 0) + times);
+  const unclassified: string[] = [];
+  for (const [file, line] of found) {
+    const n = left.get(key(file, line)) ?? 0;
+    if (n > 0) left.set(key(file, line), n - 1);
+    else unclassified.push(`${file}: ${line}`);
+  }
+  const stale = [...left].filter(([, n]) => n > 0).map(([k, n]) => `${k.replace('\u0000', ': ')} (${n} more named than found)`);
+  return { unclassified, stale };
+};
 
 const SRC = join(import.meta.dirname, '..', 'src');
 
@@ -77,15 +102,21 @@ const reads = (): [string, string][] => gitSync(['grep', '-n', '-E', String.raw`
   });
 
 it('every read of options.users in the SDK is classified as a grant check or an identity read', () => {
-  const known = new Set(ALLOWED.map(([file, line]) => `${file}\u0000${line}`));
-  const unclassified = reads().filter(([file, line]) => !known.has(`${file}\u0000${line}`)).map(([file, line]) => `${file}: ${line}`);
   // A new read of whether the host has a users directory: if it decides what a caller may do, ask
   // heldToGrants(connection, directory) instead, so a plugin's connection is held to its grants;
-  // then add the line here, tagged with its kind and why.
-  expect(unclassified).toEqual([]);
+  // then add the line here, tagged with its kind and why (or raise its count, for a copy of one).
+  expect(census(reads(), ALLOWED).unclassified).toEqual([]);
 });
 
-it('every allowlist entry still names a read, so the list shrinks as reads go', () => {
-  const present = new Set(reads().map(([file, line]) => `${file}\u0000${line}`));
-  expect(ALLOWED.filter(([file, line]) => !present.has(`${file}\u0000${line}`)).map(([file, line]) => `${file}: ${line}`)).toEqual([]);
+it('every allowlist entry still names as many reads as there are, so the list shrinks as reads go', () => {
+  expect(census(reads(), ALLOWED).stale).toEqual([]);
+});
+
+it('a copy of a classified line is a read to classify, not one its entry already covers', () => {
+  const line = 'if (options.users === undefined) return true;';
+  const allowed: Entry[] = [['host/spawn.ts', line, 'grant', 'owner', 3]];
+  const three: [string, string][] = [['host/spawn.ts', line], ['host/spawn.ts', line], ['host/spawn.ts', line]];
+  expect(census(three, allowed)).toEqual({ unclassified: [], stale: [] });
+  expect(census([...three, ['host/spawn.ts', line]], allowed).unclassified).toEqual([`host/spawn.ts: ${line}`]);
+  expect(census(three.slice(1), allowed).stale).toEqual([`host/spawn.ts: ${line} (1 more named than found)`]);
 });

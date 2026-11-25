@@ -1,7 +1,7 @@
 ---
 title: A talk with a bot is one session with its Back chats
 domain: bots
-status: planned
+status: built
 priority: high
 created: 2026-11-13
 revalidated: 2026-11-13
@@ -119,12 +119,12 @@ read bot://<slug> -> the reader's session in `session`
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - one-session-for-each-bot-and-person](task-01-one-session-for-each-bot-and-person.md) | implemented | - |
-| [02 - the-front-runs-in-the-bots-folder](task-02-the-front-runs-in-the-bots-folder.md) | implemented | - |
-| [03 - the-back-is-a-chat-of-the-front](task-03-the-back-is-a-chat-of-the-front.md) | implemented | 01, 02 |
-| [04 - a-restart-wakes-the-bot-again](task-04-a-restart-wakes-the-bot-again.md) | implemented | 03 |
-| [05 - the-webhook-picks-its-session-shape](task-05-the-webhook-picks-its-session-shape.md) | implemented | 03 |
-| [06 - docs-and-spec](task-06-docs-and-spec.md) | implemented | 04, 05 |
+| [01 - one-session-for-each-bot-and-person](task-01-one-session-for-each-bot-and-person.md) | done | - |
+| [02 - the-front-runs-in-the-bots-folder](task-02-the-front-runs-in-the-bots-folder.md) | done | - |
+| [03 - the-back-is-a-chat-of-the-front](task-03-the-back-is-a-chat-of-the-front.md) | done | 01, 02 |
+| [04 - a-restart-wakes-the-bot-again](task-04-a-restart-wakes-the-bot-again.md) | done | 03 |
+| [05 - the-webhook-picks-its-session-shape](task-05-the-webhook-picks-its-session-shape.md) | done | 03 |
+| [06 - docs-and-spec](task-06-docs-and-spec.md) | done | 04, 05 |
 
 ## Risks and tradeoffs
 
@@ -137,7 +137,7 @@ read bot://<slug> -> the reader's session in `session`
 ## Resume state
 
 - **Done so far:** tasks 01 to 06 are `implemented`, waiting for review, with the two host plans, in the branch `bots/20261113-0817-a-bot-talk-is-one-session`.
-- **Next action:** Softov's review, and the restart check by hand on the test daemon.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** the webhook's sessions are owned by the plugin, not a person, so the refusal skips them.
 

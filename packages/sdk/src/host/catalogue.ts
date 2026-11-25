@@ -1,3 +1,4 @@
+import { multipleChatProvidersOn } from '../vscoderootconfig.js';
 import { ROOT, chatUriFor } from './channels.js';
 import { accountKey } from './root.js';
 import { SESSION_META_EXTERNAL_KEY, Status, idFor, idOf, normalizeTitle, uriFor } from '../sessions/catalog.js';
@@ -61,13 +62,16 @@ const RECENT_LOCAL_SESSION_UPDATE_LIMIT = 2;
 /** The session list and each row of it. */
 export interface Catalogue {
   statusOf(uri: string): number;
+  /** A session's row as a summary says it, with its change counts. */
+  rowOf(uri: string): Bag;
   /** A chat's `ChatOrigin`: what it was made from, else `user`. */
   getChatOrigin(chat?: string): Bag;
   chatSummary(session: string, uri: string, chat: Session): Bag;
   /** Whether a chat, or a worker inside one of its calls, has a turn in progress. */
   hasActiveTurn(uri: string): boolean;
   /** Whether a chat is one a move is ever made of: moves on, a chat of its session's backend, not its default, resumable. */
-  isStructurallyMovable(uri: string): boolean;
+  /** `asSession` asks for the default chat of a session that moves whole, which a chat move never takes. */
+  isStructurallyMovable(uri: string, asSession?: boolean): boolean;
   /** Why a session refuses a move out of it or into it now: archived, or changing its workspace. */
   sessionMoveRefusal(session: string): MoveRefusal | undefined;
   /** Why a chat refuses its move now for its own state: no folder, or no turn yet. */
@@ -322,17 +326,16 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    *
    * A move here starts the chat's backend again with `resume` set to the id
    * the backend kept the conversation under, so that backend must be able to
-   * take it back by that id. A chat of another backend than the session's is
-   * never one: a move starts it again on the destination's backend, which is a
-   * harness that has never seen its transcript.
+   * take it back by that id. A chat of another backend than the session's
+   * moves with that backend, which takes chats with their own agents being on.
    */
-  const isStructurallyMovable = (uri: string): boolean => {
+  const isStructurallyMovable = (uri: string, asSession = false): boolean => {
     if (ctx.rootConfig['chatMoves.enabled'] !== true) return false;
     const held = sessions.get(sessionHolding(uri) ?? '');
     const chat = held === undefined ? undefined : held.chats.get(uri);
     if (held === undefined || chat === undefined) return false;
-    if (held.backends.has(uri)) return false;
-    if (held.defaultChat === uri) return false;
+    if (held.backends.has(uri) && !multipleChatProvidersOn(ctx.rootConfig)) return false;
+    if ((held.defaultChat === uri) !== asSession) return false;
     const own = chat.agentId();
     if (own === undefined || own === '') return false;
     return chat.resumable?.() !== false;
@@ -705,6 +708,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    */
   let announced = -1;
   const activeSessionsChanged = (): void => {
+    ctx.keepAwake?.update();
     const now = activeCount();
     const held = ctx.stateOf(ROOT)?.activeSessions;
     if (now === (typeof held === 'number' ? held : announced)) return;
@@ -1027,6 +1031,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
     if (!ctx.relaysChangesets(uri) && JSON.stringify(changesets ?? []) !== JSON.stringify(state.changesets ?? [])) {
       ctx.dispatch(uri, { type: 'session/changesetsChanged', ...(changesets === undefined ? {} : { changesets }) });
     }
+    ctx.chatChangesetsMoved(uri);
     const { _meta: meta } = ctx.describes(uri) as { _meta?: Bag };
     if (JSON.stringify(meta ?? {}) !== JSON.stringify(state._meta ?? {})) {
       ctx.dispatch(uri, { type: 'session/metaChanged', ...(meta === undefined ? {} : { _meta: meta }) });
@@ -1182,7 +1187,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
             const state = ctx.stateOf(chat);
             const active = state?.activeTurn;
             const turns = [...(Array.isArray(state?.turns) ? state.turns as Bag[] : []), ...(typeof active === 'object' && active !== null ? [active as Bag] : [])];
-            own = source?.chatSummary?.(uri, turns.map((turn) => String(turn.id ?? '')));
+            own = source?.chatSummary?.(idOf(uri), turns.map((turn) => String(turn.id ?? '')));
           }
           if (own !== undefined && sessions.has(uri)) setChatChangesSummary(uri, chat, own);
         }
@@ -1937,7 +1942,19 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    */
   const adoptExternalSession = (uri: string): void => {
     if (!externalSessions.delete(uri)) return;
-    kept.setExternal?.(idFor(uri), false);
+    const id = idFor(uri);
+    kept.setExternal?.(id, false);
+    /*
+     * The backend that listed it becomes the session's provider, and the name
+     * this host holds it under is kept, as a turn's send records both: a store
+     * keeps no `external: false`, so without them the next listing would find
+     * the session external again, under a provider-made name.
+     */
+    const agent = owners.get(uri);
+    if (agent !== undefined && kept.provider(id) === undefined) {
+      kept.setProvider(id, agent.provider);
+      if (kept.uri?.(id) === undefined) kept.setUri?.(id, uri);
+    }
     externalReconciliationModifiedAt.delete(uri);
     const exposed = exposedExternalSessions.delete(uri);
     if (sessions.has(uri)) {
@@ -2366,7 +2383,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
   };
 
   return {
-    statusOf, getChatOrigin, chatSummary, isStructurallyMovable, sessionMoveRefusal, chatMoveRefusal, movable, hasActiveTurn, updateChatMovability,
+    statusOf, rowOf, getChatOrigin, chatSummary, isStructurallyMovable, sessionMoveRefusal, chatMoveRefusal, movable, hasActiveTurn, updateChatMovability,
     chatsReordered, subagentSummary, restoredSubagentSummary,
     chatCatalogOf, onChatSummaryChanged, syncSessionInputNeeded, inputNeededOf, changesetsAndMetaChanged, activeCount,
     activityOf, markSessionProvisional, sessionAdded, provisional: (uri: string) => provisionalSessionKeys.has(uri), materialized, failSessionCreationIfStillCreating,

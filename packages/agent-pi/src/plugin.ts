@@ -124,7 +124,7 @@ const ENV_VALUE: Record<string, unknown> = {
 const kindSchema = (): Record<string, unknown> => ({
   type: 'object',
   additionalProperties: false,
-  properties: {
+  properties: envAfterHostTools({
     ...Object.fromEntries(Object.entries(optionsSchema.properties).filter(([key]) => !NOT_A_RECORD.has(key))),
     // A record's key is the channel's to vault: its schema says `secret`, so
     // the value is kept there and a record holds the reference to it.
@@ -135,8 +135,20 @@ const kindSchema = (): Record<string, unknown> => ({
       description: "Variables pi is given, over the daemon's own environment, such as OPENROUTER_API_KEY. { fromEnv: NAME } reads the daemon's NAME; { \"$secret\": \"host:NAME\" } reads the vault. A key pi reads is kept in the vault; only a host record may set any other variable.",
       additionalProperties: ENV_VALUE,
     },
-  },
+  }),
 });
+
+/**
+ * The record's fields with `env` after `hostTools`, so the form draws it with
+ * the run settings and before the folders, as the options' order has no `env`.
+ */
+const envAfterHostTools = (fields: Record<string, unknown>): Record<string, unknown> => {
+  const { env, ...rest } = fields;
+  const entries = Object.entries(rest);
+  const at = entries.findIndex(([key]) => key === 'hostTools') + 1;
+  entries.splice(at, 0, ['env', env]);
+  return Object.fromEntries(entries);
+};
 
 /** A record's variables as pi's runtime takes them: string values only. */
 const envOf = (value: unknown): Record<string, string> => {

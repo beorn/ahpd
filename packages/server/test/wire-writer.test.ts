@@ -147,6 +147,16 @@ describe('a capture line that carries a credential', () => {
     expect(readFileSync(at, 'utf8')).not.toContain('sesame');
   });
 
+  it('writes the answer of a shell authentication as VS Code redacts it, and a refusal as it came', () => {
+    const write = writerFor(at);
+    write(said(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'vscode/answerShellAuthentication', params: { chat: 'ahp-chat:/one', requestId: 'host-ask:one', answer: 'sesame' } })));
+    write(said(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'vscode/answerShellAuthentication', params: { chat: 'ahp-chat:/one', requestId: 'host-ask:two' } })));
+    const [given, refused] = lines(at);
+    expect(given?.params).toEqual({ chat: 'ahp-chat:/one', requestId: 'host-ask:one', answer: '<redacted>' });
+    expect(refused?.params).toEqual({ chat: 'ahp-chat:/one', requestId: 'host-ask:two' });
+    expect(readFileSync(at, 'utf8')).not.toContain('sesame');
+  });
+
   it('writes an authorization, a channel payload and a list of certificates as VS Code redacts them', () => {
     const write = writerFor(at);
     write(said(JSON.stringify({ jsonrpc: '2.0', id: 3, result: { authorization: 'Negotiate sesame' } })));
@@ -164,21 +174,21 @@ describe('a capture line that carries a credential', () => {
   it('writes a canvas source as VS Code redacts it, in an action and in a canvas snapshot', () => {
     const write = writerFor(at);
     const canvas = 'ahp-canvas:/Y2hhdA/board';
-    write(answered(JSON.stringify({ jsonrpc: '2.0', method: 'action', params: { channel: canvas, serverSeq: 1, action: { type: 'canvas/stateChanged', canvas: { title: 'Board', url } } } })));
-    write(answered(JSON.stringify({ jsonrpc: '2.0', id: 5, result: { snapshot: { resource: canvas, state: { title: 'Board', url }, fromSeq: 1 } } })));
+    write(answered(JSON.stringify({ jsonrpc: '2.0', method: 'action', params: { channel: canvas, serverSeq: 1, action: { type: 'canvas/stateChanged', canvas: { title: 'Board', uri: url, url } } } })));
+    write(answered(JSON.stringify({ jsonrpc: '2.0', id: 5, result: { snapshot: { resource: canvas, state: { title: 'Board', uri: url, url }, fromSeq: 1 } } })));
     const [action, snapshot] = lines(at);
-    expect(action).toMatchObject({ params: { action: { canvas: { title: 'Board', url: '<redacted canvas source>' } } } });
-    expect(snapshot).toMatchObject({ result: { snapshot: { state: { title: 'Board', url: '<redacted canvas source>' } } } });
+    expect(action).toMatchObject({ params: { action: { canvas: { title: 'Board', uri: '<redacted canvas source>', url: '<redacted canvas source>' } } } });
+    expect(snapshot).toMatchObject({ result: { snapshot: { state: { title: 'Board', uri: '<redacted canvas source>', url: '<redacted canvas source>' } } } });
     expect(readFileSync(at, 'utf8')).not.toContain('sesame');
   });
 
   it('redacts a line it writes again with its strings cut', () => {
     const write = writerFor(at, { maxLineLength: 4096 });
     const big = 'x'.repeat(64 * 1024);
-    write(answered(JSON.stringify({ jsonrpc: '2.0', method: 'action', params: { channel: 'ahp-canvas:/Y2hhdA/board', serverSeq: 2, action: { type: 'canvas/stateChanged', canvas: { title: big, url } } } })));
+    write(answered(JSON.stringify({ jsonrpc: '2.0', method: 'action', params: { channel: 'ahp-canvas:/Y2hhdA/board', serverSeq: 2, action: { type: 'canvas/stateChanged', canvas: { title: big, uri: url } } } })));
     const [line] = lines(at);
     expect((line?._ahpLog as { truncated?: boolean }).truncated).toBe(true);
-    expect(line).toMatchObject({ params: { action: { canvas: { url: '<redacted canvas source>' } } } });
+    expect(line).toMatchObject({ params: { action: { canvas: { uri: '<redacted canvas source>' } } } });
     expect(readFileSync(at, 'utf8')).not.toContain('sesame');
   });
 });

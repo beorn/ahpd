@@ -1206,7 +1206,7 @@ An optional second argument, `named: (uri: string) => void | Promise<void>`, rec
 
 `SessionRequest` carries what a `createSession` does, under the owner's name, and `owner` is the only field a caller must give. `provider` is a backend the host has and `workingDirectory` is where it works, both falling back to what a session with nothing said uses. `config` is the session's own settings and `model` is the protocol's `ModelSelection`, `{ id: 'claude-sonnet-5' }`, which rides on the session's first turn because a session has no model until a turn does. `title` is what the session is called where the plugin already knows, and a session with none is named after its first turn. `prompt` is that first turn, and leaving it out is a session that opens with nobody speaking, which is what a plugin whose new thing has nothing to open with asks for - an automation's empty message, by contrast, is an automation that does nothing. A `prompt` that is there and blank is a mistake rather than a quiet session, the same way a name written as spaces is not a name.
 
-Two reads go with it. `host.sessionKept(uri)` answers whether this host keeps the session at a URI, which is how a plugin decides whether a leftover machine is one of its own to adopt. `host.sessionOwner(uri)` answers whose that session is, or nothing where this host has none, which is how a plugin adopts a session somebody else started - a bot linking one its owner already has - without putting work into a place its writer has no business being. Both are promises read from the host's own store when they are called, because the plugin that registers that store may load after yours.
+Two reads go with it. `host.sessionKept(uri)` answers whether this host keeps the session at a URI, which is how a plugin decides whether a leftover machine is one of its own to adopt. `host.sessionOwner(uri)` answers whose that session is, or nothing where this host has none, which is how a plugin adopts a session somebody else started - a bot linking one its owner already has - without putting work into a place its writer has no business being. `host.sessionOpens(uri)` answers whether this host can open that session now: running, or restored from its catalogue. The store keeps a row longer than a session lasts, since a session that ran no turn leaves nothing a restart can read, so a plugin that hands a session back to a person, such as a bot answering a person's talk, asks `sessionOpens` and not `sessionKept`. All three are promises read when they are called, because the plugin that registers the store may load after yours.
 
 A durable creation reservation answers its saved owner at its exact canonical URI, including after `named` rejects. That read does not probe backend history, admit the reservation or start a provider. It is ownership metadata, not proof of a usable session. Required creation metadata that is missing or unreadable rejects the read rather than reporting an absent session.
 
@@ -1253,7 +1253,7 @@ const state = {
   canvasId: 'board',
   title: 'Board',
   status: 'ready',
-  url: 'https://boards.acme.test/live/board-1',
+  uri: 'https://boards.acme.test/live/board-1',
 } satisfies CanvasState;
 const canvas = await host.openCanvas(chat, state);
 host.updateCanvas(canvas, { ...state, status: 'saving' });
@@ -1262,11 +1262,11 @@ host.closeCanvas(canvas);
 
 `openCanvas` brings the chat back first, as VS Code's host restores a session's chat before a canvas operation: a chat whose session sleeps is woken with it, and a chat no session holds is refused with `Canvas operation targeted a chat outside session '<session>'.`
 
-The state is your whole claim about the canvas, and the host draws it. `instanceId`, `extensionId` and `canvasId` are required and non-empty, and `title`, `status` and `url` are as the protocol declares them. An `open` under an `instanceId` that is already open on that chat replaces its state and answers the same channel, and one with the state it already has says nothing, as VS Code's host keeps a canvas it already shows. A canvas that is redrawn is therefore not a second one.
+The state is your whole claim about the canvas, and the host draws it. `instanceId`, `extensionId` and `canvasId` are required and non-empty, and `title`, `status` and `uri` are as the protocol declares them. An `open` under an `instanceId` that is already open on that chat replaces its state and answers the same channel, and one with the state it already has says nothing, as VS Code's host keeps a canvas it already shows. A canvas that is redrawn is therefore not a second one.
 
 A canvas belongs to the plugin that opened it. Only that plugin can update or close it, and a second plugin naming another's canvas is refused. A client cannot close one either. A canvas is the plugin's claim about a page it serves, and a client that hid one would leave the plugin drawing to nobody.
 
-`url` is one absolute http(s) URL with a host, or absent. Absent is a canvas with nothing to show. It is what a plugin says while its source is down or before it is ready, and clearing `url` is the plugin's to do. The host cannot see when something outside it went away. A URL that is not a page is refused, and the refusal names the rule rather than the URL. The host never writes a canvas URL to its log.
+`uri` is one absolute http(s) URL with a host, or absent. Absent is a canvas with nothing to show. It is what a plugin says while its source is down or before it is ready, and clearing `uri` is the plugin's to do. The host cannot see when something outside it went away. A URL that is not a page is refused, and the refusal names the rule rather than the URL. The host never writes a canvas URL to its log.
 
 Ask whether a remote person can reach the URL you give. A URL on `localhost` reaches a client on that machine and no other. A plugin that must draw for a remote window therefore serves the page through [its own route](#a-route-authenticates-its-own-caller) or a public address.
 
@@ -1434,7 +1434,7 @@ does not stop the next handler or the action it observed.
 | --- | --- |
 | `session_start` | `session`, `provider`, and `client` when a client of this host created it |
 | `session_end` | `session`, `reason` |
-| `session_opened` | `session`, `client` |
+| `session_opened` | `session`, `client`, `owner` |
 | `turn_start` | `session`, `chat`, `turn`, `sender` (`user:<id>` or `root:<host>`) when the host knows who sent it, and `queuedMessageId` when the turn took up a queued message. Raised when the turn is handed to a session's chat: its backend, or the host's own `!` command. A worker's turn begins inside a call of its lead chat's turn, with none |
 | `turn_end` | The shape of [VS Code's `ITurnEnd`](https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/common/agentHostChatContributionsService.ts#L19-L49), which its host offers its chat contributions after every turn ends: `session`, `channel` (the chat the turn ran on, the session's default chat, a peer chat or a worker's), `turnId` and `reason`, and beside them `sender` as on `turn_start` and `queuedMessageId` where the queue drain that began the turn ended it itself. `reason.kind` is `success`, `cancelled`, `error` for a turn that ended in `chat/error`, a send that failed included, with `error` (`errorType` and `message`) and `resumable`, `rejected` for a start the host refused before handing it over, with `error` and `recoverable`, whether whoever sent it still holds the message (no `turn_start` comes before it), or `localCommand` for a `!` command the host ran. Raised on every chat, a worker's included, so a plugin waiting on one chat's turn reads `channel` |
 | `message` | `session`, `chat`, `turn`, `text` |
@@ -1468,6 +1468,10 @@ found in a list was created by nobody here, and a session an automation opened
 has no client at all. `session_opened` is raised once per client and session,
 so a client that subscribes to a session and then to a chat of it, or opens a
 second window under another id, is heard from once per window.
+
+On a host with users, `session_opened` also names the `owner` the opening
+connection signed in as. A client id is the client's own word, so a plugin that
+ties a client to a person checks `owner` as well.
 
 An event may repeat a state action a client also receives, and is added only
 for a moment a plugin acts on without watching the session - a turn's two ends,
@@ -2320,7 +2324,7 @@ per record with that record's values over these defaults.
 | `baseUrl` | The OpenAI-compatible endpoint a record that names none uses |
 | `models` | What the operator says of `baseUrl`'s models, each by its id on that endpoint: `supportsReasoningEffort`, the thinking levels it accepts, as VS Code's Custom Endpoint models declare it |
 | `instructions` | The system prompt a record that names none is created with |
-| `store` | The folder cofold's file store lives in, shared by every record: cofold's home, `$COFOLD_HOME`, or `~/.cofold` when that is unset. This is session data and not configuration; the harness config is read where copapo reads it, `~/.config/copapo/config.json` and a project's `.copapo.json` |
+| `store` | The folder cofold's file store lives in, shared by every record: cofold's home, `$COFOLD_HOME`, or `~/.cofold` when that is unset. This is session data and not configuration; the harness config is read where copapo reads it, `~/.config/cofold/config.json` and a project's `.cofold.json` |
 | `memory` | `true` to hold each record's store in memory, for a test |
 | `tools` | Which of the four cofold capabilities a session runs, and where `web_search` gets its providers. All four are on when it is absent |
 | `apiKey` | The daemon's own key, for a record that names none: `{ "$secret": "host:<name>" }` is read from the vault, or a function asked once per request so an expired one is not cached |
@@ -2352,7 +2356,7 @@ An approval is a question the host decides, saying what the call asks to do by c
 A shell call is drawn as a terminal with its bare command, and a call that is declined or cut short never leaves a file held as changing.
 A session opened with no working directory keeps its tools and works in the daemon's current directory.
 
-A turn with no model in the session settings, the record, the plugin options or the harness configuration fails with a sentence that says to add `"model"`, as `"<provider>/<model>"`, to `$XDG_CONFIG_HOME/copapo/config.json` or `~/.config/copapo/config.json`, or to the file `$COPAPO_CONFIG` names.
+A turn with no model in the session settings, the record, the plugin options or the harness configuration fails with a sentence that says to add `"model"`, as `"<provider>/<model>"`, to `$XDG_CONFIG_HOME/cofold/config.json` or `~/.config/cofold/config.json`, or to the file `$COFOLD_CONFIG` names.
 
 `tools` turns one off by naming it `false`, and gives `web_search` its providers:
 
@@ -2421,11 +2425,11 @@ harness runs:
 ### The harness configuration is the default
 
 `@ahpd/agent-cofold` reads the configuration cofold's own app, copapo, reads,
-through cofold's resolver under copapo's name: `$XDG_CONFIG_HOME/copapo/config.json`
-or `~/.config/copapo/config.json`, then the nearest `.copapo.json` at or above a
-session's folder, then the file `$COPAPO_CONFIG` names, each merging over the one
+through cofold's resolver under cofold's name: `$XDG_CONFIG_HOME/cofold/config.json`
+or `~/.config/cofold/config.json`, then the nearest `.cofold.json` at or above a
+session's folder, then the file `$COFOLD_CONFIG` names, each merging over the one
 before. So a person who has already pointed the harness at a provider does not
-say it again in the plugin's options. `COPAPO_CONFIG` is what a machine sets,
+say it again in the plugin's options. `COFOLD_CONFIG` is what a machine sets,
 since it is the one place a path can be moved for the harness alone. An
 OpenRouter file of your own,
 which the cofold repository also carries copyable at
@@ -2554,7 +2558,7 @@ A record of the engine, as `x-ahpd/agents/put` takes it:
 | `stderrBytes` | How much of the server's stderr, in bytes, a failure carries: `8192` by default, as VS Code keeps the last 8192 of a helper's stderr |
 | `killGraceMs` | How long, in milliseconds, the server's process group has between SIGTERM and SIGKILL: `5000` by default, VS Code's grace for ending a process tree |
 | `closeGraceMs` | How long, in milliseconds, a session waits for the server to answer `session/close` before the connection goes: `1000` by default |
-| `stderrTail` | Where the last of a failed server's stderr goes: `sentence`, the default, puts it under the failure in the error a client is shown, and `log` leaves it to the daemon's log, as VS Code's agents do; each line is logged either way |
+| `stderrTail` | Where the last of a failed server's stderr goes: `sentence`, the default, puts it under the failure in the error a client is shown, and `log` leaves it to the daemon's log, as VS Code's agents do; each line is logged either way. A server that could not open its session is named with the PATH it ran with under `sentence` only |
 | `install` | How to install this agent, by system, as the vendor's own docs give it. **Host records only** |
 | `page` | The vendor's install page, for a system the install lines do not cover |
 | `machine` | What a machine needs to run this agent: `env`, variables set only inside the machine, and `copy`, host paths copied in. See below. **Host records only** |

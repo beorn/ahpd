@@ -1,7 +1,7 @@
 ---
 title: A test's own git call says where it stalled
 domain: host
-status: active
+status: built
 priority: medium
 created: 2026-11-17
 revalidated: 2026-11-17
@@ -78,8 +78,8 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - a test git call has a timeout and a line](task-01-a-test-git-call-has-a-timeout.md) | implemented | - |
-| [02 - every test runs git through gitSync](task-02-every-test-runs-git-through-gitsync.md) | implemented | 01 |
+| [01 - a test git call has a timeout and a line](task-01-a-test-git-call-has-a-timeout.md) | done | - |
+| [02 - every test runs git through gitSync](task-02-every-test-runs-git-through-gitsync.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -89,6 +89,7 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 ## Resume state
 
+- **Closed on 2026-11-18** on Softov's word: every task is `done` or `dropped`, and [implemented.md](implemented.md) says what exists now.
 - **Checks, 2026-11-18:** every item of *Final verification checklist* passed, on the test daemon and the suites at `2946984b6`.
 - **Done so far:** tasks 01 and 02 are `implemented` on 2026-11-17, on the branch `host/20261117-2336-a-test-git-call-says-where-it-stalled`.
 - **Next action:** Softov's review; the next Windows stall of a test's own git call is the check.

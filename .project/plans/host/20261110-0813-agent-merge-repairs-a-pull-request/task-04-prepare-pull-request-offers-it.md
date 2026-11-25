@@ -1,6 +1,6 @@
 ---
 title: prepare-pull-request offers Agent Merge
-status: implemented
+status: done
 depends:
   - task-03-the-four-agent-merge-tools.md
 layer: "sdk"

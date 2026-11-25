@@ -1,6 +1,6 @@
 ---
 title: archive_chat archives one chat
-status: implemented
+status: done
 depends: [task-01-a-row-lists-its-chats.md]
 layer: "sdk, docs"
 refs:

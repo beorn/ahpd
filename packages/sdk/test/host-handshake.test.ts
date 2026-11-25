@@ -66,10 +66,25 @@ const cursorOf = (p: ReturnType<typeof peer>, ...fromSeqs: number[]): number =>
   Math.max(0, ...actions(p).map((one) => one.serverSeq), ...fromSeqs);
 
 describe('the handshake', () => {
+  it('says the path style of the platform it runs on, as AHP 1.1.0 lets it', async () => {
+    const result = await open().handle(hello(['1.1.0'])) as { environment?: { pathStyle?: string } };
+    expect(result.environment).toEqual({ pathStyle: process.platform === 'win32' ? 'windows' : 'posix' });
+  });
+
   it('answers the highest version offered that it speaks, in whatever order they came', async () => {
     for (const offered of [['1.0.0'], ['0.9.0'], ['0.9.0', '1.0.0'], ['1.0.0', '0.9.0']]) {
       const result = await open().handle(hello(offered)) as { protocolVersion: string };
       expect(result.protocolVersion).toBe(offered.includes('1.0.0') ? '1.0.0' : '0.9.0');
+    }
+  });
+
+  it('answers 1.1.0 to an offer of 1.1.0, beside or without 1.0.0', async () => {
+    // The 1.1.0 package lists only 1.0.0 and 0.9.0 as baselines, and answers
+    // an offer of 1.1.0 by its caret rule. The handshake adds no version of
+    // its own, as VS Code builds its list from the package.
+    for (const offered of [['1.1.0'], ['1.1.0', '1.0.0'], ['1.0.0', '1.1.0', '0.9.0']]) {
+      const result = await open().handle(hello(offered)) as { protocolVersion: string };
+      expect(result.protocolVersion).toBe('1.1.0');
     }
   });
 
@@ -145,7 +160,7 @@ describe('the handshake', () => {
     for (const offered of [['0.8.0'], ['99.0.0']]) {
       await expect(open().handle(hello(offered))).rejects.toMatchObject({
         code: -32005,
-        message: `Client offered protocol versions [${offered.join(', ')}], none of which are compatible with this server's version 1.0.0 (server accepts 1.0.0, 0.10.0, 0.9.0).`,
+        message: `Client offered protocol versions [${offered.join(', ')}], none of which are compatible with this server's version 1.1.0 (server accepts 1.0.0, 0.10.0, 0.9.0).`,
         // `supportedVersions`, which is the name the protocol gives it. Under
         // any other one the client has read `undefined` and has no version to
         // retry with, which is the whole point of the field.

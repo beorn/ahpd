@@ -6,7 +6,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { fileResources } from '../../sdk/src/resources/resources.js';
 import { loadPlugins } from '../../server/src/plugins.js';
 import { closeAll, keeping } from './support/closing.js';
@@ -16,6 +16,10 @@ import { agentAddressOf, labelsOfNotes, proxmoxRuntime } from '../src/proxmox.js
 import type { ProxmoxOptions } from '../src/proxmox.js';
 import { keygenWith } from '../src/keys.js';
 import type { MachineSpec } from '../src/runtime.js';
+import { PROCESS_CASE_MS } from '../../../tools/wait.ts';
+
+// Each scripted CLI call is a process of its own: see `PROCESS_CASE_MS`.
+vi.setConfig({ testTimeout: PROCESS_CASE_MS });
 
 /*
  * Virtual machines on a Proxmox node, made through a fake of its API served

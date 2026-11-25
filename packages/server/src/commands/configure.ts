@@ -22,11 +22,12 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
+import { styleText } from 'node:util';
 import { output } from '@cofold/commands';
 import type { Command, Registry } from '@cofold/commands';
-import { filePolicies, isRecord, knownAgents, sdkVersion } from '@ahpd/sdk';
+import { filePolicies, installLine, isRecord, knownAgents, sdkVersion } from '@ahpd/sdk';
 import type { Policy, PolicyKind, RecordCollection } from '@ahpd/sdk';
-import { ask, answering, confirm, here, type Term } from '../ask.js';
+import { ask, answering, confirm, here, multiselect, report, type Term } from '../ask.js';
 import { asSpec, besideFile, configDir, configPath, policiesPath } from '../config.js';
 import { marketplacesOf } from '../pluginlist.js';
 import { AGENT_PLUGIN, agentLines, alsoLines, configuredAgents, findAgents, findAlso, findRuntimes, missingLines, runtimeLines } from '../found.js';
@@ -45,11 +46,15 @@ import { usersAt } from './user.js';
  * `configure` offers each one whose command it finds on PATH. The order is the
  * one a person is most likely to want them in.
  */
-const BACKENDS = [
-  { name: 'Claude', package: '@ahpd/agent-claude' },
-  { name: 'cofold', package: '@ahpd/agent-cofold' },
-  { name: 'pi', package: '@ahpd/agent-pi' },
-] as const;
+/** The ACP runtime, which runs the ACP agents found on this machine. */
+const ACP = '@ahpd/agent-acp';
+
+const BACKENDS: readonly { name: string; package: string; hint: string }[] = [
+  { name: 'ACP', package: ACP, hint: 'Codex, Gemini, Copilot and the other ACP agents found on this machine' },
+  { name: 'Claude', package: '@ahpd/agent-claude', hint: 'Claude Code through the Claude Agent SDK' },
+  { name: 'cofold', package: '@ahpd/agent-cofold', hint: 'cofold, the agent framework this project builds' },
+  { name: 'pi', package: '@ahpd/agent-pi', hint: 'the pi agent, run in this process' },
+];
 
 /** The one a first install gets without being asked, because a daemon needs a backend. */
 const FIRST = '@ahpd/agent-claude';
@@ -69,8 +74,15 @@ const PI = '@ahpd/agent-pi';
  * are asked with the same question and installed the same way, and a daemon
  * with none of them still starts.
  */
-const OTHERS = [
-  { name: 'Web UI', package: '@ahpd/web' },
+const OTHERS: readonly { name: string; package: string; hint: string }[] = [
+  { name: 'Web UI', package: '@ahpd/web', hint: 'the web interface for ahpd' },
+  { name: 'Tasks', package: '@ahpd/tasks', hint: 'tasks and plans that agents coordinate through' },
+  { name: 'Computers', package: '@ahpd/computer', hint: 'sessions in isolated machines: containers, VMs or ssh' },
+  { name: 'Push', package: '@ahpd/push', hint: 'a notification when a session needs you' },
+  { name: 'Bots', package: '@ahpd/bot', hint: 'agents with a name, a persona and a workspace of their own' },
+  { name: 'Webhooks', package: '@ahpd/webhook', hint: 'external services trigger actions, each with its own secret' },
+  { name: 'Dev Tunnels', package: '@ahpd/tunnel-devtunnel', hint: 'reach this daemon from anywhere, without opening ports' },
+  { name: 'Activepieces', package: '@ahpd/activepieces', hint: 'Activepieces pieces as connectors and their actions as tools' },
 ] as const;
 
 /** The users file a run that adds a person writes, beside the configuration, when the configuration names none. */
@@ -250,6 +262,43 @@ const withoutPreset = (list: unknown[], id: string): unknown[] => {
  * a reason to keep the settings somebody just chose, and `enableNames` then adds
  * the packages npm installed to what is already there.
  */
+/**
+ * Ask whether a listener is served, and on which port when it is.
+ *
+ * The answer is `undefined` when the file holds nothing and the answer is No,
+ * so an absent key stays absent; otherwise it is `false`, `true` for the
+ * daemon's own listener, or `{ port }` for a listener of its own.
+ */
+const listenerQuestion = async (
+  name: string,
+  was: unknown,
+  term: Term,
+  configFile: string,
+): Promise<boolean | { port: number } | undefined> => {
+  const on = was !== undefined && was !== false;
+  if (!await confirm(`Serve the ${name}?`, on, term)) return was === undefined ? undefined : false;
+  const current = typeof was === 'object' && was !== null && 'port' in was && typeof (was as { port: unknown }).port === 'number'
+    ? String((was as { port: number }).port)
+    : 'own';
+  const typed = (await ask(`Port for the ${name}, or own for the daemon's own listener`, current, term)).trim();
+  if (typed === 'own') return true;
+  const port = Number(typed);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    stop(`The ${name} port must be a number from 1 to 65535, not ${typed}, in ${configFile}.`);
+  }
+  return { port };
+};
+
+/**
+ * Run one install line through the platform's shell, as a person would type it.
+ *
+ * The line is a vendor's command, so it is run by the shell that reads it and
+ * is never split here.
+ */
+const runShell = (run: Runner, platform: NodeJS.Platform, line: string) => (platform === 'win32'
+  ? run('cmd.exe', ['/d', '/s', '/c', line])
+  : run('/bin/sh', ['-c', line]));
+
 export async function configure(options: ConfigureOptions): Promise<Configured> {
   const held = readEntry(options.configFile);
   const installed = named(held);
@@ -274,13 +323,31 @@ export async function configure(options: ConfigureOptions): Promise<Configured> 
    * where they are: removing a plugin is `ahpd plugin remove`, and meaning the
    * same thing here would mean uninstalling it too.
    */
-  const backends: string[] = [];
+  const platform = process.platform;
+  const path = options.path ?? process.env.PATH ?? '';
+  const onPath = held.onPath === 'findExecutable' ? 'findExecutable' : 'runnable';
+  const runtimes = await findRuntimes({ run: options.run, path, platform, onPath });
+  const configured = configuredAgents(held.plugins, await agentRecords.list());
+  const found = await findAgents({ run: options.run, path, platform, onPath }, configured);
+  // The runtimes are said before the questions. The agents are said once ACP is
+  // answered on, since they are only listed for ACP to run.
+  for (const line of runtimeLines(runtimes)) options.say(line);
   let plugins = Array.isArray(held.plugins) ? [...held.plugins] : [];
+  // Claude and ACP are on by default, as a daemon with neither is not much use:
+  // ACP runs the agents found below, and a daemon with no backend will not start.
+  const backendNow = BACKENDS.filter((backend) => installed.has(backend.package)
+    || backend.package === FIRST || backend.package === ACP);
+  const backends = await multiselect(
+    'Which agent runtimes should ahpd run?',
+    BACKENDS.map((backend) => ({ value: backend.package, label: backend.name, hint: backend.hint })),
+    backendNow.map((backend) => backend.package),
+    options.term,
+  );
   for (const backend of BACKENDS) {
     const was = installed.has(backend.package);
-    const keep = await confirm(`${backend.name}?`, was || backend.package === FIRST, options.term);
-    if (keep) backends.push(backend.package);
-    if (was) plugins = switched(plugins, backend.package, keep);
+    if (was && enabledIn(plugins, backend.package) !== backends.includes(backend.package)) {
+      plugins = switched(plugins, backend.package, backends.includes(backend.package));
+    }
   }
   const nativePi = backends.includes(PI);
 
@@ -292,12 +359,17 @@ export async function configure(options: ConfigureOptions): Promise<Configured> 
    * file's own answer, so a plugin somebody switched off is not reinstalled
    * by pressing Enter through the questions.
    */
-  const others: string[] = [];
+  const others = await multiselect(
+    'Which other plugins should ahpd install?',
+    OTHERS.map((other) => ({ value: other.package, label: other.name, hint: other.hint })),
+    OTHERS.filter((other) => enabledIn(plugins, other.package) || firstRun).map((other) => other.package),
+    options.term,
+  );
   for (const other of OTHERS) {
     const was = installed.has(other.package);
-    const keep = await confirm(`${other.name}?`, firstRun || enabledIn(plugins, other.package), options.term);
-    if (keep) others.push(other.package);
-    if (was) plugins = switched(plugins, other.package, keep);
+    if (was && enabledIn(plugins, other.package) !== others.includes(other.package)) {
+      plugins = switched(plugins, other.package, others.includes(other.package));
+    }
   }
 
   /*
@@ -310,33 +382,32 @@ export async function configure(options: ConfigureOptions): Promise<Configured> 
    * more is said about it. A found agent this host already has a record for is
    * shown as configured and not asked about again.
    */
-  const platform = process.platform;
-  const path = options.path ?? process.env.PATH ?? '';
-  const onPath = held.onPath === 'findExecutable' ? 'findExecutable' : 'runnable';
-  const runtimes = await findRuntimes({ run: options.run, path, platform, onPath });
-  for (const line of runtimeLines(runtimes)) options.say(line);
-
-  const configured = configuredAgents(held.plugins, await agentRecords.list());
-  const found = await findAgents({ run: options.run, path, platform, onPath }, configured);
   const taken: string[] = [];
-  if (answering(options.term)) {
-    for (const line of agentLines(found.agents)) options.say(line);
-  }
   for (const line of alsoLines(await findAlso({ run: options.run, path, platform, onPath }))) options.say(line);
-  if (answering(options.term)) {
-    for (const one of found.agents) {
-      /*
-       * The native backend and the ACP agent `pi` serve the same name, and the
-       * daemon keeps only the first. Taking the native one is taken to mean the
-       * ACP one, so it is not offered, and a person who wants the ACP agent
-       * answers No to the native question instead.
-       */
+  // The agents are asked for only when ACP is on, since ACP is what runs them.
+  if (answering(options.term) && backends.includes(ACP)) {
+    for (const line of agentLines(found.agents)) options.say(line);
+    /*
+     * The native backend and the ACP agent `pi` serve the same name, and the
+     * daemon keeps only the first. Taking the native one is taken to mean the
+     * ACP one, so it is not offered, and a person who wants the ACP agent
+     * unticks the native backend instead.
+     */
+    const offered = found.agents.filter((one) => {
       if (nativePi && one.agent.id === 'pi') {
         options.say(`${one.agent.command}: not asked, the pi backend runs pi`);
-        continue;
+        return false;
       }
-      if (one.configured) continue;
-      if (!await confirm(`${one.agent.name}?`, true, options.term)) continue;
+      return !one.configured;
+    });
+    const kept = offered.length === 0 ? [] : await multiselect(
+      'Which agents found on this machine should ahpd serve?',
+      offered.map((one) => ({ value: one.agent.id, label: one.agent.name })),
+      offered.map((one) => one.agent.id),
+      options.term,
+    );
+    for (const one of offered) {
+      if (!kept.includes(one.agent.id)) continue;
       taken.push(one.agent.id);
       plugins = withAgentPlugin(plugins);
       try {
@@ -344,6 +415,41 @@ export async function configure(options: ConfigureOptions): Promise<Configured> 
       }
       catch (error) {
         stop(`The agent ${one.agent.id} could not be written as a record: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    /*
+     * The agents this machine does not have, each with its install line for
+     * this system. Nothing is installed unless it is ticked here and a second
+     * question says yes, so a list of commands is never run by Enter.
+     */
+    const absent = found.missing.filter((agent) => installLine(agent, platform) !== undefined);
+    const toInstall = absent.length === 0 ? [] : await multiselect(
+      'Which ACP agents not found here should ahpd install?',
+      absent.map((agent) => ({ value: agent.id, label: agent.name, hint: installLine(agent, platform) ?? '' })),
+      [],
+      options.term,
+    );
+    const chosen = absent.filter((agent) => toInstall.includes(agent.id));
+    if (chosen.length > 0) {
+      for (const agent of chosen) options.say(`  ${agent.name}: ${installLine(agent, platform) ?? ''}`);
+      if (await confirm('Run these install commands now?', false, options.term)) {
+        for (const agent of chosen) {
+          const line = installLine(agent, platform) ?? '';
+          options.say(`Installing ${agent.name}: ${line}`);
+          const ran = await runShell(options.run, platform, line);
+          if (ran.code !== 0) {
+            options.say(`${agent.name} did not install (exit ${String(ran.code)}). Its record is not written.`);
+            continue;
+          }
+          taken.push(agent.id);
+          plugins = withAgentPlugin(plugins);
+          try {
+            await takeAgent(agentRecords, agent.id);
+          }
+          catch (error) {
+            stop(`The agent ${agent.id} could not be written as a record: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
       }
     }
     // A host that already has both was configured before this question existed,
@@ -426,19 +532,32 @@ export async function configure(options: ConfigureOptions): Promise<Configured> 
    * The folders, each one asked about on its own.
    *
    * With none configured the folder the daemon was started in is the one it
-   * serves, so that is the one asked about. Refusing every folder is refused
-   * rather than written: an empty `paths` serves the current folder anyway, so
-   * answering No to all of them and being given one of them back is the one
-   * outcome this must not have.
+   * serves, so that is the one asked about. Refusing every folder is not
+   * written: an empty `paths` serves the current folder anyway, so the
+   * questions are asked again with the reason, until one folder is kept.
    */
-  const paths: string[] = [];
-  for (const folder of foldersIn(held)) {
-    if (await confirm(`Serve ${folder}?`, true, options.term)) paths.push(folder);
+  let paths: string[] = [];
+  while (paths.length === 0) {
+    for (const folder of foldersIn(held)) {
+      if (await confirm(`Serve ${folder}?`, true, options.term)) paths.push(folder);
+    }
+    if (paths.length === 0) {
+      options.say(`Every folder was refused, and a daemon serves ${process.cwd()} unless "paths" names others. `
+        + 'Answer Yes to one of them, or unset paths and start it where you want it served.');
+    }
   }
-  if (paths.length === 0) {
-    stop(`Every folder was refused, and a daemon serves ${process.cwd()} unless "paths" names others. `
-      + 'Answer Yes to one of them, or unset paths and start it where you want it served.');
-  }
+
+  /*
+   * The HTTP API and the model gateway, each on or off, and a port when on.
+   *
+   * Enter keeps what the file holds, and a file that names neither keeps both
+   * off. A port is the listener of its own, and Enter at the port keeps the
+   * daemon's own listener.
+   */
+  const httpApi = await listenerQuestion('HTTP API', held.httpApi, options.term, options.configFile);
+  if (httpApi !== undefined) held.httpApi = httpApi;
+  const modelApi = await listenerQuestion('model gateway', held.modelApi, options.term, options.configFile);
+  if (modelApi !== undefined) held.modelApi = modelApi;
 
   /*
    * The plugin lists, as URLs split by commas, asked last.
@@ -557,13 +676,15 @@ export async function configure(options: ConfigureOptions): Promise<Configured> 
     options.say(`Wrote ${starters.map((row) => row.id).join(', ')} to ${policiesPath(options.configDir)}. A running daemon reads them when it starts again.`);
   }
 
-  const missing = [
+  // A set, because the package every taken agent runs through is also a backend
+  // when ACP is on, and it is installed once.
+  const missing = [...new Set([
     ...backends.filter((one) => !installed.has(one)),
     ...others.filter((one) => !installed.has(one)),
     // The package every taken agent runs through, installed with them rather
     // than before the questions, because a first run has no entry for it yet.
     ...(taken.length > 0 && !installed.has(AGENT_PLUGIN) ? [AGENT_PLUGIN] : []),
-  ];
+  ])];
   if (missing.length > 0) {
     await installPlugins(missing, {
       configDir: options.configDir, configFile: options.configFile,
@@ -693,9 +814,28 @@ export const declareConfigure = (registry: Registry<object>): Command => registr
     });
     // The offer at a first start starts the daemon next, so only the command
     // says how to.
-    const next = 'Start the daemon: ahpd start';
-    if (payload) context.error(next);
-    else context.write(`${next}\n`);
+    const next: [string, string][] = [
+      ['ahpd start', 'Start the daemon'],
+      ['ahpd status', 'Check status and listening addresses'],
+      ['ahpd configure', 'Change an answer later, with the same questions'],
+    ];
+    if (!payload && answering(here)) {
+      // The commands are coloured here, and the words after them are lined up
+      // on the plain width, since the colour codes take no room on the screen.
+      const width = Math.max(...next.map(([command]) => command.length)) + 3;
+      await report(done.path, next.map(([command, meaning]) => `${styleText('cyan', command, { stream: process.stdout })}${' '.repeat(width - command.length)}${meaning}`), here);
+    }
+    else {
+      // Without a terminal, the commands are plain lines; the colour is only
+      // where the stream is a terminal, and the names line up in one column.
+      const stream = payload ? process.stderr : process.stdout;
+      const width = Math.max(...next.map(([command]) => command.length)) + 3;
+      for (const [command, meaning] of next) {
+        const line = `${styleText('cyan', command, { stream })}${' '.repeat(width - command.length)}${meaning}`;
+        if (payload) context.error(line);
+        else context.write(`${line}\n`);
+      }
+    }
     return output(done, '');
   },
 });

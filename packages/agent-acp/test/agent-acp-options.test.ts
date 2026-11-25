@@ -45,6 +45,49 @@ const load = (options: Record<string, unknown>) => loadPlugins([{ name: SOURCE, 
   log: () => {},
 });
 
+/*
+ * The options and a record's fields in the order a form draws them, by
+ * purpose: the model, the prompt, the tools, the run, the folders, the
+ * machine, and the tuning last. A new field goes in its group.
+ */
+it('lists its options and a record\'s fields by purpose', async () => {
+  expect(declared()).toEqual([
+    'hostTools',
+    'toolsChanged',
+  ]);
+  const { options: served, problems } = await load(VALID);
+  expect(problems).toEqual([]);
+  expect(Object.keys(served.engines?.['acp']?.schema.properties ?? {})).toEqual([
+    'hostTools',
+    'toolsChanged',
+    'base',
+    'command',
+    'args',
+    'install',
+    'page',
+    'env',
+    'cwd',
+    // This fork's ACP custody fields, beside the process they configure.
+    'sessionIdEnv',
+    'spawnGuard',
+    'authenticate',
+    'honoursTrust',
+    'machine',
+    'portFailures',
+    'cutTurns',
+    'stderrTail',
+    'modes',
+    'unreportedClientCalls',
+    'findFreshMs',
+    'listingIdleMs',
+    'sessionListMaxPages',
+    'exitGraceMs',
+    'stderrBytes',
+    'killGraceMs',
+    'closeGraceMs',
+  ]);
+});
+
 it('declares every option its README lists, and no other', () => {
   expect(declared().sort()).toEqual(documented().sort());
 });

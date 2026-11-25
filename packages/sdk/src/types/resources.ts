@@ -91,6 +91,14 @@ export interface Read {
   encoding: `${ContentEncoding}`;
   /** Sniffed MIME type, where there is one worth reporting. */
   contentType?: string;
+  /** The whole resource's size in bytes, present only when the read honoured a byte range (AHP 1.1.0). */
+  size?: number;
+}
+
+/** A byte range of a read, as AHP 1.1.0's `resourceRead` asks it: from `position`, at most `length` bytes. */
+export interface ReadRange {
+  position?: number;
+  length?: number;
 }
 
 /** What happened to one path, in the protocol's three words. */
@@ -135,6 +143,12 @@ export interface ResourceStore {
   list(uri: string): Promise<Entry[]>;
   /** One file's bytes, or the range of them that was asked for. */
   read(uri: string, wanted?: string): Promise<Read>;
+  /**
+   * A byte range of one file, with the file's `size`. A store without it
+   * answers a ranged `resourceRead` with the whole file, as AHP 1.1.0 lets a
+   * receiver that does not honour ranges.
+   */
+  readRange?(uri: string, wanted: string | undefined, range: ReadRange): Promise<Read>;
   /** What a URI is, without reading it. */
   resolve(uri: string, followSymlinks?: boolean): Promise<Metadata>;
   /** Paths under `base` that start with what is typed. */

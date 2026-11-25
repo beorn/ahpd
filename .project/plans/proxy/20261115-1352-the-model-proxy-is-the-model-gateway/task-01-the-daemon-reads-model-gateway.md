@@ -1,6 +1,6 @@
 ---
 title: The daemon reads modelGateway
-status: implemented
+status: done
 depends: []
 layer: "packages/server"
 refs:

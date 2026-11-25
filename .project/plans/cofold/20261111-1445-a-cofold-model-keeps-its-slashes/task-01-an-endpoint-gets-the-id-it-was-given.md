@@ -1,6 +1,6 @@
 ---
 title: An endpoint gets the id it was given
-status: implemented
+status: done
 depends: []
 layer: "agent-cofold"
 refs:

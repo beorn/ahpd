@@ -24,7 +24,7 @@ import type { Where } from '../plugins.js';
 import type { PluginSpec } from '@ahpd/sdk';
 import { keyed, maskOption, schemasFor, withoutSpecSecrets, withoutUserinfoIn } from './config.js';
 import { namedOptionsFrom, pluginWriteFields, flagFields, serverFields, servedPluginWriteFields, splitPluginOption, stop, typedValue } from './options.js';
-import { reachable } from './paths.js';
+import { reachable, tokenIn } from './paths.js';
 import type { ServedFacts } from './served.js';
 
 /** What a change to the plugins says when only a restart loads it: a plugin with a port, or no daemon to ask. */
@@ -38,20 +38,6 @@ const RESTART = 'Restart the daemon to load the change: ahpd restart';
  * person should be left holding a terminal for.
  */
 const APPLY_WAIT_MS = 10_000;
-
-/**
- * The token a recorded daemon's connect URL carries, read as `commands/paths.ts`
- * reads it. A record an older daemon wrote has none, and the call is made
- * without one: the refusal is then the daemon's own.
- */
-const tokenIn = (connectUrl: string): string | undefined => {
-  try {
-    return new URL(connectUrl).searchParams.get('tkn') ?? undefined;
-  }
-  catch {
-    return undefined;
-  }
-};
 
 /**
  * What a set says when the running daemon's recorded line already sets that

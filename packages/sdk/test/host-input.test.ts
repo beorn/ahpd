@@ -495,7 +495,7 @@ describe('a message typed while a turn is running', () => {
     // With its origin, which `Message` requires and this host used to omit
     // everywhere it built one.
     expect(opened.snapshot.state.queuedMessages)
-      .toEqual([{ id: 'q1', message: { text: 'second', origin: { kind: 'user' } } }]);
+      .toEqual([{ id: 'q1', kind: 'queued', message: { text: 'second', origin: { kind: 'user' } } }]);
     // And the agent has not been told about it yet.
     expect(sdk.said).toEqual(['first']);
   });

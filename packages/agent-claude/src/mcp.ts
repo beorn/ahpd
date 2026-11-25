@@ -112,39 +112,5 @@ export const urlOf = (config: unknown): string | undefined => {
   return kind === 'http' || kind === 'sse' ? url : undefined;
 };
 
-/**
- * What an MCP server says about signing into it, per RFC 9728.
- *
- * Found as VS Code finds it: the well-known path with the server's path
- * appended where the URL has one, then the origin's own, each answer taken
- * only where its `resource` is the one it was asked for (the server's URL for
- * the first, its origin for the second), since RFC 9728 says the two MUST
- * match. Answers the discovered document, or a bare one naming the server
- * itself: the URL is the canonical resource identifier, so an incomplete
- * answer is still a true one, and what a client loses is the one-click
- * sign-in, not the knowledge that it needs to sign in.
- * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/base/common/oauth.ts#L1201-L1290
- * https://datatracker.ietf.org/doc/html/rfc9728#PRConfigurationValidation
- */
-export async function protectedResource(url: string, name: string, ms = 15_000): Promise<Bag> {
-  const bare: Bag = { resource: url, resource_name: name };
-  const target = new URL(url);
-  const root = `${target.origin}/.well-known/oauth-protected-resource`;
-  const fetched = async (at: string, expected: string): Promise<Bag | undefined> => {
-    const said = await fetch(at, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(ms) })
-      .then((answer) => (answer.status === 200 ? answer.json() as Promise<unknown> : undefined))
-      .catch(() => undefined);
-    if (typeof said !== 'object' || said === null) return undefined;
-    const metadata = said as Bag;
-    if (typeof metadata.resource !== 'string') return undefined;
-    try {
-      return new URL(metadata.resource).toString() === new URL(expected).toString() ? metadata : undefined;
-    }
-    catch {
-      return undefined;
-    }
-  };
-  return (target.pathname !== '/' ? await fetched(`${root}${target.pathname}`, url) : undefined)
-    ?? await fetched(root, target.origin)
-    ?? bare;
-}
+/** Moved to `@ahpd/sdk`, the one place it is found; re-exported so this module's callers are unchanged. */
+export { protectedResource } from '@ahpd/sdk';

@@ -16,12 +16,16 @@ on:
 # What the staging, rehearsal and approval steps name. The pack step packs
 # every workspace package; this list is what is published.
 env:
+  # The packages the ahpd part is made of, packed once, by the parts job, since
+  # the part's lock holds the hash of each.
+  PART_PACKAGES: sdk server agent-cofold agent-pi
   PUBLISHED: sdk activepieces agent-claude agent-cofold agent-acp agent-pi bot tasks computer push webhook tunnel-devtunnel server
 
 jobs:
   release:
     # The parts first: `@ahpd/computer` carries the digest of each part image
-    # the parts job publishes, and a host pulls each part by it. A part that
+    # the parts job publishes, and a host pulls each part by it. It also carries
+    # the ahpd part's version and locks, made from the packages that job packs. A part that
     # does not build or push stops the release here, before any package is
     # staged; a rerun of the failed job carries on.
     needs: parts
@@ -114,18 +118,33 @@ jobs:
       # an sdk it was not built against.
       - run: pnpm sdk-range
       - run: pnpm typecheck
+      # What ci.yml installs before the sandbox runtime's cases, which fail on
+      # CI without it.
+      - name: The sandbox runtime's tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat ripgrep
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if [ -e /etc/apparmor.d/bwrap-userns-restrict ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+          fi
+          bwrap --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc true
+
       - run: timeout 1500 pnpm test
       - run: pnpm build
 
-      # The digests the parts job wrote, beside the versions file they pin, so
-      # the computer package carries them. A dry run pushed nothing, so it has
-      # none and packs without them.
-      - name: The parts' digests
-        if: ${{ inputs.dry_run != true }}
+      # What the parts job made: the ahpd part's packed packages, its version
+      # and locks, and the digests of the images. After the tests, which read
+      # the committed files, and before the pack that carries these. A dry run
+      # pushed nothing, so it has no digests and packs without them.
+      - name: What the parts job made
         uses: actions/download-artifact@v4
         with:
-          name: parts-digests
-          path: packages/computer/images
+          name: ahpd-part
+          path: ${{ runner.temp }}/ahpd-part
+
+      - name: The release's own ahpd part
+        run: cp -R "${{ runner.temp }}/ahpd-part/images/." packages/computer/images/
 
       # Packed by pnpm and not by npm, because these packages depend on each
       # other with `workspace:^` and only pnpm rewrites that to a real range on
@@ -133,7 +152,12 @@ jobs:
       # which installs here and is broken for everybody else - it looks fine
       # right up until somebody else runs `npm i`.
       - name: Pack
-        run: pnpm -r exec pnpm pack --pack-destination ${{ runner.temp }}
+        run: |
+          set -eu
+          pnpm -r exec pnpm pack --pack-destination ${{ runner.temp }}
+          # The parts job's own tarballs over the ones just packed: they are
+          # the bytes the part's lock names.
+          cp "${{ runner.temp }}"/ahpd-part/packed/*.tgz "${{ runner.temp }}/"
 
       # Read out of each tarball rather than grepped over it: a .tgz is gzipped,
       # so a grep for `workspace:` over the file finds nothing whatever is in it.
@@ -167,6 +191,45 @@ jobs:
             exit 1
           fi
           tar -xzOf "$tarball" package/images/digests.json
+
+      # A host installs what this names, so it has to be this version, and each
+      # lock has to hold the bytes about to be staged. A version npm already
+      # serves with other bytes, from an earlier run of this tag, could never be
+      # installed from the lock, so nothing is staged beside it. A rehearsal on
+      # a tree whose version is released says so and passes.
+      - name: The computer package carries this release's ahpd part
+        run: |
+          set -eu
+          tarball=$(ls ${{ runner.temp }}/ahpd-computer-*.tgz)
+          out=$(mktemp -d)
+          tar -xzf "$tarball" -C "$out"
+          version=$(node -p "require('./packages/sdk/package.json').version")
+          for package in $PART_PACKAGES; do
+            node - "$out/package/images" "$version" "$package" "${{ runner.temp }}/ahpd-$package-$version.tgz" <<'CHECK'
+          const { createHash } = require('node:crypto');
+          const { readFileSync } = require('node:fs');
+          const [images, version, name, tarball] = process.argv.slice(2);
+          const read = (path) => JSON.parse(readFileSync(`${images}/${path}`, 'utf8'));
+          const part = read('versions.json').find((one) => one.kind === 'ahpd');
+          if (part.version !== version) throw new Error(`the ahpd part is ${part.version} and the release is ${version}`);
+          const integrity = `sha512-${createHash('sha512').update(readFileSync(tarball)).digest('base64')}`;
+          const held = ['parts/ahpd', 'parts/ahpd/plugins']
+            .map((folder) => read(`${folder}/package-lock.json`).packages[`node_modules/@ahpd/${name}`])
+            .filter((one) => one !== undefined);
+          if (held.length === 0 || held.some((one) => one.integrity !== integrity)) throw new Error(`the ahpd part's lock does not hold ${tarball}`);
+          console.log(`@ahpd/${name}@${version} ${integrity}`);
+          CHECK
+            served=$(npm view "@ahpd/$package@$version" dist.integrity 2>/dev/null || true)
+            mine="sha512-$(openssl dgst -sha512 -binary "${{ runner.temp }}/ahpd-$package-$version.tgz" | base64 -w0)"
+            if [ -n "$served" ] && [ "$served" != "$mine" ]; then
+              if [ "${{ inputs.dry_run }}" = "true" ]; then
+                echo "npm serves another @ahpd/$package@$version. Expected until the manifests are bumped."
+              else
+                echo "npm serves another @ahpd/$package@$version, so no host could install this release's ahpd part."
+                exit 1
+              fi
+            fi
+          done
 
       # Staged by npm, not published, and by npm rather than pnpm because
       # trusted publishing is npm's own feature and pnpm's support for it has
@@ -300,26 +363,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The packages of the ahpd part, packed here and staged by the release
+      # job as they are, and the part's version and locks written from them as
+      # npm will serve them. npm does not serve them yet, so the part's image is
+      # built from the tarballs.
+      - run: pnpm build
+
+      - name: Pack the ahpd part, and write its version and locks
+        run: |
+          set -eu
+          made="${{ runner.temp }}/ahpd-part"
+          mkdir -p "$made/packed" "$made/images/parts"
+          for package in $PART_PACKAGES; do
+            (cd "packages/$package" && pnpm pack --pack-destination "$made/packed")
+          done
+          node scripts/parts-bump.mjs --release "$made/packed"
+          cp packages/computer/images/versions.json "$made/images/"
+          cp -R packages/computer/images/parts/ahpd "$made/images/parts/"
+
       # The plugin's own source, read through the resolver and the condition
-      # that point each workspace package at its source, so nothing is built
-      # first.
+      # that point each workspace package at its source.
       - name: Build the parts, and push them
         if: ${{ inputs.dry_run != true }}
-        run: node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs --push
-
-      # The digest of each image the push left published, for the release job
-      # to pack into the computer package.
-      - name: Hand the digests to the release job
-        if: ${{ inputs.dry_run != true }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: parts-digests
-          path: packages/computer/images/digests.json
-          if-no-files-found: error
+        run: node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs --push --packages "${{ runner.temp }}/ahpd-part/packed"
 
       - name: Build the parts, and push nothing
         if: ${{ inputs.dry_run == true }}
-        run: node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs
+        run: node --conditions development --import ./scripts/dev.mjs scripts/parts-publish.mjs --packages "${{ runner.temp }}/ahpd-part/packed"
+
+      # The digest of each image the push left published, beside the ahpd part's
+      # version and locks, for the release job to pack into the computer package.
+      - name: The digests of what was pushed
+        if: ${{ inputs.dry_run != true }}
+        run: cp packages/computer/images/digests.json "${{ runner.temp }}/ahpd-part/images/"
+
+      - name: Hand them to the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ahpd-part
+          path: ${{ runner.temp }}/ahpd-part
+          if-no-files-found: error
 
   # The daemon's own image, from the Dockerfile this tag writes, for both
   # platforms a machine runs on. It waits for the checks the release runs and

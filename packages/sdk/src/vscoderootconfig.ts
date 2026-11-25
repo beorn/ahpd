@@ -15,7 +15,7 @@ import type { ConfigPropertySchema } from '@microsoft/agent-host-protocol';
  * contributes the literal it resolves to. The two keys whose default comes
  * from `src/vs/platform/chat/common/chatSettings.ts` name that file as a URL.
  *
- * This host acts on ten of them, each one setting for every connection:
+ * This host acts on twelve of them, each one setting for every connection:
  * `globalAutoApproveEnabled`, `autoApprovePolicyRestricted` and
  * `permissions`, which a tool question is decided by,
  * `terminalAutoApproveEnabled`, `terminalAutoApproveRules` and
@@ -25,10 +25,17 @@ import type { ConfigPropertySchema } from '@microsoft/agent-host-protocol';
  * reach the store, `chatMoves.enabled`, which a chat's move is offered and
  * made by, `enableCustomTerminalTool`, which decides whether a session is
  * offered the host's own shell tools, and `artifactTools`, which decides
- * whether it is offered the artifact tools. The rest are declared so that a client
+ * whether it is offered the artifact tools, and `shellAuthentication`, which
+ * decides whether a process is given the helper a prompt comes through, and
+ * `diagnosticTiming`, which decides whether a window's timing records are
+ * taken and exported as spans. The
+ * rest are declared so that a client
  * can draw them and so that a push of one is kept and read back rather than
  * refused; what is acted on is in `docs/sdk/AHP.md`.
  */
+
+/** VS Code's root key for chats of one session on different agents. */
+export const MULTIPLE_CHAT_PROVIDERS = 'multipleChatProviders.enabled';
 
 /**
  * The properties VS Code's own agent host declares for the keys it pushes.
@@ -45,7 +52,10 @@ import type { ConfigPropertySchema } from '@microsoft/agent-host-protocol';
  * `host/catalogue.ts` asks before it offers a move and
  * `host/sessionmethods.ts` before it makes one; and `enableCustomTerminalTool`
  * and `artifactTools`, which `host/tooling.ts` asks when it lists a session's
- * tools.
+ * tools; and `shellAuthentication`, which `host/shellauth.ts` follows: on, a
+ * process gets the helper's variables and the chat's token, and off, nothing
+ * is listening; and `diagnosticTiming`, which `host/vscodemethods.ts` asks
+ * before it takes a window's timing record.
  *
  * `workspaceTrust` is not here: it is declared beside `defaultShell` in
  * `host/root.ts`.
@@ -146,7 +156,7 @@ export const vscodeRootProperties: Record<string, ConfigPropertySchema> = {
   permissions: {
     type: 'object',
     title: 'Permissions',
-    description: 'Permission rules: a tool name or Tool(specifier), e.g. Shell(npm run *), WebFetch(example.com), WebFetch(example.com/docs/*), Read(./src/**), or Edit(./docs/**). Shell specifiers support wildcards, /regex/flags, and commandLine:<specifier> for the full command line. Deny rules reject matching calls; ask rules require confirmation before allow rules or implicit defaults. Updated automatically when approving "in this Session" or "Always Allow".',
+    description: 'Permission rules: a tool name or Tool(specifier), e.g. Shell(npm run *), WebFetch(example.com), WebFetch(example.com/docs/*), Read(./src/**), Edit(./docs/**), Mcp(server), or Mcp(server/tool). Shell specifiers support wildcards, /regex/flags, and commandLine:<specifier> for the full command line. Deny rules reject matching calls; ask rules require confirmation before allow rules or implicit defaults. Updated automatically when approving "in this Session" or "Always Allow".',
     properties: {
       allow: { type: 'array', title: 'Allowed permission rules', items: { type: 'string', title: 'Permission rule' } },
       deny: { type: 'array', title: 'Denied permission rules', items: { type: 'string', title: 'Permission rule' } },
@@ -265,6 +275,29 @@ export const vscodeRootProperties: Record<string, ConfigPropertySchema> = {
     description: 'When enabled, Copilot SDK sessions use Agent Host\'s terminal tool override instead of the SDK\'s default terminal behavior. Not supported on Windows, where sessions use the SDK\'s terminal and sandbox runtime.',
     default: false,
   },
+  /*
+   * `platformRootSchema`, `agentHostSchema.ts` at `ddbdd50a9ed1`, where a
+   * window mirrors `chat.agentHost.copilot.shellAuthentication.enabled`. The
+   * helper a command asks through exists only while this is on, and the
+   * socket it reaches is closed when it goes off.
+   */
+  shellAuthentication: {
+    type: 'boolean',
+    title: 'Shell Authentication',
+    description: 'Whether commands an agent runs may ask the window for a password or a passphrase.',
+    default: false,
+  },
+  /*
+   * The host's own key: while it is on, the two timing methods take a window's
+   * records and export them as diagnostic spans, and `initialize` advertises
+   * the `_meta` capabilities that offer those methods.
+   */
+  diagnosticTiming: {
+    type: 'boolean',
+    title: 'Diagnostic Timing',
+    description: 'Whether the host accepts timing records from a connected window and exports each as a diagnostic span.',
+    default: false,
+  },
   // `platformRootSchema`, `agentHostSchema.ts:943`.
   autoAttachPullRequests: {
     type: 'boolean',
@@ -279,12 +312,81 @@ export const vscodeRootProperties: Record<string, ConfigPropertySchema> = {
     description: 'Whether agents prepare their session for a turn while the turn-start checkpoint is captured, instead of after it.',
     default: false,
   },
-  // `platformRootSchema`, `agentHostSchema.ts:955`.
-  migrateLegacyCopilotCliEnabled: {
+  // `platformRootSchema`, `agentHostSchema.ts:1193` at `ddbdd50a9ed1`.
+  keepAwakeWhileWorking: {
+    type: 'string',
+    title: 'Keep Awake While Working',
+    description: 'Controls when this Agent Host prevents idle sleep while a chat is working. The display can turn off and explicit sleep is not inhibited.',
+    enum: ['never', 'always', 'whenPluggedIn'],
+    enumDescriptions: ['Allow idle sleep while a chat is working.', 'Prevent idle sleep while a chat is working, even on battery power.', 'Prevent idle sleep only while the host is plugged in. On Linux desktop, the power source is unavailable, so this option allows idle sleep.'],
+    default: 'whenPluggedIn',
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1126` at `ddbdd50a9ed1`.
+  sessionModelOptions: {
+    type: 'string',
+    title: 'Session Model Options',
+    description: 'Controls whether agents can choose a model\'s reasoning effort and context size in `create_session`, and how they find the models and options.',
+    enum: ['off', 'inline', 'tool'],
+    enumDescriptions: ['Agents choose only a model in `create_session`.', 'Agents can also choose a reasoning effort and context size, and `create_session` lists the models and their options when the agent loads it through tool search.', 'Agents can also choose a reasoning effort and context size, and list the models and their options with `list_models`.'],
+    default: 'off',
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1144` at `ddbdd50a9ed1`.
+  chatResources: {
     type: 'boolean',
-    title: 'Migrate Legacy Copilot CLI Sessions',
-    description: 'Whether un-adopted extension-host Copilot CLI sessions are surfaced as adoptable agent-host sessions and migrated in place when opened.',
+    title: 'Chat Resources',
+    description: 'Whether agents can choose how the chat shows the files they record, such as above the chat input.',
     default: false,
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:998` at `ddbdd50a9ed1`.
+  hooksEnabled: {
+    type: 'boolean',
+    title: 'Hooks',
+    description: 'Whether VS Code\'s `chat.useHooks` setting allows hooks. When `false`, Copilot sessions run no repository hooks, custom agent hooks, or plugin hooks that VS Code runs itself.',
+    default: true,
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1097` at `ddbdd50a9ed1`.
+  mcpSkillsEnabled: {
+    type: 'boolean',
+    title: 'MCP Skills',
+    description: 'Whether Copilot agent sessions discover and use skills served by MCP servers. Changes apply to new sessions.',
+    default: true,
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1053` at `ddbdd50a9ed1`.
+  mcpSkillsServerApprovals: {
+    type: 'object',
+    title: 'MCP Skills Server Approvals',
+    description: 'Per-server-identity decisions for loading and using MCP-served skills in all sessions on this agent host. Identities include known server configuration and source, or the exact server name when no other identity is available. Remove an entry to ask again. This does not approve ordinary tool permission requests.',
+    additionalProperties: { type: 'string', title: 'MCP Server Skills Decision', enum: ['allow', 'deny'] },
+    default: {},
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1060` at `ddbdd50a9ed1`.
+  extensionPermissionApprovals: {
+    type: 'object',
+    title: 'Extension Permission Approvals',
+    description: 'Per-extension-identity decisions for letting Copilot extensions load with privileged capabilities, such as registering hooks, or read sensitive environment variables, in all sessions on this agent host. Identities include the extension name and the requested capabilities or variable names. Decisions about a project\'s extensions to read sensitive environment variables are never stored. Remove an entry to ask again.',
+    additionalProperties: { type: 'string', title: 'Extension Permission Decision', enum: ['allow', 'deny'] },
+    default: {},
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1040` at `ddbdd50a9ed1`.
+  mcpGalleryServiceUrl: {
+    type: 'string',
+    title: 'MCP Gallery Service URL',
+    description: 'The MCP Gallery service URL configured in VS Code. The agent host downloads MCP server details for installation from this gallery itself, including when it is on a private network. Empty when no gallery is configured.',
+    default: '',
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:1028` at `ddbdd50a9ed1`.
+  browserUseEnabled: {
+    type: 'boolean',
+    title: 'Browser Use',
+    description: 'Whether local Copilot agent sessions offer GitHub\'s Browser Use plugin.',
+    default: false,
+  },
+  // `platformRootSchema`, `agentHostSchema.ts:978` at `ddbdd50a9ed1`.
+  assistedApprovalInstructions: {
+    type: 'string',
+    title: 'Assisted Permissions Instructions',
+    description: 'User-authored instructions for the reviewer that decides which tool calls run without confirmation under Assisted permissions. Empty uses the default guidance.',
+    default: '',
   },
   // `platformRootSchema`, `agentHostSchema.ts:961`.
   sessionCatalogEnabled: {
@@ -478,7 +580,23 @@ export const vscodeRootProperties: Record<string, ConfigPropertySchema> = {
     title: 'Move Chats',
     default: false,
   },
+  /*
+   * `chatProvidersRootConfigSchema`, a schema of its own, whose key a window
+   * mirrors its setting into. VS Code's default is off; this host's is on, so
+   * a window that pushes its own value still turns it off.
+   * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/common/agentHostChatProviders.ts#L9-L23
+   */
+  [MULTIPLE_CHAT_PROVIDERS]: {
+    type: 'boolean',
+    title: 'Multiple Chat Providers',
+    description: 'Whether one session may hold chats on different agents.',
+    default: true,
+  },
 };
+
+/** Whether one session may hold chats on different agents: on until the root config turns it off. */
+export const multipleChatProvidersOn = (rootConfig: Record<string, unknown>): boolean =>
+  rootConfig[MULTIPLE_CHAT_PROVIDERS] !== false;
 
 /**
  * The root config keys a start leaves to each window's next push, VS Code's
@@ -487,7 +605,7 @@ export const vscodeRootProperties: Record<string, ConfigPropertySchema> = {
  * value is a snapshot of one client's settings, so reviving it would re-grant
  * approvals that a user, workspace, or policy tightened while the host was
  * stopped."
- * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/common/agentHostSchema.ts#L1085-L1102
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/agentHostSchema.ts#L1255-L1263
  */
 export const clientOwnedApprovalRootConfigKeys: ReadonlySet<string> = new Set([
   'globalAutoApproveEnabled',
@@ -496,4 +614,5 @@ export const clientOwnedApprovalRootConfigKeys: ReadonlySet<string> = new Set([
   'editAutoApprovePatterns',
   'autoReplyEnabled',
   'workspaceTrust',
+  'assistedApprovalInstructions',
 ]);

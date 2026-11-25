@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync } from '
 import { join } from 'node:path';
 import { Status, bag, idOf, steerOf, steerPart, str, uriOf } from '@ahpd/sdk';
 import type { Agent, Bag, Chosen, Listed, MessageAttachment, MessageFrom, Owner, Session, Start } from '@ahpd/sdk';
-import { BOTS_DIR, CHAT_PROVIDER, logsOf } from './names.js';
+import { BOTS_DIR, CHAT_PROVIDER, chatLogsOf, logsOf } from './names.js';
 import { mayChat, mayRead } from './provider.js';
 import type { BotRecord } from './record.js';
 import type { BotStore } from './store.js';
@@ -271,6 +271,16 @@ const logDirs = (configDir: string): string[] => {
     return readdirSync(join(configDir, BOTS_DIR), { withFileTypes: true })
       .filter((one) => one.isDirectory())
       .map((one) => logsOf(configDir, one.name));
+  }
+  catch { return []; }
+};
+
+/** The folders of one bot's other chats, one for each session that has any. */
+const chatDirs = (logs: string): string[] => {
+  try {
+    return readdirSync(join(logs, 'chats'), { withFileTypes: true })
+      .filter((one) => one.isDirectory())
+      .map((one) => join(logs, 'chats', one.name));
   }
   catch { return []; }
 };
@@ -1492,6 +1502,12 @@ export function botChatAgent(
         const turns = logAt(fileOf(dir, id))?.turns;
         if (turns !== undefined) return turns;
       }
+      // A chat that is not its session's default chat is read back by its own
+      // id, from the folder of its session's chats.
+      for (const dir of logDirs(configDir).flatMap(chatDirs)) {
+        const turns = logAt(fileOf(dir, id))?.turns;
+        if (turns !== undefined) return turns;
+      }
       return undefined;
     },
 
@@ -1534,7 +1550,12 @@ export function botChatAgent(
         if (held === undefined || (!again && held !== start.uri)) await talks.keep(bot.id, talk.owner, start.uri);
       }
       // The id the conversation is kept under: the one this chat was resumed
-      // by, which is how a chat opens on its own log again.
+      // by, which is how a chat opens on its own log again. A chat that is not
+      // the session's default chat is kept under its own id, in its session's
+      // folder of chats, so the chats of one talk never share a log.
+      if (start.chatId !== undefined) {
+        return chat(start, bot, start.chatId, markOf(bot), chatLogsOf(configDir, bot.id, idOf(start.uri)));
+      }
       return chat(start, bot, start.resume ?? idOf(start.uri), markOf(bot), logsOf(configDir, bot.id));
     },
   };

@@ -165,7 +165,7 @@ async function served(register = true) {
             { type: 'view', name: 'main', title: 'Status', description: 'What the target last answered.' },
           ],
           open: (connector: Connector, view?: ViewHandle) => {
-            opened.push({ id: connector.id, adapter: connector.adapter, owner: connector.owner, config: connector.config });
+            opened.push({ id: connector.id, adapter: connector.adapter, owner: connector.owner, ...(connector.tags === undefined ? {} : { tags: connector.tags }), config: connector.config });
             if (view !== undefined) handles.set(connector.id, view);
             return () => { closed.push(connector.id); };
           },
@@ -286,6 +286,24 @@ it('makes two connectors of one adapter, and opens each with its own config', as
   expect(Object.keys(rows)).toEqual(['ci', 'deploys']);
   expect(rows['ci']).toMatchObject({ id: 'ci', adapter: 'webhook', owner: 'user:cy', state: 'ready' });
   expect(rows['deploys']).toMatchObject({ state: 'ready' });
+  await close();
+});
+
+it('keeps a connector\'s tags once each, on its row, on what its adapter opens, and on its reference', async () => {
+  const { host, users, connectors, opened, close } = await served();
+  const cy = await as(host, users, 'cy');
+
+  await cy.call('x-ahpd/connectors/put', {
+    id: 'ci', adapter: 'webhook', owner: 'user:cy', tags: ['softov', 'ci', 'softov'], config: { target: 'bot://motion' },
+  });
+  expect((await cy.rows())['ci']?.['tags']).toEqual(['softov', 'ci']);
+  expect(opened).toEqual([{ id: 'ci', adapter: 'webhook', owner: 'user:cy', tags: ['softov', 'ci'], config: { target: 'bot://motion' } }]);
+  expect(connectors.refs()).toEqual([{ id: 'ci', adapter: 'webhook', owner: 'user:cy', tags: ['softov', 'ci'] }]);
+
+  const refused = await cy.call('x-ahpd/connectors/put', {
+    id: 'ci', adapter: 'webhook', owner: 'user:cy', tags: [''], config: { target: 'bot://motion' },
+  });
+  expect(refused).toMatchObject({ message: 'x-ahpd/connectors/put takes a tag is not empty' });
   await close();
 });
 

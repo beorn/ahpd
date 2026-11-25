@@ -1,6 +1,6 @@
 ---
 title: The host's rules need config:permissions
-status: implemented
+status: done
 depends: [task-01-a-person-keeps-rules-of-their-own.md]
 layer: sdk
 refs:

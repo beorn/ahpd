@@ -98,6 +98,25 @@ it('spends a token only on the sessions its connection watches', async () => {
   expect(header(two)).toBeUndefined();
 });
 
+/*
+ * The client's account hint, from AHP 1.1.0: an empty one is refused in VS
+ * Code's words, and a token with one is taken as one without.
+ * https://github.com/microsoft/vscode/blob/7e993177c9d9/src/vs/platform/agentHost/node/agentHostAuthenticationService.ts#L184-L185
+ */
+it('refuses an empty account hint, and takes a token that names an account', async () => {
+  const { ana, one } = await twoClients();
+  await expect(ana.client.handle({
+    method: 'authenticate',
+    params: { channel: ROOT, resource: DESK, token: 'desk-ana', accountId: '' },
+  })).rejects.toMatchObject({ code: -32602, message: 'accountId must be a nonempty string' });
+  await expect(ana.client.handle({
+    method: 'authenticate',
+    params: { channel: ROOT, resource: DESK, token: 'desk-ana', accountId: 'account-ana' },
+  })).resolves.toEqual({});
+  await settle(8);
+  expect(header(one)).toBe('Bearer desk-ana');
+});
+
 it('refuses a token for a server only another connection watches', async () => {
   const { host } = await twoClients();
   const cy = await introduced(host, 'cy');

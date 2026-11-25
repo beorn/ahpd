@@ -54,6 +54,7 @@ Facts from Cloudflare's documents, read on 2026-11-02:
 - A `CNAME` record to `<UUID>.cfargotunnel.com` points a name at the tunnel.
 - WebSockets work on every plan. Cloudflare closes a WebSocket with no traffic for a period, and a restart of its servers ends open ones. It advises a ping from the client.
 - TLS ends at Cloudflare's edge, so Cloudflare sees the traffic, the connection token included.
+- Cloudflare has no SDK that runs a tunnel in a Node process. The `cloudflare` npm package calls the REST API only. The `cloudflared` npm package is a community wrapper that downloads the binary and runs it as a child process. Checked 2026-11-14.
 
 ## What ahpd has today
 
@@ -100,7 +101,7 @@ No open PR on softov/ahpd at the time of writing.
 | The daemon pings every open WebSocket on an interval. A daemon setting holds the interval, and 0 turns it off | Softov, 2026-11-02, chose "The daemon, a setting" |
 | The plugin gives the tunnel token to `cloudflared` in the `TUNNEL_TOKEN` variable of its process | Softov, 2026-11-02, chose "TUNNEL_TOKEN variable" |
 | Cloudflare Access comes later, in its own brief. The first plan is the tunnel alone | Softov, 2026-11-02, chose "Later" |
-| How the plugin gets `cloudflared` | The person installs it. The plugin finds it on the PATH or at a path option, and raises an alert with the install link when it is missing. The plugin downloads nothing. Softov, 2026-11-02, chose "Person installs it" |
+| How the plugin gets `cloudflared` | The plugin uses `cloudflared` from the path option or the PATH first. When it finds none, it downloads the release from Cloudflare's GitHub, checks the checksum, and keeps the file. A setting turns the download off; then the plugin raises an alert with the install link. The plugin adds no npm package for this. Softov, 2026-11-14, chose "Download, as a setting". This replaces "Person installs it" from 2026-11-02 |
 
 ## Open points
 

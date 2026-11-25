@@ -1,7 +1,7 @@
 ---
 title: The test agent reads what was said
 domain: acp
-status: planned
+status: built
 priority: high
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -62,7 +62,7 @@ prompt -> blocksFor: [instructions, what was said] -> fixture textOf -> promptSc
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The fixture reads the last block](task-01-the-fixture-reads-the-last-block.md) | implemented | - |
+| [01 - The fixture reads the last block](task-01-the-fixture-reads-the-last-block.md) | done | - |
 
 ## Risks and tradeoffs
 
@@ -71,7 +71,7 @@ prompt -> blocksFor: [instructions, what was said] -> fixture textOf -> promptSc
 ## Resume state
 
 - **Done so far:** task 01 implemented, 2026-11-12; see [implemented.md](implemented.md).
-- **Next action:** review and merge the PR, then the [Windows check](../../../pending/windows-machine-paths-checks.md). The plan closes as `built` on Softov's word.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** an attachment adds its text block after the person's text, so that block is the last one rather than what was said. The new case needs a terminal, so it is in the turn test rather than the blocks harness.
 

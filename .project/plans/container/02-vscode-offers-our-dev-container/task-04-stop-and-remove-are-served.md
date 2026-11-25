@@ -71,5 +71,5 @@ The cross-connection view is a host-wide map of the relays, filled in `accept` a
 One limitation, found while testing: `placedOn` matches a session by the source it was given.
 A session placed with `computer: 'devcontainer://<folder>'` holds the container.
 One that named the machine as `computer://<id>` does not.
-It is recorded in [the stop problem](../../../problems/a-dev-container-stop-misses-a-session-placed-by-computer-uri.md).
+It is recorded in [the stop problem](../../container/20261123-0945-a-busy-dev-container-is-not-stopped/plan.md).
 Verified: `packages/sdk/test/containers.test.ts` 13 cases, `packages/computer/test/computer-devcontainer.test.ts` 43 cases, and the full suite green.

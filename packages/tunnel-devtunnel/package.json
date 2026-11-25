@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/tunnel-devtunnel",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Microsoft Dev Tunnels for ahpd. Reach the daemon from anywhere, VS Code included.",
+  "description": "Microsoft Dev Tunnels integration. Connect to your ahpd daemon from anywhere, including VS Code, without opening ports on your network.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -65,12 +65,12 @@
     "@microsoft/dev-tunnels-ssh-tcp": "^3.12.42"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0",
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "devDependencies": {
     "@ahpd/sdk": "workspace:*",
-    "@microsoft/agent-host-protocol": "^1.0.0"
+    "@microsoft/agent-host-protocol": "^1.1.0"
   },
   "ahpd": {
     "entry": "./dist/index.js",

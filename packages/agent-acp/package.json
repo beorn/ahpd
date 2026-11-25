@@ -1,9 +1,9 @@
 {
   "name": "@ahpd/agent-acp",
-  "version": "0.15.0-rc.4",
+  "version": "0.15.0",
   "type": "module",
   "os": ["linux", "darwin"],
-  "description": "Agent Client Protocol integration for the Agent Host Protocol. Run any ACP agent as an ahpd plugin or use it directly with @ahpd/sdk.",
+  "description": "Agent Client Protocol integration. Run Codex, Copilot, Gemini or any ACP agent as an ahpd plugin, or use it directly with @ahpd/sdk.",
   "keywords": [
     "ahp",
     "ahpd",
@@ -62,7 +62,7 @@
     "test": "cd ../.. && vitest run packages/agent-acp/test"
   },
   "peerDependencies": {
-    "@ahpd/sdk": ">=0.15.0-rc.4 <0.16.0-0"
+    "@ahpd/sdk": ">=0.15.0 <0.16.0-0"
   },
   "devDependencies": {
     "@ahpd/sdk": "workspace:*"

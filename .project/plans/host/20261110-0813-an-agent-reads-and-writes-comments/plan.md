@@ -1,7 +1,7 @@
 ---
 title: An agent reads and writes comments on a session's files
 domain: host
-status: planned
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -66,8 +66,8 @@ listComments / viewUnreviewedComments -> the channel's annotations with vscode.a
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - Five comment tools on the channel](task-01-five-comment-tools.md) | implemented | - |
-| [02 - viewUnreviewedComments asks first](task-02-view-unreviewed-comments.md) | implemented | 01 |
+| [01 - Five comment tools on the channel](task-01-five-comment-tools.md) | done | - |
+| [02 - viewUnreviewedComments asks first](task-02-view-unreviewed-comments.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -76,7 +76,7 @@ listComments / viewUnreviewedComments -> the channel's annotations with vscode.a
 ## Resume state
 
 - **Done so far:** both tasks are implemented. The host serves VS Code's six comment tools on the session's annotations channel. A comment is an annotation with the `vscode.agentFeedback` meta, and every write goes through the same writer a client's `annotations/*` action takes. `viewUnreviewedComments` asks the person first, and `listComments` names the comments that wait. `docs/sdk/TOOLS.md` and `docs/updates/v0_15.md` say so.
-- **Next action:** Softov reviews. The by-hand VS Code checks in task 01 have not been run.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** an annotation with no `vscode.agentFeedback` meta is not a comment; the tools leave it alone. No client lets the person pick which comments to reveal, so an answer of yes reveals every waiting one.
 

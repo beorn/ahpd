@@ -22,8 +22,11 @@ const STATE: CanvasState = {
   extensionName: 'Canvas',
   title: 'Board',
   status: 'ready',
-  url: 'https://canvas.test/board',
+  uri: 'https://canvas.test/board',
 };
+
+/** The state as the host sends it: the old `url` beside `uri`, for a VS Code 1.145 window. */
+const SENT = { ...STATE, url: STATE.uri };
 
 /** A chat name, for the store's own cases, which need no session. */
 const CHAT = 'ahp-chat://default/YWhwLXNlc3Npb246L29uZQ';
@@ -99,7 +102,7 @@ describe('the store', () => {
     expect(chatOfCanvas(resource)).toBe(CHAT);
     expect(said.map((one) => one.action.type)).toEqual(['canvas/stateChanged', 'chat/canvasesChanged']);
     expect(said[0]!.channel).toBe(resource);
-    expect(said[0]!.action.canvas).toEqual(STATE);
+    expect(said[0]!.action.canvas).toEqual(SENT);
     expect(said[1]!.channel).toBe(CHAT);
     expect(said[1]!.action.canvases).toEqual([{ resource }]);
   });
@@ -178,7 +181,7 @@ describe('the store', () => {
     expect(said.slice(before)).toEqual([]);
     store.update(resource, { ...STATE, title: 'Board, moved' }, 'fixture');
     expect(said.slice(before)).toEqual([
-      { channel: resource, action: { type: 'canvas/stateChanged', canvas: { ...STATE, title: 'Board, moved' } } },
+      { channel: resource, action: { type: 'canvas/stateChanged', canvas: { ...SENT, title: 'Board, moved' } } },
     ]);
   });
 
@@ -197,7 +200,7 @@ describe('the store', () => {
     const resource = await store.open(CHAT, STATE, 'one');
     expect(() => store.update(resource, STATE, 'two')).toThrow('was opened by one');
     expect(() => store.close(resource, 'two')).toThrow('was opened by one');
-    expect(store.snapshot(resource)).toEqual(STATE);
+    expect(store.snapshot(resource)).toEqual(SENT);
   });
 
   it('tells a chat that moved that its list is empty, and says nothing to one that is gone', async () => {
@@ -252,7 +255,7 @@ describe('a subscribe to a canvas', () => {
       snapshot: { resource: string; state: CanvasState };
     };
     expect(opened.snapshot.resource).toBe(resource);
-    expect(opened.snapshot.state).toEqual(STATE);
+    expect(opened.snapshot.state).toEqual(SENT);
 
     calls.close(resource);
     await refusedCanvas(client, resource);
@@ -359,7 +362,7 @@ describe('a canvas whose chat goes', () => {
 
     expect(lists()).toBe(before);
     const opened = await client.handle({ method: 'subscribe', params: { channel: resource } }) as { snapshot: { state: CanvasState } };
-    expect(opened.snapshot.state).toEqual(STATE);
+    expect(opened.snapshot.state).toEqual(SENT);
     const chat = await client.handle({ method: 'subscribe', params: { channel: 'ahp-chat:/spare' } }) as { snapshot: { state: Record<string, unknown> } };
     expect(chat.snapshot.state.canvases).toEqual([{ resource }]);
   });
@@ -389,7 +392,8 @@ describe('a second client of the session', () => {
     const opened = await other.client.handle({ method: 'subscribe', params: { channel: resource } }) as {
       snapshot: { state: CanvasState };
     };
-    expect(opened.snapshot.state).toEqual(STATE);
-    expect(opened.snapshot.state.url).toBe(STATE.url);
+    // AHP 1.1.0's `uri`, and the old `url` beside it for a VS Code 1.145 window.
+    expect(opened.snapshot.state).toEqual({ ...STATE, url: STATE.uri });
+    expect(opened.snapshot.state.uri).toBe(STATE.uri);
   });
 });

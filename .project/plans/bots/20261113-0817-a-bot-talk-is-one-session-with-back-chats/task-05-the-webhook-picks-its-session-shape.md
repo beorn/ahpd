@@ -1,6 +1,6 @@
 ---
 title: The webhook picks its session shape
-status: implemented
+status: done
 depends:
   - task-03-the-back-is-a-chat-of-the-front.md
 layer: "webhook"

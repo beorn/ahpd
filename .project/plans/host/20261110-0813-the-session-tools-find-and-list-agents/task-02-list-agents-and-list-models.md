@@ -1,6 +1,6 @@
 ---
 title: list_agents and list_models
-status: implemented
+status: done
 depends: []
 layer: "sdk, docs"
 refs:

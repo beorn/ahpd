@@ -1,7 +1,7 @@
 ---
 title: A machine says how it reaches the host
 domain: container
-status: planned
+status: built
 priority: medium
 created: 2026-11-12
 revalidated: 2026-11-12
@@ -67,8 +67,8 @@ serversFor -> own() endpoint http://127.0.0.1:<port> -> toolsReachable(url, mach
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The port answers a host URL](task-01-the-port-answers-a-host-url.md) | implemented | - |
-| [02 - Docker maps the host address](task-02-docker-maps-the-host-address.md) | implemented | 01 |
+| [01 - The port answers a host URL](task-01-the-port-answers-a-host-url.md) | done | - |
+| [02 - Docker maps the host address](task-02-docker-maps-the-host-address.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -78,7 +78,7 @@ serversFor -> own() endpoint http://127.0.0.1:<port> -> toolsReachable(url, mach
 ## Resume state
 
 - **Done so far:** both tasks implemented on 2026-11-12, and the typecheck passes; no suite has run.
-- **Next action:** review and merge the PR, then check both cases by hand on the Windows VM, in the [Windows check](../../../pending/windows-machine-paths-checks.md).
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `--add-host` goes at `docker run`, so a machine made before the change has no `host.docker.internal` on Linux.
 

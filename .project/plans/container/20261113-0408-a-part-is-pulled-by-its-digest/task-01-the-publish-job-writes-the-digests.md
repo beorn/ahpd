@@ -1,6 +1,6 @@
 ---
 title: The publish job writes the digests
-status: implemented
+status: done
 depends: []
 layer: "scripts"
 refs:

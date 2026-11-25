@@ -42,6 +42,55 @@ export const AUTOMATIONS_ME = `${AUTOMATIONS}?owner=me`;
  */
 export const ANNOTATIONS_PATH_SEGMENT = '/annotations';
 
+/** The scheme of a session's annotations channel in AHP 1.1.0. */
+export const AHP_ANNOTATIONS_SCHEME = 'ahp-annotations';
+/** The authority VS Code gives a session whose URI is not `ahp-session:/<id>`. */
+const LEGACY_SESSION_AUTHORITY = 'vscode-legacy';
+
+/**
+ * A session's annotations channel as AHP 1.1.0 names it, as VS Code's host
+ * makes it: `ahp-annotations:/<id>` for `ahp-session:/<id>`, and the session
+ * URI in base64url under `vscode-legacy` for any other.
+ * https://github.com/microsoft/agent-host-protocol/blob/v1.1.0/types/channels-annotations/state.ts#L1-L10
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/annotationsUri.ts#L17-L27
+ */
+export const annotationsChannelOf = (session: string): string => {
+  const parsed = URI.parse(session);
+  if (parsed.scheme === 'ahp-session' && !parsed.authority && !parsed.query && !parsed.fragment) {
+    return parsed.with({ scheme: AHP_ANNOTATIONS_SCHEME }).toString();
+  }
+  return URI.from({
+    scheme: AHP_ANNOTATIONS_SCHEME,
+    authority: LEGACY_SESSION_AUTHORITY,
+    path: `/${Buffer.from(session, 'utf8').toString('base64url')}`,
+  }).toString();
+};
+
+/**
+ * The session an annotations channel belongs to: the AHP 1.1.0 name, or the
+ * `<session>/annotations` name that a VS Code 1.145 window makes itself.
+ * Any other channel answers nothing.
+ * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/annotationsUri.ts#L30-L58
+ */
+export const sessionOfAnnotations = (channel: string): string | undefined => {
+  if (schemeOf(channel) === AHP_ANNOTATIONS_SCHEME) {
+    let parsed: URI;
+    try { parsed = URI.parse(channel, true); }
+    catch { return undefined; }
+    if (parsed.query || parsed.fragment || !parsed.path.startsWith('/') || parsed.path.length < 2) return undefined;
+    if (!parsed.authority) return parsed.with({ scheme: 'ahp-session' }).toString();
+    if (parsed.authority !== LEGACY_SESSION_AUTHORITY || !/^\/[A-Za-z0-9_-]+$/.test(parsed.path)) return undefined;
+    const session = Buffer.from(parsed.path.slice(1), 'base64url').toString('utf8');
+    return Buffer.from(session, 'utf8').toString('base64url') === parsed.path.slice(1) ? session : undefined;
+  }
+  if (!channel.endsWith(ANNOTATIONS_PATH_SEGMENT)) return undefined;
+  const session = channel.slice(0, -ANNOTATIONS_PATH_SEGMENT.length);
+  return session === '' ? undefined : session;
+};
+
+/** Both names a session's annotations are said on: AHP 1.1.0's, then the one a VS Code 1.145 window makes. */
+export const annotationsChannelsOf = (session: string): string[] => [annotationsChannelOf(session), `${session}${ANNOTATIONS_PATH_SEGMENT}`];
+
 /** The scheme a URI names, lowercased, or the empty string when it names none. */
 export const schemeOf = (uri: string): string => (/^([a-zA-Z][\w+.-]*):/.exec(uri)?.[1] ?? '').toLowerCase();
 
@@ -97,7 +146,8 @@ export const methodIn = (methods: Readonly<Record<string, ServedMethod>> | undef
  * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/common/changesetUri.ts#L314
  */
 export const ownerUriOf = (uri: string): string => {
-  if (uri.endsWith(ANNOTATIONS_PATH_SEGMENT)) return uri.slice(0, -ANNOTATIONS_PATH_SEGMENT.length);
+  const annotated = sessionOfAnnotations(uri);
+  if (annotated !== undefined) return annotated;
   const cut = uri.indexOf('/changeset/');
   return cut > 0 ? uri.slice(0, cut) : uri;
 };

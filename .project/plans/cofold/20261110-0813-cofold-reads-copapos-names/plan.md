@@ -1,7 +1,7 @@
 ---
 title: cofold reads copapo's names
 domain: cofold
-status: planned
+status: built
 priority: medium
 created: 2026-11-10
 revalidated: 2026-11-10
@@ -70,8 +70,8 @@ machine needs -> cofoldState seed and cofoldConfig mount at <configDir>/<name>/c
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - The harness reads copapo's names](task-01-the-harness-reads-copapos-names.md) | implemented | - |
-| [02 - The docs say copapo](task-02-the-docs-say-copapo.md) | implemented | 01 |
+| [01 - The harness reads copapo's names](task-01-the-harness-reads-copapos-names.md) | done | - |
+| [02 - The docs say copapo](task-02-the-docs-say-copapo.md) | done | 01 |
 
 ## Risks and tradeoffs
 
@@ -81,7 +81,7 @@ machine needs -> cofoldState seed and cofoldConfig mount at <configDir>/<name>/c
 ## Resume state
 
 - **Done so far:** tasks 01 and 02 implemented 2026-11-10.
-- **Next action:** Softov's review, then `done` on each task. No task is left.
+- **Next action:** none. The plan is `built`, closed on 2026-11-20 with the 0.15.0 release, which Softov counted as its review.
 - **Open questions:** none.
 - **Watch out for:** `tools/test-tmpdir.ts` keeps a test from reading the person's own file. Point it at copapo's file, or a test reads `~/.config/copapo/config.json` on Softov's box.
 

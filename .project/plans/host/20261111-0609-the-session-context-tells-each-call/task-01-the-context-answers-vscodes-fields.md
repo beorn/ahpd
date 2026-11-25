@@ -1,6 +1,6 @@
 ---
 title: The context answers VS Code's fields
-status: implemented
+status: done
 depends: []
 layer: "sdk, docs"
 refs:

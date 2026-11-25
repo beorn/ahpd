@@ -14,6 +14,7 @@ import { echo } from '../../../examples/echo/agent.js';
 import { memorySessions } from '../src/sessions/sessions.js';
 import type { Agent, Start } from '../src/types/agent.js';
 import type { Bag } from '../src/types/common.js';
+import type { HostOptions } from '../src/types/host.js';
 import type { Peer } from '../src/types/rpc.js';
 import type { Principal, Users } from '../src/types/users.js';
 import type { ModelUse, Usage } from '../src/types/usage.js';
@@ -223,7 +224,7 @@ function keeping(): Usage & { entries: ModelUse[] } {
 type Client = ReturnType<ReturnType<typeof createHost>['accept']>;
 
 /** One host with one store behind it, the lines it logged and the actions it sent. */
-function serving(scripts: Script[], usage: Usage | undefined, users?: Users, usagePer?: 'turn' | 'report') {
+function serving(scripts: Script[], usage: Usage | undefined, users?: Users, usagePer?: 'turn' | 'report', usageTags?: HostOptions['usageTags']) {
   const said: string[] = [];
   const host = createHost({
     path: DIR,
@@ -231,6 +232,7 @@ function serving(scripts: Script[], usage: Usage | undefined, users?: Users, usa
     sessions: memorySessions(),
     ...(usage === undefined ? {} : { usage }),
     ...(usagePer === undefined ? {} : { usagePer }),
+    ...(usageTags === undefined ? {} : { usageTags }),
     onEvent: (message) => said.push(message),
     ...(users === undefined ? {} : { users }),
   });
@@ -429,6 +431,65 @@ it('charges the owner and the team alone where the work names no project', async
     pools: ['user:eve', 'team:backend'],
   });
   expect(usage.entries[0]?.project).toBeUndefined();
+});
+
+it('carries the agent\'s tags and those of each connector the reports named, each once', async () => {
+  const usage = keeping();
+  const asked: string[] = [];
+  const tags: Record<string, string[]> = { 'login-a': ['shared', 'softov'], 'login-b': ['backup'] };
+  const { client } = serving([
+    {
+      reports: [
+        report({ _meta: { 'ahpd.connectors': ['login-a'] } }),
+        report({ _meta: { 'ahpd.connectors': ['login-a', 'login-b', 'gone'] } }),
+      ],
+      end: 'complete',
+    },
+  ], usage, directory(), undefined, {
+    agent: (id) => { asked.push(id); return ['work', 'shared']; },
+    connector: (id) => tags[id] ?? [],
+  });
+  await settle();
+  await open(client);
+  await ask(client);
+  await settle();
+
+  expect(asked).toContain('meter');
+  expect(usage.entries.map((one) => one.tags)).toEqual([['work', 'shared', 'softov', 'backup']]);
+});
+
+it('copies the tags when the record is written, so an edit changes no record already kept', async () => {
+  const usage = keeping();
+  let agentTags = ['before'];
+  const { client } = serving([
+    { reports: [report()], end: 'complete' },
+    { reports: [report()], end: 'complete' },
+  ], usage, directory(), undefined, { agent: () => agentTags, connector: () => [] });
+  await settle();
+  await open(client);
+  await ask(client, 'first', 't1');
+  await settle();
+  agentTags = ['after'];
+  await ask(client, 'second', 't2');
+  await settle();
+
+  expect(usage.entries.map((one) => one.tags)).toEqual([['before'], ['after']]);
+});
+
+it('writes no tags where nothing the work passed through has one', async () => {
+  const usage = keeping();
+  const { client } = serving([
+    { reports: [report({ _meta: { 'ahpd.connectors': ['login-a'] } })], end: 'complete' },
+    { reports: [report()], end: 'complete' },
+  ], usage, directory(), undefined, { agent: () => [], connector: () => [] });
+  await settle();
+  await open(client);
+  await ask(client, 'first', 't1');
+  await ask(client, 'second', 't2');
+  await settle();
+
+  expect(usage.entries).toHaveLength(2);
+  for (const one of usage.entries) expect(one).not.toHaveProperty('tags');
 });
 
 it('keeps each harness\'s own spelling of the cost', async () => {
