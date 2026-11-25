@@ -474,6 +474,15 @@ export const checkChannel = (scheme: string, value: unknown, by: string): void =
     if (object[member] === undefined) continue;
     if (!right(object[member], expected)) throw new Error(miss(by, 'registerChannel', member, expected));
   }
+  if (object.operations === undefined) return;
+  if (!right(object.operations, 'object')) throw new Error(miss(by, 'registerChannel', 'operations', 'an object'));
+  const side = object.operations as Record<string, unknown>;
+  for (const member of ['operations', 'begin', 'settle', 'run']) {
+    if (typeof side[member] !== 'function') throw new Error(miss(by, 'registerChannel', `operations.${member}`, 'a function'));
+  }
+  if (side.offers !== undefined && typeof side.offers !== 'function') {
+    throw new Error(miss(by, 'registerChannel', 'operations.offers', 'a function'));
+  }
 };
 
 /*
