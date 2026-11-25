@@ -32,7 +32,7 @@ import {
   CONDITIONS, FIELDS, RESTART_POLICIES, applyPatch, checkPatch, fromNative, nativeChanges, same,
   type ServicePatch, type ServiceRecord,
 } from './record.js';
-import { LayoutError, addEntry, editEntry, lineDiff, processesOf, removeEntry } from './splice.js';
+import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
 import { ROUTES, pcFailure, pcRequest, type PcSocket } from './pc.js';
 
 /** One machine's process-compose, as the plugin that hosts the driver configures it. */
@@ -71,7 +71,12 @@ export type Answer<T> = ({ readonly ok: true } & T) | Refusal;
 
 /** What `list` answers. */
 export interface Listing {
-  readonly services: readonly ServiceRecord[];
+  /**
+   * Each editable service. `plainEnv` names, read-only, every key the file sets with a plain value
+   * ("K (plain value, set in <file>)"); the value itself is never answered (@cto 7af7ed84), and turning
+   * one into a secret reference is a person's edit on the machine.
+   */
+  readonly services: ReadonlyArray<ServiceRecord & { readonly plainEnv?: readonly string[] }>;
   readonly readOnly: ReadonlyArray<{ readonly name: string; readonly reason: string }>;
   readonly capabilities: typeof CAPABILITIES;
   readonly ifVersion: string;
@@ -118,6 +123,8 @@ interface State {
   readonly ifVersion: string;
   readonly services: Map<string, ServiceRecord>;
   readonly readOnly: Map<string, string>;
+  /** Per editable service, the keys its `environment:` sets with plain values. */
+  readonly plainEnv: Map<string, string[]>;
 }
 
 const parseFile = (file: string, text: string): Document => {
@@ -192,6 +199,7 @@ function readState(machine: Machine): State {
   const where = (other: string): string => `edit it in ${other} on ${machine.name}`;
   const services = new Map<string, ServiceRecord>();
   const readOnly = new Map<string, string>();
+  const plainEnv = new Map<string, string[]>();
   let processes;
   try {
     processes = processesOf(doc);
@@ -205,14 +213,17 @@ function readState(machine: Machine): State {
     const elsewhere = shared.get(name);
     if (elsewhere !== undefined) { readOnly.set(name, `it is also defined in ${elsewhere}; ${where(elsewhere)}`); continue; }
     if (usesAnchors(pair.value)) { readOnly.set(name, `it uses YAML anchors, aliases or merge keys; ${where(file)}`); continue; }
-    const record = fromNative(name, isMap(pair.value) ? pair.value.toJSON() : pair.value);
-    if (typeof record === 'string') readOnly.set(name, `${record}; ${where(file)}`);
-    else services.set(name, record);
+    const native = isMap(pair.value) ? pair.value.toJSON() : pair.value;
+    const record = fromNative(name, native);
+    if (typeof record === 'string') { readOnly.set(name, `${record}; ${where(file)}`); continue; }
+    services.set(name, record);
+    const keys = plainEnvKeys(native);
+    if (keys.length > 0) plainEnv.set(name, keys);
   }
   for (const [name, other] of shared) {
     if (!services.has(name) && !readOnly.has(name)) readOnly.set(name, `it is defined in ${other}; ${where(other)}`);
   }
-  return { file, text, doc, ifVersion: hash, services, readOnly };
+  return { file, text, doc, ifVersion: hash, services, readOnly, plainEnv };
 }
 
 /** Make sure the change log can be appended to before anything is changed, so no change goes unlogged. */
@@ -273,12 +284,29 @@ function writeAtomic(file: string, text: string, expect: string): boolean {
   }
 }
 
-/** The refusal for a version that is not the file's, with the difference when the driver holds the version read. */
-function stale(state: State, ifVersion: unknown, seen: unknown): Refusal {
+/** The keys an entry's `environment:` sets, as a mapping or a `KEY=value` list; never their values. */
+function plainEnvKeys(entry: unknown): string[] {
+  const env = (entry as { environment?: unknown } | null)?.environment;
+  if (Array.isArray(env)) return env.map((item) => String(item).split('=')[0] ?? '').filter((key) => key !== '');
+  if (env !== null && typeof env === 'object') return Object.keys(env);
+  return [];
+}
+
+/**
+ * The refusal for a version that is not the file's, with the difference when the driver holds the version read.
+ *
+ * `redact` blanks every `environment:` / `env_cmds:` value on both sides before diffing (@cto 7af7ed84): a remote
+ * caller is answered with the redacted diff, and the change log, which is sent off the machine as a backup, always
+ * keeps the redacted one. A side that cannot be redacted gives no diff at all.
+ */
+function stale(state: State, ifVersion: unknown, seen: unknown, redact: boolean): Refusal {
   const old = typeof seen === 'string' && sha256(seen) === ifVersion ? seen : versions.get(String(ifVersion));
   const head = `${state.file} has changed since version ${String(ifVersion)}; it is now ${state.ifVersion}. Nothing was written; read it again`;
   if (old === undefined) return refuse('STALE_VERSION', `${head} (this driver no longer holds the version you read, so it cannot show what changed)`);
-  const diff = lineDiff(old, state.text, `${state.file} @ ${String(ifVersion).slice(0, 12)}`, `${state.file} @ ${state.ifVersion.slice(0, 12)}`);
+  const from = redact ? redactEnv(old) : old;
+  const to = redact ? redactEnv(state.text) : state.text;
+  if (from === undefined || to === undefined) return refuse('STALE_VERSION', `${head} (the difference cannot be shown without its environment values, so it is left out)`);
+  const diff = lineDiff(from, to, `${state.file} @ ${String(ifVersion).slice(0, 12)}`, `${state.file} @ ${state.ifVersion.slice(0, 12)}`);
   return refuse('STALE_VERSION', `${head}. What changed:\n${diff}`, diff);
 }
 
@@ -288,10 +316,10 @@ async function reload(machine: Machine, file: string, hash: string): Promise<Ref
   try {
     const answer = await pcRequest(machine.pc, method, path);
     if (answer.status === 200) return undefined;
-    return refuse('RELOAD_FAILED', `wrote ${file} (now ${hash}) but process-compose did not reload it: ${pcFailure(answer)}`);
+    return refuse('RELOAD_FAILED', `written to ${file} (now ${hash}) but not applied: ${pcFailure(answer)}`);
   }
   catch (error) {
-    return refuse('RELOAD_FAILED', `wrote ${file} (now ${hash}) but process-compose did not reload it: ${(error as Error).message}`);
+    return refuse('RELOAD_FAILED', `written to ${file} (now ${hash}) but not applied: ${(error as Error).message}`);
   }
 }
 
@@ -301,7 +329,10 @@ export function listServices(machine: Machine): Answer<Listing> {
     const state = readState(machine);
     return {
       ok: true,
-      services: [...state.services.values()],
+      services: [...state.services.values()].map((record) => {
+        const keys = state.plainEnv.get(record.name);
+        return keys ? { ...record, plainEnv: keys.map((key) => `${key} (plain value, set in ${state.file})`) } : record;
+      }),
       readOnly: [...state.readOnly].map(([name, reason]) => ({ name, reason })),
       capabilities: CAPABILITIES,
       ifVersion: state.ifVersion,
@@ -342,10 +373,10 @@ export async function putService(machine: Machine, caller: Caller, params: PutPa
   /** The record the put asked for, once it is known to be one; a refusal logs it too. */
   let intended: ServiceRecord | null = null;
   let hashBefore: string | null = null;
-  const done = (refusal: Refusal, hashAfter: string | null = hashBefore): Refusal => {
+  const done = (refusal: Refusal, hashAfter: string | null = hashBefore, logged: Refusal = refusal): Refusal => {
     writeLog(machine.changeLog, {
       principal: caller.principal, op: 'put', name, before: before ?? null, after: intended, fileHashBefore: hashBefore, fileHashAfter: hashAfter,
-      refused: { code: refusal.code, message: refusal.message },
+      refused: { code: logged.code, message: logged.message },
     });
     return refusal;
   };
@@ -369,7 +400,7 @@ export async function putService(machine: Machine, caller: Caller, params: PutPa
     if (before === undefined && params.service.command === undefined) return done(refuse('INVALID', `${name} is a new service, so it needs a command`));
     const after = applyPatch(before, params.service);
     intended = after;
-    if (params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen));
+    if (params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen, caller.remote), hashBefore, stale(state, params.ifVersion, params.seen, true));
     if (caller.remote && newCommand(before, after)) {
       let allowed: boolean;
       try {
@@ -423,10 +454,10 @@ export async function removeService(machine: Machine, caller: Caller, params: { 
   const name = typeof params?.name === 'string' ? params.name : '';
   let before: ServiceRecord | undefined;
   let hashBefore: string | null = null;
-  const done = (refusal: Refusal, hashAfter: string | null = hashBefore): Refusal => {
+  const done = (refusal: Refusal, hashAfter: string | null = hashBefore, logged: Refusal = refusal): Refusal => {
     writeLog(machine.changeLog, {
       principal: caller.principal, op: 'remove', name, before: before ?? null, after: null, fileHashBefore: hashBefore, fileHashAfter: hashAfter,
-      refused: { code: refusal.code, message: refusal.message },
+      refused: { code: logged.code, message: logged.message },
     });
     return refusal;
   };
@@ -446,7 +477,7 @@ export async function removeService(machine: Machine, caller: Caller, params: { 
     const reason = state.readOnly.get(name);
     if (reason !== undefined) return done(refuse('READ_ONLY', `${name} is read-only here: ${reason}`));
     if (before === undefined) return done(refuse('NOT_FOUND', `${name} is not a service in ${state.file}`));
-    if (params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen));
+    if (params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen, caller.remote), hashBefore, stale(state, params.ifVersion, params.seen, true));
     let text: string;
     try {
       text = removeEntry(state.text, state.doc, name);

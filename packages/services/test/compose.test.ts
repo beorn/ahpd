@@ -191,6 +191,38 @@ describe('ifVersion (rule: a stale write is refused with the difference, never m
     expect(answer).toMatchObject({ ok: false, code: 'STALE_VERSION' });
     expect(read()).toBe('processes:\n  web:\n    command: one\n');
   });
+
+  // @cto 7af7ed84: hand-written plain environment values may be secrets, and the diff goes off the machine.
+  it('answers a remote caller a diff with every plain environment value blanked, and logs only the blanked diff', async () => {
+    const before = 'processes:\n  web:\n    command: one\n    environment:\n      - DB_PASSWORD=hunter2\n    env_cmds:\n      TOKEN: "cat /secret"\n';
+    writeFileSync(local, before);
+    const read1 = version();
+    const after = before.replace('command: one', 'command: two').replace('hunter2', 'hunter3');
+    writeFileSync(local, after);
+    const remote = await putService(machine, REMOTE, { service: { name: 'web', cwd: '/srv' }, ifVersion: read1, seen: before });
+    expect(remote).toMatchObject({ ok: false, code: 'STALE_VERSION' });
+    if (remote.ok) return;
+    expect(remote.diff).toContain('+    command: two');
+    expect(remote.diff).toContain('DB_PASSWORD=<plain value>');
+    expect(remote.message).not.toMatch(/hunter|cat \/secret/);
+    const local1 = await putService(machine, LOCAL_ONLY, { service: { name: 'web', cwd: '/srv' }, ifVersion: read1, seen: before });
+    if (local1.ok) throw new Error('expected a refusal');
+    expect(local1.diff).toContain('DB_PASSWORD=hunter3');
+    expect(readFileSync(machine.changeLog, 'utf8')).not.toMatch(/hunter|cat \/secret/);
+    expect(read()).toBe(after);
+  });
+});
+
+describe('plain environment values (@cto 7af7ed84: keys listed read-only, values never answered)', () => {
+  it('lists each plain key with where it is set, and never its value', () => {
+    writeFileSync(local, 'processes:\n  web:\n    command: one\n    environment:\n      - DB_PASSWORD=hunter2\n  api:\n    command: two\n    environment:\n      PORT: "8080"\n');
+    const answer = listServices(machine);
+    if (!answer.ok) throw new Error(answer.message);
+    const byName = Object.fromEntries(answer.services.map((s) => [s.name, s]));
+    expect(byName['web']?.plainEnv).toEqual([`DB_PASSWORD (plain value, set in ${answer.file})`]);
+    expect(byName['api']?.plainEnv).toEqual([`PORT (plain value, set in ${answer.file})`]);
+    expect(JSON.stringify(answer)).not.toMatch(/hunter2|8080/);
+  });
 });
 
 describe('allowRemoteCommands (rule: off refuses a remote command, never start/stop/restart)', () => {
@@ -355,7 +387,7 @@ describe('process-compose over its Unix socket (rule: reload from disk; one rout
     answers.set('POST /project/configuration', [400, { error: 'process web2 depends on missing' }]);
     const answer = await putService(machine, LOCAL_ONLY, { service: { name: 'web', command: 'two' }, ifVersion: sha(FILE) });
     expect(answer).toMatchObject({ ok: false, code: 'RELOAD_FAILED' });
-    if (!answer.ok) expect(answer.message).toMatch(/did not reload it: process-compose answered 400: process web2 depends on missing/);
+    if (!answer.ok) expect(answer.message).toMatch(/written to .* but not applied: process-compose answered 400: process web2 depends on missing/);
     expect(logLines().at(-1)).toMatchObject({ refused: { code: 'RELOAD_FAILED' }, fileHashAfter: sha(read()) });
   });
 
