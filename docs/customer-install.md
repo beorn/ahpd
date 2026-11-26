@@ -159,11 +159,39 @@ result, and the command prints it as a warning and exits 0 — a full disk is ne
 folder that will not delete (`EBUSY`, `EACCES`) stops the prune and is named, and the folders already removed are
 listed with it, so a partly pruned disk is never reported as an unpruned one.
 
+## How a release is cut
+
+One command builds the six assets, on the machine it builds for (native modules are never cross-built):
+
+```sh
+node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> \
+  --hightea <hightea checkout> --hightea-sha <hightea sha> --out <empty dir> [--publish]
+```
+
+- `ahpd-<version>-<target>.tar.gz` and `pins-<target>.json` come from `scripts/pack-host-archive.mjs`, the one producer
+  of the pins file (@cto c5038798). The `--pin-base` it needs is written by this run from the three artifacts below, so
+  every checksum in the pins file is of bytes that run produced; there is no hand-written pin anywhere.
+- `bun-<target>` is bun's own release, verified against bun's `SHASUMS256.txt`, placed as the raw executable (never a
+  zip: a stock Debian has no `unzip`, and installing it needs root).
+- `supervisor-<version>-<target>` is process-compose, the supervisor the #38120 trial confirmed, verified against its
+  published checksums file. It is what the boot item starts.
+- `host-plugin-<version>.js` is hightea's `ahp-host` bundle, built by `packages/cli/build.ts` with no bare import; a
+  `-dev.<hash>` build between cuts is refused unless `--allow-dev-plugin` is given for a local proof (never with
+  `--publish`).
+- `ahpd-deploy-<version>.tgz` is `@ahpd/deploy`'s bin bundled for bun in npm's `package/…` layout, so the bootstrap
+  runs `$BUN package/dist/bin.js` from an empty directory with no install step.
+
+All six are uploaded to one **immutable** `beorn/ahpd` release, `hh-<issue>-<8hex>`; `hightea.ai/hosts/<tag>/<name>`
+redirects to it. A release that already exists is refused, never replaced — a fix is a new tag. The builder prints its
+six sha256 lines and the four values the Hightea installer carries (`RELEASE_TAG`, `DEPLOY_VERSION`,
+`DEPLOY_SHA256`, `PINS_SHA512_<TARGET>`); stamping those is the last step before a host can install.
+
+The bun runtime is about 100 MiB, so it is served only from the GitHub release: the site caps assets at 25 MiB.
+
 ## Still open
 
-- **Which supervisor the boot item starts.** process-compose is @dev/6's driver and Wednesday's trial; the manifest
-  carries the supervisor as a pin, so this doc does not pre-empt the trial.
-- **The pins themselves.** The `sha256` values are filled in as data, one line each, when each artifact is published;
-  until then the refusal above is what a customer sees.
+- **The boot item's working directory.** process-compose has to read a `process-compose.yaml`; the generated boot item
+  names `current/supervisor` and nothing else. The release folder must carry the file and the boot item must name the
+  folder, which is a change to `install-run.ts`'s boot items, not to this release cut.
 
 Homebrew and Nix stay optional, later, and out of this issue.
