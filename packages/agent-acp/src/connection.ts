@@ -110,6 +110,12 @@ const START_ANSWER_MS = 60_000;
  * anything (#38786, @cto 8c171c70): 600 s at the default. A model reasoning
  * quietly mid-turn for over a minute is normal and its work is real; one that
  * has said nothing for ten is not coming back.
+ *
+ * Both bounds must end a turn before the Hightea Gateway gives up on it, so
+ * the host is the one that names the reason: 60 s < its TURN_ACKED_DEADLINE_MS
+ * (120 s, hightea packages/members/src/agent-token.ts) before any output, and
+ * 600 s < its TURN_RUNNING_IDLE_MS (17 min, packages/ahp-gateway/src/gateway.ts)
+ * after it. Raising either here past those inverts the order (#38786, @cto 731240c7).
  */
 const AFTER_OUTPUT_FACTOR = 10;
 
