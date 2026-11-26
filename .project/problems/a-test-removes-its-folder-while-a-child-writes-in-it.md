@@ -19,6 +19,7 @@ On 2026-11-21 CI's `windows (3/4)` on #429, run 44942705209, failed `computer-di
 On 2026-11-21 CI's `windows (3/4)` on #426, run 44941762575, failed `takes the machine's own git volume with it, and asks for none where the profile leaves it open` in the same file, with the same error.
 On 2026-11-21 CI's `windows (3/4)` on #425, run 44943828564, failed both of those cases with the same error. Neither PR changes `packages/computer`.
 On 2026-11-22 CI's `windows (3/4)` on #435, run 44989360191, failed `takes the machine's own git volume with it, and asks for none where the profile leaves it open` with the same error. #435 does not change `packages/computer`.
+On 2026-11-26 CI's `windows (2/4)` on #481, run 45739041674, failed `host-chats.test.ts`: `refuses a move of a chat working in its session's scratch folder, which the default chat shares` with `EBUSY` on `rmdir` of `.copilot/chats/live`. Its teardown closes the host before the removal. #481 does not change the chat move.
 
 ## Cause
 

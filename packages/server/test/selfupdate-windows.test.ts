@@ -188,6 +188,37 @@ describe('the helper', () => {
     expect(said.join('\n')).toContain('starting the daemon again with the files it was running');
   });
 
+  it('writes what the plugin move said, and still starts the daemon when npm refuses a plugin', async () => {
+    // `plugin update` prints each move on its standard output; npm's words and the refusal go to its standard error, the refusal last.
+    const { facts, calls, said } = factsOf([false], (call) => (call.args.includes('plugin')
+      ? {
+          code: 2,
+          stdout: 'Updating @ahpd/agent-pi@2.0.0 with npm.\n@ahpd/agent-pi: 1.0.0 to 2.0.0\n',
+          stderr: 'npm warn deprecated glob@7.2.3\nnpm error 400 Bad Request - the manifest is refused\nnpm could not update @ahpd/agent-acp\n',
+        }
+      : { code: 0, stdout: '', stderr: '' }));
+
+    expect(await updateOnce(manifest(), facts)).toBe(0);
+    expect(calls.at(-1)?.args).toEqual([ENTRY, 'start', ...LINE]);
+    const log = said.join('\n');
+    expect(log).toContain('update: @ahpd/agent-pi: 1.0.0 to 2.0.0');
+    expect(log).toContain('update: npm error 400 Bad Request - the manifest is refused');
+    expect(log).toContain('update: the plugins were not moved: npm could not update @ahpd/agent-acp');
+    expect(log).toContain('the daemon is up');
+  });
+
+  it('writes each plugin that moved when the move succeeds', async () => {
+    const { facts, said } = factsOf([false], (call) => (call.args.includes('plugin')
+      ? { code: 0, stdout: '@ahpd/agent-pi: 1.0.0 to 2.0.0\n', stderr: 'added 3 packages\n' }
+      : { code: 0, stdout: '', stderr: '' }));
+
+    expect(await updateOnce(manifest(), facts)).toBe(0);
+    const log = said.join('\n');
+    expect(log).toContain('update: @ahpd/agent-pi: 1.0.0 to 2.0.0');
+    expect(log).not.toContain('added 3 packages');
+    expect(log).not.toContain('were not moved');
+  });
+
   it('keeps waiting for a daemon still there at the limit, then installs', async () => {
     // The clock moves a second per wait, so the fourth look is past the limit
     // and the daemon goes on the sixth.

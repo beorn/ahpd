@@ -862,6 +862,15 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
     // The joined store can identify its one recorded session even when its backend does not list it.
     const recorded = joinedSessionId(kept) === id && kept.uri?.(id) === uri ? kept.provider(id) : undefined;
     const owner = owners.get(uri) ?? (recorded === undefined ? undefined : ctx.agents.get(recorded));
+    // A session whose file cannot be read has no owner and no agent to ask.
+    // Its file is the whole of it, and removing the file is the delete.
+    if (!held && !owner && kept.damaged?.().has(id)) {
+      kept.forget(id);
+      removeNotifiedSummary(uri);
+      broadcast(ROOT, 'root/sessionRemoved', { channel: ROOT, session: uri });
+      log(`deleted the damaged session ${uri}`);
+      return;
+    }
     if (!held && !owner)
       throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${uri}`);
     const agent = held?.agent ?? (owner as Agent);

@@ -61,6 +61,21 @@ AND starts the Back with `startChat` when there is none, on the preset, or on th
 The origin of a new Back names the `subagent` call that the Front turn shows.
 The Back gets the tools `post_message` and `send_message`. `post_message` posts only into the Front that the origin of the Back names.
 
+### The agent of a bot changes
+
+WHEN the bot's record names another agent or model than the Back of a Front was started on
+AND no turn runs in that Back, and no Front turn waits on it
+THEN the next message starts a new Back, unless the option `agentChange` is `keep`
+AND the old Back stays a chat of the session.
+A row for each Front, in the bot's `backs/`, names its current Back and what it was started on.
+A Back with no row is taken as one that the record names now.
+
+### An edit clears a field
+
+WHEN an edit carries a blank `description`, `instructions`, `template`, `provider`, `model`, `preset` or `computer`
+THEN the bot has that field no more.
+A field that the edit leaves out stays.
+
 ### The Back reaches the Front at any time
 
 WHEN the Back, or a subagent of the Back, posts or asks a question
@@ -109,7 +124,9 @@ AND the host shows a problem line that names the bot and the template.
 WHEN a make names no workspace
 THEN the bot folder is `<root>/<slug>`, with `~/.bots` as the default root
 AND a named folder is accepted only under the root
-AND a folder that another bot holds is refused with -32602.
+AND a folder that another bot holds is refused with -32602
+AND a make that names no folder is refused with -32010 where the folder has files
+AND a make that names the folder takes it, and writes its parts into an `AGENTS.md` there.
 
 ### The owner of a new bot
 

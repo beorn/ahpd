@@ -775,6 +775,11 @@ export interface Session {
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L1696-L1765
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSideEffects.ts#L1898-L1902
    *
+   * `reason` is what the model is told of a decline no person made, as of a
+   * client's call whose client left before it was confirmed, where the
+   * harness takes words for one; absent, the backend's own words for a
+   * person's decline.
+   *
    * Handed over once the chat's state has the call pending a confirmation,
    * which is the protocol's condition for taking one. The host has said the
    * client's own decision by then, so a `chat/toolCallConfirmed` the backend
@@ -783,7 +788,7 @@ export interface Session {
    * confirmation here, and the host then says the decision itself, since
    * every client holds the call the state says.
    */
-  confirm(toolCallId: string, approved: boolean, optionId?: string, decisionSource?: AgentPermissionDecisionSource): boolean;
+  confirm(toolCallId: string, approved: boolean, optionId?: string, decisionSource?: AgentPermissionDecisionSource, reason?: string): boolean;
 
   /**
    * Replace the tools this session offers the model.

@@ -149,8 +149,22 @@ AND it gets the channel's `snapshot` for that reader as the state.
 WHEN a client dispatches an action to a plugin channel
 THEN the host refuses it, because the plugin is the only writer.
 
-WHEN two plugins register the same channel
+WHEN two plugins register the same channel with `registerChannel`
 THEN the second registration is a problem line.
+
+This holds for a channel one plugin serves. A list that several plugins add to is a different registration, in [briefs/a-todo-app-is-the-first-agent-app.md](../briefs/a-todo-app-is-the-first-agent-app.md).
+
+WHEN the channel has `operations`
+THEN `x-ahpd/invokeOperation` serves them at `<scheme>://`, and at no other URI of the scheme
+AND each operation needs its own grant
+AND `offers`, when the channel has it, is asked with the reader before anything begins
+AND what `begin` and `settle` throw is logged and changes no answer.
+
+WHEN `operations()` throws or does not answer a list
+THEN the call is refused naming the plugin, and what it threw is only in the log.
+
+The operations name no kind, because the list is one plugin's.
+A list that several plugins add to holds kinds, as `x-ahpd-tunnels` does with `registerTunnelKind`.
 
 The `x-` prefix is the protocol's extension space, so a later protocol channel cannot take the name.
 

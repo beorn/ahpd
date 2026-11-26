@@ -115,6 +115,11 @@
           "type": "string",
           "enum": ["refuse", "allow"],
           "description": "What a second session with the same bot gets. 'refuse' (default) refuses it and names the person's session; 'allow' opens it, and the bot answers the last used one."
+        },
+        "agentChange": {
+          "type": "string",
+          "enum": ["new", "keep"],
+          "description": "What the next message gets after the bot's agent or model changes. 'new' (default) starts a work chat on it; 'keep' goes on in the one the chat had."
         }
       }
     }

@@ -10,7 +10,7 @@ import { botMethods } from './commands.js';
 import { botChatAgent, openTalks } from './chat.js';
 import type { TurnHandle } from './chat.js';
 import { prepareAgentsTemplate } from './folder.js';
-import { backSessions, BOTS_DIR, frontSessions, frontsOf, LEGACY_CHATS, LEGACY_SESSIONS, sessionsOf } from './names.js';
+import { backSessions, BOTS_DIR, currentBacks, currentBacksOf, frontSessions, frontsOf, LEGACY_CHATS, LEGACY_SESSIONS, sessionsOf } from './names.js';
 import { postMessage } from './post.js';
 import { botProvider } from './provider.js';
 import { isSlug } from './record.js';
@@ -22,7 +22,7 @@ import type { InstructionsIn, Yaml } from './agents.js';
 import type { AskIn } from './ask.js';
 import type { BotRecord } from './record.js';
 import type { SecondSession } from './talks.js';
-import type { ContextIn, MainTurnAbsence } from './wake.js';
+import type { AgentChange, ContextIn, MainTurnAbsence } from './wake.js';
 import type { Bag, Owner, Plugin, PluginPeer, RecordCollection, TurnEndEvent } from '@ahpd/sdk';
 import type { BotSessions } from './wake.js';
 
@@ -77,6 +77,7 @@ export const defaults = {
   contextIn: 'text',
   askIn: 'main',
   secondSession: 'refuse',
+  agentChange: 'new',
 } as const;
 
 /** What the plugin's connection to the host calls itself, which is how it knows its own frames. */
@@ -479,6 +480,11 @@ export const apply: Plugin['apply'] = (host, options) => {
    * first, or opened. The schema names the two.
    */
   const second: SecondSession = isSecondSession(options.secondSession) ? options.secondSession : defaults.secondSession;
+  /*
+   * What a message gets once its bot names another agent or model: a new Back
+   * on it, or the Back it had. The schema names the two.
+   */
+  const agentChange: AgentChange = options.agentChange === 'keep' ? 'keep' : defaults.agentChange;
   const kept = host.records('templates', { body: 'text' });
   const templates = {
     // A bot file is edited by hand too, so a name is checked again here.
@@ -718,18 +724,21 @@ export const apply: Plugin['apply'] = (host, options) => {
      * names the Front chat, read off the session's own state, which is what a
      * subscribe answers. A plugin cannot list a session's chats otherwise.
      */
-    backChat: async (session, front) => {
+    backChat: async (session, front, named) => {
       const { channels } = await connection();
       return await channels.hold(session, (held) => {
         const chats = held?.['chats'];
         if (!Array.isArray(chats)) return undefined;
         const found = chats.find((one: unknown) => {
           const origin = (one as Bag | undefined)?.['origin'] as Bag | undefined;
-          return origin?.['kind'] === 'tool' && origin['chat'] === front;
+          return origin?.['kind'] === 'tool' && origin['chat'] === front
+            && (named === undefined || (one as Bag)['resource'] === named);
         }) as Bag | undefined;
         return typeof found?.['resource'] === 'string' ? found['resource'] : undefined;
       });
     },
+    /* Which Back each Front goes to, since an agent change leaves it more than one. */
+    current: currentBacks((bot) => collection(currentBacksOf(bot))),
     startChat: (session, wanted) => host.startChat(session, wanted),
     // A Back chat and the turn running in it, off the chat's own state, which
     // a stop of the Front turn cancels by its id.
@@ -757,7 +766,7 @@ export const apply: Plugin['apply'] = (host, options) => {
       return frontHandles.get(chat);
     },
     problem: (line) => { host.problem(`${name}: ${line}`); },
-  }, absent, contextIn);
+  }, absent, contextIn, agentChange);
   /*
    * A back session's connectors, which are the bot's: the host asks this at
    * each tool list and each call, so an edit to a bot reaches a session it has

@@ -47,6 +47,16 @@ The cofold backend is in [Cofold backend](cofold-backend.md), and the host tools
 
 ## Scenarios
 
+### A create names no agent
+
+WHEN a session, an automation, a tool or a plugin's chat names no agent, and inherits none
+THEN the host runs it on the agent that the root config key `defaultAgent` names
+AND refuses it when that agent is off, paused, not served or not the caller's to use.
+WHEN no default agent is set
+THEN the host takes the first agent that is on, that the caller may use, and whose `missingProgram` answers nothing.
+When every program is missing, the first agent that is on is taken, so its start says which program is missing.
+A plugin's chat never runs on an agent of that plugin.
+
 ### A Claude option is declared once
 
 WHEN the Claude backend takes an option, such as `sandbox`, `thinking`, `outputStyle`, `env` or `extraArgs`

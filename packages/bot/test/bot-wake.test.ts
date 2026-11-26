@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { memoryRecords } from '../../sdk/src/resources/records.js';
-import { backSessions, frontSessions, frontsOf, sessionsOf } from '../src/names.js';
+import { backSessions, currentBacks, frontSessions, frontsOf, sessionsOf } from '../src/names.js';
 import { botStore } from '../src/store.js';
 import { botWake } from '../src/wake.js';
 import type { ChatMessage, TurnHandle } from '../src/chat.js';
-import type { BotSessions } from '../src/wake.js';
+import type { AgentChange, BotSessions } from '../src/wake.js';
 import type { BotRecord } from '../src/record.js';
 import type { Bag } from '../../sdk/src/types/common.js';
 import type { ChatRequest } from '../../sdk/src/types/plugin.js';
@@ -144,6 +144,7 @@ async function sitting(
   record: BotRecord = bot(),
   mayUse?: (owner: Owner, provider: string | undefined) => boolean,
   seeded: { fronts?: string[]; backs?: string[]; users?: boolean } = {},
+  agentChange: AgentChange = 'new',
 ) {
   const records = memoryRecords();
   const store = botStore(
@@ -183,6 +184,7 @@ async function sitting(
 
   const sessions: BotSessions = { owner: async (uri) => owners.get(uri), hasUsers: seeded.users ?? true };
 
+  const currentRows = await memoryRecords().collection('backs');
   const wake = botWake({
     store,
     fronts,
@@ -191,8 +193,9 @@ async function sitting(
     // What a first wake writes into the folder: the real plugin fills the
     // template, and these cases are about the message rather than the file.
     agents: async (one) => `# ${one.name}\n`,
-    backChat: async (session, front) => (chats.get(session) ?? [])
-      .find((one) => one.origin?.['kind'] === 'tool' && one.origin['chat'] === front)?.resource,
+    current: currentBacks(() => currentRows),
+    backChat: async (session, front, named) => (chats.get(session) ?? [])
+      .find((one) => one.origin?.['kind'] === 'tool' && one.origin['chat'] === front && (named === undefined || one.resource === named))?.resource,
     startChat: async (session, wanted) => {
       if (startRefusal !== undefined) throw new Error(startRefusal);
       starts.push({ session, wanted });
@@ -216,10 +219,10 @@ async function sitting(
     },
     ...(mayUse === undefined ? {} : { mayUse }),
     problem: (line) => { problems.push(line); },
-  });
+  }, 'post', 'text', agentChange);
 
   return {
-    wake, backs, fronts, starts, sent, problems, running, store, during, chats, owners,
+    wake, current: currentBacks(() => currentRows), backs, fronts, starts, sent, problems, running, store, during, chats, owners,
     refuseStart: (line: string) => { startRefusal = line; },
     /** Hold every start from here, and answer with what lets them go. */
     holdStart: (): (() => void) => {
@@ -675,4 +678,81 @@ it('answers the sessions an earlier daemon left from the bot\'s rows, a talk\'s 
 
   expect(one.wake.bindings('bot-chat:/before')).toEqual({ work: 'connectors://ap-resend/account-123' });
   expect(one.wake.bindings('ahp-session:/back-before')).toEqual({ work: 'connectors://ap-resend/account-123' });
+});
+
+/** A whole Front turn of a wake: woken, and its Back ended, so nothing waits on it. */
+const answered = async (one: Awaited<ReturnType<typeof sitting>>, id: string, back: string): Promise<void> => {
+  await one.wake.woken(message(id, 'hello'), turn().handle);
+  for (const { action } of one.sent) {
+    const queued = (action as { id?: string }).id;
+    if (queued !== undefined) one.wake.taken(back, `b-${id}`, queued);
+  }
+  one.wake.finished(back, 'done');
+};
+/** The Back chat each message was sent to, in order. */
+const sentTo = (one: Awaited<ReturnType<typeof sitting>>): string[] => one.sent.map((each) => each.channel);
+const SECOND = 'ahp-chat:/back-2';
+
+it('starts a new Back once the bot names another agent or model, and goes on with one it still names', async () => {
+  const one = await sitting(bot({ provider: 'claude', model: 'sonnet' }));
+  await answered(one, 't1', BACK);
+  await answered(one, 't2', BACK);
+  await one.store.put(bot({ provider: 'pi' }));
+  await answered(one, 't3', SECOND);
+  await answered(one, 't4', SECOND);
+  await one.store.put(bot({ provider: 'pi', model: 'big' }));
+  await answered(one, 't5', 'ahp-chat:/back-3');
+  expect(sentTo(one)).toEqual([BACK, BACK, SECOND, SECOND, 'ahp-chat:/back-3']);
+  expect(one.starts.map((each) => [each.wanted.provider, each.wanted.model])).toEqual([['claude', 'sonnet'], ['pi', undefined], ['pi', 'big']]);
+});
+
+it('goes on with the old Back where agentChange is keep', async () => {
+  const one = await sitting(bot({ provider: 'claude' }), undefined, {}, 'keep');
+  await answered(one, 't1', BACK);
+  await one.store.put(bot({ provider: 'pi' }));
+  await answered(one, 't2', BACK);
+  expect(sentTo(one)).toEqual([BACK, BACK]);
+  expect(one.starts).toHaveLength(1);
+});
+
+it('waits with a changed agent while the old Back runs a turn, or a Front turn waits on it', async () => {
+  const one = await sitting(bot({ provider: 'claude' }));
+  await one.wake.woken(message('t1', 'hello'), turn().handle);
+  await one.store.put(bot({ provider: 'pi' }));
+  // The Front turn t1 still waits on the first Back.
+  await answered(one, 't2', BACK);
+  // Nothing waits, and the Back still runs a turn of its own.
+  one.running.set(BACK, 'own');
+  await answered(one, 't3', BACK);
+  one.running.delete(BACK);
+  await answered(one, 't4', SECOND);
+  expect(sentTo(one)).toEqual([BACK, BACK, BACK, SECOND]);
+});
+
+it('takes a Back from before its row was kept as one the bot names now', async () => {
+  const one = await sitting(bot({ provider: 'claude' }));
+  one.chats.set(CHAT, [...one.chats.get(CHAT) ?? [], { resource: 'ahp-chat:/older', origin: { kind: 'tool', chat: MAIN, toolCallId: 'c' } }]);
+  await answered(one, 't1', 'ahp-chat:/older');
+  expect(one.starts).toEqual([]);
+  expect(await one.current.get('backer', MAIN)).toEqual({ chat: 'ahp-chat:/older', agent: 'claude', model: '' });
+  await one.store.put(bot({ provider: 'pi' }));
+  await answered(one, 't2', BACK);
+  expect(sentTo(one)).toEqual(['ahp-chat:/older', BACK]);
+});
+
+it('starts a new Back where the one its row names is gone, and not an older one of the Front', async () => {
+  const one = await sitting(bot({ provider: 'claude' }));
+  await answered(one, 't1', BACK);
+  await one.store.put(bot({ provider: 'pi' }));
+  await answered(one, 't2', SECOND);
+  one.chats.set(CHAT, (one.chats.get(CHAT) ?? []).filter((each) => each.resource !== SECOND));
+  await answered(one, 't3', 'ahp-chat:/back-3');
+  expect(sentTo(one)).toEqual([BACK, SECOND, 'ahp-chat:/back-3']);
+});
+
+it('reads the current Back off its row in another daemon', async () => {
+  const records = memoryRecords();
+  const rows = await records.collection('backs');
+  await currentBacks(() => rows).put('backer', MAIN, { chat: SECOND, agent: 'pi', model: '' });
+  expect(await currentBacks(() => rows).get('backer', MAIN)).toEqual({ chat: SECOND, agent: 'pi', model: '' });
 });

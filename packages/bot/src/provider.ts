@@ -1,4 +1,4 @@
-import { rmSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { RpcError } from '@ahpd/sdk';
 import { covers, ownerFilter } from '@ahpd/sdk';
@@ -7,7 +7,7 @@ import { AGENTS_FILE, fromAgents, makeFolder, partsOf, readAgentsFile, writeAgen
 import { CHAT_PROVIDER, NOT_ITS_OWN_FRONT } from './names.js';
 import { talkerOf } from './talks.js';
 import {
-  BOT_BODIES, BOT_COLORS, checkRecord, isSlug,
+  ALREADY_EXISTS, BOT_BODIES, BOT_COLORS, checkRecord, isSlug,
 } from './record.js';
 import type { InstructionsIn, Yaml } from './agents.js';
 import type { BotCatalogue } from './catalogue.js';
@@ -19,6 +19,16 @@ import type {
   Bag, Entry, Metadata, Owner, Principal, Read, ResourceChange, ResourceProvider, SchemeDescription,
   Watcher, WatchOptions, Write,
 } from '@ahpd/sdk';
+
+/** Whether a folder is there with anything in it; a missing or unreadable one has nothing to lose. */
+const hasFiles = (folder: string): boolean => {
+  try {
+    return readdirSync(folder).length > 0;
+  }
+  catch {
+    return false;
+  }
+};
 
 /**
  * The `bot:` scheme.
@@ -485,8 +495,16 @@ export function botProvider(options: BotOptions): BotProvider {
     throw new RpcError(-32009, `${writer} may not make a bot of ${asked} here`);
   };
 
-  /** The folder a bot works in, or the refusal a folder another bot has is owed. */
-  const workspaceFor = (slug: string, asked: string | undefined, existing?: BotRecord): string => {
+  /**
+   * The folder a bot works in, or the refusal a folder another bot has is owed.
+   *
+   * A make that names no folder is refused when `<root>/<slug>` already has
+   * files: the root is shared by every host of this user, and a folder with
+   * files may be another host's bot, whose `AGENTS.md` is the one copy of its
+   * persona. A make that names the folder takes it on purpose. A bot on a
+   * computer has no folder on this host, so its make is not checked.
+   */
+  const workspaceFor = (slug: string, asked: string | undefined, existing?: BotRecord, onComputer = false): string => {
     const workspace = asked ?? existing?.workspace ?? join(root, slug);
     // A named folder is one under `root`: the plugin makes it, and a maker
     // names folders only where the plugin's own are kept.
@@ -500,6 +518,9 @@ export function botProvider(options: BotOptions): BotProvider {
     const clash = store.all().find((one) => one.id !== slug && one.workspace === workspace);
     if (clash !== undefined) {
       throw new RpcError(-32602, `${workspace} is where ${clash.id} works; a bot's folder is its own`);
+    }
+    if (asked === undefined && existing === undefined && !onComputer && hasFiles(workspace)) {
+      throw new RpcError(ALREADY_EXISTS, `${workspace} already has files; name it as the workspace to make the bot there`);
     }
     return workspace;
   };
@@ -677,7 +698,7 @@ export function botProvider(options: BotOptions): BotProvider {
         ...(draft.provider === undefined ? {} : { provider: draft.provider }),
         ...(draft.model === undefined ? {} : { model: draft.model }),
         ...(draft.preset === undefined ? {} : { preset: draft.preset }),
-        workspace: workspaceFor(slug, draft.workspace, existing),
+        workspace: workspaceFor(slug, draft.workspace, existing, draft.computer !== undefined),
         ...(draft.computer === undefined ? {} : { computer: draft.computer }),
         ...(draft.connectors === undefined ? {} : { connectors: draft.connectors }),
         owner: whose,
@@ -701,7 +722,8 @@ export function botProvider(options: BotOptions): BotProvider {
        * template filled with the bot's words, so the file a bot has from its
        * first moment is the one a first wake would have made. An edit writes the
        * parts into the file that is there and keeps everything else it says; so
-       * does a make that finds a file already there.
+       * does a make that names a folder with a file already there. A make that
+       * names no folder never gets here with one: `workspaceFor` refuses it.
        *
        * A bot on a computer has no folder on this host, so it is the one bot
        * whose record keeps the parts: its file is on a machine this write does

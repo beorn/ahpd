@@ -1544,7 +1544,9 @@ export function createHost(options: HostOptions): Host {
    * failed, with the model told where another client still in the session
    * provides a tool of the same name. The backend holding each call is handed
    * the failure as it is handed a client's own answer, so the agent waiting
-   * on it goes on; no backend ends a call of a client that left.
+   * on it goes on; no backend ends a call of a client that left. A call still
+   * waiting on a confirmation was handed to no client, so its confirmation is
+   * declined instead: nobody can answer it on a call that has ended.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/protocolServerHandler.ts#L2085-L2115
    */
   const completeDisconnectedClientToolCalls = (uri: string, clientId: string): void => {
@@ -1553,6 +1555,7 @@ export function createHost(options: HostOptions): Host {
       const toolCallId = String(call.toolCallId ?? '');
       const name = String(call.displayName ?? call.toolName ?? '');
       const retry = others.some((one) => Array.isArray(one.tools) && (one.tools as Bag[]).some((tool) => tool.name === call.toolName));
+      const unconfirmed = call.status === 'pending-confirmation';
       if (call.status === 'streaming') {
         dispatch(chat, { type: 'chat/toolCallReady', turnId, toolCallId, invocationMessage: call.invocationMessage ?? name, confirmed: 'not-needed' });
       }
@@ -1568,6 +1571,7 @@ export function createHost(options: HostOptions): Host {
       });
       for (const one of sessions.get(uri)?.chats.values() ?? []) {
         if (one.completeToolCall?.(toolCallId, clientId, { ok: false, text: error.message, content }) === true) break;
+        if (unconfirmed && one.confirm(toolCallId, false, undefined, 'host_policy', content[0]?.text ?? error.message)) break;
       }
     }
   };

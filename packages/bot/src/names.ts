@@ -43,6 +43,9 @@ export const sessionsOf = (slug: string): string => `${BOTS_DIR}/${slug}/session
 /** The collection one bot's Front rows are kept in: the session each person talks to it in. */
 export const frontsOf = (slug: string): string => `${BOTS_DIR}/${slug}/fronts`;
 
+/** The collection one bot's current Backs are kept in, one row for each Front. */
+export const currentBacksOf = (slug: string): string => `${BOTS_DIR}/${slug}/backs`;
+
 /** The folder one bot's chat logs are kept in. */
 export const logsOf = (configDir: string, slug: string): string => join(configDir, BOTS_DIR, slug, 'logs');
 
@@ -213,5 +216,48 @@ export const frontSessions = (rows: (bot: string) => RecordCollection): FrontSes
       const session = row['session'];
       return typeof user === 'string' && user !== '' && typeof session === 'string' && session !== '' ? [{ user, session }] : [];
     });
+  },
+});
+
+/** The Back chat one Front goes to now, and the agent and model the bot named when it started. */
+export interface CurrentBack {
+  /** The Back chat. */
+  chat: string;
+  /** The bot's `preset`, else its `provider`; empty where it named neither. */
+  agent: string;
+  /** The model it named; empty where it named none, and beside a preset, which decides it. */
+  model: string;
+}
+
+/** What a bot's record names now, as a Back's row keeps it. */
+export const namedBy = (bot: { preset?: string; provider?: string; model?: string }): Omit<CurrentBack, 'chat'> => ({
+  agent: bot.preset ?? bot.provider ?? '',
+  model: bot.preset === undefined ? bot.model ?? '' : '',
+});
+
+/**
+ * The current Back of each Front, by the Front chat.
+ *
+ * A Front can have more than one Back: an edit of the bot's agent starts
+ * another, and the first stays to be read. Which one the next message goes to,
+ * and what it was started on, is what nothing else keeps.
+ */
+export interface CurrentBacks {
+  get(bot: string, front: string): Promise<CurrentBack | undefined>;
+  put(bot: string, front: string, back: CurrentBack): Promise<void>;
+}
+
+/** The current Backs over one collection a bot. */
+export const currentBacks = (rows: (bot: string) => RecordCollection): CurrentBacks => ({
+  get: async (bot, front) => {
+    const row = await rows(bot).get(rowId([bot, front]));
+    const chat = row?.['chat'];
+    if (typeof chat !== 'string' || chat === '') return undefined;
+    const word = (key: string): string => (typeof row?.[key] === 'string' ? row[key] as string : '');
+    return { chat, agent: word('agent'), model: word('model') };
+  },
+
+  put: async (bot, front, back) => {
+    await rows(bot).put({ id: rowId([bot, front]), bot, front, ...back });
   },
 });

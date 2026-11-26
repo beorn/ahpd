@@ -216,6 +216,13 @@ const line = (key: string, said: unknown): string | undefined => {
   return held === '' ? undefined : held;
 };
 
+/**
+ * A line of an edit: the one the body says, nothing where it says a blank,
+ * and the bot's own where it leaves the key out.
+ */
+const edited = (body: Bag, key: string, held: string | undefined): string | undefined =>
+  (body[key] === undefined ? held : line(key, body[key]));
+
 /** The words a body listed, with a key of its own. */
 const words = (said: unknown, fallback: string[]): string[] => {
   if (said === undefined) return fallback;
@@ -288,7 +295,8 @@ const aliased = (said: unknown): Record<string, string> => {
  * The draft one write's body makes, or the refusal it is owed.
  *
  * `existing` is the bot a write edits, where there is one, and it is what makes
- * an edit an edit: what the body left out is kept from it, and what it may not
+ * an edit an edit: what the body left out is kept from it, a blank clears a line
+ * a bot may be without, and what it may not
  * move - the slug, the owner, the folder - is refused where the body names
  * another.
  */
@@ -334,13 +342,13 @@ export function checkRecord(slug: string, said: unknown, existing?: BotRecord): 
     color: colour(body['color'], existing?.color ?? BOT_COLORS[0]),
     owner: said_ as Owner | undefined,
     workspace,
-    description: line('description', body['description']) ?? existing?.description,
-    instructions: line('instructions', body['instructions']) ?? existing?.instructions,
-    template: template ?? existing?.template,
-    provider: line('provider', body['provider']) ?? existing?.provider,
-    model: line('model', body['model']) ?? existing?.model,
-    preset: line('preset', body['preset']) ?? existing?.preset,
-    computer: line('computer', body['computer']) ?? existing?.computer,
+    description: edited(body, 'description', existing?.description),
+    instructions: edited(body, 'instructions', existing?.instructions),
+    template: body['template'] === undefined ? existing?.template : template,
+    provider: edited(body, 'provider', existing?.provider),
+    model: edited(body, 'model', existing?.model),
+    preset: edited(body, 'preset', existing?.preset),
+    computer: edited(body, 'computer', existing?.computer),
     // Absent rather than empty where the body named none: a bot with no
     // connectors and one whose map nobody has read are the same bot, and the
     // reader answers nothing for both.

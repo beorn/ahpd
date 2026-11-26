@@ -51,7 +51,7 @@ import { INVALID_PARAMS, RpcError } from '../rpc.js';
 import { recordsChannel, type RecordsChannel } from '../resources/recordschannel.js';
 import { reason } from '../utils/values.js';
 import { connectorRefusal, withConnectorChoices } from '../connectors/fields.js';
-import { hostOperationText, operationsIn, type OperationChannel, type OperationText } from '../kinds/operations.js';
+import { hostOperationText, kindOffers, kindOperations, operationsIn, type OperationChannel, type OperationText } from '../kinds/operations.js';
 import type { ConnectorRef } from '../types/connectors.js';
 import type { Operation, OperationStatus } from '../types/kinds.js';
 import type { ChannelHandle, PluginChannel } from '../types/plugin.js';
@@ -200,14 +200,8 @@ export function tunnelsChannel(options: TunnelsChannelOptions): TunnelsChannel {
   const offersOf = (row: Record<string, unknown>): string[] => {
     const kind = options.kinds()[String(row['kind'])];
     if (kind === undefined) return [];
-    const named = (name: string): string => `${kind.name}/${name}`;
-    const ids: string[] = [];
-    if (kind.update !== undefined) ids.push(named('update'));
-    ids.push(named('remove'));
-    ids.push(named(row['enabled'] === true ? 'disable' : 'enable'));
-    for (const operation of kind.operations ?? []) {
-      if (operation.offered === undefined || operation.offered(row)) ids.push(named(operation.id));
-    }
+    const ids = kindOffers(kind, row, kind.update !== undefined);
+    ids.splice(ids.indexOf(`${kind.name}/remove`) + 1, 0, `${kind.name}/${row['enabled'] === true ? 'disable' : 'enable'}`);
     return ids;
   };
 
@@ -322,54 +316,22 @@ export function tunnelsChannel(options: TunnelsChannelOptions): TunnelsChannel {
       listed.get(id) ?? { status: 'idle' };
     for (const kind of Object.values(options.kinds()).sort((left, right) => left.name.localeCompare(right.name))) {
       const named = (name: string): string => `${kind.name}/${name}`;
-      out.push({
-        id: named('create'),
-        kind: kind.name,
-        label: kind.title,
-        description: kind.description,
-        input: kind.schema,
-        scopes: ['list'],
-        grant: 'tunnel:put',
-        ...status(named('create')),
+      const ops = kindOperations(kind, {
+        subject: 'tunnel',
+        scope: 'tunnel',
+        status,
+        update: kind.update !== undefined,
+        words: {
+          update: "Changes this tunnel's settings.",
+          remove: 'Deletes this tunnel.',
+          confirmation: 'Remove this tunnel? Its address stops reaching this host.',
+        },
       });
-      if (kind.update !== undefined) {
-        out.push({
-          id: named('update'),
-          kind: kind.name,
-          label: 'Edit',
-          description: "Changes this tunnel's settings.",
-          input: kind.schema,
-          scopes: ['tunnel'],
-          grant: 'tunnel:put',
-          ...status(named('update')),
-        });
-      }
-      out.push({
-        id: named('remove'),
-        kind: kind.name,
-        label: 'Remove',
-        description: 'Deletes this tunnel.',
-        confirmation: 'Remove this tunnel? Its address stops reaching this host.',
-        scopes: ['tunnel'],
-        grant: 'tunnel:delete',
-        ...status(named('remove')),
-      });
-      out.push({ id: named('enable'), kind: kind.name, label: 'Enable', description: 'Turns the tunnel on.', scopes: ['tunnel'], grant: 'tunnel:put', ...status(named('enable')) });
-      out.push({ id: named('disable'), kind: kind.name, label: 'Disable', description: 'Turns the tunnel off. Its address stops reaching this host.', scopes: ['tunnel'], grant: 'tunnel:put', ...status(named('disable')) });
-      for (const operation of kind.operations ?? []) {
-        out.push({
-          id: named(operation.id),
-          kind: kind.name,
-          label: operation.label ?? operation.id,
-          ...(operation.description === undefined ? {} : { description: operation.description }),
-          ...(operation.icon === undefined ? {} : { icon: operation.icon }),
-          ...(operation.input === undefined ? {} : { input: operation.input }),
-          ...(operation.confirmation === undefined ? {} : { confirmation: operation.confirmation }),
-          scopes: ['tunnel'],
-          grant: operation.grant ?? 'tunnel:put',
-          ...status(named(operation.id)),
-        });
-      }
+      // The tunnels' own two follow remove, before the kind's own verbs.
+      ops.splice(ops.findIndex((one) => one.id === named('remove')) + 1, 0,
+        { id: named('enable'), kind: kind.name, label: 'Enable', description: 'Turns the tunnel on.', scopes: ['tunnel'], grant: 'tunnel:put', ...status(named('enable')) },
+        { id: named('disable'), kind: kind.name, label: 'Disable', description: 'Turns the tunnel off. Its address stops reaching this host.', scopes: ['tunnel'], grant: 'tunnel:put', ...status(named('disable')) });
+      out.push(...ops);
     }
     return out;
   };

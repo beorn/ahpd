@@ -1861,3 +1861,35 @@ it('keeps the bots a query matches, by name or by slug', async () => {
     items: [{ value: 'backer', label: 'Backer' }, { value: 'builder', label: 'Builder' }],
   });
 });
+
+it('runs the next message of an open talk on the agent an edit names, and back on the default a blank leaves', async () => {
+  const agent = (provider: string): Agent => ({ ...echo({ path: '/tmp', pace: 0 }), provider, displayName: provider });
+  const started: string[] = [];
+  const recorded = (provider: string): Agent => {
+    const base = agent(provider);
+    return { ...base, create: (start) => { started.push(provider); return base.create(start); } };
+  };
+  const { host } = made({ agents: [recorded('base'), recorded('other')] });
+  const client = await anyone(host);
+  await talkTo(client);
+  const turn = async (id: string): Promise<void> => {
+    await said(client, id, 'hello');
+    await vi.waitFor(async () => {
+      const state = await stateOf(client);
+      expect(state['activeTurn']).toBeUndefined();
+      expect((state['turns'] as Bag[]).at(-1)?.['id']).toBe(id);
+    }, { timeout: WAIT_MS });
+  };
+  const edit = (record: Bag): Promise<unknown> => client.handle({ method: 'x-ahpd/bots/put', params: { id: 'backer', record } });
+
+  await turn('t1');
+  await edit({ provider: 'other' });
+  await turn('t2');
+  await turn('t3');
+  await edit({ provider: '' });
+  await turn('t4');
+  expect(started).toEqual(['base', 'other', 'base']);
+  // Each Back stays a chat of the talk, to be read.
+  const talk = await client.handle({ method: 'subscribe', params: { channel: SESSION } }) as { snapshot: { state: { chats: unknown[] } } };
+  expect(talk.snapshot.state.chats).toHaveLength(4);
+});

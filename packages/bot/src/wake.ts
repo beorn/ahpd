@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { idOf, openLink, reason } from '@ahpd/sdk';
 import { contextBlock, timeWithOffset } from './context.js';
 import { prepareFolder } from './folder.js';
-import { backTitle, CHAT_PROVIDER, NOT_ITS_OWN_FRONT, userOf } from './names.js';
+import { backTitle, CHAT_PROVIDER, namedBy, NOT_ITS_OWN_FRONT, userOf } from './names.js';
 import type { Bag, ChatRequest, Owner } from '@ahpd/sdk';
 import type { ChatMessage, TurnHandle } from './chat.js';
-import type { BackSessions, FrontSessions } from './names.js';
+import type { BackSessions, FrontSessions, CurrentBacks } from './names.js';
 import type { BotRecord } from './record.js';
 import type { BotStore } from './store.js';
 
@@ -62,6 +62,9 @@ export interface BotSessions {
   hasUsers: boolean;
 }
 
+/** What a message gets once its bot names another agent or model, as the option `agentChange` says. */
+export type AgentChange = 'new' | 'keep';
+
 /** What the wake reads and sends through. */
 export interface WakeSeams {
   /** The bots, whose record names the harness a Back chat runs on. */
@@ -87,8 +90,11 @@ export interface WakeSeams {
    * The Back chat of one Front: the chat of the session whose `tool` origin
    * names the Front chat, or nothing where the session has none yet. Read off
    * the session's own state, because a plugin cannot list a session's chats.
+   * With `named`, that one chat where the session still lists it as the Front's.
    */
-  backChat(session: string, front: string): Promise<string | undefined>;
+  backChat(session: string, front: string, named?: string): Promise<string | undefined>;
+  /** The current Back of each Front, and what it was started on. */
+  current: CurrentBacks;
   /** Start a chat in a session, and answer its URI. */
   startChat(session: string, wanted: ChatRequest): Promise<string>;
   /**
@@ -321,9 +327,10 @@ export interface Wake {
  * `absent` is the plugin's `mainTurnPostMessageAbsent`, and defaults to `post`:
  * a person asked a question, and the Back's last words are the answer unless
  * the host was told otherwise. `contextIn` is the plugin's option of that name,
- * and defaults to `text`.
+ * and defaults to `text`. `agentChange` is the option of that name, and
+ * defaults to `new`.
  */
-export function botWake(seams: WakeSeams, absent: MainTurnAbsence = 'post', contextIn: ContextIn = 'text'): Wake {
+export function botWake(seams: WakeSeams, absent: MainTurnAbsence = 'post', contextIn: ContextIn = 'text', agentChange: AgentChange = 'new'): Wake {
   /** The Front turn each Back chat is answering, by that chat's URI. */
   const answering = new Map<string, Answering>();
   /** The Back chats being started right now, by the Front chat each is started for. */
@@ -428,6 +435,31 @@ export function botWake(seams: WakeSeams, absent: MainTurnAbsence = 'post', cont
   });
 
   /**
+   * The Back a Front has that this message goes to, or nothing where a new one
+   * is started.
+   *
+   * The row says which of the Front's Backs it is. A Front with a Back and no
+   * row, from before the rows were kept, goes on with that Back as if it was
+   * started on what the bot names now. One whose bot names another agent or
+   * model since gets a new Back, unless `agentChange` is `keep`: but not while
+   * the old one runs a turn or a Front turn waits on it, whose steers and
+   * answers are its own, so the change waits for a later message.
+   */
+  const currentBack = async (bot: BotRecord, message: ChatMessage): Promise<string | undefined> => {
+    const row = await seams.current.get(bot.id, message.chat);
+    const found = await seams.backChat(message.session, message.chat, row?.chat);
+    if (found === undefined) return undefined;
+    const now = namedBy(bot);
+    if (row === undefined) {
+      await seams.current.put(bot.id, message.chat, { chat: found, ...now });
+      return found;
+    }
+    if (agentChange === 'keep' || (row.agent === now.agent && row.model === now.model)) return found;
+    if (answering.has(found) || (await seams.look(found)).turn !== undefined) return found;
+    return undefined;
+  };
+
+  /**
    * The Back chat of one Front, found by its id or started.
    *
    * The chat of the Front's session whose `tool` origin names the Front chat
@@ -453,8 +485,8 @@ export function botWake(seams: WakeSeams, absent: MainTurnAbsence = 'post', cont
     const running = starting.get(message.chat);
     if (running !== undefined) return running;
     const begun = (async (): Promise<string> => {
-      const found = await seams.backChat(message.session, message.chat);
-      if (found !== undefined) return found;
+      const held = await currentBack(bot, message);
+      if (held !== undefined) return held;
       /*
        * The folder before the chat, because the chat starts in it and reads
        * what is there: a bot whose `AGENTS.md` has not been written yet is one
@@ -463,13 +495,15 @@ export function botWake(seams: WakeSeams, absent: MainTurnAbsence = 'post', cont
        * works in a computer: its folder is the machine's.
        */
       if (bot.computer === undefined) prepareFolder(bot.workspace, await seams.agents(bot));
-      return await seams.startChat(message.session, {
+      const back = await seams.startChat(message.session, {
         ...(provider === undefined ? {} : { provider }),
         ...(bot.preset !== undefined || bot.model === undefined ? {} : { model: bot.model }),
         title: backTitle(bot.id, owner),
         tools: ['post_message', 'send_message'],
         origin: { kind: 'tool', chat: message.chat, toolCallId: callId },
       });
+      await seams.current.put(bot.id, message.chat, { chat: back, ...namedBy(bot) });
+      return back;
     })();
     starting.set(message.chat, begun);
     // Held only while it is being started, whether it answers or refuses.

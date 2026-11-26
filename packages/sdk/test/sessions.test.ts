@@ -1724,73 +1724,79 @@ it('keeps the time the host archived a session across a restart, and ignores one
   expect(memorySessions().autoArchivedAt?.('a')).toBeUndefined();
 });
 
-it.each([
-  'this is not json', 'null', '[]', '{"version":1,"id":"different"}',
-  '{"version":1,"id":"a","creation":{"phase":"corrupt","initialPrompt":"none"}}',
-  '{"version":1,"id":"a","creation":{"phase":"reserved","initialPrompt":"unknown"}}',
-  '{"version":1,"id":"a","creation":{"phase":"reserved","initialPrompt":"none","model":null}}',
-])('keeps an unreadable session addressable without replacing its bytes: %s', (bytes) => {
+it('starts empty and says so when a file cannot be read', () => {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'a.json'), bytes);
+  writeFileSync(join(dir, 'a.json'), 'this is not json');
   const said: string[] = [];
   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
+  // A warning and an empty store, never a refusal: losing which rows were
+  // archived is worth saying out loud, and is not worth refusing to start over.
   expect(store.flags('anything')).toBe(0);
-  expect(() => store.flags('a')).toThrow(/a.json/);
-  expect(() => store.owner('a')).toThrow(/a.json/);
-  expect(store.sessions()).toContain('a');
-  expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe(bytes);
-  expect(readdirSync(dir)).toEqual(['a.json']);
-  expect(said.join(' ')).not.toContain(bytes);
+  expect(said.join(' ')).toContain('Could not read');
 });
 
-it('refuses the unreadable row while still reading its valid sibling', () => {
+it('skips a file it cannot read and reads the others', () => {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'a.json'), 'this is not json');
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', flags: READ }));
   const said: string[] = [];
   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
-  expect(() => store.flags('a')).toThrow(/a.json/);
+  expect(store.flags('a')).toBe(0);
   expect(store.flags('b')).toBe(READ);
   expect(said.join(' ')).toContain('Could not read');
 });
 
-it('preserves an OS-unreadable row as an error rather than an absent session', () => {
-  const dir = join(root, 'sessions');
-  mkdirSync(join(dir, 'a.json'), { recursive: true });
-  writeFileSync(join(dir, 'b.json'), JSON.stringify({ version: 1, id: 'b', flags: READ }));
-  const store = fileSessions({ dir });
-  expect(() => store.config('a')).toThrow(/a.json.*EISDIR/);
-  expect(() => store.setConfig('a', {})).toThrow(/a.json.*EISDIR/);
-  expect(() => store.nestedSessions?.()).toThrow(/a.json.*EISDIR/);
-  expect(() => store.recordedFolders?.()).toThrow(/a.json.*EISDIR/);
-  expect(store.flags('b')).toBe(READ);
-  expect(store.sessions()).toEqual(expect.arrayContaining(['a', 'b']));
-  expect(statSync(join(dir, 'a.json')).isDirectory()).toBe(true);
-});
-
-it('refuses a row written by an unsupported version', () => {
+it('ignores a file written by a version that shaped it differently', () => {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ version: 2, id: 'a', flags: 64 }));
   const said: string[] = [];
   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
-  expect(() => store.flags('a')).toThrow(/a.json/);
+  expect(store.flags('a')).toBe(0);
   expect(said.join(' ')).toContain('not a session store this version can read');
 });
 
-it('refuses a write over an unreadable row and preserves its only bytes', () => {
+it('keeps a file it cannot read where it is, and no write replaces it', async () => {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'a.json'), 'this is not json');
   const said: string[] = [];
   const store = fileSessions({ dir, onProblem: (message) => said.push(message) });
-  expect(() => store.setFlags('a', READ)).toThrow(/a.json/);
-  const aside = readdirSync(dir).filter((name) => name.startsWith('a.json.unreadable-'));
-  expect(aside).toHaveLength(0);
+  store.setFlags('a', READ);
+  await new Promise((tick) => { setTimeout(tick, 5); });
+  expect(readdirSync(dir)).toEqual(['a.json']);
   expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe('this is not json');
+  expect(store.damaged?.().get('a')).toBe('it is not JSON');
+  expect(store.sessions()).toEqual([]);
+  expect(said.join(' ')).toContain('left in place');
   expect(said.join(' ')).not.toContain('this is not json');
+});
+
+it('reads a file that is null, of a version it does not know, or of another id as damaged', () => {
+  const dir = join(root, 'sessions');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'n.json'), 'null');
+  writeFileSync(join(dir, 'v.json'), JSON.stringify({ version: 2, id: 'v', flags: 64 }));
+  writeFileSync(join(dir, 'w.json'), JSON.stringify({ version: 1, id: 'other', flags: 64 }));
+  const store = fileSessions({ dir });
+  expect([...(store.damaged?.().keys() ?? [])].sort()).toEqual(['n', 'v', 'w']);
+  expect(store.flags('other')).toBe(0);
+  expect(store.sessions()).toEqual([]);
+});
+
+it('removes a damaged file on forget, and leaves it on a prune', () => {
+  const dir = join(root, 'sessions');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'a.json'), 'broken');
+  writeFileSync(join(dir, 'b.json'), 'broken');
+  const store = fileSessions({ dir });
+  store.prune!(() => true);
+  expect(readdirSync(dir).sort()).toEqual(['a.json', 'b.json']);
+  store.forget('a');
+  expect(readdirSync(dir)).toEqual(['b.json']);
+  expect([...(store.damaged?.().keys() ?? [])]).toEqual(['b']);
 });
 
 it('reads an explicitly repaired row on restart without discarding an unsupported version', () => {
@@ -1799,7 +1805,7 @@ it('reads an explicitly repaired row on restart without discarding an unsupporte
   const newer = JSON.stringify({ version: 2, id: 'a', flags: 64 });
   writeFileSync(join(dir, 'a.json'), newer);
   const store = fileSessions({ dir });
-  expect(() => store.setFlags('a', READ)).toThrow(/a.json/);
+  store.setFlags('a', READ);
   const aside = readdirSync(dir).filter((name) => name.startsWith('a.json.unreadable-'));
   expect(aside).toHaveLength(0);
   expect(readFileSync(join(dir, 'a.json'), 'utf8')).toBe(newer);

@@ -100,7 +100,7 @@ A part the file does not have reads empty. A bot that removed its Instructions s
 
 `CLAUDE.md` sits beside it with the one line `@AGENTS.md`, because Claude reads that name and not `AGENTS.md`; the import makes the two names one document.
 
-A make fills the bot's template into the file: the `templates` record it names, or the default `AGENTS.md` template at `<configDir>/templates/bots/AGENTS.md`, which the daemon writes at load where it is absent and a person may edit. The filled text is copied into the bot's folder, once; an edit to the template reaches the next bot made and no bot that exists. A folder that already has an `AGENTS.md` keeps the file, because it is the bot's from its first moment: the make writes the bot's parts into it as an edit does, and the rest of what it says stays.
+A make fills the bot's template into the file: the `templates` record it names, or the default `AGENTS.md` template at `<configDir>/templates/bots/AGENTS.md`, which the daemon writes at load where it is absent and a person may edit. The filled text is copied into the bot's folder, once; an edit to the template reaches the next bot made and no bot that exists. A make that names its folder takes a file that is there: it writes the bot's parts into it as an edit does, and the rest of what it says stays. A make that names no folder is refused where the folder has files - [The folder](#the-folder).
 
 A folder with no `AGENTS.md` - one whose make failed to write it, or one a person emptied - gets the same text at the first wake of a Back chat. The file is the bot's rules: every harness reads it, and a wake never writes over a file that is there.
 
@@ -114,7 +114,7 @@ A slug is fixed when the bot is made and an edit cannot move it. A deleted slug 
 
 ## The folder
 
-A bot works in a folder of its own, `<root>/<slug>` unless the body named one, where `root` is the plugin's option and starts at `~/.bots`. No two bots share a folder and an edit never moves one: two bots in one tree would be two of them working over each other, so a body naming a folder another bot has is refused `-32602`. A folder a body names outside `root` is refused `-32009`, `Permission denied: <folder>`, as the protocol answers a path outside the allowed set. The folder is made when the bot is made, so a bot has one whether or not anybody has talked to it yet.
+A bot works in a folder of its own, `<root>/<slug>` unless the body named one, where `root` is the plugin's option and starts at `~/.bots`. No two bots share a folder and an edit never moves one: two bots in one tree would be two of them working over each other, so a body naming a folder another bot has is refused `-32602`. A folder a body names outside `root` is refused `-32009`, `Permission denied: <folder>`, as the protocol answers a path outside the allowed set. A make that names no folder is refused `-32010` where `<root>/<slug>` already has files, because every host of one user shares the root and the files may be another host's bot. Name the folder in the make to take it. A client tries the next slug. The folder is made when the bot is made, so a bot has one whether or not anybody has talked to it yet.
 
 Its `AGENTS.md` is in that folder, with `CLAUDE.md` beside it - [The persona](#the-persona). A delete removes the daemon's own data for the bot, `<configDir>/bots/<slug>/`, and leaves the work folder and its `AGENTS.md` where they are: what a bot worked on is the person's to keep.
 
@@ -144,7 +144,7 @@ A talk's session, its Front and its row carry the bot in `_meta['ahpd.bot']`, na
 
 ### The Back a message wakes
 
-A Front has one Back, found by its id: the chat of the session whose `tool` origin names the Front. The first message starts it on the bot's `preset`, or its `provider` and `model`, titled `@main/<bot>/<person>` and offered `post_message`; a bot that names neither runs it on the host's default agent. The Back's origin names the Front and the `subagent` call the Front turn shows, so a client draws it under that call, as a subagent's chat. The person is the talk owner's id, or `root` for the root, and `main` is one fixed word for now. With `policies.check` on, the Back's turns are checked and charged as the talk owner's, not as the plugin's. Every later message continues the same Back, and two messages that arrive together for one Front start one Back. A Back session an older daemon started stays as it is, and the next message starts a Back chat.
+A Front has one Back, found by its id: the chat of the session whose `tool` origin names the Front. The first message starts it on the bot's `preset`, or its `provider` and `model`, titled `@main/<bot>/<person>` and offered `post_message`; a bot that names neither runs it on the host's default agent, the root config's `defaultAgent` or the first agent found ([HOST.md](../sdk/HOST.md#root-config)). The Back's origin names the Front and the `subagent` call the Front turn shows, so a client draws it under that call, as a subagent's chat. The person is the talk owner's id, or `root` for the root, and `main` is one fixed word for now. With `policies.check` on, the Back's turns are checked and charged as the talk owner's, not as the plugin's. Every later message continues the same Back, and two messages that arrive together for one Front start one Back. Once the bot's record names another agent or model, the next message starts a new Back on it, which knows nothing of the talk before it; the old one stays a chat of the session, to be read. With the plugin's `agentChange` at `keep`, the old Back goes on. The change waits while the old Back runs a turn or a Front turn waits on it, and a change of the host's default agent alone starts no new Back. Which Back a Front goes to is kept in the bot's `backs/` rows, and a Back from before the rows goes on until the next edit. A Back session an older daemon started stays as it is, and the next message starts a Back chat.
 
 A message that reaches the wake is sent to the Back as a **queued** `chat/pendingMessageSet`, whatever the Back is doing, as VS Code's Agents window sends a message from one session into another: the host takes it up at once when the Back is idle, and after the turn in front of it otherwise. The message is an agent's (`origin: { kind: 'agent' }`), and its `_meta['vscode.chat.delegation']` names the talk's session and the Front. It names no model, agent or attachments, so the Back runs it on its own defaults; the Front keeps those with the person's message. The Front turn is answered by the turn the last message it sent becomes, and a stop of the Front turn takes back the messages still waiting in the Back and cancels its running turn.
 
@@ -302,6 +302,8 @@ A bot that runs on a provider of its own, with something to be:
 }
 ```
 
+An edit keeps every field its body leaves out. A blank clears a `description`, `instructions`, `template`, `provider`, `model`, `preset` or `computer`: `{ "provider": "" }` puts a bot back on the host's default agent.
+
 An edit that asks for a provider, leaving everything else as it was:
 
 ```json
@@ -318,6 +320,7 @@ An edit that asks for a provider, leaving everything else as it was:
 | `contextIn` | `text` | Where a woken message's context goes: `text`, a block in front of the person's words, or `meta`, the words as said with the Front in the message's delegation `_meta` alone, as VS Code delegates a prompt - [The Back a message wakes](#the-back-a-message-wakes) |
 | `askIn` | `main` | Where the Back's question or approval is shown: `main`, copied into the Front turn and answered there, or `own`, left in the Back and listed on the talk's `inputNeeded`, as VS Code lists a subagent's requests on its session - [What the Back answers with](#what-the-back-answers-with) |
 | `secondSession` | `refuse` | What a person's second session with the same bot gets: `refuse`, refused naming their talk, or `allow`, opened, and the bot answers the one they used last - [A talk and its Back chat](#a-talk-and-its-back-chat) |
+| `agentChange` | `new` | What the next message gets after the bot's agent or model changes: `new`, a Back chat on it, or `keep`, the Back it had - [The Back a message wakes](#the-back-a-message-wakes) |
 
 ```json
 { "plugins": [{ "name": "@ahpd/bot", "options": { "root": "/srv/bots" } }] }

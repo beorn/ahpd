@@ -12,7 +12,9 @@
  * catalogue is `catalog.ts`.
  */
 
+import { onPath } from '@ahpd/sdk';
 import type { Agent, Bag, Listed, MachineNeed, Offered, Session, SessionAt, SessionMachine } from '@ahpd/sdk';
+import { isAbsolute } from 'node:path';
 import { catalogueOf, deletes, findListed, forgetSession, forks, loadedSession, machineFor, stateFile } from './catalog.js';
 import { acpSession } from './session.js';
 import type { Choice } from './session/config.js';
@@ -172,6 +174,17 @@ export function acpAgent(options: AcpOptions): Agent<Promise<Session>> {
      * server is spawned to answer it.
      */
     probe: async (): Promise<Offered> => ({ models: [], customizations: [], commands: [] }),
+
+    /*
+     * The command, where the PATH a session's server is started with does not
+     * have it. A command with a folder in it that is not absolute is read
+     * against a session's own folder, so nothing is said of one here.
+     */
+    missingProgram: () => {
+      const { command } = options;
+      if (!isAbsolute(command) && /[\\/]/.test(command)) return undefined;
+      return onPath(command, options.env?.PATH ?? process.env.PATH ?? '') === undefined ? command : undefined;
+    },
 
     /*
      * The server's own session list where it has one, and this process's record

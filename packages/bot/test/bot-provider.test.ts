@@ -475,17 +475,49 @@ it('writes a bot\'s persona into its AGENTS.md, and keeps none of it in the reco
   });
 });
 
-it('writes the UI\'s parts into an AGENTS.md a make finds, and keeps the bot\'s own text', async () => {
+/*
+ * The bot root is shared by every host of one user, so a default folder with
+ * files in it may be another host's bot. Its AGENTS.md is the one copy of that
+ * bot's persona: a make that names no folder is refused there, as already
+ * existing, and leaves it as it was. A client moves to the next slug.
+ */
+it('refuses a make whose default folder has files, and leaves them as they were', async () => {
+  const { host, bots } = made({ soft: ['bot:*', 'session:create'] });
+  const folder = join(bots, 'goo');
+  mkdirSync(folder, { recursive: true });
+  const theirs = '---\nname: Goo\ndescription: Another host\'s bot\n---\n# Goo\n';
+  writeFileSync(join(folder, 'AGENTS.md'), theirs);
+  const soft = await as(host, 'soft');
+
+  const refused = await write(soft, 'bot://goo', { name: 'Goo' }, { createOnly: true });
+  expect(refused).toMatchObject({ code: -32010, message: `${folder} already has files; name it as the workspace to make the bot there` });
+  expect(readFileSync(join(folder, 'AGENTS.md'), 'utf8')).toBe(theirs);
+  expect(readdirSync(folder)).toEqual(['AGENTS.md']);
+  expect(await write(soft, 'bot://goo-2', { name: 'Goo' }, { createOnly: true })).toEqual({ result: {} });
+});
+
+it('makes a bot in an empty default folder, and edits a bot whose folder has files', async () => {
+  const { host, bots } = made({ soft: ['bot:*', 'session:create'] });
+  mkdirSync(join(bots, 'motion'), { recursive: true });
+  const soft = await as(host, 'soft');
+
+  expect(await write(soft, 'bot://motion', { name: 'Motion' }, { createOnly: true })).toEqual({ result: {} });
+  expect(readdirSync(join(bots, 'motion')).sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+  expect(await write(soft, 'bot://motion', { name: 'Moved' })).toEqual({ result: {} });
+  expect(await record(soft, 'bot://motion')).toMatchObject({ name: 'Moved' });
+});
+
+it('writes the UI\'s parts into an AGENTS.md a make finds in the folder it names, and keeps the bot\'s own text', async () => {
   const { host, bots } = made({ soft: ['bot:*', 'session:create'] });
   const folder = join(bots, 'motion');
   mkdirSync(folder, { recursive: true });
-  // A file left by a crash between the two writes, or by a hand: the make may
-  // not leave the UI's parts nowhere.
+  // A file left by a crash between the two writes, or by a hand: a make that
+  // names the folder takes it, and may not leave the UI's parts nowhere.
   writeFileSync(join(folder, 'AGENTS.md'), '# Our rules\n\n## Instructions\n\nThe old words.\n');
   const soft = await as(host, 'soft');
 
   await write(soft, 'bot://motion', {
-    name: 'Motion', description: 'Moves things', instructions: 'Be calm',
+    name: 'Motion', description: 'Moves things', instructions: 'Be calm', workspace: folder,
   }, { createOnly: true });
 
   // The parts the UI owns are written into the file, and the bot's own text
@@ -524,8 +556,9 @@ it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses a w
   const soft = await as(host, 'soft');
 
   try {
+    // The make names the folder, so it takes it and reaches the check on the file.
     expect(await write(soft, 'bot://motion', {
-      name: 'Motion', instructions: 'Be calm',
+      name: 'Motion', instructions: 'Be calm', workspace: folder,
     }, { createOnly: true })).toMatchObject({ code: -32603, message: expect.stringContaining('cannot be read') });
   }
   finally {
@@ -558,6 +591,23 @@ it('answers a read from the bot\'s own file, so its own edit shows on the next r
     description: 'What it calls itself',
     instructions: 'Say less.',
   });
+});
+
+it('empties the instructions an edit blanks, and keeps the rest of the file', async () => {
+  const { host, bots } = made({ soft: ['bot:*', 'session:create'] });
+  const soft = await as(host, 'soft');
+  await write(soft, 'bot://motion', { name: 'Motion', description: 'One line', instructions: 'Say less.' }, { createOnly: true });
+  const file = join(bots, 'motion', 'AGENTS.md');
+  writeFileSync(file, `${readFileSync(file, 'utf8')}\n## Mine\n\nThe bot wrote this.\n`);
+
+  got(await write(soft, 'bot://motion', { instructions: '', description: '' }));
+
+  const read = await record(soft, 'bot://motion');
+  expect(read).not.toHaveProperty('instructions');
+  expect(read).not.toHaveProperty('description');
+  expect(read).toMatchObject({ name: 'Motion' });
+  expect(readFileSync(file, 'utf8')).toContain('## Mine\n\nThe bot wrote this.');
+  expect(readFileSync(file, 'utf8')).not.toContain('Say less.');
 });
 
 /** An older record, as a daemon before the file was the one copy wrote it. */

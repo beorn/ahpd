@@ -10,6 +10,7 @@ import { localPath } from '../resources/fileuri.js';
 import { bag, ownerFilter } from '../utils/values.js';
 import { configOf } from '../sessions/remotesession.js';
 import { agentRefusal, CLOSING, noProvider } from './common.js';
+import { defaultAgentFor } from './defaultagent.js';
 import { heldToGrants, refusalReason } from './gate.js';
 import {
   newChatScratchFolder, readCreateChatWorkspaceMeta, removeChatScratchFolder, requireNonScratchChatFolder,
@@ -709,6 +710,18 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
   // The protocol's own move, which the mover above serves and a session tool reaches too.
   const moveChat = createChatMover(ctx);
 
+  /**
+   * The agent a create of this connection's that names none runs on, and whose
+   * settings a form that names none is answered.
+   */
+  const defaultOf = (config: unknown): string | undefined => defaultAgentFor(ctx, {
+    may: (provider) => mayUseAgent(connection.principal, ownershipOf(options.agentOwners?.(), provider), {
+      root: connection.root === true,
+      hasDirectory: options.users !== undefined,
+    }),
+    onComputer: typeof config === 'object' && config !== null && (config as Bag).computer !== undefined,
+  });
+
   const methods: SessionMethods = {
     /**
      * A snapshot, and everything that happened while it was being taken.
@@ -1341,7 +1354,7 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
        */
       try {
         const uri = named(String(params.channel ?? ''), 'session');
-        const provider = params.provider === undefined ? ctx.first?.provider : String(params.provider);
+        const provider = params.provider === undefined ? defaultOf(params.config) : String(params.provider);
         if (provider === undefined) throw new RpcError(-32002, noProvider(provider));
         // An agent whose record is off or paused starts no session, said with
         // the sentence that state uses.
@@ -2111,7 +2124,7 @@ export function createSessionMethods(ctx: HostContext, conn: ConnectionContext):
      * exactly what it did.
      */
     resolveSessionConfig: async (params) => {
-      const provider = params.provider === undefined ? ctx.first?.provider : String(params.provider);
+      const provider = params.provider === undefined ? defaultOf(params.config) : String(params.provider);
       if (provider === undefined) throw new RpcError(-32002, noProvider(provider));
       const agent = agents.get(provider);
       if (!agent)

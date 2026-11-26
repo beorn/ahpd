@@ -26,6 +26,7 @@ import { filterChatConfigValues } from './chatconfig.js';
 import type { ConfigSchema } from './chatconfig.js';
 import { AGENT_CLIENT_SCHEME } from './clienturi.js';
 import { agentRefusal, need, noProvider } from './common.js';
+import { defaultAgentFor, ownerMay } from './defaultagent.js';
 import { asksForTool } from './permissions.js';
 import { preambleOf } from './preamble.js';
 import { chatFlag, readAggregate, sessionFlag, startsRead } from './chatactions.js';
@@ -2052,6 +2053,12 @@ export function createTooling(ctx: HostContext): Tooling {
     };
   };
 
+  /** The person behind an owner, where this process has met them. */
+  const person = (owner: Owner): { principal?: Principal } => {
+    const found = principalFor(owner);
+    return found === undefined ? {} : { principal: found };
+  };
+
   const openChat = async (
     at: string, asked: ChatStart, calling?: { uri: string; chatUri: string },
   ): Promise<{ chat: string }> => {
@@ -2079,18 +2086,20 @@ export function createTooling(ctx: HostContext): Tooling {
      * agent, runs on this host's default agent, as a client's create that
      * names none does: a plugin's own agent is a front of its own, such as a
      * bot's talk, which runs no model, and its chats are the work behind it.
-     * The default is the first agent the host serves that is not one of that
-     * plugin's own and is not turned off or paused: the agents are in the
-     * order the plugins loaded, so the first may be the front itself, and a
-     * chat on the front would be one more front.
+     * The default is never one of that plugin's own: a chat on the front
+     * would be one more front.
      */
     const ownFront = asked.provider === undefined && asked.by !== undefined
       && options.agentStarts?.[held.agent.provider]?.by === asked.by;
-    const agent = asked.provider !== undefined ? ctx.agents.get(asked.provider)
-      : !ownFront ? held.agent
-      : [...ctx.agents.values()].find((one) => options.agentStarts?.[one.provider]?.by !== asked.by
-        && agentRefusal(ctx.options.disabledAgents?.(), ctx.options.pausedAgents?.(), one.provider) === undefined);
-    if (agent === undefined) throw new Error(noProvider(asked.provider));
+    const owner = kept.owner(idOf(at));
+    const standard = ownFront ? defaultAgentFor(ctx, {
+      may: owner === undefined ? () => true : ownerMay(ctx, { owner, ...person(owner) }),
+      by: asked.by,
+      onComputer: kept.config(idOf(at))?.computer !== undefined,
+    }) : undefined;
+    const named = asked.provider ?? standard;
+    const agent = named !== undefined ? ctx.agents.get(named) : ownFront ? undefined : held.agent;
+    if (agent === undefined) throw new Error(noProvider(named));
     // A chat made by a call is drawn under that call, so the call's chat has
     // to be one a client of this session can see.
     if (asked.origin?.kind === 'tool' && !held.chats.has(asked.origin.chat))
@@ -2437,7 +2446,11 @@ export function createTooling(ctx: HostContext): Tooling {
        * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/shared/sessionServerTools.ts#L1208-L1233
        */
       const defaults = creationDefaults({ uri, chatUri });
-      const provider = asked.provider ?? defaults.agent?.provider ?? ctx.first?.provider;
+      const owner = kept.owner(idOf(uri));
+      const provider = asked.provider ?? defaults.agent?.provider ?? defaultAgentFor(ctx, {
+        may: owner === undefined ? () => true : ownerMay(ctx, { owner, ...person(owner) }),
+        onComputer: asked.config?.computer !== undefined,
+      });
       if (provider === undefined) throw new Error(noProvider(provider));
       const unavailable = agentRefusal(ctx.options.disabledAgents?.(), ctx.options.pausedAgents?.(), provider);
       if (unavailable !== undefined) throw new Error(unavailable);
@@ -2748,7 +2761,10 @@ export function createTooling(ctx: HostContext): Tooling {
       create: async (asked) => {
         // No chain and no budget: a session made here belongs to the caller,
         // has no parent, and spends nothing a budget keeps.
-        const provider = asked.provider ?? ctx.first?.provider;
+        const provider = asked.provider ?? defaultAgentFor(ctx, {
+          may: (one) => usableAgents(caller.principal, caller.root === true).some((agent) => agent.provider === one),
+          onComputer: asked.config?.computer !== undefined,
+        });
         if (provider === undefined) throw new Error(noProvider(provider));
         const unavailable = agentRefusal(ctx.options.disabledAgents?.(), ctx.options.pausedAgents?.(), provider);
         if (unavailable !== undefined) throw new Error(unavailable);

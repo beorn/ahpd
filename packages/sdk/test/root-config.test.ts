@@ -33,7 +33,7 @@ const RESOURCE = 'ahpd://users';
  * and which of the three a key came from is what the cases below read.
  */
 const PUSHED_BY_VSCODE = Object.keys(vscodeRootProperties);
-const HOST_OWN = ['defaultShell', 'workspaceTrust', 'ahpd.restartNeeded', 'changeWords', 'clientQueueBytes', 'replayBytes'];
+const HOST_OWN = ['defaultShell', 'defaultAgent', 'workspaceTrust', 'ahpd.restartNeeded', 'changeWords', 'clientQueueBytes', 'replayBytes'];
 const DAEMON_OWN = ['daemonPort', 'advancedTools', 'apiKey'];
 
 /** A directory that knows one admin and one member, by the token each presents. */

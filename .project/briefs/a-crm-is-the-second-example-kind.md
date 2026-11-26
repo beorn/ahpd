@@ -1,5 +1,5 @@
 ---
-title: A CRM is the second example of a thing and its kinds
+title: A CRM is the second example of a list and its kinds
 created: 2026-11-23
 refs:
   - git://5277544c0 - main when the facts were checked
@@ -10,7 +10,7 @@ refs:
   - "[code://packages/sdk/src/types/kinds.ts](../../packages/sdk/src/types/kinds.ts) - `KindOperation`, with `offered` and `grant`"
 ---
 
-# A CRM is the second example of a thing and its kinds
+# A CRM is the second example of a list and its kinds
 
 Softov wants a second example beside the todo app, so the host parts are not shaped by what a todo needs. He named a CRM with clients, tickets and interactions, as a plugin. Softov, 2026-11-23: "A brief in ahpd". This brief writes that plugin with the host parts of the todo brief, and lists where they do not fit. Nothing is built from it.
 
@@ -18,8 +18,8 @@ Softov wants a second example beside the todo app, so the host parts are not sha
 
 | Need | Todo app | CRM |
 | --- | --- | --- |
-| Things | One | Three: clients, tickets, interactions |
-| Kinds in a thing | One | Several, some from other plugins |
+| Lists | One | Three: clients, tickets, interactions |
+| Kinds in a list | One | Several, some from other plugins |
 | Links between records | None | A ticket names its client, and an interaction names its ticket |
 | Size | Tens of rows | Thousands of tickets |
 | Who reads a row | Everybody | The team the ticket is assigned to |
@@ -28,33 +28,35 @@ Softov wants a second example beside the todo app, so the host parts are not sha
 
 ## The plugin
 
-The plugin `@local/crm` registers three things:
+[a-list-and-its-kinds.md](a-list-and-its-kinds.md) is the shape of a list and its kinds now, and writes this CRM as one of its examples. Where this brief differs, that brief holds.
+
+The plugin `@local/crm` registers three lists:
 
 ```js
-host.registerThing({ name: 'client', title: 'Clients', description: 'A company or a person the team serves.' });
-host.registerThing({ name: 'ticket', title: 'Tickets', description: 'One request from a client.' });
-host.registerThing({ name: 'interaction', title: 'Interactions', description: 'One contact with a client: an email, a call or a note.' });
+host.registerList({ name: 'client', title: 'Clients', description: 'A company or a person the team serves.' });
+host.registerList({ name: 'ticket', title: 'Tickets', description: 'One request from a client.' });
+host.registerList({ name: 'interaction', title: 'Interactions', description: 'One contact with a client: an email, a call or a note.' });
 ```
 
-Each thing gets its channel and its row scheme, as the todo brief's *The thing and its kind* says. `x-ahpd-tickets://` lists the tickets, and `ticket://t-1042` is one ticket.
+Each list gets its channel and its row scheme, as the todo brief's *The list and its kind* says. `x-ahpd-tickets://` lists the tickets, and `ticket://t-1042` is one ticket.
 
 ### Kinds from more than one plugin
 
-The CRM registers the kinds it knows. A mail plugin adds the kind `email` to `interaction`, and a phone plugin adds `call`. No plugin owns `interaction`. The mail plugin declares it too, and its declaration joins the CRM's, as the todo brief's *The thing and its kind* says. Each kind has its own schema and operations, and a client draws each from the thing's entry in `ahpd.channels`.
+The CRM registers the kinds it knows. A mail plugin adds the kind `email` to `interaction`, and a phone plugin adds `call`. No plugin owns `interaction`. The mail plugin declares it too, and its declaration joins the CRM's, as the todo brief's *The list and its kind* says. Each kind has its own schema and operations, and a client draws each from the list's entry in `ahpd.channels`.
 
 ```js
 // in @local/crm
-host.registerKind({ thing: 'ticket', name: 'request', title: 'Request', schema: requestSchema, operations: ticketOperations });
-host.registerKind({ thing: 'ticket', name: 'incident', title: 'Incident', schema: incidentSchema, operations: incidentOperations });
-host.registerKind({ thing: 'interaction', name: 'note', title: 'Note', schema: noteSchema });
+host.registerKind({ channel: 'x-ahpd-tickets', name: 'request', title: 'Request', schema: requestSchema, operations: ticketOperations });
+host.registerKind({ channel: 'x-ahpd-tickets', name: 'incident', title: 'Incident', schema: incidentSchema, operations: incidentOperations });
+host.registerKind({ channel: 'x-ahpd-interactions', name: 'note', title: 'Note', schema: noteSchema });
 
 // in @local/mail
-host.registerThing({ name: 'interaction', title: 'Interactions', description: 'One contact with a client: an email, a call or a note.' });
-host.registerKind({ thing: 'interaction', name: 'email', title: 'Email', schema: emailSchema,
+host.registerList({ name: 'interaction', title: 'Interactions', description: 'One contact with a client: an email, a call or a note.' });
+host.registerKind({ channel: 'x-ahpd-interactions', name: 'email', title: 'Email', schema: emailSchema,
   operations: [{ id: 'send', label: 'Send', icon: 'send', offered: (email) => email.state === 'draft' }] });
 ```
 
-The thing's entry then lists kinds from two plugins:
+The list's entry in `ahpd.channels` then names kinds from two plugins:
 
 ```json
 { "scheme": "x-ahpd-interactions", "title": "Interactions", "grant": "interaction:get",
@@ -74,7 +76,7 @@ The thing's entry then lists kinds from two plugins:
   "operation": { "id": "incident/assign", "status": "idle" } }
 ```
 
-`record.client` is the URI of another thing's row. A form draws the field as a picker of clients.
+`record.client` is the URI of another list's row. A form draws the field as a picker of clients.
 
 ### An email that is sent
 
@@ -103,8 +105,8 @@ A session that works on a ticket records `ticket://t-1042` with `add_artifact_or
 
 | Host part | Fits the CRM | What is missing |
 | --- | --- | --- |
-| A thing and its kinds | Yes. Kinds from two plugins in one thing is the case it is for | Nothing: no plugin owns a thing, and a declaration with the same name joins it |
-| The thing's entry in `ahpd.channels` | Yes | A kind names its plugin, so a client can say where it came from |
+| A list and its kinds | Yes. Kinds from two plugins in one list is the case it is for | Nothing: no plugin owns a list, and a declaration with the same name joins it |
+| The list's entry in `ahpd.channels` | Yes | A kind names its plugin, so a client can say where it came from |
 | The row: `id`, `kind`, `owner`, `record`, `operations`, `operation` | Yes | `owner` is a team here, not a person |
 | The row scheme and a watch | Yes | Nothing |
 | Operation status on the row | Yes, and the CRM needs it more than the todo app | Nothing |
@@ -118,9 +120,9 @@ A session that works on a ticket records `ticket://t-1042` with `add_artifact_or
 
 Softov, 2026-11-23, chose each of these.
 
-### A large thing: a query on the channel URI
+### A large list: a query on the channel URI
 
-"Query on the channel URI". A client subscribes to part of a thing with a query, as `?owner=me` works on the computers and users channels today:
+"Query on the channel URI". A client subscribes to part of a list with a query, as `?owner=me` works on the computers and users channels today:
 
 ```json
 { "jsonrpc": "2.0", "id": 30, "method": "subscribe",
@@ -131,7 +133,7 @@ Softov, 2026-11-23, chose each of these.
 - `after=<id>` asks for the next page.
 - A kind declares the fields a query may filter and sort by. A query on any other field is refused.
 - A row that leaves the query, such as a ticket that is closed, arrives as `removed` for that subscription.
-- A channel URI with no query lists the whole thing, as today.
+- A channel URI with no query reads the whole list, as today.
 
 ### A field that names a row: a mark like the connector's
 
@@ -151,7 +153,7 @@ Softov, 2026-11-23, chose each of these.
 "A handle from registerKind". `registerKind` answers `rows`, which changes that kind's rows only:
 
 ```js
-const emails = host.registerKind({ thing: 'interaction', name: 'email', /* ... */ });
+const emails = host.registerKind({ channel: 'x-ahpd-interactions', name: 'email', /* ... */ });
 
 mail.on('bounce', async (id) => {
   await emails.rows.update(id, { ...(await emails.rows.get(id)).record, state: 'bounced' });

@@ -1,5 +1,6 @@
 import type { StringOrMarkdown } from '@microsoft/agent-host-protocol';
-import type { Bag, PendingConfirmation } from '@ahpd/sdk';
+import type { Bag, PendingConfirmation, Session } from '@ahpd/sdk';
+import { CLAUDE_CLIENT_MCP_SERVER_NAME } from './clienttools.js';
 import { bag, list, str } from './common.js';
 import type { SessionContext } from './context.js';
 import { getClaudeInvocationMessage, getClaudePastTenseMessage, getClaudeToolInputString, questionRequest, writeOf } from '../input.js';
@@ -129,7 +130,7 @@ export interface Asking {
    */
   settleEdits: (toolCallId?: string) => void;
   methods: {
-    confirm: (toolCallId: string, approved: boolean, optionId?: string) => boolean;
+    confirm: Session['confirm'];
     setAnswer: (requestId: string, questionId: string, answer: Bag | undefined) => boolean;
     answer: (requestId: string, accepted: boolean, answers?: Bag) => boolean;
   };
@@ -420,6 +421,11 @@ export function createAsking(ctx: SessionContext): Asking {  /**
      */
     const signal = about.signal as AbortSignal | undefined;
     if (signal?.aborted === true) return { behavior: 'deny', message: ABORTED };
+    // A client's tool whose client has left: nothing would run the call, and
+    // the host may have ended it already, where nobody could answer.
+    if (toolName.startsWith(`mcp__${CLAUDE_CLIENT_MCP_SERVER_NAME}__`) && ctx.clientToolOf(toolName) === undefined) {
+      return { behavior: 'deny', message: `Nothing here offers ${toolName}.` };
+    }
     const agentId = str(about.agentID);
     const server = str(bag(about.mcpServer).name);
     return await askPerson({
@@ -442,7 +448,7 @@ export function createAsking(ctx: SessionContext): Asking {  /**
      * person picked is the host's to act on, the rules it keeps included.
      * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/claude/claudeCanUseTool.ts#L177-L180
      */
-    confirm: (toolCallId, approved) => {
+    confirm: (toolCallId, approved, _optionId, _source, reason) => {
       // Found by id rather than assumed to be the only one. This used to
       // compare against whichever question happened to be held and return
       // silently when it did not match - which, with two tool calls open, is
@@ -488,12 +494,12 @@ export function createAsking(ctx: SessionContext): Asking {  /**
       if (approved) {
         ctx.allowCall(name, str(held.request.turnId) ?? '', toolCallId, call.invocationMessage as StringOrMarkdown, str(call.toolInput));
       }
-      else ctx.refuseCall(toolCallId, DECLINED);
+      else ctx.refuseCall(toolCallId, reason ?? DECLINED);
       // The answer is given, so the preview goes with it: what the tool would
       // leave is on no disk, and the file itself is the copy every client can
       // read once it has run.
       settleEdits(toolCallId);
-      settle(approved ? { behavior: 'allow', updatedInput: {} } : { behavior: 'deny', message: DECLINED });
+      settle(approved ? { behavior: 'allow', updatedInput: {} } : { behavior: 'deny', message: reason ?? DECLINED });
       return true;
     },
 

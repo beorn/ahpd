@@ -138,7 +138,7 @@ export const createPauses = (
    * keeps of it, as VS Code's agents answer their runtimes once.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/copilotAgentSession.ts#L8640
    */
-  const confirm = (toolCallId: string, approved: boolean): boolean => {
+  const confirm: Session['confirm'] = (toolCallId, approved, optionId, source, reason) => {
     const held = [...pending.values()].find((one) => one.kind === 'approval' && one.callId === toolCallId);
     /*
      * An answer can arrive while the session is still finding the run a
@@ -147,7 +147,7 @@ export const createPauses = (
      */
     const opening = ctx.opening;
     if (held === undefined && opening !== undefined) {
-      void opening.then(() => confirm(toolCallId, approved), () => {});
+      void opening.then(() => confirm(toolCallId, approved, optionId, source, reason), () => {});
       return true;
     }
     /*
@@ -200,7 +200,7 @@ export const createPauses = (
      * https://github.com/softov/cofold/blob/ee4819644696b88e83e63c56ed7bdf426d32cfb9/packages/papo/src/chat.ts#L544
      * https://github.com/softov/cofold/blob/ee4819644696b88e83e63c56ed7bdf426d32cfb9/packages/agents/src/run/turn.ts#L405
      */
-    if (paused === undefined) route(approved ? { type: 'approve', requestId } : { type: 'deny', requestId });
+    if (paused === undefined) route(approved ? { type: 'approve', requestId } : { type: 'deny', requestId, ...(reason === undefined ? {} : { reason }) });
     return true;
   };
 

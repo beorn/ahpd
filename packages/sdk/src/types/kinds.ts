@@ -100,16 +100,15 @@ export interface KindOperation {
 /**
  * One operation as a channel's state lists it.
  *
- * The kind's declaration, with the facts the host alone knows: the kind it
- * belongs to, the scopes it may be pointed at, the grant it asks, and how its
- * last invocation went. A client invokes it by `id`, so the list is the whole
- * of what may be asked for.
+ * The words and the form, with the scopes it may be pointed at, the grant it
+ * asks, and how its last invocation went. A client invokes it by `id`, so the
+ * list is the whole of what may be asked for. It names no kind: a channel one
+ * plugin serves with `registerChannel` has none, and `Operation` is the one a
+ * kind declared.
  */
-export interface Operation extends KindOperation {
-  /** The `name` of the kind that declared it. */
-  kind: string;
+export interface ChannelOperation extends Omit<KindOperation, 'offered'> {
   /**
-   * The scopes an invocation may name, as the kind declared them.
+   * The scopes an invocation may name.
    *
    * At runtime only one thing is read: `list` runs on the channel as a whole
    * and takes no target, and any other name runs on one record and needs
@@ -123,4 +122,12 @@ export interface Operation extends KindOperation {
   status: OperationStatus;
   /** Why the last invocation failed, when it did. */
   error?: string;
+}
+
+/** One operation a kind declared, as the list of a channel that holds kinds says it. */
+export interface Operation extends ChannelOperation {
+  /** The `name` of the kind that declared it. */
+  kind: string;
+  /** Whether one record offers it now, as the kind declared: see `KindOperation`. */
+  offered?: KindOperation['offered'];
 }

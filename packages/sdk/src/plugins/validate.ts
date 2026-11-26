@@ -20,7 +20,7 @@
 import type { StartSession } from '../types/automations.js';
 import type { ChatRequest, PluginContracts, PortKey } from '../types/plugin.js';
 import type { Owner } from '../types/usage.js';
-import type { Operation } from '../types/kinds.js';
+import type { ChannelOperation } from '../types/kinds.js';
 import { SUBJECTS, grantProblem, isGrant, isOperationWord } from '../access/users.js';
 import { isSecret, secretFields } from '../channels/owners.js';
 import { RECORD_SLUG, isRecordSlug } from '../resources/records.js';
@@ -497,26 +497,29 @@ export const checkChannel = (scheme: string, value: unknown, by: string): void =
  * change. An entry is served when it has an id no earlier entry has, a list of
  * scopes, and a grant like `svc:restart`: those are what `invokeOperation`
  * reads before it runs anything. A list that throws, or is not a list, serves
- * nothing and says why in `failed`.
+ * nothing: `failed` is what a caller is told, and what it threw is in
+ * `problems` alone.
  */
 export const listedOperations = (
   by: string,
   uri: string,
   list: () => unknown,
-): { operations: Operation[]; problems: string[]; failed?: string } => {
+): { operations: ChannelOperation[]; problems: string[]; failed?: string } => {
   let listed: unknown;
   try {
     listed = list();
   }
   catch (error) {
-    const failed = `plugin ${by} could not list its operations at ${uri}: ${error instanceof Error ? error.message : String(error)}`;
-    return { operations: [], problems: [failed], failed };
+    const failed = `plugin ${by} could not list its operations at ${uri}`;
+    return { operations: [], problems: [`${failed}: ${error instanceof Error ? error.message : String(error)}`], failed };
   }
   if (!Array.isArray(listed)) {
+    // An `async` list is not one, and its rejection is nobody's to catch later.
+    if (listed instanceof Promise) listed.catch(() => {});
     const failed = `plugin ${by} lists its operations at ${uri} as ${typeof listed}, not a list`;
     return { operations: [], problems: [failed], failed };
   }
-  const operations: Operation[] = [];
+  const operations: ChannelOperation[] = [];
   const problems: string[] = [];
   const seen = new Set<string>();
   for (const one of listed as unknown[]) {
@@ -524,7 +527,7 @@ export const listedOperations = (
     const id = typeof entry.id === 'string' && entry.id !== '' ? entry.id : undefined;
     const why = id === undefined ? 'it has no id'
       : seen.has(id) ? 'an earlier entry has its id'
-        : !Array.isArray(entry.scopes) || !entry.scopes.every((scope) => typeof scope === 'string' && scope !== '') ? 'its scopes are not a list of names'
+        : !Array.isArray(entry.scopes) || entry.scopes.length === 0 || !entry.scopes.every((scope) => typeof scope === 'string' && scope !== '') ? 'its scopes are not a list of names'
           : typeof entry.grant !== 'string' || !isGrant(entry.grant) ? 'its grant is not one like svc:restart'
             : undefined;
     if (why !== undefined) {
@@ -532,7 +535,7 @@ export const listedOperations = (
       continue;
     }
     seen.add(id!);
-    operations.push(one as Operation);
+    operations.push(one as ChannelOperation);
   }
   return { operations, problems };
 };
@@ -1083,39 +1086,178 @@ export const checkTunnelKind = (value: unknown, by: string): { name: string; che
     }
   }
   const checked: CheckedSchema[] = [{ where: `tunnel kind ${name}`, gaps: schemaProblems(object.schema, true) }];
-  if (object.operations === undefined) return { name, checked };
-  if (!Array.isArray(object.operations)) {
-    throw new Error(miss(by, 'registerTunnelKind', 'operations', 'a list of operations, or nothing'));
+  checkKindOperations(object.operations, TUNNEL_OPERATIONS, `tunnel kind ${name}`, by, 'registerTunnelKind', checked);
+  return { name, checked };
+};
+
+/**
+ * Check the operations a kind lists: each an object with an id that is not
+ * one of `reserved`, which the host serves for every kind, and that no other
+ * operation of the kind uses; its words strings; its input a schema, whose
+ * gaps go in `checked`; and its grant a grant.
+ */
+const checkKindOperations = (
+  value: unknown,
+  reserved: readonly string[],
+  where: string,
+  by: string,
+  method: string,
+  checked: CheckedSchema[],
+): void => {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new Error(miss(by, method, 'operations', 'a list of operations, or nothing'));
   }
   const ids = new Set<string>();
-  for (const held of object.operations) {
-    const operation = asObject(held, by, 'registerTunnelKind', 'an operation');
-    stringy(operation, 'id', by, 'registerTunnelKind');
+  for (const held of value) {
+    const operation = asObject(held, by, method, 'an operation');
+    stringy(operation, 'id', by, method);
     const id = operation.id as string;
-    if (TUNNEL_OPERATIONS.includes(id)) {
-      throw new Error(miss(by, 'registerTunnelKind', `operation ${id}`, `an id other than ${TUNNEL_OPERATIONS.join(', ')}, which the host serves for every kind`));
+    if (reserved.includes(id)) {
+      throw new Error(miss(by, method, `operation ${id}`, `an id other than ${reserved.join(', ')}, which the host serves for every kind`));
     }
     if (ids.has(id)) {
-      throw new Error(miss(by, 'registerTunnelKind', `operation ${id}`, 'an id no other operation of this kind uses'));
+      throw new Error(miss(by, method, `operation ${id}`, 'an id no other operation of this kind uses'));
     }
     ids.add(id);
     for (const member of ['label', 'description', 'icon', 'confirmation']) {
       if (operation[member] === undefined) continue;
       if (typeof operation[member] !== 'string') {
-        throw new Error(miss(by, 'registerTunnelKind', `operation ${id} ${member}`, 'a string, or nothing'));
+        throw new Error(miss(by, method, `operation ${id} ${member}`, 'a string, or nothing'));
       }
     }
     if (operation.input !== undefined) {
       if (!right(operation.input, 'object')) {
-        throw new Error(miss(by, 'registerTunnelKind', `operation ${id} input`, 'an object, the JSON Schema a client draws the form from, or nothing'));
+        throw new Error(miss(by, method, `operation ${id} input`, 'an object, the JSON Schema a client draws the form from, or nothing'));
       }
-      checked.push({ where: `tunnel kind ${name} operation ${id} input`, gaps: schemaProblems(operation.input) });
+      checked.push({ where: `${where} operation ${id} input`, gaps: schemaProblems(operation.input) });
     }
     if (operation.grant !== undefined) {
       if (typeof operation.grant !== 'string' || !isGrant(operation.grant)) {
-        throw new Error(miss(by, 'registerTunnelKind', `operation ${id} grant`, `a grant, <subject>:<operation>, and ${String(operation.grant)} is not one`));
+        throw new Error(miss(by, method, `operation ${id} grant`, `a grant, <subject>:<operation>, and ${String(operation.grant)} is not one`));
+      }
+    }
+    if (operation.offered !== undefined && typeof operation.offered !== 'function') {
+      throw new Error(miss(by, method, `operation ${id} offered`, 'a function, or nothing'));
+    }
+  }
+};
+
+/** The filter types step 1 builds, and the step that builds each other one. */
+const LIST_FILTER_STEPS: Readonly<Record<string, string | undefined>> = {
+  enum: undefined,
+  boolean: undefined,
+  range: 'a later step of lists, which builds range filters',
+  uri: 'a later step of lists, which builds uri filters and relations',
+};
+
+/**
+ * Check one `registerList` value against `ListDeclaration`, and answer its name.
+ *
+ * The name is a slug a plugin may name a scheme with, because it is the
+ * scheme of one row and the subject of the list's grants. The channel is an
+ * extension scheme, `x-` and more. `instances`, `page`, a `range` or `uri`
+ * filter are refused with the step that builds each, so a declaration written
+ * for later says so at load rather than being served half.
+ */
+export const checkList = (value: unknown, by: string): string => {
+  const method = 'registerList';
+  const object = asObject(value, by, method, 'list');
+  for (const member of ['name', 'channel', 'title']) stringy(object, member, by, method);
+  const name = object.name as string;
+  if (!isRecordSlug(name)) throw new Error(miss(by, method, name, `a slug, ${RECORD_SLUG}`));
+  const reserved = reservedName(name);
+  if (reserved !== undefined) throw new Error(miss(by, method, name, `a name the host does not use: ${reserved}`));
+  const channel = checkScheme(object.channel, by, method).toLowerCase();
+  if (!channel.startsWith('x-') || channel === 'x-') {
+    throw new Error(miss(by, method, channel, 'a scheme that starts with x-, the protocol\'s extension prefix'));
+  }
+  for (const member of ['description', 'icon']) {
+    if (object[member] !== undefined && typeof object[member] !== 'string') {
+      throw new Error(miss(by, method, member, 'a string, or nothing'));
+    }
+  }
+  if (object.instances !== undefined && object.instances !== false) {
+    throw new Error(miss(by, method, 'instances', 'false or nothing: instances wait for a later step of lists, which builds them'));
+  }
+  if (object.page !== undefined) {
+    throw new Error(miss(by, method, 'page', 'nothing: paging waits for a later step of lists, which builds the merged cursor'));
+  }
+  if (object.filters !== undefined) {
+    if (!Array.isArray(object.filters)) throw new Error(miss(by, method, 'filters', 'a list of filters, or nothing'));
+    for (const held of object.filters) {
+      const filter = asObject(held, by, method, 'a filter');
+      stringy(filter, 'field', by, method);
+      const type = filter.type;
+      if (typeof type !== 'string' || !(type in LIST_FILTER_STEPS)) {
+        throw new Error(miss(by, method, `filter ${String(filter.field)} type`, 'enum, range, uri or boolean'));
+      }
+      const step = LIST_FILTER_STEPS[type];
+      if (step !== undefined) throw new Error(miss(by, method, `filter ${String(filter.field)}`, `an enum or boolean filter: ${type} waits for ${step}`));
+    }
+  }
+  for (const member of ['search', 'sorts']) {
+    const held = object[member];
+    if (held === undefined) continue;
+    if (!Array.isArray(held) || held.some((one) => typeof one !== 'string' || one.trim() === '')) {
+      throw new Error(miss(by, method, member, 'a list of field names, or nothing'));
+    }
+  }
+  if (object.defaultSort !== undefined) {
+    const sort = object.defaultSort;
+    const sorts = (object.sorts ?? []) as string[];
+    if (typeof sort !== 'string' || !sorts.includes(sort.startsWith('-') ? sort.slice(1) : sort)) {
+      throw new Error(miss(by, method, 'defaultSort', 'a field of sorts, with - for descending'));
+    }
+  }
+  return name;
+};
+
+/** The operations the host serves for every kind of a list, which a kind may not take for its own. */
+const LIST_KIND_OPERATIONS: readonly string[] = ['create', 'update', 'remove'];
+
+/**
+ * Check one `registerKind` value against `ListKind`, and answer its channel,
+ * its name and its schemas' gaps.
+ *
+ * Copies `checkTunnelKind`: the name is a slug and the schema an object, and
+ * the functions the host calls are required. `class: 'runtime'` is refused
+ * until the step that builds its `start` and `stop` hooks.
+ */
+export const checkListKind = (value: unknown, by: string): { channel: string; name: string; checked: CheckedSchema[] } => {
+  const method = 'registerKind';
+  const object = asObject(value, by, method, 'kind');
+  for (const member of ['channel', 'name', 'title']) stringy(object, member, by, method);
+  const channel = checkScheme(object.channel, by, method).toLowerCase();
+  const name = object.name as string;
+  if (!isRecordSlug(name)) throw new Error(miss(by, method, name, `a slug, ${RECORD_SLUG}`));
+  for (const member of ['description', 'icon']) {
+    if (object[member] !== undefined && typeof object[member] !== 'string') {
+      throw new Error(miss(by, method, member, 'a string, or nothing'));
+    }
+  }
+  if (object.class !== undefined && object.class !== 'data') {
+    throw new Error(miss(by, method, 'class', 'data or nothing: a runtime kind waits for a later step of lists, which builds its start and stop'));
+  }
+  if (!right(object.schema, 'object')) {
+    throw new Error(miss(by, method, 'schema', 'an object, the JSON Schema a client draws the form from'));
+  }
+  if (typeof object.invoke !== 'function') throw new Error(miss(by, method, 'invoke', 'a function the host calls'));
+  const rows = asObject(object.rows, by, method, 'rows');
+  for (const member of ['list', 'read']) {
+    if (typeof rows[member] !== 'function') throw new Error(miss(by, method, `rows.${member}`, 'a function the host calls'));
+  }
+  if (object.relations !== undefined) {
+    const relations = asObject(object.relations, by, method, 'relations');
+    for (const [field, held] of Object.entries(relations)) {
+      const relation = asObject(held, by, method, `relation ${field}`);
+      stringy(relation, 'channel', by, method);
+      if ((relation.one === undefined) === (relation.many === undefined)) {
+        throw new Error(miss(by, method, `relation ${field}`, 'one of one or many, the field on the other list that points back'));
       }
     }
   }
-  return { name, checked };
+  const checked: CheckedSchema[] = [{ where: `kind ${name}`, gaps: schemaProblems(object.schema, true) }];
+  checkKindOperations(object.operations, LIST_KIND_OPERATIONS, `kind ${name}`, by, method, checked);
+  return { channel, name, checked };
 };

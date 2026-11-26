@@ -723,6 +723,14 @@ export interface SessionStore {
    */
   sessions(): string[];
   /**
+   * The ids whose file is there and cannot be read, each with the reason.
+   *
+   * Not in `sessions()`, so nothing that reads each id of that list breaks on
+   * one. Nothing writes over such a file; `forget` removes it, and a prune
+   * leaves it. A store with no file has none.
+   */
+  damaged?(): ReadonlyMap<string, string>;
+  /**
    * Forget a session entirely.
    *
    * Called when one is disposed. Without it a store that survives restarts is

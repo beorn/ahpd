@@ -9,6 +9,8 @@ import { createHost } from '../../sdk/src/host.js';
 import { connectorsChannel } from '../../sdk/src/connectors/channel.js';
 import { memoryRecords } from '../../sdk/src/resources/records.js';
 import { WAIT_MS } from '../../../tools/wait.ts';
+import { invokeOperation } from '../../sdk/src/kinds/operations.js';
+import { channelOperations } from '../src/channeloperations.js';
 import { applyPlugins, eventFailed, type Applied } from '../src/applyplugins.js';
 import { memoryAutomations } from '../../sdk/src/automations/automations.js';
 import { loadPlugins, pluginSet } from '../src/plugins.js';
@@ -645,4 +647,73 @@ it('raises no alert for a plugin the set does not hold', async () => {
   running.set.alert('gone', { level: 'error', ref: 'event:stopping', text: 'x' });
   expect(running.set.alerts()).toEqual({});
   await running.close();
+});
+
+/** A plugin whose channel offers one operation, and whose closer waits to be let go. */
+const operationPlugin = (id: string): string => {
+  const file = pluginFile(id);
+  writeFileSync(file, `
+export const name = ${JSON.stringify(id)};
+export function apply(host, options) {
+  host.registerGrants('svc', { operations: ['restart'] });
+  host.registerChannel('x-svc', {
+    grant: 'svc:restart',
+    snapshot: () => ({}),
+    operations: {
+      operations: () => [{ id: 'restart', label: 'Restart', scopes: ['service'], grant: 'svc:restart', status: 'idle' }],
+      run: async () => ({ by: options.tag }),
+    },
+  });
+  host.registerClose(() => new Promise((done) => { globalThis.__letOperationsGo = done; }));
+}
+`);
+  return file;
+};
+
+it('offers a channel\'s operations until its plugin starts to close, through a fold made meanwhile', async () => {
+  const base: HostOptions = { path: home, agents: [{ ...echo({ path: home, pace: 0 }), provider: 'base', displayName: 'Base backend' }] };
+  const where = { configDir: REPO, cwd: REPO, log: () => {} };
+  const set = pluginSet({ base, ...where });
+  const host = createHost((await loadPlugins([], { base, ...where, set })).options);
+  const operations = channelOperations(() => {});
+  const method = invokeOperation({ channels: () => operations.channels(), check: () => {} });
+  const invoke = () => method.handle({ channel: 'x-svc://', operationId: 'restart', target: { id: 'web' } }, undefined, 'c1');
+  const apply = async (): Promise<void> => {
+    const answer = await applyPlugins({
+      set, configFile, host: () => host, log: () => {},
+      beforeUnload: async (id) => { operations.close(set.held(id)?.contribution); },
+    });
+    expect(answer.problems).toEqual([]);
+    operations.serve(set.fold().options.channels);
+  };
+  const held = globalThis as { __letOperationsGo?: () => void };
+  const closing = async (): Promise<void> => {
+    await until(() => held.__letOperationsGo !== undefined, 'the closer');
+    // The set holds the plugin until its closer is done, so a fold still lists it.
+    const channels = set.fold().options.channels;
+    expect(Object.keys(channels ?? {})).toContain('x-svc');
+    await expect(invoke()).rejects.toThrow('No channel with operations at x-svc://');
+    operations.serve(channels);
+    await expect(invoke()).rejects.toThrow('No channel with operations at x-svc://');
+    held.__letOperationsGo!();
+    delete held.__letOperationsGo;
+  };
+
+  const file = operationPlugin('live-operations');
+  configured({ name: file, options: { tag: 'one' } });
+  await apply();
+  expect(await invoke()).toEqual({ by: 'one' });
+
+  configured({ name: file, options: { tag: 'two' } });
+  const again = apply();
+  await closing();
+  await again;
+  expect(await invoke()).toEqual({ by: 'two' });
+
+  configured();
+  const off = apply();
+  await closing();
+  await off;
+  await expect(invoke()).rejects.toThrow('No channel with operations at x-svc://');
+  await host.close();
 });

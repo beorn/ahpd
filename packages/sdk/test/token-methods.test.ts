@@ -128,7 +128,7 @@ it('refuses a reader that signed in with a minted token on each of the three', a
   await expect(ask('list', {}, token)).rejects.toMatchObject({ code: -32009, message: MINTED });
   await expect(ask('revoke', { id: minted.id }, token)).rejects.toMatchObject({ code: -32009, message: MINTED });
   for (const name of ['mint', 'list', 'revoke']) {
-    expect(await methods[`x-ahpd/tokens/${name}`]!.authorize!({}, token!)).toBe(false);
+    await expect(methods[`x-ahpd/tokens/${name}`]!.authorize!({}, token!)).rejects.toMatchObject({ code: -32009, message: MINTED });
   }
 });
 
@@ -331,6 +331,23 @@ it('the host answers a minted token\'s own calls with the sentence, even when it
     .toMatchObject({ code: -32009, message: MINTED });
   expect(await call(token, 'x-ahpd/tokens/revoke', { id: minted.id }))
     .toMatchObject({ code: -32009, message: MINTED });
+  await made.close();
+});
+
+it('the host answers a minted token without user:write with the same sentence', async () => {
+  const ana = await person('ana');
+  const minted = await ask('mint', {}, ana) as MintedToken;
+  const made = host({ users: people, methods: served() });
+  const token = made.accept(peer());
+  await hello(token, 'ana');
+  await signIn(token, minted.secret);
+  for (const [name, params] of [
+    ['mint', {}], ['list', {}], ['revoke', { id: minted.id }], ['list', { user: 'bob' }], ['list', { team: 'backend' }],
+  ] as const) {
+    expect(await call(token, `x-ahpd/tokens/${name}`, params)).toMatchObject({ code: -32009, message: MINTED });
+  }
+  // Nothing was made or taken.
+  expect(await ask('list', {}, ana)).toMatchObject([{ id: minted.id }]);
   await made.close();
 });
 
