@@ -821,6 +821,12 @@ export interface Moved {
   to?: string;
 }
 
+/** The packages an `updatePlugins` that threw had moved before it did, or none for any other error. */
+export const movedBefore = (error: unknown): Moved[] => {
+  const moved = (error as { moved?: unknown } | null)?.moved;
+  return Array.isArray(moved) ? moved as Moved[] : [];
+};
+
 /**
  * Move the packages installed in the plugin root, each in an npm call of its
  * own: every one for `all`, or only those named, each of which must be
@@ -844,7 +850,8 @@ export interface Moved {
  * (src/vs/workbench/contrib/extensions/browser/extensionsWorkbenchService.ts
  * L2088-L2105, src/vs/platform/extensionManagement/common/abstractExtensionManagementService.ts
  * L193-L215 at 6b68d3fe): what moved is said, and the ones npm refused end the
- * command together, with npm's words for the first.
+ * command together, with npm's words for the first. That error carries the
+ * packages that did move, which `movedBefore` reads.
  */
 export async function updatePlugins(names: 'all' | readonly string[], options: UpdateOptions): Promise<Moved[]> {
   const root = pluginRoot(options.configDir);
@@ -949,8 +956,8 @@ export async function updatePlugins(names: 'all' | readonly string[], options: U
   // "Nothing to update." is left unsaid when npm refused some, because the
   // refusal that follows says why nothing did.
   if (moved.length === 0 && reason === undefined && differed.length === 0) options.say('Nothing to update.');
-  if (reason !== undefined) throw npmFailed(`npm could not update ${refused.join(', ')}`, reason);
-  if (differed.length > 0) throw new Error(differed.join(' '));
+  if (reason !== undefined) throw Object.assign(npmFailed(`npm could not update ${refused.join(', ')}`, reason), { moved });
+  if (differed.length > 0) throw Object.assign(new Error(differed.join(' ')), { moved });
   return moved;
 }
 

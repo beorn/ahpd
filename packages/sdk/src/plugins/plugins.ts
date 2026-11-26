@@ -21,7 +21,10 @@ import type { HostOptions, HostTool, NodeRegistry } from '../types/host.js';
 import type { ChannelHandle, Contribution, GrantEntry, LoaderContext, Alert, InstallAnswer, PluginConnects, PluginContext, PluginContracts, PluginHost, PluginStarts, PluginView, SessionMetaKey, ServedBindings, ServedCanvases, ServedChannel, ServedMethod, ServedPlan, ServedSessionMeta, PluginTriggers, PortContribution, PortKey, PortOf, Route, TriggerTypeDefinition, ViewSurface } from '../types/plugin.js';
 import type { CollectionOptions, RecordCollection, RecordStore } from '../types/records.js';
 import type { SessionStore } from '../types/sessions.js';
+import { servedList } from '../lists/channel.js';
+import { PROCESS_STOP, PROCESSES_SCHEME, servedProcesses } from '../lists/processes.js';
 import type { ServedTunnelKind } from '../types/tunnels.js';
+import type { ServedList, ServedListKind } from '../types/lists.js';
 import type { Usage } from '../types/usage.js';
 import type { Grant, Principal } from '../types/users.js';
 import type { Vault } from '../types/vault.js';
@@ -36,7 +39,7 @@ import { isRecordPath, isRecordSlug, RECORD_PATH, RECORD_SLUG } from '../resourc
 import type { Pair } from '../utils/pair.js';
 import { reason } from '../utils/values.js';
 import { readSecret } from '../access/vault.js';
-import { checkAdapter, checkAgent, checkEngine, checkChannel, checkChatRequest, checkGrants, checkMethod, checkPort, checkResourceProvider, checkRoute, checkScheme, checkSessionRequest, checkTool, listedOperations, checkTriggerType, checkTunnelKind, declared, miss, reservedName, type CheckedSchema } from './validate.js';
+import { checkAdapter, checkAgent, checkEngine, checkChannel, checkChatRequest, checkGrants, checkMethod, checkPort, checkResourceProvider, checkRoute, checkScheme, checkSessionRequest, checkTool, listedOperations, checkTriggerType, checkTunnelKind, checkList, checkListKind, declared, miss, reservedName, type CheckedSchema } from './validate.js';
 import { checkView, VIEW_SURFACES } from './view.js';
 import { gapLine, schemaGaps } from './schemagaps.js';
 
@@ -669,6 +672,134 @@ export function foldHostOptions(base: HostOptions, contributions: Contribution[]
     }
   }
   if (Object.keys(tunnelKinds).length > 0) options.tunnelKinds = tunnelKinds;
+
+  /*
+   * The lists, joined by name across every plugin that declared one.
+   *
+   * The first declaration loaded gives the channel and the words, and the
+   * filters, the search fields and the sorts of every declaration join, each
+   * field once. A later one whose channel or words differ is reported and
+   * keeps its filters. A list and a `registerChannel` on one scheme are one
+   * channel too many: the one loaded second is refused. Each kind joins the
+   * list its `channel` names, and a kind on a list nobody declared, or a
+   * second kind of one name in a list, is reported and left out.
+   */
+  const order = (by: string): number => {
+    const at = contributions.findIndex((one) => one.by === by);
+    return at < 0 ? -1 : at;
+  };
+  const lists: Record<string, ServedList> = { ...base.lists };
+  for (const contribution of contributions) {
+    for (const [name, declaration] of Object.entries(contribution.lists ?? {})) {
+      const held = lists[name];
+      if (held === undefined) {
+        const { by, ...rest } = declaration;
+        lists[name] = {
+          ...rest,
+          by,
+          declaredBy: [by],
+          filters: [...(declaration.filters ?? [])],
+          search: [...(declaration.search ?? [])],
+          sorts: [...(declaration.sorts ?? [])],
+          kinds: {},
+        };
+        continue;
+      }
+      held.declaredBy.push(contribution.by);
+      if (declaration.channel !== held.channel) {
+        problems.push(`plugin ${contribution.by} declares list ${name} on ${declaration.channel}, and plugin ${held.by} declared it on ${held.channel}; ${held.channel} stays`);
+      }
+      for (const member of ['title', 'description', 'icon'] as const) {
+        if (declaration[member] !== undefined && declaration[member] !== held[member]) {
+          problems.push(`plugin ${contribution.by} declares list ${name} with another ${member}; plugin ${held.by}'s stays`);
+        }
+      }
+      for (const filter of declaration.filters ?? []) {
+        if (!held.filters!.some((one) => one.field === filter.field)) held.filters!.push(filter);
+      }
+      for (const field of declaration.search ?? []) if (!held.search!.includes(field)) held.search!.push(field);
+      for (const field of declaration.sorts ?? []) if (!held.sorts!.includes(field)) held.sorts!.push(field);
+    }
+  }
+  for (const [name, list] of Object.entries(lists)) {
+    const channel = channels[list.channel];
+    if (channel === undefined) continue;
+    if (order(channel.by) <= order(list.by)) {
+      problems.push(`plugin ${list.by} declares list ${name} on ${list.channel}, which plugin ${channel.by} already registered as a channel; the list is refused`);
+      delete lists[name];
+    }
+    else {
+      problems.push(`plugin ${channel.by} registers channel ${list.channel}, which plugin ${list.by} already declared as list ${name}; the channel is refused`);
+      delete channels[list.channel];
+    }
+  }
+  const listOn = new Map(Object.values(lists).map((list) => [list.channel, list]));
+  for (const contribution of contributions) {
+    for (const kind of Object.values(contribution.kinds ?? {})) {
+      const list = listOn.get(kind.channel);
+      if (list === undefined) {
+        problems.push(`plugin ${kind.by} adds kind ${kind.name} to ${kind.channel}, which no plugin declared as a list; the kind is left out`);
+        continue;
+      }
+      const held = list.kinds[kind.name];
+      if (held !== undefined) {
+        problems.push(`plugin ${kind.by} adds kind ${kind.name} to list ${list.name}, which plugin ${held.by} already added; the first stays`);
+        continue;
+      }
+      list.kinds[kind.name] = kind;
+    }
+  }
+  /*
+   * Each list is one channel and one scheme of rows. A row scheme another
+   * plugin or the daemon serves is a clash: the list is reported and not
+   * served, as a second provider of one scheme is.
+   */
+  for (const [name, list] of Object.entries(lists)) {
+    const held = schemes.get(name);
+    if (held !== undefined) {
+      problems.push(`plugin ${list.by} declares list ${name}, whose rows are ${name}://, which ${held === 'the daemon' ? 'the daemon' : `plugin ${held}`} already serves; the list is refused`);
+      delete lists[name];
+      continue;
+    }
+    const { served, provider } = servedList(base, list, undefined, servedProcesses(base));
+    channels[list.channel] = served;
+    schemes.set(name, list.by);
+    resourceProviders[name] = provider as Schemes[string];
+  }
+  for (const list of Object.values(lists)) {
+    // The list's grants join the table as a plugin's own subject does.
+    const before = grants[list.name];
+    const joined = [...(before?.operations ?? [])];
+    for (const one of ['get', 'put', 'delete']) if (!joined.includes(one)) joined.push(one);
+    const description = before?.description ?? list.description;
+    grants[list.name] = {
+      title: before?.title ?? list.title,
+      ...(description === undefined ? {} : { description }),
+      operations: joined,
+    };
+  }
+  /*
+   * Where a kind keeps processes, the host serves what they run: the channel
+   * of processes, its stop command and the grants they name. A plugin that
+   * took the scheme or the command first keeps it, and is reported.
+   */
+  if (Object.values(lists).some((list) => Object.values(list.kinds).some((kind) => kind.processes !== undefined))) {
+    const processes = servedProcesses(base);
+    processes.update(lists);
+    const heldChannel = channels[PROCESSES_SCHEME];
+    if (heldChannel !== undefined && heldChannel !== processes.served) {
+      problems.push(`plugin ${heldChannel.by} registers channel ${PROCESSES_SCHEME}, which the host serves for processes; the plugin's stays and processes are not served`);
+    }
+    else {
+      channels[PROCESSES_SCHEME] = processes.served;
+      if (methods[PROCESS_STOP] === undefined) methods[PROCESS_STOP] = processes.method;
+      const before = grants['process'];
+      const joined = [...(before?.operations ?? [])];
+      for (const one of ['get']) if (!joined.includes(one)) joined.push(one);
+      grants['process'] = { title: before?.title ?? 'Processes', description: before?.description ?? 'What this host runs: services, deploys and jobs.', operations: joined };
+    }
+  }
+  if (Object.keys(lists).length > 0) options.lists = lists;
   if (Object.keys(grants).length > 0) options.grants = grants;
 
   /*
@@ -2166,6 +2297,52 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
       }
       reportGaps(checked);
       held[named] = { ...kind, by };
+    },
+    registerList(list) {
+      open();
+      const named = checkList(list, by);
+      declared(by, options.contracts, 'lists', named);
+      const held = contribution.lists ??= {};
+      if (held[named] !== undefined) {
+        throw new Error(miss(by, 'registerList', named, 'a name no other list in this plugin uses'));
+      }
+      held[named] = { ...list, channel: list.channel.toLowerCase(), by };
+    },
+    /*
+     * The handle is a closure over the entry the fold carries, so a `changed`
+     * reaches whichever list channel a host built over it, and one made before
+     * any host did is told rather than dropped, as a channel's publish is.
+     */
+    registerKind(kind) {
+      open();
+      const { channel, name: named, checked } = checkListKind(kind, by);
+      declared(by, options.contracts, 'kinds', named);
+      const held = contribution.kinds ??= {};
+      const key = `${channel} ${named}`;
+      if (held[key] !== undefined) {
+        throw new Error(miss(by, 'registerKind', named, `a name no other kind of ${channel} in this plugin uses`));
+      }
+      reportGaps(checked);
+      const served: ServedListKind = { ...kind, channel, by, problem: (line) => { options.alert?.({ level: 'warning', text: line }); } };
+      held[key] = served;
+      return {
+        changed: (instance, id) => {
+          if (typeof id !== 'string' || id === '') throw new Error(miss(by, 'changed', 'the id', 'a row id'));
+          const changed = served.changed;
+          if (changed === undefined) {
+            throw new Error(miss(by, 'changed', id, 'said once a host is built over this plugin'));
+          }
+          changed(instance, id);
+        },
+        processChanged: (id) => {
+          if (typeof id !== 'string' || id === '') throw new Error(miss(by, 'processChanged', 'the id', 'a process id'));
+          const changed = served.processChanged;
+          if (changed === undefined) {
+            throw new Error(miss(by, 'processChanged', id, 'said once a host is built over this plugin'));
+          }
+          changed(id);
+        },
+      };
     },
     on(event, handle) {
       // The context is captured, not rebuilt when the event fires: it is the

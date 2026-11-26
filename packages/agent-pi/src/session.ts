@@ -1621,7 +1621,7 @@ export function piSession(
      * Found by id rather than assumed to be the only one: two calls can wait
      * at once, and answering one must not answer the other.
      */
-    confirm: (toolCallId, approved) => {
+    confirm: (toolCallId, approved, _optionId, _source, reason) => {
       const held = pending.get(toolCallId);
       if (held === undefined) return false;
       pending.delete(toolCallId);
@@ -1647,7 +1647,7 @@ export function piSession(
        * approval gate refused, the reason its model reads: npm://@earendil-works/pi-coding-agent@1.3.0
        * docs/extensions.md L169-L178, `{ block: true, reason: \`${event.toolName} was not approved\` }`.
        */
-      held.settle(approved ? undefined : { block: true, reason: `${held.toolName} was not approved` });
+      held.settle(approved ? undefined : { block: true, reason: reason ?? `${held.toolName} was not approved` });
       return true;
     },
     answer: () => false,

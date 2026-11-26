@@ -12,6 +12,7 @@ import { wakeMessage } from '../automations/wakemessage.js';
 import { bag, ownerOfPrincipal, str, strings } from '../utils/values.js';
 import { AUTOMATIONS, isAutomationResource } from './channels.js';
 import { CLOSING, need, noProvider, reason } from './common.js';
+import { defaultAgentFor, ownerMay } from './defaultagent.js';
 import { refusalReason } from './gate.js';
 import type { Bag } from '../types/common.js';
 import type { AutomationEntry, AutomationRun, AutomationRunState, AutomationStore, RunEnding, StartSession } from '../types/automations.js';
@@ -916,7 +917,14 @@ export function createAutomations(ctx: HostContext): Automations {
      */
     const { running, ...data } = wanted;
     wanted = { ...structuredClone(data), ...(running === undefined ? {} : { running }) };
-    const provider = wanted.provider ?? ctx.first?.provider;
+    const defaultPerson = principalFor(wanted.owner);
+    const provider = wanted.provider ?? defaultAgentFor(ctx, {
+      may: ownerMay(ctx, {
+        ...(wanted.owner === undefined ? {} : { owner: wanted.owner }),
+        ...(defaultPerson === undefined ? {} : { principal: defaultPerson }),
+      }),
+      onComputer: wanted.config?.computer !== undefined,
+    });
     if (provider === undefined) throw new Error(noProvider(provider));
     // Named the way a client's `createSession` names a session.
     if (!recovering) unheld(uri);

@@ -37,6 +37,7 @@ In the configuration file, with every option set:
 | `contextIn` | `text` | Where a woken message's context goes: `text`, a block in front of the person's words, or `meta`, the words as said with the Front in the message's delegation `_meta` alone, as VS Code delegates a prompt |
 | `askIn` | `main` | Where the Back's question or approval is shown: `main`, copied into the Front turn and answered there, or `own`, left in the Back and listed on the talk's `inputNeeded`, as VS Code lists a subagent's requests on its session |
 | `secondSession` | `refuse` | What a person's second session with the same bot gets: `refuse`, refused naming their talk, or `allow`, opened, and the bot answers the one they used last |
+| `agentChange` | `new` | What the next message gets after the bot's agent or model changes: `new`, a Back chat on it, or `keep`, the Back it had |
 
 The plugin's own entry needs no grants. A talk runs in the bot's folder, trusted, because the plugin registers its `root` as its own folder, and a talk is a session of the plugin's own agent, so the plugin reads and writes it with no grant.
 

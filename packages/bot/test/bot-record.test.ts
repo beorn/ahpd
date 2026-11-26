@@ -151,3 +151,20 @@ it('takes a map of connector aliases, and refuses one the host would not read', 
   expect(() => checkRecord('motion', { name: 'Motion', connectors: { work: 'connectors://ap-resend/account-123/extra' } })).toThrow(/ap-resend/);
   expect(() => checkRecord('motion', { name: 'Motion', connectors: { work: 7 } })).toThrow(/7/);
 });
+
+it('clears a line an edit blanks, keeps one it leaves out, and makes a bot without one a make blanks', () => {
+  const keys = ['description', 'instructions', 'template', 'provider', 'model', 'preset', 'computer'] as const;
+  const all = Object.fromEntries(keys.map((key) => [key, `${key}-one`]));
+  const held = {
+    id: 'motion', name: 'Motion', labels: [], body: 'robot', color: 'red', workspace: '/w', owner: 'user:soft',
+    createdAt: '2026-10-11T09:00:00.000Z', updatedAt: '2026-10-11T09:00:00.000Z', ...all,
+  } as never;
+  for (const key of keys) {
+    const draft = checkRecord('motion', { [key]: ' ' }, held) as unknown as Record<string, unknown>;
+    expect(draft[key]).toBeUndefined();
+    for (const other of keys.filter((one) => one !== key)) expect(draft[other]).toBe(`${other}-one`);
+    expect((checkRecord('motion', { name: 'Motion', [key]: '' }) as unknown as Record<string, unknown>)[key]).toBeUndefined();
+  }
+  // The name is the one line a bot always has.
+  expect(checkRecord('motion', { name: '' }, held).name).toBe('Motion');
+});

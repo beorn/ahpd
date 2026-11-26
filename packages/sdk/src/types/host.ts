@@ -1,5 +1,6 @@
 /** The protocol server: channels, subscriptions and requests. */
 
+import type { ServedList } from './lists.js';
 import type { AnnotationsAction, AnnotationsState, ProjectInfo, ToolDefinition, ToolResultContent } from '@microsoft/agent-host-protocol';
 import type { LogLevel } from '../log.js';
 import type { OnWire } from './wire.js';
@@ -392,6 +393,14 @@ export interface HostOptions {
    * stored record; a record whose kind is not here cannot be started.
    */
   tunnelKinds?: Record<string, ServedTunnelKind>;
+  /**
+   * The lists the plugins declare, by name, each with its kinds.
+   *
+   * The fold fills this from `registerList` and `registerKind`: every
+   * declaration of one name joins, and a kind joins the list its `channel`
+   * names. The host serves each as a channel and keeps none of its rows.
+   */
+  lists?: Record<string, ServedList>;
   /**
    * Whose each agent is, by its id, as the last read of its record found it.
    *

@@ -20,11 +20,10 @@
  * agent, which is also why the rows themselves live in the sdk.
  */
 
-import { installLine, knownAgents, type KnownAgent } from '@ahpd/sdk';
+import { installLine, knownAgents, onPath, type KnownAgent, type OnPathLookup } from '@ahpd/sdk';
 import type { StoredRecord } from '@ahpd/sdk';
 import { asSpec } from './config.js';
 import type { Runner } from './install.js';
-import { onPath, type OnPathLookup } from './onpath.js';
 import { isNamed } from './plugins.js';
 
 /** The plugin every ACP agent runs through, which is what registers the engine they are records of. */

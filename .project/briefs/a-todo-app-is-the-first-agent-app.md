@@ -4,7 +4,7 @@ created: 2026-11-22
 refs:
   - git://3f55e4349 - main when the facts were checked
   - "[briefs/plugins-are-a-sessions-extensions.md](plugins-are-a-sessions-extensions.md) - an agent builds an app that lasts, which this app is the first case of"
-  - "[ideas/a-plugin-registers-a-thing-and-its-kinds.md](../ideas/a-plugin-registers-a-thing-and-its-kinds.md) - a generic thing with its kinds, which `todo` would be the first of"
+  - "[ideas/a-plugin-registers-a-thing-and-its-kinds.md](../ideas/a-plugin-registers-a-thing-and-its-kinds.md) - a generic list with its kinds, which `todo` would be the first of"
   - "[briefs/a-person-acts-from-a-plugin-page.md](a-person-acts-from-a-plugin-page.md) - a plugin's page and its Buttons"
   - "[code://packages/sdk/src/types/records.ts](../../packages/sdk/src/types/records.ts) - `host.records(name)`, a plugin's own collections"
   - "[code://packages/sdk/src/types/tunnels.ts#L132-L190](../../packages/sdk/src/types/tunnels.ts#L132-L190) - `TunnelKind`, the one kind a plugin registers with a schema and operations"
@@ -84,29 +84,31 @@ export async function apply(host) {
 
 With the kind, the host keeps the record, its kind and its owner, as *The row* says.
 
-### The thing and its kind
+### The list and its kind
 
-New. A thing is one list on the host, and a kind is one type of record in it. Softov, 2026-11-23: "A thing and its kinds".
+[a-list-and-its-kinds.md](a-list-and-its-kinds.md) is the shape of a list and its kinds now, with instances, filters, sorts, paging and relations. Where this section differs, that brief holds.
 
-- No plugin owns a thing. Any plugin may declare it, and a declaration with the same name joins the thing. Softov, 2026-11-23: "Any plugin declares it, same name joins".
-- Any plugin may add a kind to a thing, as two plugins add devtunnel and cloudflare to the tunnels, and computers take their runtimes.
-- The first declaration loaded gives the thing's title and description. A declaration that differs is a warning on its plugin's row.
-- The thing lives while a plugin declares it or holds a kind of it. A plugin that unloads takes its kinds, and the thing keeps the others.
-- The grants are the thing's, as the tunnels' are: `<name>:get` to read, `<name>:put` to create, change and run an operation, and `<name>:delete` to remove. An operation may name its own grant, as `KindOperation.grant` does today. A record operation's scope is the thing's name (defaulted).
-- The channel and the row scheme are the thing's, not a plugin's: `x-ahpd-<plural>://` lists the rows, and `<name>://<id>` is one row. Softov, 2026-11-23: "x-ahpd-<plural>://, <name>://<id>". This is the form of `x-ahpd-users://` and `user://<id>`, and of `x-ahpd-tunnels://`.
-- A declaration may name the plural. Without one, the host adds an `s` to the name (defaulted). [a-crm-is-the-second-example-kind.md](a-crm-is-the-second-example-kind.md) checks this against a thing with many kinds.
+New. A list is kept by the host, and a kind is one type of record in it. Softov, 2026-11-23: "A thing and its kinds". Softov renamed the thing a list on 2026-11-25: "registerList replacing the registerThing". A thing is something else, as [ideas/a-thing-has-an-id-and-a-tree-of-values.md](../ideas/a-thing-has-an-id-and-a-tree-of-values.md) says.
 
-The todo app registers the thing `todo`, and one kind in it, also named `todo`:
+- No plugin owns a list. Any plugin may declare it, and a declaration with the same name joins the list. Softov, 2026-11-23: "Any plugin declares it, same name joins".
+- Any plugin may add a kind to a list, as two plugins add devtunnel and cloudflare to the tunnels, and computers take their runtimes.
+- The first declaration loaded gives the list's title and description. A declaration that differs is a warning on its plugin's row.
+- The list lives while a plugin declares it or holds a kind of it. A plugin that unloads takes its kinds, and the list keeps the others.
+- The grants are the list's, as the tunnels' are: `<name>:get` to read, `<name>:put` to create, change and run an operation, and `<name>:delete` to remove. An operation may name its own grant, as `KindOperation.grant` does today. A record operation's scope is the list's name (defaulted).
+- The channel and the row scheme are the list's, not a plugin's: the channel the declaration names, such as `x-ahpd-todos://`, lists the rows, and `<name>://<id>` is one row. Softov, 2026-11-23: "x-ahpd-<plural>://, <name>://<id>". This is the form of `x-ahpd-users://` and `user://<id>`, and of `x-ahpd-tunnels://`.
+- A declaration names its channel as a whole scheme, such as `channel: 'x-ahpd-todos'`. Softov, 2026-11-25: "channel: 'x-ahpd-tickets'". It replaces the plural and the `s` the host added.
+
+The todo app registers the list `todo`, and one kind in it, also named `todo`:
 
 ```js
-host.registerThing({ name: 'todo', plural: 'todos', title: 'Todos', description: 'A shared todo list.' });
+host.registerList({ name: 'todo', channel: 'x-ahpd-todos', title: 'Todos', description: 'A shared todo list.' });
 ```
 
 The kind has the shape of `TunnelKind`. The kind declares its `schema` once. The host keeps the list, serves create, update and remove with that schema as their form, and lists the records on a channel. A client draws the forms with no code for todos.
 
 ```js
 host.registerKind({
-  thing: 'todo',
+  channel: 'x-ahpd-todos',
   name: 'todo',
   title: 'Todo',
   description: 'One thing to do.',
@@ -385,11 +387,11 @@ Three things in it do not work today:
 
 ## What is missing
 
-Each row is one of Softov's three parts. "Kind" is the generic registration that the idea `a-plugin-registers-a-thing-and-its-kinds` names.
+Each row is one of Softov's three parts. "Kind" is the generic registration that the idea `a-plugin-registers-a-thing-and-its-kinds` names, where it is a list.
 
 | Part | Missing | Without it |
 | --- | --- | --- |
-| Render | A way to register a thing and its kinds: `registerThing`, `registerKind`, a channel per thing, and an open `OperationScope` | Each new thing needs new host code |
+| Render | A way to register a list and its kinds: `registerList`, `registerKind`, a channel per list, and an open `OperationScope` | Each new list needs new host code |
 | Render | A kind's schema and operations in its channel's entry of `ahpd.channels` | A client learns the operations only by subscribing to the list |
 | Render | One row shape, with the kind's data apart from the host's facts | A field of a record can clash with one of the host's |
 | Render | Input components in a view, such as a text field and a check box | A person types only in the kind's form |
@@ -403,7 +405,7 @@ Each row is one of Softov's three parts. "Kind" is the generic registration that
 A first order, for the plans:
 
 1. Write the app with what works today: records, four tools, and a page that only reads. It proves the storage and the tools, and it is the example an agent copies.
-2. A plugin registers a thing and its kinds, with the thing's channel, its operations and its entry in `ahpd.channels`. Rows take the shape of *The row*, and a row's URI reads alone. The todo list moves from the page to the kind. Add the four parts of the CRM brief's *Answers*.
+2. A plugin registers a list and its kinds, with the list's channel, its operations and its entry in `ahpd.channels`. Rows take the shape of *The row*, and a row's URI reads alone. The todo list moves from the page to the kind. Add the four parts of the CRM brief's *Answers*.
 3. A view's Button reads `{ path }` in its `context`, and a view gets input components.
 4. A view knows its reader.
 5. A plugin's tools turn off while it runs.

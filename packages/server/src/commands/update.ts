@@ -20,7 +20,7 @@ import type { PluginMethod } from '@ahpd/sdk';
 import { configDir, daemonLog } from '../config.js';
 import { running, stop as stopDaemon } from '../daemon.js';
 import type { Running } from '../daemon.js';
-import { oneAtATime, run as npm } from '../install.js';
+import { movedBefore, oneAtATime, run as npm } from '../install.js';
 import type { Runner } from '../install.js';
 import { checkPlugins, handOffToHelper, installServer, movePlugins, planUpdate, targetSdk } from '../selfupdate.js';
 import type { HelperOptions, PlaceFacts } from '../selfupdate.js';
@@ -198,7 +198,18 @@ export async function runUpdate(ask: UpdateAsk, served?: ServedFacts, facts: Upd
     ...(facts.npmVersion === undefined ? {} : { npmVersion: facts.npmVersion }),
     say: (line) => { said.push(line); },
   });
-  const moved = await movePlugins({ configDir: where, sdk, run, fetch, force: ask.force, marketplaces, say: (line) => { said.push(line); } });
+  /*
+   * The binary is already replaced, so a refused plugin move does not end the
+   * update: the refusal is said, the plugins that moved before it are kept in
+   * the answer, and the restart still runs.
+   */
+  let pluginsError: string | undefined;
+  const moved = await movePlugins({ configDir: where, sdk, run, fetch, force: ask.force, marketplaces, say: (line) => { said.push(line); } })
+    .catch((error: unknown) => {
+      pluginsError = words(error);
+      said.push(`The plugins were not moved: ${pluginsError}`);
+      return movedBefore(error);
+    });
   /*
    * A terminal's restart is a signal another process answers, so the new
    * binary is asked about the recorded line here, before the answer: the
@@ -219,8 +230,16 @@ export async function runUpdate(ask: UpdateAsk, served?: ServedFacts, facts: Upd
    * the next turn of the loop, after this answer has been printed, and says a
    * park when the daemon answers with one.
    */
-  const before = `${said.length === 0 ? '' : `${said.join('\n')}\n`}${plan.current} to ${plan.latest}`;
-  const kept = { from: plan.current, to: plan.latest, plugins: moved, left: checked.left };
+  // npm's words for a refused move are said on their own line, so the last line only names it.
+  const unmoved = pluginsError === undefined ? '' : '; the plugins were not moved';
+  const before = `${said.length === 0 ? '' : `${said.join('\n')}\n`}${plan.current} to ${plan.latest}${unmoved}`;
+  const kept = {
+    from: plan.current,
+    to: plan.latest,
+    plugins: moved,
+    left: checked.left,
+    ...(pluginsError === undefined ? {} : { pluginsError }),
+  };
   if (served !== undefined) {
     const outcome = await served.restart([...(daemon.argv ?? facts.ownArgv ?? process.argv.slice(2))], ask.force);
     if ('parked' in outcome) {

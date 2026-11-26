@@ -1,9 +1,9 @@
 /**
  * Where a command is on PATH, which is how a setup asks what a machine has.
  *
- * The lookup is a function of its own because two things ask it: `ahpd
- * configure` offers the agents it finds, and `ahpd doctor` will report the
- * runtimes. Neither should answer with a half-read PATH, so every way of not
+ * The lookup is a function of its own because several things ask it: `ahpd
+ * configure` offers the agents it finds, `ahpd doctor` reports the runtimes, and
+ * an agent says its program is missing. None should answer with a half-read PATH, so every way of not
  * finding one answers nothing rather than the first candidate that exists.
  *
  * Away from Windows a file is a command when it is a regular file with an

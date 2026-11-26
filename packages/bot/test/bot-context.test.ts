@@ -5,7 +5,7 @@ import { expect, it } from 'vitest';
 import { memoryRecords } from '../../sdk/src/resources/records.js';
 import { botChatAgent } from '../src/chat.js';
 import { contextBlock, timeWithOffset } from '../src/context.js';
-import { backSessions, frontSessions, frontsOf, sessionsOf } from '../src/names.js';
+import { backSessions, currentBacks, frontSessions, frontsOf, sessionsOf } from '../src/names.js';
 import { botStore } from '../src/store.js';
 import { botWake } from '../src/wake.js';
 import type { ChatMessage, TurnHandle } from '../src/chat.js';
@@ -116,6 +116,7 @@ async function sitting(record: BotRecord = bot(), contextIn: ContextIn = 'text')
 
   const sessions: BotSessions = { owner: async (uri) => owners.get(uri), hasUsers: true };
 
+  const currentRows = await memoryRecords().collection('backs');
   const wake = botWake({
     store,
     fronts: frontSessions(() => frontsRows),
@@ -124,6 +125,7 @@ async function sitting(record: BotRecord = bot(), contextIn: ContextIn = 'text')
     // What a first wake writes into the folder: the real plugin fills the
     // template, and these cases are about the message rather than the file.
     agents: async (one) => `# ${one.name}\n`,
+    current: currentBacks(() => currentRows),
     backChat: async (_session, front) => backs.get(front),
     startChat: async (_session, wanted) => {
       minted += 1;

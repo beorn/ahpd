@@ -13,7 +13,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { onPath } from '../src/onpath.js';
+import { onPath } from '../src/utils/onpath.js';
 
 let root: string;
 let first: string;

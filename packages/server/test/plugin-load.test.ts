@@ -360,7 +360,7 @@ describe('a first-party plugin', { timeout: IMPORT_CASE_MS }, () => {
       'resource', 'autoCompactTokens', 'autoCompactAt', 'catalogueTimeoutMs', 'hostTools',
     ]],
     ['agent-pi', ['model', 'baseUrl', 'apiKey', 'projectTrust', 'sessionDir', 'hostTools']],
-    ['bot', ['root', 'mainTurnPostMessageAbsent', 'instructionsIn', 'contextIn', 'askIn', 'secondSession']],
+    ['bot', ['root', 'mainTurnPostMessageAbsent', 'instructionsIn', 'contextIn', 'askIn', 'secondSession', 'agentChange']],
     ['computer', [
       'runtime', 'command', 'args', 'ssh', 'libvirt', 'proxmox', 'env', 'image', 'cpus', 'memory', 'max', 'label',
       'prefix', 'sessionSetting', 'sessionDefault', 'needs', 'mounts', 'profiles', 'bodyMounts', 'imageMounts',

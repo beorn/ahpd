@@ -167,10 +167,12 @@ export const tokenMethods = (directory: Users): Record<string, PluginMethod> => 
    *
    * Asked only of a caller the `user:write` grant refuses, so a reader who
    * holds it is never asked and reaches the body's own check. A caller that
-   * names a team is refused here, because no reader has a team of their own.
+   * names a team is refused here, because no reader has a team of their own. A
+   * minted token is refused here with the sentence its body would say, so it
+   * hears why rather than which grant it lacks.
    */
   const authorize: PluginMethod['authorize'] = async (params, reader) => {
-    if (reader.token !== undefined) return false;
+    if (reader.token !== undefined) throw new RpcError(-32009, MINTED);
     if (params['team'] !== undefined) return false;
     const named = params['user'];
     return named === undefined || named === reader.id;

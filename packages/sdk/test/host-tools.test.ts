@@ -2633,6 +2633,46 @@ describe('tools a client contributes', () => {
     expect(await askedToRun(client, uri)).toEqual([]);
   });
 
+  /*
+   * The call of a client that left while a person was being asked about it.
+   *
+   * The host fails the call, and nobody can answer the question on a call that
+   * has ended, so the question is declined with it: the model reads why, and
+   * its turn goes on.
+   */
+  it('declines the question about a call whose client left before anybody answered', async () => {
+    const { client, uri, chatUri } = await providing();
+    await intoTurn(client, chatUri);
+    const gate = sdk.canUseTool?.('mcp__client__probe__openFile', { path: '/a.txt' }, { toolUseID: 'call-1' });
+    await settle();
+
+    client.handle({ method: 'unsubscribe', params: { channel: chatUri } });
+    client.handle({ method: 'unsubscribe', params: { channel: uri } });
+    const words = 'Client probe disconnected before completing openFile';
+    expect(await gate).toEqual({ behavior: 'deny', message: words });
+    await settle();
+
+    // The call failed for every client, and nothing waits on a person.
+    const state = await watched(client, uri);
+    expect(state.inputNeeded ?? []).toEqual([]);
+    const chat = (await client.handle({ method: 'subscribe', params: { channel: chatUri } }) as {
+      snapshot: { state: { activeTurn?: { responseParts: { toolCall?: Record<string, unknown> }[] } } };
+    }).snapshot.state;
+    expect(chat.activeTurn?.responseParts.at(-1)?.toolCall).toMatchObject({
+      toolCallId: 'call-1', status: 'completed', success: false, error: { message: words },
+    });
+  });
+
+  it('asks nobody about a tool whose client has left', async () => {
+    const { client, uri, chatUri } = await providing();
+    await intoTurn(client, chatUri);
+    client.handle({ method: 'unsubscribe', params: { channel: chatUri } });
+    client.handle({ method: 'unsubscribe', params: { channel: uri } });
+    await settle();
+    const gate = sdk.canUseTool?.('mcp__client__probe__openFile', { path: '/a.txt' }, { toolUseID: 'call-1' });
+    expect(await gate).toEqual({ behavior: 'deny', message: 'Nothing here offers mcp__client__probe__openFile.' });
+  });
+
   it('approves nothing on an input answer naming a call a person is asked to confirm', async () => {
     const { client, peer: p, uri, chatUri } = await providing();
     await intoTurn(client, chatUri);

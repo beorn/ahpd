@@ -7,7 +7,7 @@ import { pluginHost } from '../../sdk/src/plugins/plugins.js';
 import { memoryRecords } from '../../sdk/src/resources/records.js';
 import { memorySessions } from '../../sdk/src/sessions/sessions.js';
 import { sdkVersion } from '../../sdk/src/version.js';
-import { backSessions, frontSessions, frontsOf, sessionsOf } from '../src/names.js';
+import { backSessions, currentBacks, frontSessions, frontsOf, sessionsOf } from '../src/names.js';
 import { apply, defaults } from '../src/plugin.js';
 import { postMessage } from '../src/post.js';
 import { botStore } from '../src/store.js';
@@ -159,6 +159,7 @@ async function sitting(record: BotRecord = bot(), absent: MainTurnAbsence = 'pos
   /** The Back chats with a turn running, which hold a turn the bot opened. */
   const running = new Set<string>();
 
+  const currentRows = await memoryRecords().collection('backs');
   const wake = botWake({
     store,
     fronts: frontSessions(() => frontsRows),
@@ -167,6 +168,7 @@ async function sitting(record: BotRecord = bot(), absent: MainTurnAbsence = 'pos
     // What a first wake writes into the folder: the real plugin fills the
     // template, and these cases are about the post rather than the file.
     agents: async (one) => `# ${one.name}\n`,
+    current: currentBacks(() => currentRows),
     backChat: async (_session, front) => backs.get(front),
     startChat: async (_session, wanted) => {
       minted += 1;
@@ -514,8 +516,8 @@ it('gives mainTurnPostMessageAbsent a default of post, and declares it', () => {
 it('declares the options something reads, and those alone', async () => {
   // A chat runs no model, so nothing opens a chat with a template: the count of
   // chats a first turn listed is an option nothing reads, gone with the builder.
-  expect(Object.keys(optionsSchema.properties)).toEqual(['root', 'mainTurnPostMessageAbsent', 'instructionsIn', 'contextIn', 'askIn', 'secondSession']);
-  expect(Object.keys(defaults)).toEqual(['root', 'mainTurnPostMessageAbsent', 'instructionsIn', 'contextIn', 'askIn', 'secondSession']);
+  expect(Object.keys(optionsSchema.properties)).toEqual(['root', 'mainTurnPostMessageAbsent', 'instructionsIn', 'contextIn', 'askIn', 'secondSession', 'agentChange']);
+  expect(Object.keys(defaults)).toEqual(['root', 'mainTurnPostMessageAbsent', 'instructionsIn', 'contextIn', 'askIn', 'secondSession', 'agentChange']);
   const exported = await import('../src/index.js');
   expect(exported).not.toHaveProperty('firstTurn');
   expect(exported).not.toHaveProperty('chatLines');

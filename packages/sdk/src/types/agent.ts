@@ -1047,6 +1047,16 @@ export interface Agent<Started extends Session | Promise<Session> = Session | Pr
   probe?(): Promise<Offered>;
 
   /**
+   * The program this backend runs on this host and cannot find, by its name.
+   *
+   * Asked when a create names no agent, so the host picks one that can start:
+   * an agent that answers a program is passed over. Absent, or nothing, is a
+   * backend with no program to miss, or one it finds. It answers for this host
+   * alone and says nothing about a sign-in.
+   */
+  missingProgram?(): string | undefined;
+
+  /**
    * Call `onChange` when what `probe` answers may have changed, such as a file
    * written into a folder the backend reads.
    *

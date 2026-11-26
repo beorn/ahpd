@@ -1,5 +1,5 @@
 ---
-title: Three cofold question cases time out on Windows
+title: Cofold cases that wait by the clock time out on Windows
 status: open
 date: 2026-11-21
 severity: minor
@@ -17,6 +17,8 @@ On 2026-11-21, CI's `windows (2/4)` on #429, run 44943713018, failed three cases
 - `asks about a tool the operator's rule sets false in every mode, and refuses it under dontAsk`
 
 15 s is `WAIT_MS` on Windows. #429 does not change `packages/agent-cofold`.
+
+On 2026-11-26 CI's `windows (3/4)` on #481, run 45739041674, failed `agent-cofold-tools.test.ts`: `draws a shell call as a terminal, with its command as the intention` with `timed out waiting`. #481 does not change `packages/agent-cofold`.
 
 ## Cause
 

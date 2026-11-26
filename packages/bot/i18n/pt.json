@@ -21,6 +21,9 @@
     },
     "secondSession": {
       "description": "O que recebe uma segunda sessão com o mesmo bot. 'refuse' (padrão) a recusa e cita a sessão da pessoa; 'allow' a abre, e o bot responde com a usada por último."
+    },
+    "agentChange": {
+      "description": "O que a próxima mensagem recebe quando o agente ou o modelo do bot muda. 'new' (padrão) abre um chat de trabalho nele; 'keep' continua no que já havia."
     }
   },
   "session": {

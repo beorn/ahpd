@@ -206,6 +206,8 @@ against its contract before it is recorded.
 | `registerResources(store)` | set | `list`, `read`, `resolve`, `complete`, and the optional write half |
 | `registerResourceProvider(scheme, provider)` | register, open key | One host-owned URI scheme, routed beside the `file:` store |
 | `registerChannel(scheme, channel)` | register, open key | One channel a client subscribes to, under an `x-` scheme; answers a handle to publish on |
+| `registerList(list)` | register, joined by name | One list the host serves and no plugin owns: its channel, its row scheme, its filters and sorts. Every plugin's declaration of one name joins |
+| `registerKind(kind)` | register, by list and name | One kind of record in a list: its schema, its operations, where its rows are, and `invoke`; answers a handle whose `changed` tells the list's subscribers |
 | `registerAdapter(adapter)` | register, open key | One adapter, whose schema a client draws the form from, and the connectors a person makes of it |
 | `registerBindings(read)` | set | One function the host asks, synchronously, for the connectors a session may use, by alias - at each tool list and each call. `@ahpd/bot` answers a bot's for the sessions it started |
 | `registerMethod(name, method)` | register, open key | One command a client sends by name, under an `x-` name |
@@ -595,6 +597,17 @@ handle.publish('x-notes://', { type: 'x-notes/added', note }, {
 - `describe()` is optional, and names the channel in `_meta['ahpd.channels']`
   on `initialize` and on the root state, as an entry `{ scheme, title,
   description?, grant }`. The title is the scheme when there is no `describe`.
+- `operations` is optional, and offers operations to
+  [`x-ahpd/invokeOperation`](#x-ahpd-invokeoperation) at `<scheme>://`, and at
+  no other URI of the scheme. `operations()` lists them, synchronously, and
+  `run(operation, target, input, reader)` does one. `offers(target, operationId,
+  reader)` is optional and says whether the record offers it to this reader now,
+  so it is where a record that is not theirs is refused. `begin` and `settle`
+  are optional and are told when a call starts and ends; what they throw is
+  logged and changes no answer. Put the same list in the snapshot's
+  `operations`, and register each grant it names. It is for a list one plugin
+  serves, and its operations name no kind. A list several plugins add to holds
+  kinds: see [A list of your own](#a-list-of-your-own).
 
 A client may subscribe and may not dispatch: an action a client sends to the
 channel is refused, because the state is the plugin's.
@@ -893,6 +906,51 @@ host.registerTunnelKind({
   record carries its `id`, `kind`, the `plugin` that opened it, its `purpose`
   (`system` for the host's own, `person` for one somebody made), `enabled`, an
   optional `owner`, and its settings.
+
+### A list of your own
+
+A plugin may declare a list that the host serves and no plugin owns, and any plugin may add a kind of record to it. The host keeps the list's structure: the declaration, its kinds, its filters and its sorts. Each kind keeps its own rows, and the host asks it for them at each snapshot and each read. A client draws the list, its rows, their forms and their buttons from what the host sends.
+
+```ts
+host.registerList({
+  name: 'todo',
+  channel: 'x-ahpd-todos',
+  title: 'Todos',
+  filters: [{ field: 'done', type: 'boolean' }],
+  search: ['title'],
+  sorts: ['title'],
+  defaultSort: 'title',
+});
+
+const todos = host.registerKind({
+  channel: 'x-ahpd-todos',
+  name: 'todo',
+  title: 'Todo',
+  schema: { type: 'object', required: ['title'], properties: { title: { type: 'string' }, done: { type: 'boolean' } } },
+  operations: [{ id: 'complete', label: 'Done', offered: (record) => record.done !== true }],
+  rows: {
+    list: (query, instance, reader) => store.list(query),
+    read: (id, instance, reader) => store.get(id),
+  },
+  invoke: async (operation, row, input) => {
+    if (operation === 'create') return store.add(input);
+    if (operation === 'complete') await store.set(row.id, { done: true });
+  },
+});
+todos.changed(undefined, 't-buy-milk');
+```
+
+A list's `name` is the scheme of one row, `todo://<id>`, and the subject of its grants, `todo:get`, `todo:put` and `todo:delete`. Its `channel` is an `x-` scheme. A filter is `{ field, type }`, with `enum` or `boolean` as the type. `search` names the fields a free-text search reads, and `sorts` the fields a client may sort by, with `-` for descending. `instances`, `page`, a `range` or `uri` filter, and a kind with `class: 'runtime'` are refused for now, with the step of lists that builds each.
+
+Every declaration of one `name` joins: the first loaded gives the channel and the words, and the filters, search fields and sorts of each join. A later one with another channel or other words is a warning on its plugin's row. A list and a `registerChannel` on one scheme: the one loaded second is refused.
+
+A kind joins the list its `channel` names. `rows.list(query, instance, reader)` answers the rows a query asks for, filtered and sorted by the kind, as `{ id, owner?, record }`; `rows.read(id, instance, reader)` answers one row, or nothing. `instance` is always undefined for now. `invoke(operation, row, input)` runs `create`, `update`, `remove` or one of the kind's own operations; `row` is the row it was pointed at, and nothing for `create`. A create answers the id of the row it made. A throw fails the call with its message. After a row changes, call the handle's `changed(instance, id)`: the host reads the row again and tells the list's subscribers.
+
+The host serves the list at its channel. A client subscribes to `x-ahpd-todos://`, or to a query of it such as `x-ahpd-todos://?done=false&sort=-title`, and a filter, a sort or a search the list does not declare is refused. A kind whose schema lacks a set filter's field, has it with another type, or lacks the field asked to sort by is left out while that is set. The snapshot is `{ records, operations }`: each row with the host's `kind` and `operations` added, and the status of each list operation. After a `changed`, each watched query is sent `x-ahpd-todos/added`, `changed` or `removed` as the row entered, stayed in or left it. A row reads alone with `resourceRead` at `todo://<id>`.
+
+The operations are each kind's `<kind>/create`, `<kind>/update` and `<kind>/remove`, with the kind's schema as their form, and the kind's own as `<kind>/<id>`. A client runs one with `x-ahpd/invokeOperation`, which checks the grant, the target and the input against the schema. `ahpd.channels` lists the list with `kinds`, one entry per kind with its title, description, schema and every operation in full. A kind that throws while it answers rows is left out of that answer, with a warning on its plugin's row.
+
+A process is something a list's record runs: a service, a deploy, a CI job. A kind that runs processes gives `processes`, whose `list(reader)` and `read(id, reader)` answer them from where the work lives - its own store, journalctl, a CI's API - and an optional `stop(id)` for one the host did not start. The host keeps no process. An operation with `long: true` answers its call with `{ process }` at once, and the kind's `invoke` gets a fourth argument, `{ id, report, signal }`: `report({ lifecycle, progress, line, error })` is passed on to the process's subscribers, and `signal` aborts when a person stops it. The kind keeps the process under that `id`, and calls the handle's `processChanged(id)` when it changes. A client follows a process at `x-ahpd-processes://<list>/<kind>/<id>`, lists every process it may read at `x-ahpd-processes://`, and stops one with `x-ahpd/processes/stop { process }`, under the grant of the operation that started it. A reader of a list may read its processes.
 
 ### An engine of your own
 
@@ -1675,6 +1733,8 @@ that method may be called with:
 | `agents` | `registerAgent(agent)`, by `provider` |
 | `engines` | `registerEngine(engine)`, by the engine's name |
 | `tunnelKinds` | `registerTunnelKind(kind)`, by the kind's name |
+| `lists` | `registerList(list)`, by the list's `name` |
+| `kinds` | `registerKind(kind)`, by the kind's name |
 | `tools` | `registerTool(tool)`, by the tool's `name` |
 | `sessionConfigs` | `registerSessionConfig(key, ...)`, by key |
 | `providerConfigurations` | `registerProviderConfiguration(registration)`, by `provider` |
@@ -1976,7 +2036,7 @@ One command runs an operation that a channel's state lists, and the same command
 
 It needs `operation:invoke`. It also admits a caller who holds the grant the operation itself names, such as `tunnel:delete` for a remove. So a person who may change the tunnels needs no second grant to run one.
 
-Every channel with operations puts an `operations` list in its state, and every row carries `operations`, the ids that record offers now. The list holds the label, the description, the input schema and the grant; the row holds only the ids. A client draws a record's buttons from its ids and takes the words from the list. Four channels serve one: `x-ahpd-tunnels`, `x-ahpd-clients`, `x-ahpd-agents` and `x-ahpd-connectors`. A channel works the ids out from the record each time it sends the row.
+Every channel with operations puts an `operations` list in its state, and every row carries `operations`, the ids that record offers now. The list holds the label, the description, the input schema and the grant; the row holds only the ids. A client draws a record's buttons from its ids and takes the words from the list. The daemon's `x-ahpd-tunnels`, `x-ahpd-clients`, `x-ahpd-agents` and `x-ahpd-connectors` serve one, and so may a channel a plugin registers with `operations`. A channel works the ids out from the record each time it sends the row.
 
 The list comes in the locale the client sent at `initialize`. Each `label`, `description` and `confirmation` is looked up at `operations.<row>.<id>` in the host's catalogs, such as `operations.agent.disable.description`. A tunnel kind's create and its own operations are looked up at `operations.<id>` in the catalogs of the plugin that registered the kind. A client that sent no locale gets English.
 

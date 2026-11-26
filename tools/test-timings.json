@@ -478,7 +478,7 @@
   "packages/server/test/logline.test.ts": 12.606201171875,
   "packages/server/test/mcp.test.ts": 480.427001953125,
   "packages/server/test/no-console.test.ts": 159.49658203125,
-  "packages/server/test/onpath.test.ts": 19.306640625,
+  "packages/sdk/test/onpath.test.ts": 19.306640625,
   "packages/server/test/openrouter-signin.test.ts": 22.39892578125,
   "packages/server/test/plugin-compat.test.ts": 165.812255859375,
   "packages/server/test/plugin-config.test.ts": 664.22900390625,

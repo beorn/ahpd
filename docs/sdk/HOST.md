@@ -151,6 +151,7 @@ The host's own schema is what a client draws its controls from. A key in the sch
 | Key | Values | Default | What it changes |
 | --- | --- | --- | --- |
 | `defaultShell` | absolute path | the system shell | The shell a host-managed terminal opens |
+| `defaultAgent` | an agent's provider | the first agent found | The agent a session, a chat of a plugin's own session or a bot runs on when it names none. Unset or empty, the host takes the first agent that is on, that the caller may use, and whose program is found. A chosen agent is checked as a named one is: off, paused or not served, the create is refused and says so. A plugin's chat never runs on an agent of that plugin. The choices a client reads are the agents the host lists |
 | `workspaceTrust` | `{ "enabled": bool, "trustedUris": [uri] }` | none | Which folders the host's sessions may load their projects from. `readOnly`: a window pushes it, it is not a control |
 | `ahpd.restartNeeded` | `true` | absent | Nothing: the host sets it with its own `root/configChanged` when a change it took waits for a restart, and a new daemon starts without it. `readOnly`, so a client draws no control for it. A client's push of it goes out as sent, and every reader's root holds the value pushed, as VS Code's host takes a root push as given |
 

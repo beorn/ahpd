@@ -20,7 +20,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { installLine, reason } from '@ahpd/sdk';
-import type { PluginSpec, StoredRecord } from '@ahpd/sdk';
+import type { OnPathLookup, PluginSpec, StoredRecord } from '@ahpd/sdk';
 import { withoutUserinfoIn } from './commands/config.js';
 import { asSpec, configDir, loadConfig } from './config.js';
 import type { LoadedConfig } from './config.js';
@@ -29,7 +29,6 @@ import type { Running } from './daemon.js';
 import { configuredAgents, findAgents, findRuntimes, nodeRuns } from './found.js';
 import { run as runProgram } from './install.js';
 import type { Runner } from './install.js';
-import type { OnPathLookup } from './onpath.js';
 import { describePlugin } from './plugins.js';
 import type { PluginRow } from './plugins.js';
 import { pluginFailuresPath, readPluginFailures } from './pluginfailures.js';

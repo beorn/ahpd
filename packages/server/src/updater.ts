@@ -115,11 +115,14 @@ const WAIT_MS = 60_000;
 /** How often the daemon's pid is looked at, as `ahpd stop` looks. */
 const POLL_MS = 100;
 
-/** The first line of a program's output that says anything, so a log line stays one line. */
-const firstLine = (said: string): string | undefined => said
+/** The lines of a program's output that say anything, each trimmed. */
+const linesOf = (said: string): string[] => said
   .split(/\r?\n/u)
   .map((line) => line.trim())
-  .find((line) => line !== '');
+  .filter((line) => line !== '');
+
+/** The first line of a program's output that says anything, so a log line stays one line. */
+const firstLine = (said: string): string | undefined => linesOf(said)[0];
 
 /** Why a program failed, in its own words when it has any. */
 const reasonOf = (done: HelperRan): string => firstLine(done.stderr)
@@ -155,7 +158,10 @@ const pluginEnv = (manifest: HelperManifest, env: NodeJS.ProcessEnv): NodeJS.Pro
  * were, so the old line is started again and npm's reason is written to the
  * log. The plugin move is the new binary's `plugin update all`, which pins the
  * sdk at its own version; it runs from the completed install, never from the
- * copy that is being replaced.
+ * copy that is being replaced. Each line it prints, such as a plugin that
+ * moved, is written to the log. A move that npm refuses is written with npm's
+ * words and the refusal, which is the last line `plugin update` writes to its
+ * standard error, and the daemon still starts on the new binary.
  */
 export async function updateOnce(manifest: HelperManifest, facts: HelperFacts): Promise<number> {
   const say = (line: string): void => { facts.log(logLine(new Date(facts.now()), 'info', `update: ${line}`)); };
@@ -188,7 +194,12 @@ export async function updateOnce(manifest: HelperManifest, facts: HelperFacts): 
     cwd,
     env: pluginEnv(manifest, process.env),
   });
-  if (moved.code !== 0) say(`the plugins did not move: ${reasonOf(moved)}`);
+  for (const line of linesOf(moved.stdout)) say(line);
+  if (moved.code !== 0) {
+    const errors = linesOf(moved.stderr);
+    for (const line of errors.slice(0, -1)) say(line);
+    say(`the plugins were not moved: ${errors.at(-1) ?? reasonOf(moved)}`);
+  }
   say('starting the daemon');
   const started = await facts.run(process.execPath, [manifest.entry, 'start', ...manifest.line], { shell: false, cwd });
   if (started.code !== 0) {

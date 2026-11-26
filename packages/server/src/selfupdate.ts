@@ -11,8 +11,10 @@
  * The plugins move with the daemon because they peer on `@ahpd/sdk`: each one
  * is checked for a version that admits the new sdk *before* npm replaces
  * anything, so a plugin that cannot load after the update refuses it while the
- * old daemon still runs. The successor check is the last step before the
- * restart, because the files it reads are the ones npm just wrote.
+ * old daemon still runs. A move that npm refuses after the install is said, and
+ * the daemon still restarts on the new binary. The successor check is the last
+ * step before the restart, because the files it reads are the ones npm just
+ * wrote.
  *
  * Everything here answers over passed-in facts - the path module, the folder
  * checks, how npm runs, how the registry is asked - so the cases can be driven

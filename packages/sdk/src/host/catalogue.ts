@@ -1737,10 +1737,29 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    */
   const computeSessions = async (): Promise<Summary[]> => {
     const running = getOverlaySessionSummaries();
-    const claimed = new Set([...running.map((summary) => idFor(summary.resource)), ...[...provisionalSessionKeys].map(idFor)]);
+    // A damaged id is claimed too: its failed row is the one answer for it, and the agent's own row would read as an ordinary session.
+    const claimed = new Set([...running.map((summary) => idFor(summary.resource)), ...[...provisionalSessionKeys].map(idFor), ...(kept.damaged?.().keys() ?? [])]);
     const listed = await ctx.listedSessions();
-    return [...running, ...listed.filter((summary) => !claimed.has(idFor(summary.resource))).map(getSurfacedSessionSummary)];
+    return [...running, ...listed.filter((summary) => !claimed.has(idFor(summary.resource))).map(getSurfacedSessionSummary), ...damagedRows()];
   };
+  /**
+   * One failed row for each session whose file cannot be read.
+   *
+   * Not external and not archived: it is neither, and its file cannot say. It
+   * is shown whatever `showExternalSessions` says, so a person sees it and can
+   * delete it. The provider is `unknown` because none can be read from it.
+   */
+  const damagedRows = (): Summary[] => [...(kept.damaged?.() ?? [])].map(([id, reason]) => ({
+    resource: kept.uri?.(id) ?? uriFor(id),
+    provider: 'unknown',
+    title: id,
+    createdAt: new Date(0).toISOString(),
+    modifiedAt: new Date(0).toISOString(),
+    workingDirectories: [],
+    status: Status.Idle,
+    lifecycle: 'failed',
+    creationError: { errorType: 'sessionStartFailed', message: `The session file of ${id} cannot be read: ${reason}.` },
+  }) as unknown as Summary);
   /**
    * Every session summary a client is handed: the sessions the mode shows, most
    * recently modified first, as VS Code's host lists its sessions, which are
