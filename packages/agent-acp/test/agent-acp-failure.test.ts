@@ -936,6 +936,52 @@ it('keeps a prompt whose server keeps streaming, however long the turn takes', a
   expect(escaped).toEqual([]);
 }, 15_000);
 
+it('does not count the time a tool the server is running takes', async () => {
+  // A build of the server's own, quiet for longer than the bound, then over.
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 'b', title: 'build', status: 'in_progress' } } });
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call_update', toolCallId: 'b', status: 'completed' } } });
+        send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+      }, 450);`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('fails a prompt that goes quiet once its tool is over', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 'b', title: 'build', status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call_update', toolCallId: 'b', status: 'completed' } } });`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
+      .rejects.toThrow('sent nothing for 150 ms during session/prompt');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
 it('does not count the time a prompt waits on this client', async () => {
   // The server asks a permission and says nothing until it has the answer,
   // which a person takes longer than the bound to give.
