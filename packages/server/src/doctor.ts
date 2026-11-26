@@ -32,6 +32,8 @@ import type { Runner } from './install.js';
 import type { OnPathLookup } from './onpath.js';
 import { describePlugin } from './plugins.js';
 import type { PluginRow } from './plugins.js';
+import { pluginFailuresPath, readPluginFailures } from './pluginfailures.js';
+import type { PluginFailures } from './pluginfailures.js';
 import { fileRecords } from './records.js';
 import { installFile, serviceOn } from './service.js';
 import { updateLine } from './update.js';
@@ -77,6 +79,11 @@ export interface DoctorFacts {
   version?: string;
   /** The daemon's record. Defaults to `running`. */
   record?(): Running | undefined;
+  /**
+   * What the last fold could not load, from the record beside the
+   * configuration. Defaults to `readPluginFailures(configDir())`.
+   */
+  pluginFailures?(): PluginFailures | undefined;
   /** Open a WebSocket and settle when it opened. Defaults to `openSocket`. */
   open?(url: string): Promise<void>;
   /** Whether a file is there. Defaults to `existsSync`. */
@@ -264,7 +271,16 @@ export const serviceCheck = (facts: DoctorFacts): Check | undefined => {
   return { name: 'Service', result: 'ok', line: `the ${service} file is at ${file}` };
 };
 
-/** Every plugin the configuration names, and whether it would load. */
+/**
+ * Every plugin the configuration names, and whether it would load.
+ *
+ * Two questions, and the second is the one a healthy-looking host gets wrong:
+ * what the configuration names (read without importing anything), and what the
+ * fold now running actually loaded. A plugin that applied and then threw is
+ * absent from the running host but present and importable in the configuration,
+ * so the static answer alone is a false green - the record beside the
+ * configuration is what says the difference.
+ */
 export const pluginCheck = async (facts: DoctorFacts): Promise<Check> => {
   let plugins: PluginSpec[];
   try {
@@ -276,6 +292,36 @@ export const pluginCheck = async (facts: DoctorFacts): Promise<Check> => {
       result: 'fail',
       line: `the configuration does not load: ${reason(error)}`,
       fix: 'fix the configuration, then run ahpd doctor again',
+    };
+  }
+  /*
+   * What the fold now running could not load.
+   *
+   * Read first as a fact about the daemon, because it survives the config
+   * change that has not been applied yet: a host whose plan no longer names the
+   * plugin is still a host missing that plugin's work until it restarts.
+   */
+  let last: PluginFailures | undefined;
+  try { last = (facts.pluginFailures ?? (() => readPluginFailures(configDir())))(); }
+  catch (error) {
+    return {
+      name: 'Plugins',
+      result: 'fail',
+      line: `the record of what the last start loaded is unreadable: ${reason(error)}`,
+      fix: `remove ${pluginFailuresPath(configDir())}, then start the daemon again`,
+    };
+  }
+  if (last !== undefined && last.failures.length > 0) {
+    const count = last.failures.length;
+    return {
+      name: 'Plugins',
+      result: 'fail',
+      line: withoutUserinfoIn(
+        `the start at ${last.at} skipped ${String(count)} ${count === 1 ? 'plugin' : 'plugins'}: `
+        + last.failures.map((failure) => `${failure.plugin}: ${failure.line}`).join('; '),
+      ),
+      fix: 'install the build the plugin needs, or point its source at one that supports what the configuration declares, '
+        + "then restart the daemon; until then the host is up without that plugin's work",
     };
   }
   if (plugins.length === 0) {

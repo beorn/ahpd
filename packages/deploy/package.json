@@ -59,7 +59,31 @@
     },
     "optionsSchema": {
       "type": "object",
-      "properties": {}
+      "required": [
+        "files",
+        "socket"
+      ],
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "process-compose's -f files as absolute paths, in the order it is given them: this machine's services are read from the same files the services plugin watches."
+        },
+        "socket": {
+          "type": "string",
+          "description": "Absolute path of process-compose's Unix socket (its -u). Never TCP."
+        },
+        "machine": {
+          "type": "string",
+          "description": "The machine's name as messages say it. Default: the host name."
+        },
+        "stateDir": {
+          "type": "string",
+          "description": "Where this machine's deploy state sits (one folder per service). Default: the configuration directory."
+        }
+      }
     }
   },
   "dependencies": {

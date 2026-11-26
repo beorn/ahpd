@@ -189,6 +189,7 @@ export function acpSession(
     resources: new Map(),
     modes: undefined,
     active: undefined,
+    promptBegun: false,
     pendingTurns: [],
     replaced: new Set<string>(),
     mapping: undefined,
@@ -368,7 +369,8 @@ export function acpSession(
         && ctx.successfulOpening.connection === ctx.live && ctx.successfulOpening.opening === ctx.opening
         && ctx.acpSessionId !== undefined && ctx.acpSessionId.trim() !== ''
         ? { _meta: { 'ahpd/backendSessionId': ctx.acpSessionId } } : {}),
-      ...(ctx.active !== undefined ? { activeTurn: ctx.active } : {}),
+      // #38705: a turn is the chat's running one once its prompt began, not when the host said it.
+      ...(ctx.active !== undefined && ctx.promptBegun ? { activeTurn: ctx.active } : {}),
       ...(draft !== undefined ? { draft } : {}),
     }),
 

@@ -248,7 +248,39 @@ describe('the deploy plugin as ahpd loads it', () => {
     expect(providers).toEqual(['hh-deploys']);
     expect(alerts).toHaveLength(0);
     // The retired names still exist, so a caller on the old grants is told what replaced them.
-    expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:read');
+    expect(registered.get('x-ahpd/deploy/run')?.grant).toBe('deploy:status');
+  });
+
+  it('with a files path that does not exist, still loads and answers a named error rather than throwing', async () => {
+    const registered = new Map<string, DeployMethod>();
+    let held: {
+      snapshot(uri: string): unknown;
+      operations: {
+        offers(target: string, operationId: string): boolean;
+        run(operation: { id: string }, target: string | undefined, input: Record<string, unknown> | undefined, reader: undefined, caller: { client: string }): Promise<unknown>;
+      };
+    } | undefined;
+    const one: DeployHost = {
+      configDir: machine(),
+      registerMethod: (name, method) => registered.set(name, method),
+      registerGrants: () => {},
+      registerChannel: (_scheme, channel) => {
+        held = channel as typeof held;
+        return { publish: () => {} };
+      },
+      registerResourceProvider: () => {},
+      alert: () => {},
+    };
+    expect(() => apply(one, { files: ['/nonexistent/does-not-exist.yaml'], socket: '/nonexistent/pc.sock' })).not.toThrow();
+    expect(held).toBeDefined();
+    // The channel's own state is the sentence, with nothing read: never a throw and never a quiet empty list.
+    const state = held!.snapshot('x-hh-deploys://') as Record<string, unknown>;
+    expect(state['runs']).toEqual([]);
+    expect(String(state['error'])).toContain('/nonexistent/does-not-exist.yaml');
+    // The target is offered rather than thrown on, so the run is reached and answers by name.
+    expect(held!.operations.offers('web', 'deploy')).toBe(true);
+    // A deploy asked for anyway is refused by name, not thrown as a fault.
+    await expect(held!.operations.run({ id: 'deploy' }, 'web', { version: 'main' }, undefined, { client: 'test-client' })).rejects.toMatchObject({ code: -32602, data: { code: 'NOT_CONFIGURED' } });
   });
 });
 

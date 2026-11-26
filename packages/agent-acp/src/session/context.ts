@@ -153,6 +153,15 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   modes: SessionModeState | undefined;
   active: Bag | undefined;
   /**
+   * #38705: whether the running turn's prompt has actually begun.
+   *
+   * `active` is taken the moment the host says a turn - before the server is
+   * even brought up - so a server that never comes up leaves a turn every
+   * client is shown as running and nothing can end. What a client is shown as
+   * `activeTurn` is this flag beside it, never the claim alone.
+   */
+  promptBegun: boolean;
+  /**
    * The turns handed while the server ran another, in the order they came,
    * each prompted once the turn in front of it is over: a session runs one
    * prompt at a time, as the reference agent runs each send after the one

@@ -26,6 +26,7 @@ import {
   type DoctorFacts,
 } from '../src/doctor.js';
 import type { Ran, Runner } from '../src/install.js';
+import { writePluginFailures } from '../src/pluginfailures.js';
 
 let root: string;
 let home: string;
@@ -260,6 +261,67 @@ describe('the Plugins check', () => {
     expect(one.result).toBe('fail');
     expect(one.line).not.toContain('hunter2');
     expect(one.line).toContain('<set>@example.com');
+  });
+
+  /*
+   * The false green #38646 reports: the configuration names a plugin the
+   * daemon could import, and that plugin threw while it applied. Every static
+   * answer says the plugin loads; the running host is missing it.
+   */
+  it('says fail when the last start skipped a plugin', async () => {
+    const folder = join(root, 'demo-plugin');
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, 'package.json'), `${JSON.stringify({
+      name: 'demo-plugin',
+      version: '1.0.0',
+      ahpd: { entry: './index.js' },
+    })}\n`);
+    writeFileSync(join(folder, 'index.js'), 'export function apply() {}\n');
+    put({ plugins: [join(folder, 'index.js')] });
+    writePluginFailures(configFolder, {
+      'demo-plugin': [{
+        level: 'error',
+        text: 'plugin demo-plugin failed in 2 ms: Error: minIncrementalReadGapMs must be a finite number of milliseconds, 0 or more, not undefined',
+      }],
+    }, new Date('2026-11-25T19:30:00.000Z'));
+    const one = await pluginCheck(facts());
+    expect(one.result).toBe('fail');
+    expect(one.line).toContain('the start at 2026-11-25T19:30:00.000Z skipped 1 plugin: demo-plugin:');
+    expect(one.line).toContain('minIncrementalReadGapMs');
+    fixed(one);
+  });
+
+  /*
+   * A plugin's error is free text and may quote the token it was given. The
+   * line doctor prints is what a person debugging the host reads, so the value
+   * is not in it - also when the record was written by a build that did not
+   * clear it.
+   */
+  it('never prints a configuration value a skipped plugin echoed', async () => {
+    writeFileSync(join(configFolder, 'plugin-failures.json'), `${JSON.stringify({
+      at: '2026-11-25T19:30:00.000Z',
+      failures: [{ plugin: 'demo-plugin', line: 'the remote refused token=sk-live-8d3f9a2c7b41e6d0' }],
+    })}\n`);
+    const one = await pluginCheck(facts());
+    expect(one.result).toBe('fail');
+    expect(one.line).toContain('skipped 1 plugin: demo-plugin:');
+    expect(one.line).toContain('token=<redacted>');
+    expect(one.line).not.toContain('sk-live-8d3f9a2c7b41e6d0');
+    fixed(one);
+  });
+
+  it('says ok when the last start only warned', async () => {
+    writePluginFailures(configFolder, { 'demo-plugin': [{ level: 'warning', text: 'plugin demo-plugin: an option was passed through' }] });
+    const one = await pluginCheck(facts());
+    expect(one).toEqual({ name: 'Plugins', result: 'ok', line: 'no plugin is configured' });
+  });
+
+  it('says fail when the record of the last start cannot be read', async () => {
+    writeFileSync(join(configFolder, 'plugin-failures.json'), 'not a record\n');
+    const one = await pluginCheck(facts());
+    expect(one.result).toBe('fail');
+    expect(one.line).toContain('the record of what the last start loaded is unreadable');
+    fixed(one);
   });
 });
 

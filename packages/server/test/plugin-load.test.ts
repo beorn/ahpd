@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { IMPORT_CASE_MS } from '../../../tools/wait.ts';
 import { loadPlugins, pluginIdOf, pluginSet } from '../src/plugins.js';
+import { pluginFailuresPath, writePluginFailures } from '../src/pluginfailures.js';
 import { setPluginEnabled } from '../src/install.js';
 import { echo } from '../../../examples/echo/agent.js';
 import { FRONTMATTER } from './fixtures/plugin-yaml/index.js';
@@ -55,6 +56,37 @@ describe('loadPlugins', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('the throws fixture threw on purpose');
     expect(loaded).toEqual([]);
+  });
+
+  it('keeps a credential out of the line a throw becomes, and the rest of it', async () => {
+    // The fixture's schema marks `apiKey` writeOnly and `token` secret; its
+    // throw quotes every option it was handed. The line the start's record
+    // keeps is read by `ahpd doctor` and may be paged on, so neither value is
+    // in it - and the region it also quoted is, because it is not a credential.
+    const { loaded, alerts, problems } = await load([{
+      source: './fixtures/plugin-throws-secret',
+      options: { apiKey: 'sk-live-3', token: 'tk-live-4', region: 'eu' },
+    }]);
+
+    expect(loaded).toEqual([]);
+    const said = JSON.stringify({ alerts, problems });
+    expect(said).not.toContain('sk-live-3');
+    expect(said).not.toContain('tk-live-4');
+    expect(said).toContain('in eu');
+
+    // The record a start leaves beside its configuration, which `doctor` reads
+    // and a supervisor may page on, holds the same line and not the values.
+    const dir = mkdtempSync(join(tmpdir(), 'ahpd-plugin-record-'));
+    try {
+      writePluginFailures(dir, alerts, new Date('2026-11-25T19:30:00.000Z'));
+      const recorded = readFileSync(pluginFailuresPath(dir), 'utf8');
+      expect(recorded).not.toContain('sk-live-3');
+      expect(recorded).not.toContain('tk-live-4');
+      expect(recorded).toContain('in eu');
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('carries what a plugin said it skipped, beside the ones it found', async () => {

@@ -44,6 +44,8 @@ export interface ServedRunning {
   /** The folder the daemon was started in, when it serves that folder because nothing names one. */
   startFolder?: string;
   startedAt: string;
+  /** The plugins the running fold could not load, one line each: what a local record's `skipped` holds. */
+  skipped?: string[];
   /** Where automations are kept and whether their schedules fire. */
   automations?: string;
   /** The kind that started this daemon and holds it, when one did. */

@@ -12,7 +12,7 @@
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { Readable, Writable } from 'node:stream';
+import { Readable, Transform, Writable } from 'node:stream';
 import { PROTOCOL_VERSION, client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import type {
   AuthenticateRequest,
@@ -90,6 +90,19 @@ const STDERR_BYTES = 8 * 1024;
  * ever, which is what the SIGKILL is for.
  */
 export const KILL_GRACE_MS = 5000;
+
+/**
+ * How long a spawned server may say nothing while a call is owed an answer,
+ * unless the record's `startAnswerMs` says otherwise.
+ *
+ * A server that boots and never greets leaves a turn taken and unable to
+ * begin: nothing in the protocol ends such a turn, and every reader is told
+ * one runs that no process will finish (#38705). Generous, because a cold
+ * machine starts a server slowly and this is a bound on silence rather than on
+ * work: a session read back from a long conversation streams its replay the
+ * whole way, and every message the server sends restarts the clock.
+ */
+const START_ANSWER_MS = 60_000;
 
 /**
  * Windows, which has no process group to signal and no SIGTERM to send: a
@@ -215,6 +228,7 @@ const exited = (command: string, code: number | null, signal: NodeJS.Signals | n
 export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const exitGraceMs = options.exitGraceMs ?? EXIT_GRACE_MS;
   const stderrBytes = options.stderrBytes ?? STDERR_BYTES;
+  const startAnswerMs = options.startAnswerMs ?? START_ANSWER_MS;
   // A second early, as a process's own start time is read back to the
   // millisecond and the two clocks need not agree on the last one.
   const spawnedAt = Date.now() - 1000;
@@ -299,7 +313,55 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   });
   child.on('exit', (code, signal) => { die(exited(options.command, code, signal)); });
 
-  const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout));
+  /*
+   * The bound on a server that stops talking (#38705).
+   *
+   * A bound on silence, not on time: a session read back from a long
+   * conversation legitimately replays for minutes, but it streams
+   * `session/update` the whole way, and every chunk the server writes is proof
+   * it is working. So each chunk restarts the clock, and only a server that has
+   * gone quiet while a call is owed an answer fails - in the words a person
+   * needs, rather than as a turn every reader thinks is running.
+   */
+  const owed = new Set<{ step: string; fail: (why: Error) => void; timer: NodeJS.Timeout | undefined }>();
+  const quiet = (): void => {
+    if (startAnswerMs <= 0) return;
+    for (const held of owed) {
+      if (held.timer !== undefined) clearTimeout(held.timer);
+      held.timer = setTimeout(() => {
+        owed.delete(held);
+        held.fail(new Error(`${options.command}: the ACP server sent nothing for ${startAnswerMs} ms during ${held.step}; nothing ran`));
+      }, startAnswerMs);
+      held.timer.unref();
+    }
+  };
+  /** This call, failed by the server's silence rather than waited on for ever. */
+  const answered = <T>(step: string, call: Promise<T>): Promise<T> => {
+    if (startAnswerMs <= 0) return call;
+    let fail!: (why: Error) => void;
+    const silent = new Promise<never>((_resolve, no) => { fail = no; });
+    const held = { step, fail, timer: undefined as NodeJS.Timeout | undefined };
+    owed.add(held);
+    quiet();
+    return Promise.race([call, silent]).finally(() => {
+      owed.delete(held);
+      if (held.timer !== undefined) clearTimeout(held.timer);
+    });
+  };
+
+  /*
+   * What the server writes, heard before the protocol reads it: a transform
+   * passes each chunk through untouched and restarts the silence clock, which
+   * is what makes the bound above measure quiet rather than elapsed time.
+   */
+  const speaking = new Transform({
+    transform(chunk, _encoding, done) {
+      quiet();
+      done(undefined, chunk);
+    },
+  });
+  child.stdout.pipe(speaking);
+  const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(speaking));
 
   const handlers = options.handlers;
   const {
@@ -503,7 +565,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
         clientCapabilities,
         clientInfo: CLIENT_INFO,
       };
-      return heard(() => connection.agent.request(methods.agent.initialize, greeting)).then((reply) => {
+      return answered('the handshake', heard(() => connection.agent.request(methods.agent.initialize, greeting))).then((reply) => {
         initializeResponse = reply;
         const says = reply.agentCapabilities?._meta?.[AUTH_STATUS];
         announces = says !== undefined && says !== null;
@@ -514,11 +576,11 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     authenticate: (request: AuthenticateRequest): Promise<AuthenticateResponse> =>
       heard(() => connection.agent.request(methods.agent.authenticate, request)),
     newSession: (request: NewSessionRequest): Promise<NewSessionResponse> =>
-      heard(() => connection.agent.request(methods.agent.session.new, request)),
+      answered('session/new', heard(() => connection.agent.request(methods.agent.session.new, request))),
     loadSession: (request: LoadSessionRequest): Promise<LoadSessionResponse> =>
-      heard(() => connection.agent.request(methods.agent.session.load, request)),
+      answered('session/load', heard(() => connection.agent.request(methods.agent.session.load, request))),
     resumeSession: (request: ResumeSessionRequest): Promise<ResumeSessionResponse> =>
-      heard(() => connection.agent.request(methods.agent.session.resume, request)),
+      answered('session/resume', heard(() => connection.agent.request(methods.agent.session.resume, request))),
     /*
      * `session/fork`, which the SDK calls unstable.
      *

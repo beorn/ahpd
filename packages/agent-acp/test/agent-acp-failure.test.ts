@@ -737,6 +737,122 @@ it('keeps as much of the stderr as the record\'s stderrBytes names', async () =>
   await connection.close();
 });
 
+/*
+ * #38705: the silence bound.
+ *
+ * A server that greets and then says nothing is not a slow server: the turn
+ * waiting on it has been taken and can never begin, and nothing in the protocol
+ * ends such a turn. The bound is on silence rather than on time, so a session
+ * read back from a long conversation - which streams its replay the whole way -
+ * is never cut short, and the failure is said in words that name the step.
+ */
+
+/** A server that answers its handshake and then does what it was told for the next call. */
+const quietServer = (after: string): string => `
+const send = (one) => process.stdout.write(JSON.stringify(one) + '\\n');
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (blob) => {
+  for (const line of blob.split('\\n')) {
+    if (line.trim() === '') continue;
+    const message = JSON.parse(line);
+    if (message.id === undefined) continue;
+    if (message.method === 'initialize') {
+      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '1', agentCapabilities: {} } });
+      continue;
+    }
+    if (message.method === 'session/new') { ${after} }
+  }
+});
+`;
+
+it('fails a handshake the server never answers, naming the step', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', 'setInterval(() => {}, 1000);'],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await expect(connection.initialize()).rejects.toThrow('sent nothing for 150 ms during the handshake; nothing ran');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+});
+
+it('fails a server that greets and then goes quiet on session/new', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', quietServer('')],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await expect(connection.newSession({ cwd: '/', mcpServers: [] } as never))
+      .rejects.toThrow('sent nothing for 150 ms during session/new; nothing ran');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+});
+
+it('keeps waiting on a server that keeps talking, however long the call takes', async () => {
+  // Twelve updates forty milliseconds apart: past the bound in total, never
+  // quiet for as long as it. A replay that streams is working, not stuck.
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', quietServer(`
+      let left = 12;
+      const tick = () => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'part' } } } });
+        if (--left === 0) {
+          send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 's' } });
+          return;
+        }
+        setTimeout(tick, 40);
+      };
+      tick();`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    const began = Date.now();
+    const answer = await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    expect(answer.sessionId).toBe('s');
+    expect(Date.now() - began).toBeGreaterThan(150);
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('waits for ever where the record turns the silence bound off', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', quietServer('')],
+    handlers: { update: () => {} },
+    startAnswerMs: 0,
+  });
+  try {
+    await connection.initialize();
+    const call = connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const outcome = await Promise.race([
+      call.then(() => 'answered', () => 'failed'),
+      new Promise((resolve) => { setTimeout(() => resolve('waiting'), 400); }),
+    ]);
+    expect(outcome).toBe('waiting');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
 // A Node server cannot close its stdout on Windows while it keeps running:
 // libuv's stdout holds a copy of the pipe handle, and fs.closeSync(1) skips
 // fds 0-2, so the parent never reads an end. On POSIX, end() shuts the socket.
