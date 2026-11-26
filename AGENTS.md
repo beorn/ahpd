@@ -27,3 +27,4 @@ How our work is made stays behind the scenes. A post upstream (PR description, c
 
 - Keeping up with VS Code's reference host: [UPSTREAM.md](UPSTREAM.md) and [REFERENCE.md](REFERENCE.md). A prior-art pass follows that procedure.
 - Developing and testing: [DEVELOPER.md](DEVELOPER.md).
+- What this fork carries over upstream: [FORK-PATCHES.md](FORK-PATCHES.md). A carried change adds its FORK-PATCHES.md row in the same PR (one row per patch; see the file's header).
