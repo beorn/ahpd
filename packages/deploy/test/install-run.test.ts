@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { putService } from '@hallohuman/hightea-services';
 import { describe, expect, it } from 'vitest';
 import {
   applyInstall,
@@ -14,6 +15,8 @@ import {
   pruneReleaseFolders,
   releasesToPrune,
   renderInstallPlan,
+  SERVICES_FILE_SEED,
+  configSeed,
   uninstallInstall,
   type InstallIo,
   type InstallPins,
@@ -223,7 +226,7 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     const unit = linuxIo.content.get(`${linux.root}/boot/systemd-user-unit`) ?? '';
     const linuxCurrent = `${linux.root}/state/deploy/ahpd/current`;
     expect(unit).toContain(
-      `ExecStart=${linuxCurrent}/supervisor up -f ${linuxCurrent}/process-compose.yaml -t=false -U -u ${linux.root}/state/pc.sock -L ${linux.root}/state/process-compose.log`,
+      `ExecStart=${linuxCurrent}/supervisor up -f ${linuxCurrent}/process-compose.yaml -f ${linux.root}/state/services.yaml -t=false -U -u ${linux.root}/state/pc.sock -L ${linux.root}/state/process-compose.log`,
     );
     expect(unit).toContain('WantedBy=default.target');
     expect(unit).not.toContain('After=default.target');
@@ -236,7 +239,7 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     const spacedUnit = spacedIo.content.get(`${spaced.manifest.root}/boot/systemd-user-unit`) ?? '';
     const spacedCurrent = `${spaced.manifest.root}/state/deploy/ahpd/current`;
     expect(spacedUnit).toContain(
-      `ExecStart="${spacedCurrent}/supervisor" up -f "${spacedCurrent}/process-compose.yaml" -t=false -U -u "${spaced.manifest.root}/state/pc.sock" -L "${spaced.manifest.root}/state/process-compose.log"`,
+      `ExecStart="${spacedCurrent}/supervisor" up -f "${spacedCurrent}/process-compose.yaml" -f "${spaced.manifest.root}/state/services.yaml" -t=false -U -u "${spaced.manifest.root}/state/pc.sock" -L "${spaced.manifest.root}/state/process-compose.log"`,
     );
   });
 
@@ -552,6 +555,8 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     const manifest = manifestWith();
     const io = fakeIo(manifest.entries.map((entry) => entry.path));
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
+    io.content.set(`${manifest.root}/state/services.yaml`, SERVICES_FILE_SEED);
+    io.content.set(`${manifest.root}/state/config.json`, configSeed(manifest));
     const result = uninstallInstall(manifest, io);
     expect(result.ok).toBe(true);
     expect(io.commands).toEqual([manifest.bootItem.disable]);
@@ -566,6 +571,8 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     const state = `${manifest.root}/state`;
     const io = fakeIo([...manifest.entries.map((entry) => entry.path), `${state}/sessions.json`, `${state}/ahpd.out.log`]);
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
+    io.content.set(`${state}/services.yaml`, SERVICES_FILE_SEED);
+    io.content.set(`${state}/config.json`, configSeed(manifest));
     const keptResult = uninstallInstall(manifest, io);
     expect(keptResult.ok).toBe(true);
     expect(keptResult.kept).toEqual([
@@ -683,5 +690,150 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'disable boot item' });
     expect(result.removed).toEqual([]);
     expect([...io.paths]).toHaveLength(manifest.entries.length);
+  });
+});
+
+/**
+ * #38277 S2: the boot item runs process-compose against two project files, and the install writes both.
+ * @failure the boot item names a project file no step writes; an upgrade rewrites or drops the machine's services; a
+ *   switch back runs one release's tree with another's project file; uninstall deletes services a person added
+ * @level l2 (applyInstall and uninstallInstall over the fake io; the real tmpdir run above covers the node io)
+ */
+describe('the install writes the project files the boot item runs (#38277 S2)', () => {
+  const releaseOf = (manifest: ReturnType<typeof manifestWith>, version = manifest.version) => `${manifest.root}/state/deploy/ahpd/releases/${version}`;
+
+  it('writes the release file inside the release folder, naming that release and nothing else, before the switch', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo();
+    const switched: string[] = [];
+    const result = await applyInstall(manifest, io, ((_layout: unknown, version: string) => {
+      // The project file is already in the release folder when current moves onto it.
+      expect(io.paths.has(`${releaseOf(manifest)}/process-compose.yaml`)).toBe(true);
+      switched.push(version);
+    }) as never);
+    expect(result.ok).toBe(true);
+    const release = releaseOf(manifest);
+    const compose = io.content.get(`${release}/process-compose.yaml`) ?? '';
+    expect(compose).toContain(`command: "'${release}/runtime' '${release}/packages/server/dist/main.js' '--config-file' '${manifest.root}/state/config.json'"`);
+    expect(compose).toContain('- "PATH=/usr/local/bin:/usr/bin:/bin"');
+    expect(compose).not.toContain('/current/');
+    expect(result.wrote.indexOf(`${release}/process-compose.yaml`)).toBeGreaterThan(result.wrote.indexOf(release));
+    expect(switched).toEqual([manifest.version]);
+  });
+
+  it('seeds the services file once and an upgrade keeps a changed one byte for byte', async () => {
+    const first = manifestWith();
+    const io = fakeIo();
+    expect((await applyInstall(first, io, () => undefined)).ok).toBe(true);
+    const services = `${first.root}/state/services.yaml`;
+    expect(io.content.get(services)).toBe(SERVICES_FILE_SEED);
+    const edited = 'processes:\n  web:\n    command: "\'/srv/web\' --port 8080"\n';
+    io.content.set(services, edited);
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0-rc.5', pins: HONEST });
+    if (!built.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(built.manifest, io, () => undefined)).ok).toBe(true);
+    expect(io.content.get(services)).toBe(edited);
+    // Each release keeps its own project file, so switching back to 0.15.0-rc.4 runs the file it was installed with.
+    expect(io.content.get(`${releaseOf(first)}/process-compose.yaml`)).toContain(`${releaseOf(first)}/runtime`);
+    expect(io.content.get(`${releaseOf(built.manifest)}/process-compose.yaml`)).toContain(`${releaseOf(built.manifest)}/runtime`);
+  });
+
+  it('uninstall keeps a services file a person changed, names it, and only purge deletes it', () => {
+    const manifest = manifestWith();
+    const services = `${manifest.root}/state/services.yaml`;
+    const io = fakeIo(manifest.entries.map((entry) => entry.path));
+    for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
+    io.content.set(services, 'processes:\n  web:\n    command: "/srv/web"\n');
+    io.content.set(`${manifest.root}/state/config.json`, configSeed(manifest));
+    const kept = uninstallInstall(manifest, io);
+    expect(kept.ok).toBe(true);
+    expect(kept.kept[0]).toBe(`kept ${services}: this machine's services; remove by hand or run uninstall --purge`);
+    expect(io.paths.has(services)).toBe(true);
+    const purged = uninstallInstall(manifest, io, { purge: true });
+    expect(purged.ok).toBe(true);
+    expect(io.paths.has(services)).toBe(false);
+  });
+
+  // @cto e46dd009 row 1: a fresh install boots with both files - the boot item names the pair, and both exist.
+  it('a fresh install boots with both files: the unit names the pair and apply wrote each one', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo();
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    const unit = io.content.get(`${manifest.root}/boot/systemd-user-unit`) ?? '';
+    const current = `${manifest.root}/state/deploy/ahpd/current`;
+    expect(unit).toContain(`-f ${current}/process-compose.yaml -f ${manifest.root}/state/services.yaml `);
+    expect(io.paths.has(`${releaseOf(manifest)}/process-compose.yaml`)).toBe(true);
+    expect(io.paths.has(`${manifest.root}/state/services.yaml`)).toBe(true);
+  });
+
+  // @cto e46dd009 row 2: the failed-start switch back runs the old release's own file, and the machine file is untouched.
+  it('a switch back after a failed start leaves the old release file as it was and keeps the machine file', async () => {
+    const io = fakeIo();
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, () => undefined)).ok).toBe(true);
+    const oldFile = `${releaseOf(first.manifest)}/process-compose.yaml`;
+    const oldText = io.content.get(oldFile);
+    const services = `${first.manifest.root}/state/services.yaml`;
+    const edited = 'processes:\n  web:\n    command: "/srv/web"\n';
+    io.content.set(services, edited);
+    io.failRun();
+    const failing = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    if (!failing.ok) throw new Error('expected a manifest');
+    const switched: string[] = [];
+    const result = await applyInstall(failing.manifest, io, ((_layout: unknown, version: string) => { switched.push(version); }) as never);
+    expect(result.ok).toBe(false);
+    expect(switched).toEqual(['0.16.0', '0.15.0']);
+    expect(io.content.get(oldFile)).toBe(oldText);
+    expect(oldText).toContain(`${releaseOf(first.manifest)}/runtime`);
+    expect(io.content.get(services)).toBe(edited);
+  });
+
+  // @cto e46dd009 row 3: on a real install, the services plugin refuses a machine entry that would shadow ahpd, by name.
+  it('the services plugin refuses a machine entry named after the release file\'s ahpd, naming that file', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'ahpd-shadow-')));
+    const archive = daemonArchive(HONEST.ahpd.source);
+    const pins: InstallPins = { ...HONEST, ahpd: { ...HONEST.ahpd, checksum: `sha256:${createHash('sha256').update(archive).digest('hex')}` } };
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home, version: '0.15.0-rc.4', pins });
+    if (!built.ok) throw new Error('expected a manifest');
+    const manifest = built.manifest;
+    const io: InstallIo = {
+      ...nodeInstallIo(),
+      fetchTo: async (source, path) => writeFileSync(path, source === pins.ahpd.source ? archive : bytesOf(source)),
+      run: () => ({ code: 0, output: '' }),
+    };
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    const release = `${releaseOf(manifest)}/process-compose.yaml`;
+    const services = `${manifest.root}/state/services.yaml`;
+    const machine = { name: 'test-machine', files: [release, services], configDir: `${manifest.root}/state`, changeLog: `${manifest.root}/state/changes.jsonl`, pc: {} as never };
+    const before = readFileSync(services, 'utf8');
+    const answer = await putService(machine, { principal: 'local:test', remote: false }, { service: { name: 'ahpd', command: '/bin/true' }, ifVersion: createHash('sha256').update(before).digest('hex') });
+    expect(answer).toMatchObject({ ok: false, code: 'READ_ONLY' });
+    if (!answer.ok) expect(answer.message).toContain(`it is defined in ${release}`);
+    expect(readFileSync(services, 'utf8')).toBe(before);
+  });
+
+  // @cto 65231d93 row: ahpd's own config writes survive a switch, and a switch back.
+  it('an agent pair ahpd wrote into its configuration survives an upgrade and a failed-start switch back', async () => {
+    const io = fakeIo();
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, () => undefined)).ok).toBe(true);
+    const config = `${first.manifest.root}/state/config.json`;
+    expect(JSON.parse(io.content.get(config) ?? '{}')).toEqual({ plugins: [{ source: `${first.manifest.root}/state/deploy/ahpd/current/host-plugin` }] });
+    // What ahpd writes at run time: an agents pair beside the plug-in entry.
+    const written = `${JSON.stringify({ plugins: [{ source: `${first.manifest.root}/state/deploy/ahpd/current/host-plugin` }], agents: [{ id: 'codex', account: 'a' }] }, null, 2)}\n`;
+    io.content.set(config, written);
+    const second = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    if (!second.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(second.manifest, io, () => undefined)).ok).toBe(true);
+    expect(io.content.get(config)).toBe(written);
+    io.failRun();
+    const third = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.17.0', pins: HONEST });
+    if (!third.ok) throw new Error('expected a manifest');
+    const switched: string[] = [];
+    expect((await applyInstall(third.manifest, io, ((_l: unknown, version: string) => { switched.push(version); }) as never)).ok).toBe(false);
+    expect(switched).toEqual(['0.17.0', '0.16.0']);
+    expect(io.content.get(config)).toBe(written);
   });
 });
