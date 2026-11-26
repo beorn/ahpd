@@ -38,6 +38,7 @@ import { readCatalogs } from './i18n.js';
 import { satisfies } from './compat.js';
 import { run as runProgram } from './install.js';
 import type { Runner } from './install.js';
+import { redactFailurePatterns } from './pluginfailures.js';
 
 /** One spec, turned into a URL to import. */
 export interface Resolved {
@@ -1229,6 +1230,42 @@ export const schemaOf = (schema: Record<string, unknown>, key: string): Record<s
 };
 
 /**
+ * The values among one spec's options that its schema marks `writeOnly` or `secret`.
+ *
+ * A plugin's own error can quote what it was handed, and the record beside the
+ * configuration is read by `ahpd doctor` and may be broadcast by a supervisor.
+ * A reference is a name rather than a value, so it is left as written.
+ */
+const secretsIn = (schema: Record<string, unknown> | undefined, value: unknown, found: string[]): void => {
+  if (schema === undefined || secretRef(value) !== undefined) return;
+  if (Array.isArray(value)) {
+    const items = isRecord(schema['items']) ? schema['items'] as Record<string, unknown> : undefined;
+    for (const one of value) secretsIn(items, one, found);
+    return;
+  }
+  if (isRecord(value)) {
+    for (const [key, one] of Object.entries(value)) secretsIn(schemaOf(schema, key), one, found);
+    return;
+  }
+  if ((schema['writeOnly'] === true || schema['secret'] === true) && typeof value === 'string' && value !== '') found.push(value);
+};
+
+/**
+ * A failure line as the record beside the configuration may keep it.
+ *
+ * What the plugin's own schema marks `writeOnly` or `secret` is taken out, as
+ * a served row already does, and then what looks like a credential anywhere:
+ * the file `doctor` prints from is not a place a token is repeated.
+ */
+const withoutMarkedSecrets = (line: string, spec: PluginSpec, schema: Record<string, unknown> | undefined): string => {
+  const found: string[] = [];
+  if (typeof spec !== 'string') secretsIn(schema, spec.options, found);
+  let text = redactFailurePatterns(line);
+  for (const secret of found) text = text.split(secret).join('<redacted>');
+  return text;
+};
+
+/**
  * What one value carries, and what it is checked against.
  *
  * The two are one value everywhere except where a schema node says
@@ -2181,7 +2218,7 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
         resolved = resolvePlugin(spec, where);
       }
       catch (error) {
-        found.push({ spec, id: sourceOf(spec), unresolved: reason(error), disabled });
+        found.push({ spec, id: sourceOf(spec), unresolved: redactFailurePatterns(reason(error)), disabled });
         continue;
       }
       const named = await namePlugin(resolved, version);
@@ -2215,6 +2252,9 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
 
   const load = async (entry: Planned): Promise<StagedPlugin> => {
     const { spec, id, resolved, named, unresolved } = entry;
+    // The schema is read from the manifest before the import, so it is here
+    // when the throw that has to be cleared of a credential is.
+    const schema = named !== undefined && !('refused' in named) ? named.found.manifest?.optionsSchema : undefined;
     // A load starts a clean row: a reload replaces what the last one said, and
     // keys the last run minted name nobody now.
     alerted.delete(id);
@@ -2222,7 +2262,7 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
     answered.delete(id);
     personKeys.delete(id);
     if (resolved === undefined || named === undefined) {
-      const line = unresolved ?? `plugin ${id} did not resolve`;
+      const line = withoutMarkedSecrets(unresolved ?? `plugin ${id} did not resolve`, spec, schema);
       addAlert(id, { level: 'error', text: line });
       answered.add(id);
       return { id, problems: [line] };
@@ -2263,8 +2303,12 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
       // this call, so a plugin that kept its host still reaches its own row.
       alert: (alert) => {
         if (current.get(id) !== self) return;
+        // An error is what the start's record keeps, so it is the line that
+        // must not quote the configuration. Every other level stays as the
+        // plugin said it: a served row clears it already.
+        const said = alert.level === 'error' ? withoutMarkedSecrets(alert.text, spec, schema) : alert.text;
         if (!answered.has(id)) raised.push(alert.text);
-        addAlert(id, alert);
+        addAlert(id, said === alert.text ? alert : { ...alert, text: said });
       },
       clearAlert: (ref) => { if (current.get(id) === self) dropAlert(id, ref); },
       // The plugin's own view, held the same way an alert is: a host that
@@ -2293,14 +2337,15 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
     }
     for (const [at, line] of one.problems.entries()) {
       if (raised.includes(line)) continue;
-      addAlert(id, { level: refused && at === one.problems.length - 1 ? 'error' : 'warning', text: line });
+      const failed = refused && at === one.problems.length - 1;
+      addAlert(id, { level: failed ? 'error' : 'warning', text: withoutMarkedSecrets(line, spec, schema) });
     }
     answered.add(id);
     if (one.loaded === undefined || one.contribution === undefined) {
       // A plugin that did not load holds no key: anything minted before it
       // threw names nobody.
       personKeys.delete(id);
-      return { id, problems: one.problems };
+      return { id, problems: one.problems.map((line) => withoutMarkedSecrets(line, spec, schema)) };
     }
     kept.set(id, { loaded: one.loaded, contribution: one.contribution, resolved, named });
     known.push(...one.contribution.agents);
@@ -2313,7 +2358,7 @@ export const pluginSet = (options: LoadOptions): PluginSet => {
       standing = port.value as Vault;
       owner = one.contribution.by;
     }
-    return { id, loaded: one.loaded, contribution: one.contribution, problems: one.problems };
+    return { id, loaded: one.loaded, contribution: one.contribution, problems: one.problems.map((line) => withoutMarkedSecrets(line, spec, schema)) };
   };
 
   const reload = (entry: Planned): Promise<StagedPlugin> => {

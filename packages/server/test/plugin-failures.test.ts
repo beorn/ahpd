@@ -40,6 +40,17 @@ describe('pluginFailuresOf', () => {
     ]);
   });
 
+  it('never repeats a keyed credential a line echoes back', () => {
+    // What a plugin throws may quote what it was configured with, and the
+    // record, the doctor line and a page are all read by people.
+    expect(pluginFailuresOf({
+      hightea: [{ level: 'error', text: 'the pipe refused token=sk-live-8d3f9a2c7b41e6d0 with Authorization: Bearer tk-live-4' }],
+    })).toEqual([{
+      plugin: 'hightea',
+      line: 'the pipe refused token=<redacted> with Authorization: Bearer <redacted>',
+    }]);
+  });
+
   it('is empty when every row holds only warnings', () => {
     expect(pluginFailuresOf({ clean: [{ level: 'warning', text: 'plugin clean: an icon was dropped' }] })).toEqual([]);
   });
@@ -75,6 +86,20 @@ describe('writePluginFailures', () => {
 describe('readPluginFailures', () => {
   it('answers nothing when no start has left a record', () => {
     expect(readPluginFailures(root)).toBeUndefined();
+  });
+
+  it('redacts a credential a record written before this build holds', () => {
+    // A host that updates keeps the record its last start left: what every
+    // reader prints from it is still cleared before it is printed.
+    writeFileSync(pluginFailuresPath(root), `${JSON.stringify({
+      at: '2026-11-25T19:30:00.000Z',
+      failures: [{ plugin: 'hightea', line: 'the pipe refused: Authorization: Bearer sk-live-8d3f9a2c7b41e6d0' }],
+    })}\n`);
+
+    expect(readPluginFailures(root)).toEqual({
+      at: '2026-11-25T19:30:00.000Z',
+      failures: [{ plugin: 'hightea', line: 'the pipe refused: Authorization: Bearer <redacted>' }],
+    });
   });
 
   it('refuses a file that is not a record, rather than reading it as no failure', () => {

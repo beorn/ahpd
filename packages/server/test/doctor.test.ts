@@ -291,6 +291,25 @@ describe('the Plugins check', () => {
     fixed(one);
   });
 
+  /*
+   * A plugin's error is free text and may quote the token it was given. The
+   * line doctor prints is what a person debugging the host reads, so the value
+   * is not in it - also when the record was written by a build that did not
+   * clear it.
+   */
+  it('never prints a configuration value a skipped plugin echoed', async () => {
+    writeFileSync(join(configFolder, 'plugin-failures.json'), `${JSON.stringify({
+      at: '2026-11-25T19:30:00.000Z',
+      failures: [{ plugin: 'demo-plugin', line: 'the remote refused token=sk-live-8d3f9a2c7b41e6d0' }],
+    })}\n`);
+    const one = await pluginCheck(facts());
+    expect(one.result).toBe('fail');
+    expect(one.line).toContain('skipped 1 plugin: demo-plugin:');
+    expect(one.line).toContain('token=<redacted>');
+    expect(one.line).not.toContain('sk-live-8d3f9a2c7b41e6d0');
+    fixed(one);
+  });
+
   it('says ok when the last start only warned', async () => {
     writePluginFailures(configFolder, { 'demo-plugin': [{ level: 'warning', text: 'plugin demo-plugin: an option was passed through' }] });
     const one = await pluginCheck(facts());

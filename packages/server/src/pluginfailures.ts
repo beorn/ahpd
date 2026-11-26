@@ -19,6 +19,7 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { join } from 'node:path';
 import { reason } from '@ahpd/sdk';
 import type { Alert } from '@ahpd/sdk';
+import { redactSecretsInText } from './redaction.js';
 
 /** The file, beside `daemon.json` in the configuration directory. */
 export const PLUGIN_FAILURES_FILE = 'plugin-failures.json';
@@ -30,6 +31,34 @@ export interface PluginFailure {
   /** The last line of its load: why it did not load. */
   readonly line: string;
 }
+
+/** The marker a value this file will not repeat is replaced by, as the wire uses it. */
+const REDACTED = '<redacted>';
+
+/** A key that names a credential, however a person spelled it in their configuration. */
+const CREDENTIAL_KEY = String.raw`[A-Za-z0-9_.-]*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*`;
+
+/** `<key>=<value>` or `<key>: <value>` where the key names a credential, also quoted or in JSON. */
+const KEYED_CREDENTIAL = new RegExp(String.raw`(${CREDENTIAL_KEY}\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;)\]}]*)`, 'gi');
+
+/** `Bearer <value>`, as an authorization header a plugin quoted reaches a line. */
+const BEARER_CREDENTIAL = /\b(Bearer\s+)\S+/gi;
+
+/**
+ * A line with anything that looks like a credential taken out of it.
+ *
+ * A plugin's error is free text and may quote a token it was given, and this
+ * file is read by `ahpd doctor`, printed by `ahpd status`, and folded into a
+ * page a supervisor may broadcast. None of those is a place for a credential,
+ * so a keyed token, a bearer value and a URL that carries a secret are removed
+ * wherever a line holds one. What a plugin's own schema marks `writeOnly` or
+ * `secret` is taken out where the loader still has the schema (in `plugins.ts`,
+ * `withoutMarkedSecrets`); this is the part every record and every reader can
+ * do without it, the record a build before this one wrote included.
+ */
+export const redactFailurePatterns = (line: string): string => redactSecretsInText(line)
+  .replace(KEYED_CREDENTIAL, `$1${REDACTED}`)
+  .replace(BEARER_CREDENTIAL, `$1${REDACTED}`);
 
 /** What one start could not load. */
 export interface PluginFailures {
@@ -56,7 +85,7 @@ export function pluginFailuresOf(alerts: Readonly<Record<string, readonly Alert[
   for (const [plugin, list] of Object.entries(alerts)) {
     const errors = list.filter((alert) => alert.level === 'error');
     const last = errors[errors.length - 1];
-    if (last !== undefined) found.push({ plugin, line: last.text });
+    if (last !== undefined) found.push({ plugin, line: redactFailurePatterns(last.text) });
   }
   return found.sort((left, right) => left.plugin.localeCompare(right.plugin));
 }
@@ -122,7 +151,9 @@ export function readPluginFailures(configDir: string): PluginFailures | undefine
     if (typeof one !== 'object' || one === null || typeof one.plugin !== 'string' || typeof one.line !== 'string') {
       throw new Error(`${file} holds a failure that is not a plugin and a line`);
     }
-    failures.push({ plugin: one.plugin, line: one.line });
+    // A record written before this build may hold a line nothing redacted:
+    // every reader gets it clean, and a keyed secret is never echoed on.
+    failures.push({ plugin: one.plugin, line: redactFailurePatterns(one.line) });
   }
   return { at: held.at, failures };
 }
