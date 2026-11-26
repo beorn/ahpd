@@ -35,6 +35,7 @@ import type {
   RequestPermissionResponse,
   ResumeSessionRequest,
   ResumeSessionResponse,
+  SessionUpdate,
   SetSessionConfigOptionRequest,
   SetSessionConfigOptionResponse,
   SetSessionModeRequest,
@@ -103,6 +104,20 @@ export const KILL_GRACE_MS = 5000;
  * whole way, and every message the server sends restarts the clock.
  */
 const START_ANSWER_MS = 60_000;
+
+/**
+ * How many times the opening bound a prompt is given once it has said
+ * anything (#38786, @cto 8c171c70): 600 s at the default. A model reasoning
+ * quietly mid-turn for over a minute is normal and its work is real; one that
+ * has said nothing for ten is not coming back.
+ *
+ * Both bounds must end a turn before the Hightea Gateway gives up on it, so
+ * the host is the one that names the reason: 60 s < its TURN_ACKED_DEADLINE_MS
+ * (120 s, hightea packages/members/src/agent-token.ts) before any output, and
+ * 600 s < its TURN_RUNNING_IDLE_MS (17 min, packages/ahp-gateway/src/gateway.ts)
+ * after it. Raising either here past those inverts the order (#38786, @cto 731240c7).
+ */
+const AFTER_OUTPUT_FACTOR = 10;
 
 /**
  * Windows, which has no process group to signal and no SIGTERM to send: a
@@ -323,24 +338,56 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * gone quiet while a call is owed an answer fails - in the words a person
    * needs, rather than as a turn every reader thinks is running.
    */
-  const owed = new Set<{ step: string; fail: (why: Error) => void; timer: NodeJS.Timeout | undefined }>();
-  const quiet = (): void => {
+  const owed = new Set<{ step: string; tail: string; afterOutput: number | undefined; spoke: boolean; fail: (why: Error) => void; timer: NodeJS.Timeout | undefined }>();
+  /*
+   * #38786: the calls the server is waiting on this client to answer - a
+   * person deciding a permission, a terminal it was told to wait for. While one
+   * is open the silence is this client's, not the server's, so no clock runs.
+   */
+  let ours = 0;
+  /*
+   * #38786: the tool calls the server said it is running and has not said are
+   * over. A server running a build of its own can be quiet for minutes and is
+   * working, which VS Code's host also counts as expected silence; the clock
+   * waits for it as it waits for this client.
+   */
+  const tools = new Set<string>();
+  const running = (update: SessionUpdate): void => {
+    if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') return;
+    const before = tools.size;
+    if (update.status === 'completed' || update.status === 'failed') tools.delete(update.toolCallId);
+    else if (update.sessionUpdate === 'tool_call' || update.status !== undefined) tools.add(update.toolCallId);
+    // The chunk restarted the clock before it was read; what it said decides whether one runs.
+    if (tools.size !== before) quiet();
+  };
+  /** `heard`: the server wrote something, which is the first output of every call still owed one. */
+  const quiet = (heard = false): void => {
     if (startAnswerMs <= 0) return;
     for (const held of owed) {
+      if (heard) held.spoke = true;
       if (held.timer !== undefined) clearTimeout(held.timer);
+      held.timer = undefined;
+      if (ours > 0 || tools.size > 0) continue;
+      const bound = held.spoke && held.afterOutput !== undefined ? held.afterOutput : startAnswerMs;
       held.timer = setTimeout(() => {
         owed.delete(held);
-        held.fail(new Error(`${options.command}: the ACP server sent nothing for ${startAnswerMs} ms during ${held.step}; nothing ran`));
-      }, startAnswerMs);
+        held.fail(new Error(`${options.command}: the ACP server sent nothing for ${bound} ms during ${held.step}${held.tail}`));
+      }, bound);
       held.timer.unref();
     }
   };
-  /** This call, failed by the server's silence rather than waited on for ever. */
-  const answered = <T>(step: string, call: Promise<T>): Promise<T> => {
+  /**
+   * This call, failed by the server's silence rather than waited on for ever.
+   *
+   * `afterOutput`, where given, is the bound once the call has heard anything:
+   * a turn that has begun to answer and then thinks quietly is working, and is
+   * given far longer than one that never started (#38786, @cto 8c171c70).
+   */
+  const answered = <T>(step: string, call: Promise<T>, tail = '; nothing ran', afterOutput?: number): Promise<T> => {
     if (startAnswerMs <= 0) return call;
     let fail!: (why: Error) => void;
     const silent = new Promise<never>((_resolve, no) => { fail = no; });
-    const held = { step, fail, timer: undefined as NodeJS.Timeout | undefined };
+    const held = { step, tail, afterOutput, spoke: false, fail, timer: undefined as NodeJS.Timeout | undefined };
     owed.add(held);
     quiet();
     return Promise.race([call, silent]).finally(() => {
@@ -356,7 +403,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    */
   const speaking = new Transform({
     transform(chunk, _encoding, done) {
-      quiet();
+      quiet(true);
       done(undefined, chunk);
     },
   });
@@ -413,13 +460,32 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
      * an update for a session this bridge did not open and dropping it is
      * better than writing it into the wrong turn.
      */
+    running(context.params.update);
     handlers.update(context.params.sessionId, context.params.update);
   });
   /*
    * A person's answer, or the protocol's refusal.
    */
+  /** One call the server asked of this client, during which its silence does not count (#38786). */
+  const waitingOnUs = <T>(answer: () => T | Promise<T>): Promise<T> => {
+    ours += 1;
+    quiet();
+    const done = (): void => {
+      ours -= 1;
+      quiet();
+    };
+    // Called at once, as the handler was before: the order it says things in
+    // against the server's own updates is part of what a client reads.
+    let result: T | Promise<T>;
+    try { result = answer(); }
+    catch (why: unknown) {
+      done();
+      return Promise.reject(why);
+    }
+    return Promise.resolve(result).finally(done);
+  };
   app.onRequest(methods.client.session.requestPermission, async (context): Promise<RequestPermissionResponse> => {
-    const answer = await handlers.permission?.(context.params);
+    const answer = await waitingOnUs(() => handlers.permission?.(context.params));
     if (answer === undefined || answer === 'cancelled') return REFUSED;
     return { outcome: { outcome: 'selected', optionId: answer.optionId } };
   });
@@ -436,18 +502,18 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * question off the chat before the server's own waiting ends.
    */
   if (elicitation !== undefined) {
-    app.onRequest(methods.client.elicitation.create, (context): Promise<CreateElicitationResponse> => elicitation(context.params, context.signal));
+    app.onRequest(methods.client.elicitation.create, (context): Promise<CreateElicitationResponse> => waitingOnUs(() => elicitation(context.params, context.signal)));
   }
   if (elicitationComplete !== undefined) {
     app.onNotification(methods.client.elicitation.complete, (context) => elicitationComplete(context.params));
   }
-  if (readTextFile !== undefined) app.onRequest(methods.client.fs.readTextFile, (context) => readTextFile(context.params));
-  if (writeTextFile !== undefined) app.onRequest(methods.client.fs.writeTextFile, (context) => writeTextFile(context.params));
-  if (createTerminal !== undefined) app.onRequest(methods.client.terminal.create, (context) => createTerminal(context.params));
-  if (terminalOutput !== undefined) app.onRequest(methods.client.terminal.output, (context) => terminalOutput(context.params));
-  if (waitForTerminalExit !== undefined) app.onRequest(methods.client.terminal.waitForExit, (context) => waitForTerminalExit(context.params));
-  if (killTerminal !== undefined) app.onRequest(methods.client.terminal.kill, (context) => killTerminal(context.params));
-  if (releaseTerminal !== undefined) app.onRequest(methods.client.terminal.release, (context) => releaseTerminal(context.params));
+  if (readTextFile !== undefined) app.onRequest(methods.client.fs.readTextFile, (context) => waitingOnUs(() => readTextFile(context.params)));
+  if (writeTextFile !== undefined) app.onRequest(methods.client.fs.writeTextFile, (context) => waitingOnUs(() => writeTextFile(context.params)));
+  if (createTerminal !== undefined) app.onRequest(methods.client.terminal.create, (context) => waitingOnUs(() => createTerminal(context.params)));
+  if (terminalOutput !== undefined) app.onRequest(methods.client.terminal.output, (context) => waitingOnUs(() => terminalOutput(context.params)));
+  if (waitForTerminalExit !== undefined) app.onRequest(methods.client.terminal.waitForExit, (context) => waitingOnUs(() => waitForTerminalExit(context.params)));
+  if (killTerminal !== undefined) app.onRequest(methods.client.terminal.kill, (context) => waitingOnUs(() => killTerminal(context.params)));
+  if (releaseTerminal !== undefined) app.onRequest(methods.client.terminal.release, (context) => waitingOnUs(() => releaseTerminal(context.params)));
 
   /*
    * The account the server is signed in as, which a harness that signs in out
@@ -606,10 +672,12 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
      * before the config options - which is the only kind this is asked of.
      */
     setModel: (request): Promise<unknown> => heard(() => connection.agent.request('session/set_model', request)),
-    prompt: (sessionId: string, prompt: ContentBlock[]): Promise<PromptResponse> => heard(() => connection.agent.request(methods.agent.session.prompt, {
+    // #38786: a prompt is owed its answer as the opening is, and a server gone quiet on one ends the turn by name.
+    // A tool the server never said was over belongs to the turn that is ending, not to the next one.
+    prompt: (sessionId: string, prompt: ContentBlock[]): Promise<PromptResponse> => answered('session/prompt', heard(() => connection.agent.request(methods.agent.session.prompt, {
       sessionId,
       prompt,
-    })),
+    })), '; the turn is ended', startAnswerMs * AFTER_OUTPUT_FACTOR).finally(() => { tools.clear(); }),
     cancel: (sessionId: string): Promise<void> =>
       heard(() => connection.agent.notify(methods.agent.session.cancel, { sessionId })),
     closeSession: (sessionId: string): Promise<void> =>
