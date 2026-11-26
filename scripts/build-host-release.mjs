@@ -2,14 +2,22 @@
 // Cut one customer-host release: the six assets `hightea.ai/hosts/<tag>/<name>` answers for (#38280).
 //
 //   node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> \
-//     --hightea <hightea checkout> --hightea-sha <sha> --out <empty dir> [--publish]
+//     --hightea <hightea checkout> --hightea-sha <sha> --out <empty dir> [--publish | --append]
+//   node scripts/build-host-release.mjs --tag <tag> --finalize [--allow-single-target]
 //
 // Two of the six already had their one producer: scripts/pack-host-archive.mjs writes
 // ahpd-<version>-<target>.tar.gz and the complete pins-<target>.json, given a --pin-base that names the other three.
 // This script builds those three, the deploy tarball the bootstrap runs, and writes the pin-base it just measured, so
 // the pins file is still written only by the pack script (@cto c5038798) and every checksum in it is of bytes this run
-// produced. --publish uploads all six to one immutable beorn/ahpd release; a release that exists is refused, never
-// replaced (a fix is a new tag).
+// produced.
+//
+// A release carries both machines but only Linux can be built here, so publishing is three steps (@dev/6 df76c0d1):
+//   --publish   the first machine's run creates a DRAFT with all six of its assets.
+//   --append    the second machine's run uploads only its own archive, pins, runtime and supervisor, refuses a name
+//               already there (no --clobber) and checks the draft's shared deploy/plugin bytes equal its own.
+//   --finalize  publishes the draft once both pins files are on it; --allow-single-target publishes with one and says
+//               which machine is then not installable.
+// An asset is never replaced; a fix is a new tag.
 //
 // The three artifacts the pack script cannot build:
 //   bun-<target>                  the raw bun executable, never a zip: a stock Debian has no unzip (@dev/5 82d34a90).
@@ -23,9 +31,10 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { TAG, VERSION, ahpdVersion, assetNames, inContract, pinBase } from './host-release-assets.mjs';
+import { TAG, VERSION, ahpdVersion, appendPlan, assetNames, finalizeTargets, inContract, pinBase } from './host-release-assets.mjs';
 
 const fail = (message) => {
   process.stderr.write(`build-host-release: refused: ${message}\n`);
@@ -55,30 +64,89 @@ const must = (command, args, options = {}) => {
     fail(`${command} ${args.join(' ')} exited ${result.status}\n${(result.stdout ?? '').slice(-2000)}${(result.stderr ?? '').slice(-2000)}`);
   return (result.stdout ?? '').trim();
 };
+const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+// Both checksum files are read from a URL now, so a 404 has to read as one rather than as "names no X".
+const fetchText = async (url) => {
+  const answer = await fetch(url, { redirect: 'follow' });
+  if (!answer.ok) fail(`${url} answered ${String(answer.status)} ${answer.statusText}`);
+  return answer.text();
+};
+const download = async (url, destination) => {
+  note(`fetch ${url}`);
+  const answer = await fetch(url, { redirect: 'follow' });
+  if (!answer.ok) fail(`${url} answered ${String(answer.status)} ${answer.statusText}`);
+  writeFileSync(destination, Buffer.from(await answer.arrayBuffer()));
+};
+
+/** The release as GitHub has it, or undefined when it has none. */
+const releaseState = (name) => {
+  const answer = run('gh', ['release', 'view', name, '--repo', 'beorn/ahpd', '--json', 'isDraft,assets']);
+  if (answer.status !== 0) return undefined;
+  return JSON.parse(answer.stdout);
+};
+const releaseAssetNames = (state) => new Set(state.assets.map((asset) => asset.name));
+const downloadAsset = (name, directory) => {
+  mkdirSync(directory, { recursive: true });
+  must('gh', ['release', 'download', tag, '--repo', 'beorn/ahpd', '--pattern', name, '--dir', directory], { stdio: ['ignore', 'pipe', 'pipe'] });
+  return join(directory, name);
+};
+
+const tag = arg('tag');
+const publish = flag('publish');
+const append = flag('append');
+const finalizeNow = flag('finalize');
+const allowSingleTarget = flag('allow-single-target');
+if (!TAG.test(tag)) fail(`--tag must read hh-<issue>-<8 hex>, got ${tag}`);
+if ([publish, append, finalizeNow].filter(Boolean).length > 1) fail('--publish, --append and --finalize are one step each; pick one');
+
+// --finalize needs no build: it reads the draft's own assets and publishes it.
+if (finalizeNow) {
+  const state = releaseState(tag);
+  if (state === undefined) fail(`beorn/ahpd has no release ${tag} to finalize`);
+  if (!state.isDraft) fail(`${tag} is already published; nothing to finalize`);
+  const present = releaseAssetNames(state);
+  const shared = ['ahpd-deploy-' , 'host-plugin-'].flatMap((prefix) => [...present].filter((name) => name.startsWith(prefix)));
+  if (shared.length !== 2) fail(`${tag} is missing ${2 - shared.length} of its two shared assets (deploy tarball, host plug-in)`);
+  const scratch = mkdtempSync(join(tmpdir(), 'ahpd-finalize-'));
+  const targets = finalizeTargets(present);
+  for (const one of targets) {
+    const pinsName = `pins-${one}.json`;
+    const pins = JSON.parse(readFileSync(downloadAsset(pinsName, scratch), 'utf8'));
+    for (const key of ['ahpd', 'runtime', 'supervisor']) {
+      const basename = String(pins.pins?.[key]?.source ?? '').split('/').pop();
+      if (!present.has(basename)) fail(`${pinsName} names ${basename} for ${key}, and ${tag} does not carry it`);
+    }
+  }
+  rmSync(scratch, { recursive: true, force: true });
+  if (targets.length === 0) fail(`${tag} carries no pins-<target>.json`);
+  if (targets.length === 1 && !allowSingleTarget)
+    fail(`${tag} carries only ${targets[0]}'s pins; run --append on the other machine, or --finalize --allow-single-target to publish one target`);
+  must('gh', ['release', 'edit', tag, '--repo', 'beorn/ahpd', '--draft=false'], { stdio: ['ignore', 'inherit', 'inherit'] });
+  note(`published ${tag}; installable: ${targets.join(', ')}${targets.length === 1 ? ' (the other machine has no installer pins yet)' : ''}`);
+  process.exit(0);
+}
 
 const commit = arg('commit');
-const tag = arg('tag');
 const out = resolve(arg('out'));
 const hightea = resolve(arg('hightea'));
 const highteaSha = arg('hightea-sha');
 const sourceBase = (arg('source-base', false) ?? 'https://hightea.ai/hosts').replace(/\/+$/u, '');
 const runtimeVersion = arg('runtime', false) ?? '1.4.4';
 const supervisorVersion = arg('supervisor', false) ?? '1.122.0';
-const publish = flag('publish');
-const allowDevPlugin = flag('allow-dev-plugin');
 
-if (!TAG.test(tag)) fail(`--tag must read hh-<issue>-<8 hex>, got ${tag}`);
 if (!/^[0-9a-f]{40}$/u.test(commit)) fail(`--commit must be a full 40-character sha, got ${commit}`);
+// A tag names its build: the eight hex are this commit, or an operator cannot tell which ahpd a tag carries.
+if (tag.slice(-8) !== commit.slice(0, 8)) fail(`--tag ends in ${tag.slice(-8)}, but --commit is ${commit.slice(0, 8)}; a tag names its ahpd build`);
 if (!/^https:\/\/[^/\s]+/u.test(sourceBase)) fail(`--source-base must be an https URL, got ${sourceBase}`);
 if (!/^\d+\.\d+\.\d+$/u.test(runtimeVersion)) fail(`--runtime must be an exact x.y.z bun version, got ${runtimeVersion}`);
 if (!/^\d+\.\d+\.\d+$/u.test(supervisorVersion)) fail(`--supervisor must be an exact x.y.z process-compose version, got ${supervisorVersion}`);
 if (existsSync(out) && readdirSync(out).length > 0) fail(`--out ${out} is not empty`);
 if (!existsSync(hightea)) fail(`--hightea ${hightea} is not a directory`);
 
-// The same commit-and-clean-tree rule the pack script enforces, said before two downloads and a build.
+// The same commit-and-clean-tree rule the pack script enforces, said before two downloads and a build. The out folder
+// is inside the checkout only when git already ignores it: a fresh one would make the tree dirty.
 const root = must('git', ['rev-parse', '--show-toplevel']);
-// The pack script refuses a dirty tree, and a fresh --out inside the checkout is untracked: either keep it outside the
-// repository or in a path git already ignores.
 if (out === root || out.startsWith(`${root}/`)) {
   const ignored = run('git', ['check-ignore', '-q', out], { cwd: root });
   if (ignored.status !== 0) fail(`--out ${out} is inside the checkout and not ignored by git; use a path outside it`);
@@ -92,28 +160,20 @@ const platform = process.platform;
 const arch = process.arch;
 if (!['linux', 'darwin'].includes(platform) || !['x64', 'arm64'].includes(arch))
   fail(`this machine is ${platform}-${arch}; releases are built for linux-x64 and darwin-arm64`);
+if (platform === 'darwin' && arch === 'x64') fail('the installer pins darwin-arm64 only; no darwin-x64 release is built');
 const target = `${platform}-${arch}`;
 
 mkdirSync(out, { recursive: true });
 const work = join(out, '.work');
 mkdirSync(work, { recursive: true });
-const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
-
-const download = async (url, destination) => {
-  const answer = await fetch(url, { redirect: 'follow' });
-  if (!answer.ok) fail(`${url} answered ${String(answer.status)}`);
-  writeFileSync(destination, Buffer.from(await answer.arrayBuffer()));
-};
 
 // 1. The runtime: bun's own release, checked against bun's published SHASUMS256.txt, then copied as the raw file the
 // installer places with one chmod. The zip's top folder spells the target differently (aarch64, not arm64).
-const bunArchive = platform === 'linux' ? `bun-linux-${arch === 'x64' ? 'x64' : 'aarch64'}` : `bun-darwin-aarch64`;
-if (arch === 'x64' && platform === 'darwin') fail('bun has no darwin-x64 build in this script; the installer pins darwin-arm64 only');
+const bunArchive = platform === 'linux' ? `bun-linux-${arch === 'x64' ? 'x64' : 'aarch64'}` : 'bun-darwin-aarch64';
 const bunUrl = `https://github.com/oven-sh/bun/releases/download/bun-v${runtimeVersion}/${bunArchive}.zip`;
 const bunZip = join(work, 'bun.zip');
-note(`runtime: ${bunUrl}`);
 await download(bunUrl, bunZip);
-const sums = await (await fetch(`https://github.com/oven-sh/bun/releases/download/bun-v${runtimeVersion}/SHASUMS256.txt`)).text();
+const sums = await fetchText(`https://github.com/oven-sh/bun/releases/download/bun-v${runtimeVersion}/SHASUMS256.txt`);
 const bunWanted = sums.split('\n').find((line) => line.endsWith(`  ${bunArchive}.zip`))?.split(' ')[0];
 if (bunWanted === undefined) fail(`bun-v${runtimeVersion}'s SHASUMS256.txt names no ${bunArchive}.zip`);
 if (sha256(bunZip) !== bunWanted) fail(`${bunArchive}.zip does not match bun's published sha256 ${bunWanted}`);
@@ -123,16 +183,16 @@ if (!existsSync(bunBinary)) fail(`the bun zip has no ${bunArchive}/bun`);
 const names = { runtime: `bun-${target}` };
 copyFileSync(bunBinary, join(out, names.runtime));
 must('chmod', ['0755', join(out, names.runtime)]);
+note(`runtime ${must(join(out, names.runtime), ['--version'])}`);
 
 // 2. The supervisor: process-compose, checked against its own checksums file, unpacked from the tarball it ships as.
 const pcGoos = platform === 'linux' ? 'linux' : 'darwin';
 const pcGoarch = arch === 'x64' ? 'amd64' : 'arm64';
 const pcAsset = `process-compose_${pcGoos}_${pcGoarch}.tar.gz`;
 const pcBase = `https://github.com/f1bonacc1/process-compose/releases/download/v${supervisorVersion}`;
-note(`supervisor: ${pcBase}/${pcAsset}`);
 const pcTar = join(work, pcAsset);
 await download(`${pcBase}/${pcAsset}`, pcTar);
-const pcSums = await (await fetch(`${pcBase}/process-compose_checksums.txt`)).text();
+const pcSums = await fetchText(`${pcBase}/process-compose_checksums.txt`);
 const pcWanted = pcSums.split('\n').find((line) => line.endsWith(`  ${pcAsset}`))?.split(' ')[0];
 if (pcWanted === undefined) fail(`process-compose v${supervisorVersion}'s checksums file names no ${pcAsset}`);
 if (sha256(pcTar) !== pcWanted) fail(`${pcAsset} does not match process-compose's published sha256 ${pcWanted}`);
@@ -145,10 +205,12 @@ names.supervisor = `supervisor-${supervisorVersion}-${target}`;
 copyFileSync(pcBinary, join(out, names.supervisor));
 must('chmod', ['0755', join(out, names.supervisor)]);
 
-// 3. The host plug-in: hightea's ahp-host bundle at one named sha, built the way packages/cli/build.ts builds it (no
-// bare import, so the installed copy resolves nothing). A `-dev.<hash>` bundle is a build between cuts and refuses.
+// 3. The host plug-in: hightea's ahp-host bundle at one named, clean sha, built the way packages/cli/build.ts builds it
+// (no bare import, so the installed copy resolves nothing). `dist` is gitignored, so the build cannot dirty the tree.
 const highteaHead = must('git', ['rev-parse', 'HEAD'], { cwd: hightea });
 if (highteaHead !== highteaSha) fail(`--hightea HEAD is ${highteaHead}, not --hightea-sha ${highteaSha}`);
+if (must('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: hightea }) !== '')
+  fail(`--hightea ${hightea} is dirty; uncommitted plugin code must not be released under ${highteaSha}`);
 if (!existsSync(join(hightea, 'node_modules'))) fail(`${hightea} has no node_modules; run its install before cutting a host release`);
 note(`host plugin: ${hightea} at ${highteaSha}`);
 must('bun', [join(hightea, 'packages/cli/build.ts')], { cwd: join(hightea, 'packages/cli') });
@@ -156,7 +218,7 @@ const pluginDirectory = join(hightea, 'packages/cli/dist/plugin');
 const pluginManifest = JSON.parse(readFileSync(join(pluginDirectory, 'plugin.json'), 'utf8'));
 if (typeof pluginManifest.version !== 'string' || !new RegExp(`^${VERSION}$`, 'u').test(pluginManifest.version))
   fail(`the host plug-in manifest names ${String(pluginManifest.version)}, not an exact version`);
-if (/-dev\./u.test(pluginManifest.version) && !(allowDevPlugin && !publish))
+if (/-dev\./u.test(pluginManifest.version) && !(flag('allow-dev-plugin') && !publish && !append))
   fail(`the host plug-in bundle is ${pluginManifest.version}: a build between cuts; cut the plugin release first, or use --allow-dev-plugin for a local proof that publishes nothing`);
 names.plugin = `host-plugin-${pluginManifest.version}.js`;
 copyFileSync(join(pluginDirectory, 'plugin.mjs'), join(out, names.plugin));
@@ -165,10 +227,11 @@ copyFileSync(join(pluginDirectory, 'plugin.mjs'), join(out, names.plugin));
 const version = ahpdVersion(JSON.parse(readFileSync(join(root, 'packages/server/package.json'), 'utf8')).version, commit);
 
 // 5. The deploy tarball: one bun bundle at package/dist/bin.js, in npm's own layout, so nothing installs on the host.
+// It is built with the runtime this release ships, not whatever bun is on PATH, and its whole use is checked below.
 const deployDir = join(work, 'deploy');
 mkdirSync(join(deployDir, 'package/dist'), { recursive: true });
 note('deploy: bundling @ahpd/deploy for bun');
-must('bun', ['build', 'src/bin.ts', '--target=bun', '--outfile', join(deployDir, 'package/dist/bin.js')], {
+must(join(out, names.runtime), ['build', 'src/bin.ts', '--target=bun', '--outfile', join(deployDir, 'package/dist/bin.js')], {
   cwd: join(root, 'packages/deploy'),
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -229,8 +292,8 @@ const pinsName = all.pins;
 copyFileSync(join(packOut, archiveName), join(out, archiveName));
 copyFileSync(join(packOut, pinsName), join(out, pinsName));
 
-// 7. The check @dev/6 will repeat against the published files: every pin's checksum is of the local bytes, and every
-// name is one the host-release route answers. A mismatch here is before anything is uploaded.
+// 7. The check @dev/6 repeated against the published files: every pin's checksum is of the local bytes, and every name
+// is one the host-release route answers. A mismatch here is before anything is uploaded.
 const pins = JSON.parse(readFileSync(join(out, pinsName), 'utf8'));
 const released = [archiveName, pinsName, names.runtime, names.deploy, names.plugin, names.supervisor];
 for (const name of released) if (!inContract(name)) fail(`${name} is not a file the host-release route answers`);
@@ -247,9 +310,7 @@ for (const key of ['runtime', 'ahpd', 'hostPlugin', 'supervisor']) {
 }
 if (pins.version !== version) fail(`the pins file names ${String(pins.version)}, this cut is ${version}`);
 
-rmSync(work, { recursive: true, force: true });
-const lines = released.map((name) => `${sha256(join(out, name))}  ${name}`);
-process.stdout.write(`${lines.join('\n')}\n`);
+process.stdout.write(`${released.map((name) => `${sha256(join(out, name))}  ${name}`).join('\n')}\n`);
 process.stdout.write(
   [
     '',
@@ -262,12 +323,40 @@ process.stdout.write(
   ].join('\n'),
 );
 
-if (publish) {
-  note(`publish: beorn/ahpd release ${tag} (immutable; an existing tag is refused)`);
-  const existing = run('gh', ['release', 'view', tag, '--repo', 'beorn/ahpd']);
-  if (existing.status === 0) fail(`beorn/ahpd already has a release ${tag}; releases are immutable, cut a new tag`);
-  must('gh', ['release', 'create', tag, '--repo', 'beorn/ahpd', '--title', `host ${tag}`, '--notes', `Customer host release ${version} for ${target}.`, ...released.map((name) => join(out, name))], {
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  note(`published ${tag}: ${released.join(', ')}`);
+if (publish || append) {
+  const state = releaseState(tag);
+  const shared = [names.deploy, names.plugin];
+  const mine = [archiveName, pinsName, names.runtime, names.supervisor];
+  if (publish) {
+    if (state !== undefined)
+      fail(`${tag} already exists as a ${state.isDraft ? 'draft' : 'published release'}; run --append on the other machine, or cut a new tag`);
+    note(`publish: creating DRAFT ${tag} with this machine's six assets (--append the other, then --finalize)`);
+    must('gh', ['release', 'create', tag, '--repo', 'beorn/ahpd', '--draft', '--title', `host ${tag}`, '--notes', `Customer host release ${version}. Targets are appended by the same builder; --finalize publishes it.`, ...released.map((name) => join(out, name))], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    note(`drafted ${tag}: ${released.join(', ')}`);
+  } else {
+    if (state === undefined) fail(`--append needs a draft release ${tag}; run --publish on the first machine`);
+    if (!state.isDraft) fail(`${tag} is already published; release assets are immutable, cut a new tag`);
+    const present = releaseAssetNames(state);
+    const remote = join(work, 'remote');
+    const remoteChecksums = {};
+    for (const name of shared) if (present.has(name)) remoteChecksums[name] = sha256(downloadAsset(name, remote));
+    const plan = appendPlan({
+      onRelease: present,
+      shared,
+      mine,
+      localChecksums: Object.fromEntries(shared.map((name) => [name, sha256(join(out, name))])),
+      remoteChecksums,
+    });
+    if (!plan.ok) fail(plan.refusal);
+    const upload = plan.upload;
+    note(`append: uploading ${upload.join(', ')} to DRAFT ${tag}`);
+    must('gh', ['release', 'upload', tag, '--repo', 'beorn/ahpd', ...upload.map((name) => join(out, name))], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    note(`appended ${tag}: ${upload.join(', ')}`);
+  }
 }
+
+rmSync(work, { recursive: true, force: true });

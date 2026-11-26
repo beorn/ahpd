@@ -50,3 +50,26 @@ export const pinBase = ({ version, platform, arch, tag, sourceBase, names, versi
     },
   };
 };
+
+/**
+ * What a second machine's run uploads to a release the first one drafted: the two shared assets only when the draft
+ * lacks them, then this machine's own four. A name already there is refused (a release asset is never replaced), and a
+ * shared asset whose bytes differ is refused with both digests, because both machines must publish the same one.
+ */
+export const appendPlan = ({ onRelease, shared, mine, localChecksums, remoteChecksums }) => {
+  for (const name of mine) if (onRelease.has(name)) return { ok: false, refusal: `${name} is already on the release; a release asset is never replaced` };
+  const upload = [];
+  for (const name of shared) {
+    if (!onRelease.has(name)) {
+      upload.push(name);
+      continue;
+    }
+    if (remoteChecksums[name] !== localChecksums[name])
+      return { ok: false, refusal: `${name} on the release is ${String(remoteChecksums[name])}, this run built ${String(localChecksums[name])}; the shared asset must be identical on both machines` };
+  }
+  return { ok: true, upload: [...upload, ...mine] };
+};
+
+/** The machines a draft can be published for: each `pins-<target>.json` that is on it. */
+export const finalizeTargets = (onRelease) =>
+  ['linux-x64', 'darwin-arm64'].filter((target) => onRelease.has(`pins-${target}.json`));

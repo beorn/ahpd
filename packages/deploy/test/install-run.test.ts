@@ -190,7 +190,8 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     expect([...io.paths].some((path) => path.endsWith('.download'))).toBe(false);
   });
 
-  // @level l3 @consumer the boot item on disk starts `current` and escapes the root for XML.
+  // @level l3 @consumer the boot item on disk runs `current`'s supervisor against `current`'s yaml and escapes the
+  // root for XML; the trial's flag set is the one the #38120 scorecard ran under (@dev/6 df76c0d1).
   it('writes a plist that escapes the root and a unit with WantedBy alone', async () => {
     const macBuilt = customerInstallManifest({ platform: 'darwin', arch: 'arm64', home: '/home/customer', version: '0.15.0-rc.4', pins: HONEST });
     if (!macBuilt.ok) throw new Error('expected a manifest');
@@ -199,7 +200,14 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     await applyInstall(mac, macIo, () => undefined);
     const plist = macIo.content.get(`${mac.root}/boot/launchd-agent`) ?? '';
     expect(plist).toContain('dev.hallohuman.ahpd');
-    expect(plist).toContain('current/supervisor');
+    const macCurrent = `${mac.root}/state/deploy/ahpd/current`;
+    expect(plist).toContain(`<string>${macCurrent}/supervisor</string>`);
+    expect(plist).toContain('<string>up</string>');
+    expect(plist).toContain(`<string>${macCurrent}/process-compose.yaml</string>`);
+    expect(plist).toContain('<string>-t=false</string>');
+    expect(plist).toContain('<string>-U</string>');
+    expect(plist).toContain(`<string>${mac.root}/state/pc.sock</string>`);
+    expect(plist).toContain(`<string>${mac.root}/state/process-compose.log</string>`);
 
     const built = customerInstallManifest({ platform: 'darwin', arch: 'arm64', home: '/home/c&d"x', version: '0.15.0-rc.4', pins: HONEST });
     if (!built.ok) throw new Error('expected a manifest');
@@ -213,6 +221,10 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     const linuxIo = fakeIo();
     await applyInstall(linux, linuxIo, () => undefined);
     const unit = linuxIo.content.get(`${linux.root}/boot/systemd-user-unit`) ?? '';
+    const linuxCurrent = `${linux.root}/state/deploy/ahpd/current`;
+    expect(unit).toContain(
+      `ExecStart=${linuxCurrent}/supervisor up -f ${linuxCurrent}/process-compose.yaml -t=false -U -u ${linux.root}/state/pc.sock -L ${linux.root}/state/process-compose.log`,
+    );
     expect(unit).toContain('WantedBy=default.target');
     expect(unit).not.toContain('After=default.target');
   });

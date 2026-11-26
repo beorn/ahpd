@@ -7,7 +7,9 @@
 //     --pin-base <file> --out <empty dir>
 //
 // Writes <out>/ahpd-<version>-<platform>-<arch>.tar.gz and the complete <out>/pins-<platform>-<arch>.json: the
-// runtime, hostPlugin and supervisor pins from --pin-base (checked in per platform), plus the ahpd pin this run made.
+// runtime, hostPlugin and supervisor pins from --pin-base, plus the ahpd pin this run made. The base is written by
+// scripts/build-host-release.mjs from the three assets it just built and measured: a checked-in base could not name a
+// tag that does not exist yet (@dev/6 2026-11-26).
 // This script is the one producer of that file (@cto c5038798); the CLI and bootstrap require all four pins. Refuses, by name:
 // a dirty tree, a HEAD that is not the commit, an @ahpd/* package that did not come from this workspace, a
 // non-empty output folder, a source base that is not https, any type error, and a missing build output. Prints the node, pnpm, bun and tar versions it used, so

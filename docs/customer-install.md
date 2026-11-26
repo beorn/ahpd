@@ -181,12 +181,18 @@ node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> 
 - `ahpd-deploy-<version>.tgz` is `@ahpd/deploy`'s bin bundled for bun in npm's `package/…` layout, so the bootstrap
   runs `$BUN package/dist/bin.js` from an empty directory with no install step.
 
-All six are uploaded to one **immutable** `beorn/ahpd` release, `hh-<issue>-<8hex>`; `hightea.ai/hosts/<tag>/<name>`
-redirects to it. A release that already exists is refused, never replaced — a fix is a new tag. The builder prints its
-six sha256 lines and the four values the Hightea installer carries (`RELEASE_TAG`, `DEPLOY_VERSION`,
-`DEPLOY_SHA256`, `PINS_SHA512_<TARGET>`); stamping those is the last step before a host can install.
+All six live on one **immutable** `beorn/ahpd` release, `hh-<issue>-<8hex>`; `hightea.ai/hosts/<tag>/<name>`
+redirects to it. Only Linux can be built here, so a release is cut in three steps: `--publish` on the first machine
+creates a **draft**; `--append` on the second uploads only that machine's archive, pins, runtime and supervisor, refuses
+a name already present and checks the shared deploy/plugin bytes are identical; `--finalize` publishes the draft. It
+refuses to publish a draft with one machine's pins unless `--allow-single-target` is given, and then says which machine
+is not installable. An asset is never replaced — a fix is a new tag — and the tag's eight hex are its ahpd commit.
 
-The bun runtime is about 100 MiB, so it is served only from the GitHub release: the site caps assets at 25 MiB.
+The builder prints its six sha256 lines and the four values the Hightea installer carries (`RELEASE_TAG`,
+`DEPLOY_VERSION`, `DEPLOY_SHA256`, `PINS_SHA512_<TARGET>`); stamping those is the last step before a host can install.
+
+The bun runtime is about 107 MiB raw, so it is served only from the GitHub release: the site caps assets at 25 MiB. The
+bootstrap should print each download's size before fetching it, so a customer on a slow link is not surprised.
 
 ## Still open
 
