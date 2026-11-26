@@ -84,13 +84,13 @@ const text = async (source: ChangesetSource, uri: string): Promise<string | unde
   (await source.read?.(uri))?.data;
 
 /** A connected client with one ACP session, watching both its channels. */
-async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete' } = {}) {
+async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete'; silentServer?: boolean } = {}) {
   const path = mkdtempSync(join(tmpdir(), 'ahpd-acp-'));
   const host = createHost({
     path,
     agents: [acpAgent({
       command: process.execPath,
-      args: [FIXTURE],
+      args: options.silentServer === true ? ['-e', 'setInterval(() => {}, 1000)'] : [FIXTURE],
       provider: 'acp',
       ...(options.cutTurns === undefined ? {} : { cutTurns: options.cutTurns }),
     })],
@@ -1172,3 +1172,44 @@ it('keeps a person\'s name when the agent offers one afterwards', async () => {
   expect(title.said).toEqual(['Mine, thanks']);
   expect(title.last).toBe('Mine, thanks');
 });
+
+/*
+ * #38705: a turn is the chat's running turn once its prompt begins.
+ *
+ * The host takes a turn the moment a client says one, before the server is even
+ * brought up, and it used to publish that as `activeTurn`. A server that never
+ * comes up therefore left every reader - `hab ps`, the wake driver, a person's
+ * window - told a turn was running that nothing could end: on 2026-11-26 two
+ * seats sat behind such a turn for 38 and 50 minutes, and cycling their host
+ * child did not clear it because the claim lives in the host process. What a
+ * client is shown as `activeTurn` is now the prompt, never the claim alone.
+ */
+
+/** The chat as a client reads it back, which is where `activeTurn` is published. */
+const chatNow = async (
+  client: Awaited<ReturnType<typeof talking>>['client'],
+  chatUri: string,
+): Promise<{ activeTurn?: { id?: string } }> =>
+  ((await client.handle({ method: 'subscribe', params: { channel: chatUri } })) as {
+    snapshot: { state: { activeTurn?: { id?: string } } };
+  }).snapshot.state;
+
+it('shows a turn as running once its prompt began', async () => {
+  const { client, chatUri } = await talking();
+  // The fixture holds this prompt until a cancel, so the running turn is readable.
+  begin(client, chatUri, 't-held', 'elicitcancel');
+  await until(async () => (await chatNow(client, chatUri)).activeTurn !== undefined);
+  expect((await chatNow(client, chatUri)).activeTurn?.id).toBe('t-held');
+});
+
+/*
+ * The half this harness cannot reach, stated rather than faked: the window
+ * between a turn being taken and its prompt beginning. Creating a session
+ * awaits the server's handshake, so a server that never answers is refused
+ * before any turn exists, and a session whose child dies mid-life re-opens only
+ * on the next prompt - which is the path that produced the live hang. Proving
+ * that window needs a fixture seam that stops answering after the handshake;
+ * until it exists, the case above guards the direction that must not regress
+ * (a begun prompt is published as the running turn) and the gate itself is
+ * one condition in session.ts.
+ */
