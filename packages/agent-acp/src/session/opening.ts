@@ -263,9 +263,25 @@ const serversFor = async (
       env: Object.entries(one.env ?? {}).map(([variable, value]) => ({ name: variable, value })),
     });
   }
+  /*
+   * A session that declared tools and is handed none of them is said as well
+   * as answered. The answer reaches the client that opened the session, and
+   * nobody reading this host's log: a turn that ran with no tools then looks
+   * like an agent that thought better of it. So the host log names the reason,
+   * once per session that actually lost something - a session that declared
+   * nothing has lost nothing.
+   */
+  const declared = start.tools?.length ?? 0;
+  const sayLeftOut = (why: string): void => {
+    say(`${HOST_TOOLS}: ${why}, so this session's ${String(declared)} declared tool${declared === 1 ? ' was' : 's were'} left out`);
+  };
   // A host that offers its sessions no tools has nothing to answer about them.
-  if (start.toolsServer === undefined) return taken;
+  if (start.toolsServer === undefined) {
+    if (declared > 0) sayLeftOut('this host serves no tools endpoint');
+    return taken;
+  }
   if (!hostTools) {
+    if (declared > 0) sayLeftOut('this agent runs with hostTools off');
     toolsAnswer({ available: false, reason: 'Host tools are turned off for this agent.' });
     return taken;
   }
