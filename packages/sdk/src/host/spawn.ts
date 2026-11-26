@@ -2154,6 +2154,18 @@ export function createSpawn(ctx: HostContext): Spawn {
     }
     const made = used.create(wired);
     const session = made instanceof Promise ? await made : made;
+    /*
+     * #38506: `close` is required of a Session, and every close of a chat
+     * calls it, but a plugin's agent is plain JavaScript and only the agent is
+     * checked at `registerAgent`, never what its `create` answers. A session
+     * without it holds nothing it can be asked to end, so it is let go of as
+     * closed, and said here once by chat and provider, rather than throwing
+     * half way through a removal and in every host stop.
+     */
+    if (typeof (session as Partial<Session>).close !== 'function') {
+      log.error(`${chatUri}: agent ${used.provider} made a session without close(); every Session needs one, so it is let go of as already closed`);
+      (session as { close: Session['close'] }).close = () => {};
+    }
     titled = session;
     const now = new Date().toISOString();
     const held = existing ?? {
