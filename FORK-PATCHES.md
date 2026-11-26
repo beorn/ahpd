@@ -56,6 +56,11 @@ Upstream status is one of:
   row (PR #22), `173a6ff76` and `c24cccacf` under Rebase repairs and test-only fixups (PR #24).
 - The 29 newly rowed commits split 24 `upstream ask not written` and 5 `not upstreamable` (2 of them
   the users-read census harness, 3 our own process and ledger docs). No new upstream card is implied.
+- Re-measured 2026-11-26 (@dev/4, #38436): 190 carried over upstream/main `1f3168c22` (origin/main `7b49d0cbb`, 0
+  upstream-equivalent); 74 had no row and are now rowed, in 30 rows: 25 `upstream ask not written`, 47 `not upstreamable`
+  (our customer-host install, deploy driver, release builder, the Hightea services package, our own docs), and 2 `posted`
+  (plugin channel operations, ahpio/ahpd#474, which upstream carries under its own hash). A row naming a PR merge commit
+  counts that merge's `^1..^2` commits as rowed.
 
 ## Patches
 
@@ -69,6 +74,7 @@ Upstream status is one of:
 - `22a3b0bcd`, `5b1bdc0e7` · persist owned creation intent in the session row and commit owned creation before mapping and backend start · #35139 · upstream ask not written
 - `c47099fa1`, `7ec7b5321` · read reserved ownership without restoring, and resume owned reservations on the existing session lifecycle (`runSessionExclusive`) · #35139 · upstream ask not written (largest conflict: upstream rewrote the same block into a worktree-removal queue)
 - `9bc824b77`, `edc4189dd` · fence file-store writers across accepted host starts, and close them before cold-restart assertions · #35139 · upstream ask not written (wip step plus its test; ships as one patch)
+- `e8f95e2e4` · opening the file store creates only the lock's folder, not `sessions/`, so a refused legacy `sessions.json` is left alone · #38634 · upstream ask not written (fixes our writer fence `9bc824b77`; goes with that row's ask)
 
 ### Host: prompt settlement, sleep and stop window
 - `eb5b5e402`, `af158c8b1` · durably settle the exact initial prompt (red test plus fix) · #35139 · upstream ask not written (upstream `93b232b89` settles an automation run, not the prompt)
@@ -76,6 +82,7 @@ Upstream status is one of:
 - `e6ed9944d` · name a failed sleep instead of swallowing it · #37577 · upstream ask not written
 - `2dae899b5` · an unlist drops the row and preserves the provider conversation · #37603 · upstream ask not written
 - `26303059d` · a throwing close still releases the session folder; restart cases release the old store · #37472 · upstream ask not written
+- `39f5cc389` · turning an agent off sleeps each of its sessions (`stopWhenQuiet`; a running turn finishes first), never removes them · no issue · upstream ask not written (`stopWhenQuiet` absent upstream; upstream's disable only writes `mode: disabled`)
 
 ### Host: turn, join and catalogue
 - `3c0500e36` · stamp `turnId` on chatInput requests and fence the post-abort unwind across host, agent-acp, agent-claude and agent-cofold · #35154 · upstream ask not written (`heldAgentTurns`/`agentTurnId` absent upstream)
@@ -92,11 +99,30 @@ Upstream status is one of:
 - `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · not upstreamable as written: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
 - `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · not upstreamable as written: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
 - `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · upstream ask not written (`openedMeta` absent upstream)
+- `8d79ff977` · a session's summary says whether it was offered the host's tools, and why not, as `ahpd/hostTools` · #38499 · upstream ask not written (`ahpd/hostTools` absent upstream)
 
 ### acp / server: failure handling and retries
 - `7ee8395a9`, `863a43a85` · preserve records read failures across open and watch, and keep unknown and spoken no-rollout errors · #35127 · upstream ask not written
 - `920ffefcc` · recover only proven unspoken conversations before their first prompt · #35117 · upstream ask not written (`neverSpoken` absent upstream)
 - `dec3c1424`, `64ddcd26b` · one bounded backoff policy for respawning a host server and for `failedOnHost` listings · #37753 · upstream ask not written
+
+### acp: prompt and opening silence bounds
+- `63213b86b`, `130b99603`, `84b2752b1` · a turn is the chat's running turn only once its prompt began; a server that never answers the handshake, `session/new`, `session/load` or `session/resume` fails its turn by name after `startAnswerMs` of silence (60 s; the clock restarts on every chunk) · #38705 · upstream ask not written (`startAnswerMs`, `promptBegun` absent upstream)
+- `436268cd8`, `ff51a9ad7`, `ab776c51f`, `ddfddb621`, `54efa8483` · bound `session/prompt` too: a prompt the server goes quiet on ends its turn by name and frees the chat; no clock while the server waits on us or runs a tool it reported; ten times the bound once the prompt has begun to answer; a comment names the Gateway deadlines the bounds stay under (@dev/6, PR #73) · #38786 · upstream ask not written (no prompt bound upstream)
+
+### Host: MCP server tokens and the pass-through
+- `70d20178e`, `429ab9a43` · a renewed MCP server token applies on arrival, and an expired one reads as that server's `authRequired` state (`Session.expired`) · #38500 · upstream ask not written (`Session.expired` absent upstream)
+- `0dd84de8d`, `83c7da1b4`, `4d12e6f76` · one sdk builder for an MCP server's customization and id, and agent-acp publishes its configured MCP servers as customizations, so a targeted token can name one · #38500 · upstream ask not written (`mcpServerCustomization` absent upstream)
+- `abfb33748`, `46fa719e9`, `41bf02a30` · a pass-through to an upstream MCP server on the tools listener (`openProxy`, `Start.proxyServer`), RFC 9728 `protectedResource` moved to the sdk with the named metadata URL, and agent-acp reaches configured HTTP MCP servers through it so a renewal arrives · #38500 · upstream ask not written (`openProxy` absent upstream)
+
+### Host: plugin starts, plugin sessions and permission rules
+- `e6dd2d9b5`, `d8b973dfc` · a start that skipped a plugin is written to `plugin-failures.json` beside `daemon.json`, which `ahpd doctor` and `ahpd status` report, with the plugin's credentials cleared from the line · #38645, #38646 · upstream ask not written (`plugin-failures.json` absent upstream)
+- `b4bcefbca` · a plugin session without `close()` is logged once and treated as closed, so dispose and stop no longer break · #38506 · upstream ask not written
+- `86d8dd111` · a permission rule that can match nothing (unparsable, or a bare MCP tool glob) is warned once by name · #38499 · upstream ask not written
+
+### Plugins: channel operations
+- `e0dab3d69`, `b30a23839` · a plugin's channel offers operations to `invokeOperation`, then brought in line with the reviewed upstream version · #38502 · posted https://github.com/ahpio/ahpd/pull/474 (upstream carries it as `e47b5f9cd`; ours differs by patch-id until a sync takes upstream's)
+- `682418ef5` · `invokeOperation` tells a channel's `run` who sent the command (`caller: { client, owner }`) · #38277 · upstream ask not written (`OperationCaller` absent upstream)
 
 ### Records: exclusive creation
 - `9b4d713d0`, `7c8074aeb`, `d7d038c2d` · arbitrate create-only record creation on disk with an exclusive lock, with the cross-process proof · #35139 · upstream ask not written (`tryAcquireFlock` absent upstream; upstream `createOnly` is an unrelated bot option)
@@ -114,13 +140,30 @@ Upstream status is one of:
 - `326837da6` (PR #22; hh/integration `6dc16d309`, `ef7eb440a`, `50af536bbc`, `25d15c7dec`, `d6e8b735d`, `7eb7aae9a`) · count every write on an agent record and let a write say which revision it read; keep the secrets a saved row shows; let a plugin write a `user:`-owned record only while that owner lists it in `delegates` on the record, keeping the owner, logged after the write lands · #38233 (@cto dea0a98b) · upstream ask not written (host-side owner rule and write count; no upstream issue names either)
 
 ### Services: machine-local switches
-- `d82d697ed` (hh/integration `67799d139`) · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
-- `9b7bd1b3f` (hh/integration `1a7e8f52b`), `4027fc96d` (hh/integration `6e6f65762`) · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · upstream ask not written (new package)
-- `178dc5f65` (hh/integration `163563a48`), `52344b179` (hh/integration `4791459b9`), `540754037` (hh/integration `54e5d3de0`), `54fa98c0c` (hh/integration `5ce94713c`), `acb6a760a` (hh/integration `849057267`), `fccbe345e` (hh/integration `076967b87`) · `@ahpd/services` as a plugin: `x-ahpd/services/{list,put,remove,start,stop,restart,logs}` under the `services` grants (every caller remote: a handler is told no transport), drift alerts `services-drift:<what>` at start and every 5 minutes (names process-compose holds vs the `-f` files, file sha256 vs the hash last written or acknowledged in `services/drift.json`); plus `ahpd secrets exec` in `packages/server` (`commands/secrets.ts`, read in `main.ts` before the program), the wrapper process-compose starts a program through: reads `vault.json` with no daemon, values only in the child's environment, a missing value starts nothing · #38277 slice 2 (@cto) · upstream ask not written (new package; the server half is one new file and five lines of `main.ts`)
+- `d82d697ed` (hh/integration `67799d139`) · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · not upstreamable: the services package, now `@hallohuman/hightea-services`; upstream has no services package (ADR-004 amendment 6)
+- `9b7bd1b3f` (hh/integration `1a7e8f52b`), `4027fc96d` (hh/integration `6e6f65762`) · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · not upstreamable: same services package
+- `178dc5f65` (hh/integration `163563a48`), `540754037` (hh/integration `54e5d3de0`), `54fa98c0c` (hh/integration `5ce94713c`), `acb6a760a` (hh/integration `849057267`), `fccbe345e` (hh/integration `076967b87`) · `@ahpd/services` as a plugin: `x-ahpd/services/{list,put,remove,start,stop,restart,logs}` under the `services` grants (every caller remote: a handler is told no transport), drift alerts `services-drift:<what>` at start and every 5 minutes (names process-compose holds vs the `-f` files, file sha256 vs the hash last written or acknowledged in `services/drift.json`), a person at the machine driving services in-process, acknowledge, backup and create-only restore · #38277 slice 2 (@cto) · not upstreamable: same services package (`540754037`'s six lines of `main.ts` only load it)
+- `52344b179` (hh/integration `4791459b9`) · `ahpd secrets exec` in `packages/server` (`commands/secrets.ts`, read in `main.ts` before the program), the wrapper process-compose starts a program through: reads `vault.json` with no daemon, values only in the child's environment, a missing value starts nothing · #38277 slice 2 (@cto) · upstream ask not written (generic server command outside the services package; split from the services row on 2026-11-26)
 
 ### Deploy: a customer host install and a git deploy driver
-- `250b9a040`, `660c68dbd`, `e67e9ddc6`, `f4e97111d`, `b7f54963b`, `16fe9d2ed`, `1676d7a99`, `777d90ebe` · a customer host install manifest and plan, apply and uninstall from it, a step's exec modes, a resumable record, keep-vs-purge, named refusals for thrown effects, one `activateRelease` that journals the switch, an explicit install root so `$AHPD_HOME` is honoured, npm's own sha512 integrity beside sha256, and root tsc back to its 19-error baseline · #38280 (@dev/5) · upstream ask not written (generic installer; no upstream issue names it)
-- `dea9643b1`, `94828e260`, `902022937`, `8cec6324d`, `391703390` · a git deploy driver and the `ahpd deploy` verb: a step's own environment and timeout, gates before the switch, a lock that names its process, `started` answered only once the child holds the lock, the child stopped before refusing, and the driver served to a host as two AHP methods · #38276 (@dev/3) · upstream ask not written (generic deploy driver)
+- `250b9a040`, `660c68dbd`, `e67e9ddc6`, `f4e97111d`, `b7f54963b`, `16fe9d2ed`, `1676d7a99`, `777d90ebe` · a customer host install manifest and plan, apply and uninstall from it, a step's exec modes, a resumable record, keep-vs-purge, named refusals for thrown effects, one `activateRelease` that journals the switch, an explicit install root so `$AHPD_HOME` is honoured, npm's own sha512 integrity beside sha256, and root tsc back to its 19-error baseline · #38280 (@dev/5) · not upstreamable: our customer-host install; upstream has no deploy package
+- `dea9643b1`, `94828e260`, `902022937`, `8cec6324d`, `391703390` · a git deploy driver and the `ahpd deploy` verb: a step's own environment and timeout, gates before the switch, a lock that names its process, `started` answered only once the child holds the lock, the child stopped before refusing, and the driver served to a host as two AHP methods · #38276 (@dev/3) · not upstreamable: our deploy driver; upstream has no deploy package, and the `ahpd deploy` verb in `packages/server` only calls it
+- `b8d267b10`, `e81d6a162`, `795e070de`, `6ecc1f9e2` · `ahpd-host-install`, the command the customer bootstrap runs: takes the pins file and plans, applies or uninstalls; runs through a symlink, needs a HOME, refuses unknown flags by name, prints a prune failure as a warning, and prepack bundles the bin after tsc so the tarball ships one runnable file · #38280 · not upstreamable: our customer-host install, run by Hightea's bootstrap
+- `8d1b5829e`, `e5f55ea72`, `40f00c913` · the install writes the process-compose files its boot item runs (one per release, plus `state/services.yaml` seeded once) and ahpd's configuration as machine state at `state/config.json`, created once and kept across switches, with @cto's three S2 tests · #38277 S2 · not upstreamable: our customer-host install
+- `2f7b635c7`, `21d3be851` · the deploy driver is one channel, `x-hh-deploys://`, with one `deploy` operation run by `invokeOperation`; the old methods refuse naming it; the read grant is `deploy:status`, since `read` is reserved · #38276 · not upstreamable: speaks our `x-hh-deploys://` channel, named for its owner (ADR-004 amendment 6)
+- `d7985cfe8` · the deploy declaration lives on the service's own record (`x-hh-deploy`), so `deploy` takes only `{service, version}` and a caller can no longer supply commands · #38549 · not upstreamable: reads the hightea-services record
+- `2170549e0`, `9fd9a4255` · when the child wins the lock after the last check, the refusal names the lock and the journal says outcome unknown, not not-started · #38276 · not upstreamable: same deploy driver
+- `b68ba4282`, `455a7b859` · an unreadable services listing is a channel state and a named refusal, not a throw; a wrong deploy block is named as the deploy plugin's, not the services entry beside it · #38276, #38645 · not upstreamable: same deploy driver
+- `cdd290be5` · journal every release a prune removes · no issue in the commit (its PR branch names #38276) · not upstreamable: same deploy driver
+
+### Deploy: release archive, prune and switch-back
+- `c5f4384fd`, `21ab868e6`, `a8ba70228`, `4be215e82`, `40af6685d`, `8fcb4979a`, `b585d7651` · a newer version is a switch through `activateRelease`, pruned by one shared rule (`releasesToPrune`); prune only after a started release, recorded first; a failed start switches back and says so if that fails too; a folder that will not delete stops the prune by name; the release a switch left is kept as the way back, and a switch back is a journal flag (`back: true`), never the prune target · #38280 · not upstreamable: our customer-host install and deploy journal
+- `291ba3c07`, `1496e7f84`, `9328439a8`, `d140757fc`, `028f9a360`, `4c7f82ac1`, `5bd565ed6` · the daemon arrives as one pinned archive, checked entry by entry before unpacking (read with node-tar, the safety policy ours): each link resolved from its own base, none re-entering the stripped top folder, strict extraction, a leftover staging tree refused and cleared by its own install; uninstall unlinks `current` instead of rmdir through it; docs name the pins file · #38280 · not upstreamable: our customer-host install
+
+### Host build: customer-host release assets
+- `15409ac82`, `719a45ea5`, `c3ada8fd0`, `64fffc3e8`, `72668b3b8` · `scripts/pack-host-archive.mjs` packs the reproducible daemon archive for one platform, top folder named after the archive, a required https `--source-base`, any type error refusing the release, and `--pin-base` writing the complete four-pin `pins-<platform>-<arch>.json` · #38280 · not upstreamable: builds our customer-host release assets
+- `da1bea42d`, `da5b032ca`, `54301716e`, `be078ac43`, `d0196f4a2`, `7a99b3ce9` · `scripts/build-host-release.mjs` builds the six customer-host release assets (draft, append, finalize across two machines), holds their names in a test, runs the packed deploy before uploading, and the boot item's supervisor flags and quoting; docs say what a one-machine release means on the other machine · no issue in the commits (their branches name #38280) · not upstreamable: builds and publishes our customer-host release assets
+- `153edb33c` · `tsconfig.base.json` loads only Node's global types (`types: ["node"]`, plus `es2024.promise`), so the build no longer depends on the folder above the checkout · #38280 · upstream ask not written (neither setting is upstream)
 
 ### Host: plugin grants reach every path
 - `fe791140b`, `2c18ddc14`, `e838dfb01`, `3a38b2fa6`, `68a74eee8`, `dcc52429c`, `a58415897`, `bdf1b98bb` · every grant refusal logged once at the boundary, `-32009` logged once rather than at four sites, one `heldToGrants` check plus four more paths a plugin skipped its grants with no users directory, a plugin's own connection held to its entry's grants, a refusal line escaping what the caller chose with capped windows, a transcript excerpt left off for `session:read` logged once, and a `host.connect()` connection always carrying `principal.plugin` · #38446 (@cto rulings; PRs #8-#11) · upstream ask not written (host-side grant enforcement)
@@ -128,11 +171,18 @@ Upstream status is one of:
 - `ff37e12a2` · the plugins contracts table names grants · #38446 prior art (PR #9) · upstream ask not written (a generic docs table)
 
 ### Services: the grants its manifest applies
-- `eac0dabf0`, `31e23c05d` · the services manifest declares the grants `apply()` registers, and a test proves no daemon method, plugin hook or pipe path reaches `localServices` · #38277 · upstream ask not written (same new package as the rows above)
+- `eac0dabf0`, `31e23c05d` · the services manifest declares the grants `apply()` registers, and a test proves no daemon method, plugin hook or pipe path reaches `localServices` · #38277 · not upstreamable: same services package
+
+### Services: the x-hh-services channel, its owner field and its alerts
+- `05f15b6f6`, `4b87c342c` · the services driver becomes the `x-hh-services://` channel, whose actions are its operations, and the package is published as `@hallohuman/hightea-services` · #38277 · not upstreamable: `@hallohuman/hightea-services` is a Hightea package that leaves this repo with the deploy plugin (ADR-004 amendment 6)
+- `3548ee7cc` · a service says who put it on the machine, as `source` (`x-hh-source`) · #38278 · not upstreamable: same Hightea package
+- `8c521d5d1` · alert when process-compose gives up on a program (`services-gave-up:<name>`), and make read-only a command YAML cuts at ` #` · #38120 · not upstreamable: same Hightea package
 
 ### Our own process docs
 - `c17289eb2`, `4c403b657` · every upstream post gets `/pro` and an independent Fable critique first, and prior art is checked before any ahpd change · #38236 · not upstreamable: our review process
 - `594b14cc8` · this file moves to `main`, since `main` is the release line · #463 · not upstreamable: the fork's own ledger
+- `f79cad01a`, `0cbb6e169` · the first #38436 pass rows 29 unrowed patches, and names where the #38233 row and its fixups landed · #38436 · not upstreamable: the fork's own ledger
+- `463beda51` · an upstream post leaves out how our work is made (no review process, models, agents, seats or beads) · no issue (operator rule 2026-11-25) · not upstreamable: our own posting rule
 
 ### Rebase repairs and test-only fixups
 - `dae7f13d4` (PR #24; hh/integration `173a6ff76`, `c24cccacf`) · `@bearly/durable-file` from the registry, and each plugin-route daemon with its own `XDG_CONFIG_HOME` so the store's one-writer fence does not refuse the other three · #38185 · upstream ask not written (test-only; the durable-file change is a rebase repair named under Rebase below)
@@ -143,29 +193,35 @@ Upstream status is one of:
 ## PR prepared (not carried)
 
 Upstream fixes written straight against `upstream/main` and never carried on `hh/integration`. They
-are not in the patch count; each waits for the operator's upstream card.
+are not in the patch count. None is waiting now.
 
 - `92afb94db` on `fix/acp-backend-start-fails-creation` (base `upstream/main` `7d927326c`) · a
   backend that cannot start fails session creation: opt-in `Session.sendBringsUp`, agent-acp's send
   resolves once its server holds the session and rejects naming the command, its PATH and a capped
-  stderr tail · #38139 (@cto b1d6a0cf, amendment OK 491ba7d9) · PR pending card (text:
-  /hh/var/@dev12/38139-upstream/PR.md); carried on `hh/integration` only if a live seat needs it
-  before upstream answers
+  stderr tail · #38139 (@cto b1d6a0cf, amendment OK 491ba7d9) · posted
+  https://github.com/ahpio/ahpd/pull/463 (merged 2026-11-25; `sendBringsUp` is on `upstream/main`)
 
 ## What is left on the zero-patch target
 
-Measured over the 70 patches:
+Measured 2026-11-26 (@dev/4, #38436) over the 190 commits `main` (`7b49d0cbb`) carries over `upstream/main`
+(`1f3168c22`), counting each commit under its row's upstream status (a row naming a PR merge commit counts that
+merge's `^1..^2` commits):
 
-- 1 has an upstream PR posted (#38159, `c6f74e9d0`, ahpio/ahpd#462, 2026-11-24);
-- 1 is superseded (`d17130bbf`, replaced by #38158's `535303cf5`, whose text is also a
-  `PR pending card` and which is not counted in the 70 because it is not on `hh/integration` yet);
-- 22 are not upstreamable as written, all for one of two reasons: they speak hab's `HAB_ACP_*` /
-  `HAB_ID_TOKEN_FILE` child protocol (17), or they read hh's inhab JSONL journals pinned to an Ag
-  commit (5);
-- 46 are absent upstream with no ask written — the real remaining work on the zero-patch target.
-- Re-counted 2026-11-25 over `main` (#38436): the 29 newly rowed patches add 24 asks and 5
-  `not upstreamable`, so the target reads 70 upstream asks plus the 1 prepared, with 27 fork-only.
+- 89 are absent upstream with no ask written — the real remaining work on the zero-patch target;
+- 97 are not upstreamable: 17 speak hab's `HAB_ACP_*` / `HAB_ID_TOKEN_FILE` child protocol, 5 read hh's inhab JSONL
+  journals pinned to an Ag commit, 53 are our customer-host install, deploy driver and release builder, 14 are the
+  `@hallohuman/hightea-services` package, 2 are the users-read census harness, and 6 are our own process docs and
+  this ledger (the older deploy and services rows moved here from `upstream ask not written` on 2026-11-26, @cto
+  f8fac5d6: upstream has no deploy or services package, and their channels are ours by ADR-004 amendment 6;
+  `ahpd secrets exec`, generic server code, stays an ask in its own row);
+- 2 are posted (plugin channel operations, ahpio/ahpd#474): upstream carries its own version, so they leave the
+  count when a sync takes upstream's;
+- 2 are superseded (`d17130bbf` and the test skip `0f92e1c41` it needs), replaced by #38158's `535303cf5`, which is
+  not on `main` yet.
 
+Not counted, because not on `main`: `c6f74e9d0` (#38159; ahpio/ahpd#462 was closed unmerged on 2026-11-24) and
+`535303cf5`. The one PR prepared (#38139) was posted and merged upstream (ahpio/ahpd#463, 2026-11-25), so none is
+waiting.
 
-The honest shape of the target is therefore: 46 upstream asks plus the 1 prepared, and a decision on
-the 22 fork-protocol patches, which stay ours unless upstream grows hab's protocol.
+The honest shape of the target is therefore: 89 upstream asks, and a decision on the 17 hab-protocol patches, which
+stay ours unless upstream grows hab's protocol. The other 80 fork-only commits are ours by nature.
