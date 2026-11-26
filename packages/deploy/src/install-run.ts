@@ -717,6 +717,10 @@ const launchdAgent = (manifest: InstallManifest): string => {
   ].join('\n');
 };
 
+/** systemd joins ExecStart's words with spaces unquoted, so a word with whitespace is double-quoted, `\` and `"` first. */
+const systemdWord = (word: string): string =>
+  /[\s"\\]/u.test(word) ? `"${word.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"` : word;
+
 /** `WantedBy` alone: pairing it with `After=default.target` is the ordering cycle systemd warns about. */
 const systemdUnit = (manifest: InstallManifest): string =>
   [
@@ -724,7 +728,7 @@ const systemdUnit = (manifest: InstallManifest): string =>
     'Description=ahpd (Hallohuman agent host), user session',
     '',
     '[Service]',
-    `ExecStart=${supervisorArgv(manifest).join(' ')}`,
+    `ExecStart=${supervisorArgv(manifest).map(systemdWord).join(' ')}`,
     'Restart=always',
     'RestartSec=2',
     '',

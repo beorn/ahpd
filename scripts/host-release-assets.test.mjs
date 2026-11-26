@@ -93,6 +93,11 @@ describe('a second machine appends to the draft, never replaces an asset', () =>
   const mine = ['ahpd-0.15.0-beorn.abcdef12-darwin-arm64.tar.gz', 'pins-darwin-arm64.json', 'bun-darwin-arm64', 'supervisor-1.122.0-darwin-arm64'];
   const local = Object.fromEntries(shared.map((name) => [name, 'a'.repeat(64)]));
 
+  it('uploads only this machine\'s four when the draft already carries both shared assets', () => {
+    const plan = appendPlan({ onRelease: new Set(shared), shared, mine, localChecksums: local, remoteChecksums: local });
+    expect(plan).toEqual({ ok: true, upload: mine });
+  });
+
   it('uploads this machine\'s four plus a shared asset the draft is missing', () => {
     const plan = appendPlan({ onRelease: new Set([shared[0]]), shared, mine, localChecksums: local, remoteChecksums: { [shared[0]]: 'a'.repeat(64) } });
     expect(plan).toEqual({ ok: true, upload: [shared[1], ...mine] });

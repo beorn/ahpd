@@ -227,6 +227,17 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     );
     expect(unit).toContain('WantedBy=default.target');
     expect(unit).not.toContain('After=default.target');
+
+    // systemd joins ExecStart's words with spaces, so a root with a space is quoted word by word and still splits right.
+    const spaced = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer name', version: '0.15.0-rc.4', pins: HONEST });
+    if (!spaced.ok) throw new Error('expected a manifest');
+    const spacedIo = fakeIo();
+    await applyInstall(spaced.manifest, spacedIo, () => undefined);
+    const spacedUnit = spacedIo.content.get(`${spaced.manifest.root}/boot/systemd-user-unit`) ?? '';
+    const spacedCurrent = `${spaced.manifest.root}/state/deploy/ahpd/current`;
+    expect(spacedUnit).toContain(
+      `ExecStart="${spacedCurrent}/supervisor" up -f "${spacedCurrent}/process-compose.yaml" -t=false -U -u "${spaced.manifest.root}/state/pc.sock" -L "${spaced.manifest.root}/state/process-compose.log"`,
+    );
   });
 
   // @level l3 @consumer a download that does not match its pin stops the install by name, before it is placed.

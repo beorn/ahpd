@@ -2,7 +2,9 @@
 // Cut one customer-host release: the six assets `hightea.ai/hosts/<tag>/<name>` answers for (#38280).
 //
 //   node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> \
-//     --hightea <hightea checkout> --hightea-sha <sha> --out <empty dir> [--publish | --append]
+//     --hightea <hightea checkout> --hightea-sha <sha> --out <empty dir> [--publish]
+//   node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> \
+//     --out <empty dir> --append
 //   node scripts/build-host-release.mjs --tag <tag> --finalize [--allow-single-target]
 //
 // Two of the six already had their one producer: scripts/pack-host-archive.mjs writes
@@ -14,7 +16,10 @@
 // A release carries both machines but only Linux can be built here, so publishing is three steps (@dev/6 df76c0d1):
 //   --publish   the first machine's run creates a DRAFT with all six of its assets.
 //   --append    the second machine's run uploads only its own archive, pins, runtime and supervisor, refuses a name
-//               already there (no --clobber) and checks the draft's shared deploy/plugin bytes equal its own.
+//               already there (no --clobber), and takes the two shared assets — the deploy tarball and the host
+//               plug-in — from the draft instead of rebuilding them: both pins files then name the same bytes by
+//               construction. So --append needs no hightea checkout and no GNU tar (macOS's bsdtar refuses the flags
+//               the deploy tarball is built with, and a Mac's bundle is not byte-identical to Linux's anyway).
 //   --finalize  publishes the draft once both pins files are on it; --allow-single-target publishes with one and says
 //               which machine is then not installable.
 // An asset is never replaced; a fix is a new tag.
@@ -129,8 +134,10 @@ if (finalizeNow) {
 
 const commit = arg('commit');
 const out = resolve(arg('out'));
-const hightea = resolve(arg('hightea'));
-const highteaSha = arg('hightea-sha');
+// --append takes the plug-in bytes from the draft, so only a run that builds it needs the hightea checkout.
+const highteaArg = arg('hightea', !append);
+const hightea = highteaArg === undefined ? undefined : resolve(highteaArg);
+const highteaSha = arg('hightea-sha', !append);
 const sourceBase = (arg('source-base', false) ?? 'https://hightea.ai/hosts').replace(/\/+$/u, '');
 const runtimeVersion = arg('runtime', false) ?? '1.4.4';
 const supervisorVersion = arg('supervisor', false) ?? '1.122.0';
@@ -142,7 +149,7 @@ if (!/^https:\/\/[^/\s]+/u.test(sourceBase)) fail(`--source-base must be an http
 if (!/^\d+\.\d+\.\d+$/u.test(runtimeVersion)) fail(`--runtime must be an exact x.y.z bun version, got ${runtimeVersion}`);
 if (!/^\d+\.\d+\.\d+$/u.test(supervisorVersion)) fail(`--supervisor must be an exact x.y.z process-compose version, got ${supervisorVersion}`);
 if (existsSync(out) && readdirSync(out).length > 0) fail(`--out ${out} is not empty`);
-if (!existsSync(hightea)) fail(`--hightea ${hightea} is not a directory`);
+if (hightea !== undefined && !existsSync(hightea)) fail(`--hightea ${hightea} is not a directory`);
 
 // The same commit-and-clean-tree rule the pack script enforces, said before two downloads and a build. The out folder
 // is inside the checkout only when git already ignores it: a fresh one would make the tree dirty.
@@ -166,6 +173,21 @@ const target = `${platform}-${arch}`;
 mkdirSync(out, { recursive: true });
 const work = join(out, '.work');
 mkdirSync(work, { recursive: true });
+
+// --append never builds the two assets both machines must publish; it takes them from the draft. A draft made by
+// --publish carries all six, so a shared name that is missing or doubled means this is not that draft.
+let draftPresent;
+if (append) {
+  const state = releaseState(tag);
+  if (state === undefined) fail(`--append needs a draft release ${tag}; run --publish on the first machine`);
+  if (!state.isDraft) fail(`${tag} is already published; release assets are immutable, cut a new tag`);
+  draftPresent = releaseAssetNames(state);
+}
+const sharedOnDraft = (prefix) => {
+  const found = [...draftPresent].filter((name) => name.startsWith(prefix));
+  if (found.length !== 1) fail(`draft ${tag} carries ${String(found.length)} ${prefix}… assets; --publish uploads exactly one`);
+  return found[0];
+};
 
 // 1. The runtime: bun's own release, checked against bun's published SHASUMS256.txt, then copied as the raw file the
 // installer places with one chmod. The zip's top folder spells the target differently (aarch64, not arm64).
@@ -205,58 +227,79 @@ names.supervisor = `supervisor-${supervisorVersion}-${target}`;
 copyFileSync(pcBinary, join(out, names.supervisor));
 must('chmod', ['0755', join(out, names.supervisor)]);
 
-// 3. The host plug-in: hightea's ahp-host bundle at one named, clean sha, built the way packages/cli/build.ts builds it
-// (no bare import, so the installed copy resolves nothing). `dist` is gitignored, so the build cannot dirty the tree.
-const highteaHead = must('git', ['rev-parse', 'HEAD'], { cwd: hightea });
-if (highteaHead !== highteaSha) fail(`--hightea HEAD is ${highteaHead}, not --hightea-sha ${highteaSha}`);
-if (must('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: hightea }) !== '')
-  fail(`--hightea ${hightea} is dirty; uncommitted plugin code must not be released under ${highteaSha}`);
-if (!existsSync(join(hightea, 'node_modules'))) fail(`${hightea} has no node_modules; run its install before cutting a host release`);
-note(`host plugin: ${hightea} at ${highteaSha}`);
-must('bun', [join(hightea, 'packages/cli/build.ts')], { cwd: join(hightea, 'packages/cli') });
-const pluginDirectory = join(hightea, 'packages/cli/dist/plugin');
-const pluginManifest = JSON.parse(readFileSync(join(pluginDirectory, 'plugin.json'), 'utf8'));
-if (typeof pluginManifest.version !== 'string' || !new RegExp(`^${VERSION}$`, 'u').test(pluginManifest.version))
-  fail(`the host plug-in manifest names ${String(pluginManifest.version)}, not an exact version`);
-if (/-dev\./u.test(pluginManifest.version) && !(flag('allow-dev-plugin') && !publish && !append))
-  fail(`the host plug-in bundle is ${pluginManifest.version}: a build between cuts; cut the plugin release first, or use --allow-dev-plugin for a local proof that publishes nothing`);
-names.plugin = `host-plugin-${pluginManifest.version}.js`;
-copyFileSync(join(pluginDirectory, 'plugin.mjs'), join(out, names.plugin));
+// 3. The host plug-in. On --publish: hightea's ahp-host bundle at one named, clean sha, built the way
+// packages/cli/build.ts builds it (no bare import, so the installed copy resolves nothing). `dist` is gitignored, so
+// the build cannot dirty the tree. On --append the draft's own plug-in bytes, untouched.
+let pluginVersion;
+if (append) {
+  names.plugin = sharedOnDraft('host-plugin-');
+  pluginVersion = names.plugin.slice('host-plugin-'.length, -'.js'.length);
+  if (!new RegExp(`^${VERSION}$`, 'u').test(pluginVersion))
+    fail(`the draft carries ${names.plugin}, whose name is not an exact version`);
+  downloadAsset(names.plugin, out);
+  note(`host plugin from the draft: ${names.plugin} (${sha256(join(out, names.plugin))})`);
+} else {
+  const highteaHead = must('git', ['rev-parse', 'HEAD'], { cwd: hightea });
+  if (highteaHead !== highteaSha) fail(`--hightea HEAD is ${highteaHead}, not --hightea-sha ${highteaSha}`);
+  if (must('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: hightea }) !== '')
+    fail(`--hightea ${hightea} is dirty; uncommitted plugin code must not be released under ${highteaSha}`);
+  if (!existsSync(join(hightea, 'node_modules'))) fail(`${hightea} has no node_modules; run its install before cutting a host release`);
+  note(`host plugin: ${hightea} at ${highteaSha}`);
+  must('bun', [join(hightea, 'packages/cli/build.ts')], { cwd: join(hightea, 'packages/cli') });
+  const pluginDirectory = join(hightea, 'packages/cli/dist/plugin');
+  const pluginManifest = JSON.parse(readFileSync(join(pluginDirectory, 'plugin.json'), 'utf8'));
+  if (typeof pluginManifest.version !== 'string' || !new RegExp(`^${VERSION}$`, 'u').test(pluginManifest.version))
+    fail(`the host plug-in manifest names ${String(pluginManifest.version)}, not an exact version`);
+  if (/-dev\./u.test(pluginManifest.version) && !(flag('allow-dev-plugin') && !publish))
+    fail(`the host plug-in bundle is ${pluginManifest.version}: a build between cuts; cut the plugin release first, or use --allow-dev-plugin for a local proof that publishes nothing`);
+  pluginVersion = pluginManifest.version;
+  names.plugin = `host-plugin-${pluginVersion}.js`;
+  copyFileSync(join(pluginDirectory, 'plugin.mjs'), join(out, names.plugin));
+}
 
 // 4. The version every ahpd asset carries, the same formula scripts/pack-host-archive.mjs uses.
 const version = ahpdVersion(JSON.parse(readFileSync(join(root, 'packages/server/package.json'), 'utf8')).version, commit);
 
 // 5. The deploy tarball: one bun bundle at package/dist/bin.js, in npm's own layout, so nothing installs on the host.
 // It is built with the runtime this release ships, not whatever bun is on PATH, and its whole use is checked below.
-const deployDir = join(work, 'deploy');
-mkdirSync(join(deployDir, 'package/dist'), { recursive: true });
-note('deploy: bundling @ahpd/deploy for bun');
-must(join(out, names.runtime), ['build', 'src/bin.ts', '--target=bun', '--outfile', join(deployDir, 'package/dist/bin.js')], {
-  cwd: join(root, 'packages/deploy'),
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-writeFileSync(
-  join(deployDir, 'package/package.json'),
-  `${JSON.stringify(
-    {
-      name: '@ahpd/host-install',
-      version,
-      private: true,
-      type: 'module',
-      bin: { 'ahpd-host-install': './dist/bin.js' },
-    },
-    null,
-    2,
-  )}\n`,
-);
+// On --append it is the draft's tarball, untouched: the pins here must name the bytes the first machine built.
 names.deploy = `ahpd-deploy-${version}.tgz`;
-const mtime = must('git', ['show', '-s', '--format=%ct', commit], { cwd: root });
-must('tar', [
-  '--sort=name', `--mtime=@${mtime}`, '--owner=0', '--group=0', '--numeric-owner',
-  '-C', deployDir, '-cf', join(work, `${names.deploy}.tar`), 'package',
-]);
-must('gzip', ['-n', '-9', join(work, `${names.deploy}.tar`)]);
-must('mv', [join(work, `${names.deploy}.tar.gz`), join(out, names.deploy)]);
+if (append) {
+  const onDraft = sharedOnDraft('ahpd-deploy-');
+  if (onDraft !== names.deploy)
+    fail(`the draft's deploy tarball is ${onDraft}, this cut is ${version}; both machines cut the same --commit`);
+  downloadAsset(names.deploy, out);
+  note(`deploy tarball from the draft: ${names.deploy} (${sha256(join(out, names.deploy))})`);
+} else {
+  const deployDir = join(work, 'deploy');
+  mkdirSync(join(deployDir, 'package/dist'), { recursive: true });
+  note('deploy: bundling @ahpd/deploy for bun');
+  must(join(out, names.runtime), ['build', 'src/bin.ts', '--target=bun', '--outfile', join(deployDir, 'package/dist/bin.js')], {
+    cwd: join(root, 'packages/deploy'),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  writeFileSync(
+    join(deployDir, 'package/package.json'),
+    `${JSON.stringify(
+      {
+        name: '@ahpd/host-install',
+        version,
+        private: true,
+        type: 'module',
+        bin: { 'ahpd-host-install': './dist/bin.js' },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const mtime = must('git', ['show', '-s', '--format=%ct', commit], { cwd: root });
+  must('tar', [
+    '--sort=name', `--mtime=@${mtime}`, '--owner=0', '--group=0', '--numeric-owner',
+    '-C', deployDir, '-cf', join(work, `${names.deploy}.tar`), 'package',
+  ]);
+  must('gzip', ['-n', '-9', join(work, `${names.deploy}.tar`)]);
+  must('mv', [join(work, `${names.deploy}.tar.gz`), join(out, names.deploy)]);
+}
 
 // 6. The pin-base for the three above, measured from these bytes, then the pack script writes the four-pin file.
 const pinBasePath = join(work, 'pin-base.json');
@@ -271,7 +314,7 @@ writeFileSync(
       tag,
       sourceBase,
       names,
-      versions: { runtime: runtimeVersion, hostPlugin: pluginManifest.version, supervisor: supervisorVersion },
+      versions: { runtime: runtimeVersion, hostPlugin: pluginVersion, supervisor: supervisorVersion },
       checksums,
     }),
     null,
@@ -286,7 +329,7 @@ must('node', [join(root, 'scripts/pack-host-archive.mjs'), '--commit', commit, '
   cwd: root,
   stdio: ['ignore', 'inherit', 'inherit'],
 });
-const all = assetNames({ version, runtimeVersion, supervisorVersion, pluginVersion: pluginManifest.version, target });
+const all = assetNames({ version, runtimeVersion, supervisorVersion, pluginVersion, target });
 const archiveName = all.archive;
 const pinsName = all.pins;
 copyFileSync(join(packOut, archiveName), join(out, archiveName));
@@ -338,10 +381,10 @@ process.stdout.write(
 );
 
 if (publish || append) {
-  const state = releaseState(tag);
   const shared = [names.deploy, names.plugin];
   const mine = [archiveName, pinsName, names.runtime, names.supervisor];
   if (publish) {
+    const state = releaseState(tag);
     if (state !== undefined)
       fail(`${tag} already exists as a ${state.isDraft ? 'draft' : 'published release'}; run --append on the other machine, or cut a new tag`);
     note(`publish: creating DRAFT ${tag} with this machine's six assets (--append the other, then --finalize)`);
@@ -350,18 +393,15 @@ if (publish || append) {
     });
     note(`drafted ${tag}: ${released.join(', ')}`);
   } else {
-    if (state === undefined) fail(`--append needs a draft release ${tag}; run --publish on the first machine`);
-    if (!state.isDraft) fail(`${tag} is already published; release assets are immutable, cut a new tag`);
-    const present = releaseAssetNames(state);
-    const remote = join(work, 'remote');
-    const remoteChecksums = {};
-    for (const name of shared) if (present.has(name)) remoteChecksums[name] = sha256(downloadAsset(name, remote));
+    // Both maps are the bytes this run placed in out/ from the draft, so the shared half of the plan is a self-check:
+    // the plug-in and tarball the new pins will name are the ones the release already carries.
+    const sharedChecksums = Object.fromEntries(shared.map((name) => [name, sha256(join(out, name))]));
     const plan = appendPlan({
-      onRelease: present,
+      onRelease: draftPresent,
       shared,
       mine,
-      localChecksums: Object.fromEntries(shared.map((name) => [name, sha256(join(out, name))])),
-      remoteChecksums,
+      localChecksums: sharedChecksums,
+      remoteChecksums: sharedChecksums,
     });
     if (!plan.ok) fail(plan.refusal);
     const upload = plan.upload;
