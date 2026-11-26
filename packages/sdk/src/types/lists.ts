@@ -130,7 +130,72 @@ export interface ListKind {
    * made, so the host can answer the caller with it. A throw fails the call
    * with its message. A row that changed is said with the handle's `changed`.
    */
-  invoke(operation: string, row: ListRow | undefined, input?: Record<string, unknown>): string | void | Promise<string | void>;
+  invoke(
+    operation: string,
+    row: ListRow | undefined,
+    input?: Record<string, unknown>,
+    process?: ProcessWork,
+  ): string | void | Promise<string | void>;
+  /**
+   * The processes the kind ran or runs: a service it started, a deploy, a CI
+   * job. The kind answers them from where the work lives - its own store, the
+   * system that runs it, the CI's API - and the host keeps none. Required
+   * when an operation is `long`.
+   */
+  processes?: ListProcesses;
+}
+
+/** How a process is going: `running` is a resting state for a service and a passing one for a job. */
+export type ProcessLifecycle = 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+
+/** One process as a kind answers it. */
+export interface ListProcess {
+  /** Its id, unique in its kind, so its URI is `x-ahpd-processes://<list>/<kind>/<id>`. */
+  id: string;
+  /** What a client shows for it. */
+  title?: string;
+  /** The row it runs for, and the operation that started it, where it has them. */
+  origin?: { row?: string; operation?: string };
+  lifecycle: ProcessLifecycle;
+  /** When it started and ended, as ISO dates. */
+  startedAt?: string;
+  endedAt?: string;
+  /** How far it is, from 0 to 1, where it knows. */
+  progress?: number;
+  /** Its log lines so far, or the last of them. */
+  log?: string[];
+  /** Why it failed. */
+  error?: string;
+}
+
+/** Where a kind's processes are. */
+export interface ListProcesses {
+  /** Every process the reader may see, newest first. */
+  list(reader: Principal | undefined): ListProcess[] | Promise<ListProcess[]>;
+  /** One process, or nothing for an id the kind does not hold. */
+  read(id: string, reader: Principal | undefined): ListProcess | undefined | Promise<ListProcess | undefined>;
+  /** Stop one process the host did not start, such as a CI job. Absent, only a process the host runs can stop. */
+  stop?(id: string): void | Promise<void>;
+}
+
+/** What one report of a running process says; each part is relayed to the process's subscribers. */
+export interface ProcessReport {
+  lifecycle?: ProcessLifecycle;
+  progress?: number;
+  /** One log line. */
+  line?: string;
+  error?: string;
+}
+
+/**
+ * What a long operation's `invoke` is handed: the id the host gave its
+ * process, a report the host relays to subscribers, and a signal a stop
+ * aborts. The kind keeps the process itself, so a read answers it later.
+ */
+export interface ProcessWork {
+  id: string;
+  report(report: ProcessReport): void;
+  signal: AbortSignal;
 }
 
 /** What `registerKind` answers: how the kind tells the host a row changed. */
@@ -141,6 +206,8 @@ export interface ListKindHandle {
    * instances are built.
    */
   changed(instance: string | undefined, id: string): void;
+  /** Say one process changed, started or ended. The host reads it again with `processes.read` and tells its subscribers. */
+  processChanged(id: string): void;
 }
 
 /** One `registerList` as the fold keeps it, with the plugin that declared it. */
@@ -153,6 +220,8 @@ export interface ServedListKind extends ListKind {
   by: string;
   /** Set by the list channel once a host serves it: how a `changed` reaches it. */
   changed?: (instance: string | undefined, id: string) => void;
+  /** Set by the list channel once a host serves it: how a `processChanged` reaches it. */
+  processChanged?: (id: string) => void;
   /** A warning on the row of the plugin that registered it, for a kind that failed to answer. */
   problem?: (line: string) => void;
 }

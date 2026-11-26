@@ -950,6 +950,8 @@ The host serves the list at its channel. A client subscribes to `x-ahpd-todos://
 
 The operations are each kind's `<kind>/create`, `<kind>/update` and `<kind>/remove`, with the kind's schema as their form, and the kind's own as `<kind>/<id>`. A client runs one with `x-ahpd/invokeOperation`, which checks the grant, the target and the input against the schema. `ahpd.channels` lists the list with `kinds`, one entry per kind with its title, description, schema and every operation in full. A kind that throws while it answers rows is left out of that answer, with a warning on its plugin's row.
 
+A process is something a list's record runs: a service, a deploy, a CI job. A kind that runs processes gives `processes`, whose `list(reader)` and `read(id, reader)` answer them from where the work lives - its own store, journalctl, a CI's API - and an optional `stop(id)` for one the host did not start. The host keeps no process. An operation with `long: true` answers its call with `{ process }` at once, and the kind's `invoke` gets a fourth argument, `{ id, report, signal }`: `report({ lifecycle, progress, line, error })` is passed on to the process's subscribers, and `signal` aborts when a person stops it. The kind keeps the process under that `id`, and calls the handle's `processChanged(id)` when it changes. A client follows a process at `x-ahpd-processes://<list>/<kind>/<id>`, lists every process it may read at `x-ahpd-processes://`, and stops one with `x-ahpd/processes/stop { process }`, under the grant of the operation that started it. A reader of a list may read its processes.
+
 ### An engine of your own
 
 A plugin may register an engine: the form a person fills in, the fields only

@@ -1,6 +1,6 @@
 ---
 title: A kind keeps its processes
-status: todo
+status: done
 depends: []
 layer: "sdk"
 ---
@@ -26,3 +26,5 @@ A kind answers the processes it started, as it answers its rows.
 - The plugin host refuses a kind with a long operation and no `processes`.
 
 ## Resume
+
+Built on 2026-11-26.

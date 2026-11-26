@@ -95,6 +95,12 @@ export interface KindOperation {
    * `.project/ideas/an-operation-says-when-it-applies.md`.
    */
   offered?(record: Record<string, unknown>): boolean;
+  /**
+   * Whether a call takes long, such as a deploy. A long call answers with a
+   * process at once, and its work runs in it, so a client knows before it
+   * invokes it that it gets a process to follow.
+   */
+  long?: boolean;
 }
 
 /**

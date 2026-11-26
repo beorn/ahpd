@@ -1140,6 +1140,9 @@ const checkKindOperations = (
     if (operation.offered !== undefined && typeof operation.offered !== 'function') {
       throw new Error(miss(by, method, `operation ${id} offered`, 'a function, or nothing'));
     }
+    if (operation.long !== undefined && typeof operation.long !== 'boolean') {
+      throw new Error(miss(by, method, `operation ${id} long`, 'true, false or nothing'));
+    }
   }
 };
 
@@ -1259,5 +1262,18 @@ export const checkListKind = (value: unknown, by: string): { channel: string; na
   }
   const checked: CheckedSchema[] = [{ where: `kind ${name}`, gaps: schemaProblems(object.schema, true) }];
   checkKindOperations(object.operations, LIST_KIND_OPERATIONS, `kind ${name}`, by, method, checked);
+  if (object.processes !== undefined) {
+    const processes = asObject(object.processes, by, method, 'processes');
+    for (const member of ['list', 'read']) {
+      if (typeof processes[member] !== 'function') throw new Error(miss(by, method, `processes.${member}`, 'a function the host calls'));
+    }
+    if (processes.stop !== undefined && typeof processes.stop !== 'function') {
+      throw new Error(miss(by, method, 'processes.stop', 'a function, or nothing'));
+    }
+  }
+  const long = Array.isArray(object.operations) && (object.operations as Record<string, unknown>[]).some((one) => one?.long === true);
+  if (long && object.processes === undefined) {
+    throw new Error(miss(by, method, 'processes', 'list and read, because a long operation answers with a process'));
+  }
   return { channel, name, checked };
 };

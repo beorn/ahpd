@@ -1,6 +1,6 @@
 ---
 title: The host serves processes
-status: todo
+status: done
 depends: 
   - task-01-a-kind-keeps-its-processes.md
 layer: "sdk"
@@ -33,3 +33,5 @@ The host serves `x-ahpd-processes://<id>`, sends what a running process reports,
 - A finished process reads from the kind after the host forgets it.
 
 ## Resume
+
+Built on 2026-11-26.

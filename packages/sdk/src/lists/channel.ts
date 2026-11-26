@@ -19,6 +19,7 @@
  */
 
 import { kindOffers, kindOperations } from '../kinds/operations.js';
+import type { ProcessesServing } from './processes.js';
 import { absentResource, asFile, splitResource } from '../resources/records.js';
 import { INVALID_PARAMS, RpcError } from '../rpc.js';
 import { reason } from '../utils/values.js';
@@ -126,7 +127,7 @@ const compare = (left: unknown, right: unknown): number => {
  * `onProblem` is told of a kind that throws while it answers rows, with the
  * plugin that registered it; its rows are left out and the others answered.
  */
-export function listChannel(initial: ServedList, onProblem: (message: string) => void = () => {}): ListServing {
+export function listChannel(initial: ServedList, onProblem: (message: string) => void = () => {}, processes?: ProcessesServing): ListServing {
   let list = initial;
   const scheme = list.channel;
   const root = `${scheme}://`;
@@ -255,6 +256,7 @@ export function listChannel(initial: ServedList, onProblem: (message: string) =>
       kind.changed = (_instance, id) => {
         void changed(id).catch((error: unknown) => { onProblem(`list ${list.name} could not send ${id}: ${reason(error)}`); });
       };
+      kind.processChanged = (id) => { processes?.changed(list.name, kind.name, id); };
     }
   };
   wire();
@@ -311,6 +313,11 @@ export function listChannel(initial: ServedList, onProblem: (message: string) =>
         const { kind, name } = operationOf(operation);
         const found = target === undefined ? undefined : await find(target, reader);
         if (target !== undefined && found === undefined) throw absentResource(list.name, `${list.name}://${target}`);
+        // A long call answers with its process at once; its work runs in it.
+        if (kind.operations?.find((one) => one.id === name)?.long === true && processes !== undefined) {
+          const process = processes.start(list, kind, async (work) => { await kind.invoke(name, found?.row, input, work); });
+          return { process };
+        }
         const made = await kind.invoke(name, found?.row, input);
         const id = typeof made === 'string' && made !== '' ? made : target;
         if (id === undefined) return {};
@@ -349,7 +356,7 @@ const servings = new WeakMap<object, Map<string, ListServing>>();
  * the same base built, handed the list again, or a new one. A list that moved
  * to another channel is a new one.
  */
-export function servedList(base: object, list: ServedList, onProblem?: (message: string) => void): ListServing {
+export function servedList(base: object, list: ServedList, onProblem?: (message: string) => void, processes?: ProcessesServing): ListServing {
   let held = servings.get(base);
   if (held === undefined) {
     held = new Map();
@@ -360,7 +367,7 @@ export function servedList(base: object, list: ServedList, onProblem?: (message:
     before.update(list);
     return before;
   }
-  const made = listChannel(list, onProblem);
+  const made = listChannel(list, onProblem, processes);
   held.set(list.name, made);
   return made;
 }

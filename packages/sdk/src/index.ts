@@ -157,6 +157,8 @@ export type { ClientCounts, ClientsChannel, ClientsChannelOptions } from './clie
 export { invokeOperation, kindOffers, kindOperations, OPERATION_COMMAND, OPERATION_GRANT, pluginOperationChannels } from './kinds/operations.js';
 export type { InvokeOperationOptions, KindOperationsOptions, KindShape, OperationCaller, OperationChannel } from './kinds/operations.js';
 export { listChannel, servedList } from './lists/channel.js';
+export { PROCESS_STOP, PROCESSES, PROCESSES_SCHEME, processesChannel, processUri, servedProcesses } from './lists/processes.js';
+export type { ProcessesServing, ServedProcess } from './lists/processes.js';
 export type { ListServing, ServedRow } from './lists/channel.js';
 export { BINDINGS_KEY, BINDINGS_SCHEME, bindingTarget, bindingsOf, checkBindings } from './connectors/bindings.js';
 export type { Binding } from './connectors/bindings.js';

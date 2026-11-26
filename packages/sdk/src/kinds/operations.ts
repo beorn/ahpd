@@ -186,6 +186,7 @@ export const kindOperations = (kind: KindShape, options: KindOperationsOptions):
       ...(operation.icon === undefined ? {} : { icon: operation.icon }),
       ...(operation.input === undefined ? {} : { input: operation.input }),
       ...(operation.confirmation === undefined ? {} : { confirmation: operation.confirmation }),
+      ...(operation.long === true ? { long: true } : {}),
       scopes: [options.scope],
       grant: operation.grant ?? put,
       ...options.status(named(operation.id)),

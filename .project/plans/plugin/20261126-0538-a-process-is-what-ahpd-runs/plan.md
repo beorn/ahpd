@@ -1,7 +1,7 @@
 ---
 title: A process is what ahpd runs
 domain: plugin
-status: planned
+status: active
 priority: high
 created: 2026-11-26
 revalidated: 2026-11-26
@@ -33,6 +33,8 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 | The plugin keeps every process, running and finished, and the host asks it for a process's state | Softov, 2026-11-26: "Yes, the plugin keeps runs" | 01 |
 | A process has `origin` (its list, kind, row and operation), `lifecycle` (`pending`, `running`, `completed`, `failed`, `stopped`), `progress` and `log`, as an automation run has a lifecycle | (defaulted: the brief's "a lifecycle, progress, a log and cancel, as an automation run") | 01 |
 | `running` is a resting state for a service and a passing one for a deploy | (defaulted: one lifecycle for both) | 01 |
+| The kind answers its processes from where the work lives, and the host relays reports and keeps nothing | Softov, 2026-11-26, chose "The kind, from its own source" | 01 |
+| A process URI is `x-ahpd-processes://<list>/<kind>/<id>`, so the path names the kind to ask | (defaulted: the host keeps no process, so it cannot look one up by id alone) | 02 |
 | `long: true` on an operation says its call answers with a process, and a client knows before it invokes it | the brief's *What Softov chose while drafting* | 03 |
 | The work of a process gets a report for its lifecycle, progress and log lines, and an abort signal | (defaulted: a stop needs a way in) | 02 |
 | `x-ahpd/processes/stop` stops a process, under the grant of the operation that started it | (defaulted: as a run is stopped by a command) | 02 |
@@ -42,9 +44,9 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 | Task | Status | Depends on |
 | --- | --- | --- |
-| [01 - a-kind-keeps-its-processes](task-01-a-kind-keeps-its-processes.md) | todo | - |
-| [02 - the-host-serves-processes](task-02-the-host-serves-processes.md) | todo | 01 |
-| [03 - a-long-operation-answers-a-process](task-03-a-long-operation-answers-a-process.md) | todo | 02 |
+| [01 - a-kind-keeps-its-processes](task-01-a-kind-keeps-its-processes.md) | done | - |
+| [02 - the-host-serves-processes](task-02-the-host-serves-processes.md) | done | 01 |
+| [03 - a-long-operation-answers-a-process](task-03-a-long-operation-answers-a-process.md) | done | 02 |
 
 ## Risks and tradeoffs
 
@@ -54,13 +56,13 @@ The files read and the patterns to reuse are the `refs` in the frontmatter, each
 
 ## Resume state
 
-- **Done so far:** the plan.
-- **Next action:** task 01.
+- **Done so far:** all three tasks, on 2026-11-26. [implemented.md](implemented.md) holds the checks.
+- **Next action:** Softov's review.
 - **Open questions:** none.
 - **Watch out for:** the host keeps no row and no finished process of a plugin's list.
 
 ## Final verification checklist
 
-- [ ] A long operation answers with a process a client follows to its end.
-- [ ] A process can be stopped, and a finished one still reads from its plugin.
-- [ ] `pnpm typecheck`, the sdk and server suites, and `pnpm docs:build` pass.
+- [x] A long operation answers with a process a client follows to its end.
+- [x] A process can be stopped, and a finished one still reads from its plugin.
+- [x] `pnpm typecheck`, the sdk and server suites, and `pnpm docs:build` pass.

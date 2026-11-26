@@ -1,6 +1,6 @@
 ---
 title: A long operation answers a process
-status: todo
+status: done
 depends: 
   - task-02-the-host-serves-processes.md
 layer: "sdk"
@@ -29,3 +29,5 @@ An operation with `long: true` answers its call with a process at once, and its 
 - Its work reaches `completed`, and a stop ends it.
 
 ## Resume
+
+Built on 2026-11-26.

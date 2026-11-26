@@ -22,6 +22,7 @@ import type { ChannelHandle, Contribution, GrantEntry, LoaderContext, Alert, Ins
 import type { CollectionOptions, RecordCollection, RecordStore } from '../types/records.js';
 import type { SessionStore } from '../types/sessions.js';
 import { servedList } from '../lists/channel.js';
+import { PROCESS_STOP, PROCESSES_SCHEME, servedProcesses } from '../lists/processes.js';
 import type { ServedTunnelKind } from '../types/tunnels.js';
 import type { ServedList, ServedListKind } from '../types/lists.js';
 import type { Usage } from '../types/usage.js';
@@ -760,7 +761,7 @@ export function foldHostOptions(base: HostOptions, contributions: Contribution[]
       delete lists[name];
       continue;
     }
-    const { served, provider } = servedList(base, list);
+    const { served, provider } = servedList(base, list, undefined, servedProcesses(base));
     channels[list.channel] = served;
     schemes.set(name, list.by);
     resourceProviders[name] = provider as Schemes[string];
@@ -776,6 +777,27 @@ export function foldHostOptions(base: HostOptions, contributions: Contribution[]
       ...(description === undefined ? {} : { description }),
       operations: joined,
     };
+  }
+  /*
+   * Where a kind keeps processes, the host serves what they run: the channel
+   * of processes, its stop command and the grants they name. A plugin that
+   * took the scheme or the command first keeps it, and is reported.
+   */
+  if (Object.values(lists).some((list) => Object.values(list.kinds).some((kind) => kind.processes !== undefined))) {
+    const processes = servedProcesses(base);
+    processes.update(lists);
+    const heldChannel = channels[PROCESSES_SCHEME];
+    if (heldChannel !== undefined && heldChannel !== processes.served) {
+      problems.push(`plugin ${heldChannel.by} registers channel ${PROCESSES_SCHEME}, which the host serves for processes; the plugin's stays and processes are not served`);
+    }
+    else {
+      channels[PROCESSES_SCHEME] = processes.served;
+      if (methods[PROCESS_STOP] === undefined) methods[PROCESS_STOP] = processes.method;
+      const before = grants['process'];
+      const joined = [...(before?.operations ?? [])];
+      for (const one of ['get']) if (!joined.includes(one)) joined.push(one);
+      grants['process'] = { title: before?.title ?? 'Processes', description: before?.description ?? 'What this host runs: services, deploys and jobs.', operations: joined };
+    }
   }
   if (Object.keys(lists).length > 0) options.lists = lists;
   if (Object.keys(grants).length > 0) options.grants = grants;
@@ -2311,6 +2333,14 @@ export function pluginHost(by: string, given: LoaderContext, options: HostRecord
             throw new Error(miss(by, 'changed', id, 'said once a host is built over this plugin'));
           }
           changed(instance, id);
+        },
+        processChanged: (id) => {
+          if (typeof id !== 'string' || id === '') throw new Error(miss(by, 'processChanged', 'the id', 'a process id'));
+          const changed = served.processChanged;
+          if (changed === undefined) {
+            throw new Error(miss(by, 'processChanged', id, 'said once a host is built over this plugin'));
+          }
+          changed(id);
         },
       };
     },
