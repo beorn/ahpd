@@ -123,6 +123,16 @@ describe('checkDrift against files and a process-compose socket', () => {
     expect(alerts.map((one) => one.ref)).toEqual(['services-drift:not-loaded:web', 'services-drift:not-in-files:extra']);
   });
 
+  // #38277: process-compose holds a program with replicas: N as <name>-0 … <name>-(N-1) (observed on 1.122.0,
+  // /hh/var/@dev6/38277/replicas-probe), so a replicated service read as not loaded and its replicas as unknown.
+  it('takes a replicated service as its replicas, named the way process-compose names them, and still names a missing one', async () => {
+    writeFileSync(join(dir, 'local.yaml'), 'processes:\n  web:\n    command: sleep 2\n    replicas: 2\n');
+    held = ['shared', 'web-0', 'web-1'];
+    expect(await checkDrift(machine, stateFile)).toEqual([]);
+    held = ['shared', 'web-0'];
+    expect((await checkDrift(machine, stateFile)).map((one) => one.ref)).toEqual(['services-drift:not-loaded:web-1']);
+  });
+
   it('says process-compose cannot be read, by its answer, and still compares the files', async () => {
     machine = { ...machine, pc: { socket: machine.pc.socket, tokenFile: join(dir, 'missing-token') } };
     await checkDrift(machine, stateFile);

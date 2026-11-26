@@ -22,7 +22,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { isScalar, parseDocument } from 'yaml';
+import { isMap, isScalar, parseDocument } from 'yaml';
 import type { Machine } from './compose.js';
 import { ROUTES, pcFailure, pcRequest } from './pc.js';
 import { processesOf } from './splice.js';
@@ -163,28 +163,49 @@ export function acknowledge(stateFile: string, file: string, hash: string): void
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
-/** The process names one file defines, and the file its top-level `extends` names (resolved beside it), if any. */
-const namesIn = (file: string): { names: string[]; parent?: string } => {
+/**
+ * The process names one file defines, each with its `replicas` when the file sets it, and the file its top-level
+ * `extends` names (resolved beside it), if any.
+ */
+const namesIn = (file: string): { names: { name: string; replicas?: number }[]; parent?: string } => {
   const doc = parseDocument(readFileSync(file, 'utf8'));
   const error = doc.errors[0];
   if (error) throw new Error(`${file} is not YAML: ${error.message.split('\n')[0]}`);
-  const names = (processesOf(doc)?.items ?? []).flatMap((pair) => (isScalar(pair.key) ? [String(pair.key.value)] : []));
+  const names = (processesOf(doc)?.items ?? []).flatMap((pair) => {
+    if (!isScalar(pair.key)) return [];
+    const replicas = isMap(pair.value) ? pair.value.get('replicas') : undefined;
+    return [{ name: String(pair.key.value), ...(typeof replicas === 'number' ? { replicas } : {}) }];
+  });
   const parent = doc.get('extends');
   return typeof parent === 'string' ? { names, parent: resolve(dirname(file), parent) } : { names };
 };
 
-/** Every name the `-f` files (and the files they extend) define, with the last file to define it, as process-compose merges them. */
+/**
+ * Every process name the `-f` files (and the files they extend) define, with the last file to define it, as
+ * process-compose merges them. A program with `replicas` above 1 is held as `<name>-0` … `<name>-<n-1>` (#38277,
+ * seen on process-compose 1.122.0), so it is named that way here; the last file to set `replicas` decides.
+ */
 function definedNames(machine: Machine): Map<string, string> {
   const defined = new Map<string, string>();
+  const replicas = new Map<string, number>();
   const read = (file: string, depth: number, seen: Set<string>): void => {
     if (seen.has(file) || depth > 8) return;
     seen.add(file);
     const { names, parent } = namesIn(file);
     if (parent !== undefined) read(parent, depth + 1, seen);
-    for (const name of names) defined.set(name, file);
+    for (const one of names) {
+      defined.set(one.name, file);
+      if (one.replicas !== undefined) replicas.set(one.name, one.replicas);
+    }
   };
   for (const file of machine.files) read(resolve(file), 0, new Set());
-  return defined;
+  const held = new Map<string, string>();
+  for (const [name, file] of defined) {
+    const count = replicas.get(name) ?? 1;
+    if (count > 1) for (let at = 0; at < count; at++) held.set(`${name}-${at}`, file);
+    else held.set(name, file);
+  }
+  return held;
 }
 
 /** Read every fact the comparison needs: process-compose over its socket, the files, and the state file. Never throws. */
