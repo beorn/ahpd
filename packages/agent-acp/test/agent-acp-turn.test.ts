@@ -1259,3 +1259,40 @@ it('ends a turn whose re-opened server never answers, rather than showing it as 
   unlinkSync(join(path, 'armed'));
 }, 15_000);
 
+/*
+ * #38786, the trial host's shape: a server that is alive, took the prompt and never says another word on it.
+ * Before the bound the turn stayed active forever, every wake handed behind it waited with it, and the stop that
+ * would clear it was refused TurnInProgress. Three hundred milliseconds stand for the sixty seconds a live host
+ * waits; nothing else in either case depends on the length.
+ */
+const chatSaid = (p: ReturnType<typeof peer>, chatUri: string): string =>
+  JSON.stringify(actions(p, chatUri).map((one) => [one.action.type, one.action.turnId]));
+
+it('ends a turn whose live server goes quiet on its prompt by name, and leaves nothing running (#38786)', async () => {
+  const { client, peer: p, chatUri } = await talking({ startAnswerMs: 300 });
+  begin(client, chatUri, 't-mute', 'mute');
+  const failed = (): Bag | undefined => actions(p, chatUri)
+    .map((one) => one.action)
+    .find((action) => action.type === 'chat/error' && action.turnId === 't-mute');
+  await until(() => failed() !== undefined)
+    .catch((why) => { throw new Error(`${String(why)}; chat said ${chatSaid(p, chatUri)}`); });
+  // A terminal event naming the step and the bound, never a turn left silently open.
+  const message = String(((failed()?.part as Bag | undefined)?.error as Bag | undefined)?.message ?? '');
+  expect(message).toContain('sent nothing for 300 ms during session/prompt');
+  expect(message).toContain('the turn is ended');
+  // Nothing is left running that would refuse a stop as TurnInProgress.
+  expect((await chatNow(client, chatUri)).activeTurn).toBeUndefined();
+}, 15_000);
+
+it('runs a turn handed behind a turn whose live server went quiet, without a restart (#38786)', async () => {
+  const { client, peer: p, chatUri } = await talking({ startAnswerMs: 300 });
+  begin(client, chatUri, 't-mute', 'mute');
+  await until(async () => (await chatNow(client, chatUri)).activeTurn?.id === 't-mute');
+  // A wake handed while the quiet turn is in front takes its place, and its prompt waits on the server only as
+  // long as the bound: then it is prompted and runs to its end.
+  begin(client, chatUri, 't-next', 'hello');
+  await until(() => actions(p, chatUri).some((one) => one.action.type === 'chat/turnComplete' && one.action.turnId === 't-next'))
+    .catch((why) => { throw new Error(`${String(why)}; chat said ${chatSaid(p, chatUri)}`); });
+  expect((await chatNow(client, chatUri)).activeTurn).toBeUndefined();
+}, 15_000);
+

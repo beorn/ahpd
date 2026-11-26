@@ -831,6 +831,10 @@ let commandsSent = false;
  */
 const promptScript = async (id, params) => {
   const text = textOf(params);
+  // #38786: a live server that takes a prompt and never says another word on it,
+  // neither an update nor an answer - the turn in front the trial host's wakes
+  // queued behind.
+  if (text.includes('mute')) return;
   if (!commandsSent) {
     commandsSent = true;
     notify({
