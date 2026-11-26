@@ -84,6 +84,7 @@ Upstream status is one of:
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
 - not on main: `c6f74e9d0`, awaiting its author's PR · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
 - not on main: `27f6093df`, `c46e0acf0`, awaiting their author's PR · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses puts the row back nobody's · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
+- `f3e4911f1` · each open tool call carries its own silence bound (900 s by default, per-call timers, the turn ended naming the call, its open age, its silence and the bound) · #38695 (@cto fb984750) · upstream ask not written (the disarm it replaces is fork-only, #38786 `tools.size > 0`, absent upstream; a bound on an unreported open call is plausibly upstreamable and no ask is prepared yet)
 
 ### acp: openings, native identity and custody
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written

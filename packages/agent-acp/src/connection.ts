@@ -44,6 +44,7 @@ import type {
 import { bag, isRecord, levelIn, sdkVersion, str } from '@ahpd/sdk';
 import type { Account } from '@ahpd/sdk';
 import type { AcpConnection, AcpConnectionOptions } from './types.js';
+import { messageOf } from './session/common.js';
 
 /**
  * What this bridge answers a permission request with when nobody can be asked.
@@ -112,6 +113,16 @@ const START_ANSWER_MS = 60_000;
  * has said nothing for ten is not coming back.
  */
 const AFTER_OUTPUT_FACTOR = 10;
+
+/**
+ * How long an open tool call may stay quiet before the turn is ended by name (#38695, @cto e1c1b0f1).
+ *
+ * The pause below is deliberate: a server building its own thing is quiet and working, which VS Code's host counts as
+ * expected silence. But a pause is not a licence to wait for ever — a call the server never finishes held @dev/19's turn
+ * open for 31.7 minutes with a wake queued behind it, and the turn bound could not see it because an open call disarmed
+ * that clock entirely. So each call carries its own clock, and this is the one it falls back to when it declares none.
+ */
+export const TOOL_CALL_SILENCE_MS = 900_000;
 
 /**
  * Windows, which has no process group to signal and no SIGTERM to send: a
@@ -238,6 +249,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const exitGraceMs = options.exitGraceMs ?? EXIT_GRACE_MS;
   const stderrBytes = options.stderrBytes ?? STDERR_BYTES;
   const startAnswerMs = options.startAnswerMs ?? START_ANSWER_MS;
+  const toolCallSilenceMs = options.toolCallSilenceMs ?? TOOL_CALL_SILENCE_MS;
   // A second early, as a process's own start time is read back to the
   // millisecond and the two clocks need not agree on the last one.
   const spawnedAt = Date.now() - 1000;
@@ -344,19 +356,91 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * over. A server running a build of its own can be quiet for minutes and is
    * working, which VS Code's host also counts as expected silence; the clock
    * waits for it as it waits for this client.
+   *
+   * #38695: each of them carries its OWN clock. Disarming every bound while a call was open meant a call the server
+   * never finished kept the turn alive for as long as the process did, which is the stall this issue is about. The
+   * call's clock is restarted by the same chunks that restart the turn's, and by its own progress updates.
    */
-  const tools = new Set<string>();
-  const running = (update: SessionUpdate): void => {
+  const tools = new Map<string, {
+    readonly name: string
+    readonly sessionId: string
+    /** When the server first said this call was open: the age a refusal reports. */
+    readonly openedAt: number
+    /** When the call last said anything, which is where its silence is measured from. */
+    at: number
+    timer: NodeJS.Timeout | undefined
+  }>();
+  const clearTool = (id: string): void => {
+    const held = tools.get(id);
+    if (held?.timer !== undefined) clearTimeout(held.timer);
+    tools.delete(id);
+  };
+  const clearTools = (): void => {
+    for (const id of [...tools.keys()]) clearTool(id);
+  };
+  /**
+   * The bound on one open call (#38695).
+   *
+   * It ends the turn naming the call, how long it has been open, how long it has
+   * been silent and the bound it passed - never a silent clear, and never a
+   * bound the server declared it was still working inside. The session is also
+   * told to cancel, so the work behind the call stops rather than running on
+   * behind a turn no reader is shown (the cancel a person's stop sends).
+   */
+  const armTool = (id: string): NodeJS.Timeout | undefined => {
+    if (toolCallSilenceMs <= 0) return undefined;
+    const timer = setTimeout(() => {
+      const held = tools.get(id);
+      if (held === undefined) return;
+      const openMs = Date.now() - held.openedAt;
+      const quietMs = Date.now() - held.at;
+      clearTool(id);
+      const why =
+        `${options.command}: the tool call ${held.name} has been open ${openMs} ms and silent for ${quietMs} ms, ` +
+        `past its ${toolCallSilenceMs} ms bound, so the turn is ended`;
+      connection.agent.notify(methods.agent.session.cancel, { sessionId: held.sessionId }).catch((error: unknown) => {
+        options.log?.(`${options.command}: could not cancel ${held.sessionId} after the ${held.name} bound: ${messageOf(error)}`, 'error');
+      });
+      // Every call still owed an answer ends with the turn: the server was working on this call, not on those.
+      for (const owedCall of [...owed]) {
+        owed.delete(owedCall);
+        if (owedCall.timer !== undefined) clearTimeout(owedCall.timer);
+        owedCall.fail(new Error(why));
+      }
+    }, toolCallSilenceMs);
+    timer.unref();
+    return timer;
+  };
+  const running = (update: SessionUpdate, sessionId: string): void => {
     if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') return;
-    const before = tools.size;
-    if (update.status === 'completed' || update.status === 'failed') tools.delete(update.toolCallId);
-    else if (update.sessionUpdate === 'tool_call' || update.status !== undefined) tools.add(update.toolCallId);
-    // The chunk restarted the clock before it was read; what it said decides whether one runs.
-    if (tools.size !== before) quiet();
+    const id = update.toolCallId;
+    if (update.status === 'completed' || update.status === 'failed') clearTool(id);
+    else if (update.sessionUpdate === 'tool_call' || update.status !== undefined) {
+      const prior = tools.get(id);
+      const title = typeof update.title === 'string' && update.title.trim().length > 0 ? update.title.trim() : 'unnamed';
+      tools.set(id, {
+        name: `"${title}"`,
+        sessionId,
+        openedAt: prior?.openedAt ?? Date.now(),
+        at: Date.now(),
+        timer: prior?.timer,
+      });
+    }
+    // The chunk restarted the clock before it was read; what it said decides whether one runs, so the call's
+    // arm is decided in one place (quiet) rather than here and there.
+    quiet();
   };
   /** `heard`: the server wrote something, which is the first output of every call still owed one. */
   const quiet = (heard = false): void => {
     if (startAnswerMs <= 0) return;
+    // #38695: a chunk is proof the server is working, so it restarts every open call's clock as well as the turn's.
+    for (const [id, before] of tools) {
+      const held = heard ? { ...before, at: Date.now() } : before;
+      if (before.timer !== undefined) clearTimeout(before.timer);
+      // While this client owes the server an answer the silence is ours, not the server's (#38786): the call's clock
+      // waits with it and is armed again when the answer is given.
+      tools.set(id, { ...held, timer: ours > 0 ? undefined : armTool(id) });
+    }
     for (const held of owed) {
       if (heard) held.spoke = true;
       if (held.timer !== undefined) clearTimeout(held.timer);
@@ -454,7 +538,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
      * an update for a session this bridge did not open and dropping it is
      * better than writing it into the wrong turn.
      */
-    running(context.params.update);
+    running(context.params.update, context.params.sessionId);
     handlers.update(context.params.sessionId, context.params.update);
   });
   /*
@@ -671,7 +755,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     prompt: (sessionId: string, prompt: ContentBlock[]): Promise<PromptResponse> => answered('session/prompt', heard(() => connection.agent.request(methods.agent.session.prompt, {
       sessionId,
       prompt,
-    })), '; the turn is ended', startAnswerMs * AFTER_OUTPUT_FACTOR).finally(() => { tools.clear(); }),
+    })), '; the turn is ended', startAnswerMs * AFTER_OUTPUT_FACTOR).finally(() => { clearTools(); }),
     cancel: (sessionId: string): Promise<void> =>
       heard(() => connection.agent.notify(methods.agent.session.cancel, { sessionId })),
     closeSession: (sessionId: string): Promise<void> =>
