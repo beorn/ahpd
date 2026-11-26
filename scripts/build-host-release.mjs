@@ -310,6 +310,20 @@ for (const key of ['runtime', 'ahpd', 'hostPlugin', 'supervisor']) {
 }
 if (pins.version !== version) fail(`the pins file names ${String(pins.version)}, this cut is ${version}`);
 
+// 8. The tarball is run the way the bootstrap runs it: unpacked, from an empty directory, with this release's runtime
+// and pins. `--plan` fetches nothing, so this proves the layout, the bundle and the pins before anything is uploaded.
+const checkRoot = join(work, 'check');
+const checkRun = join(checkRoot, 'run');
+const extract = join(checkRoot, 'deploy');
+mkdirSync(checkRun, { recursive: true });
+mkdirSync(extract, { recursive: true });
+must('tar', ['-xzf', join(out, names.deploy), '-C', extract]);
+const plan = run(join(out, names.runtime), [join(extract, 'package/dist/bin.js'), '--pins', join(out, pinsName), '--plan', '--home', join(checkRoot, 'home')], { cwd: checkRun });
+if (plan.status !== 0)
+  fail(`the deploy tarball did not run with this release's runtime: ${(plan.stdout ?? '').slice(-1000)}${(plan.stderr ?? '').slice(-1000)}`);
+if (!/uninstall removes \d+ entries/u.test(plan.stdout ?? '')) fail('the deploy tarball printed no install plan; the bootstrap would have run nothing useful');
+note('checked: the tarball runs from an empty directory and prints the plan');
+
 process.stdout.write(`${released.map((name) => `${sha256(join(out, name))}  ${name}`).join('\n')}\n`);
 process.stdout.write(
   [
