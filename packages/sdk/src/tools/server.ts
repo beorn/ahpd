@@ -260,7 +260,8 @@ const forward = async (request: Request, proxied: Proxied): Promise<Response> =>
     if (value !== null) back.set(name, value);
   }
   const done = (): void => { proxied.inflight.delete(abort); };
-  const body = answer.body === null ? null : answer.body.pipeThrough(new TransformStream({ flush: done }));
+  // A downstream that drops the stream before it ends cancels the upstream too, and stops being held.
+  const body = answer.body === null ? null : answer.body.pipeThrough(new TransformStream({ flush: done, cancel: () => { abort.abort(); done(); } }));
   if (body === null) done();
   return new Response(body, { status: answer.status, headers: back });
 };
