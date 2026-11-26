@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { TAG, VERSION, ahpdVersion, assetNames, inContract, pinBase } from './host-release-assets.mjs';
 
 const fail = (message) => {
   process.stderr.write(`build-host-release: refused: ${message}\n`);
@@ -54,21 +55,6 @@ const must = (command, args, options = {}) => {
     fail(`${command} ${args.join(' ')} exited ${result.status}\n${(result.stdout ?? '').slice(-2000)}${(result.stderr ?? '').slice(-2000)}`);
   return (result.stdout ?? '').trim();
 };
-
-// The release contract, copied from hightea `packages/server/src/host-release-route.ts` on purpose: this script runs
-// before any hightea checkout is guaranteed, so it cannot import it, and a name it gets wrong is a 404 for a customer.
-const TAG = /^hh-[0-9]+-[0-9a-f]{8}$/u;
-const VERSION = String.raw`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`;
-const TARGET = String.raw`(?:linux|darwin)-(?:x64|arm64)`;
-const CONTRACT = [
-  new RegExp(`^ahpd-${VERSION}-${TARGET}\\.tar\\.gz$`, 'u'),
-  new RegExp(`^pins-${TARGET}\\.json$`, 'u'),
-  new RegExp(`^bun-${TARGET}$`, 'u'),
-  new RegExp(`^ahpd-deploy-${VERSION}\\.tgz$`, 'u'),
-  new RegExp(`^host-plugin-${VERSION}\\.js$`, 'u'),
-  new RegExp(`^supervisor-${VERSION}-${TARGET}$`, 'u'),
-];
-const inContract = (name) => CONTRACT.some((pattern) => pattern.test(name));
 
 const commit = arg('commit');
 const tag = arg('tag');
@@ -134,9 +120,9 @@ if (sha256(bunZip) !== bunWanted) fail(`${bunArchive}.zip does not match bun's p
 must('unzip', ['-q', '-o', bunZip, '-d', work]);
 const bunBinary = join(work, bunArchive, 'bun');
 if (!existsSync(bunBinary)) fail(`the bun zip has no ${bunArchive}/bun`);
-const runtimeName = `bun-${target}`;
-copyFileSync(bunBinary, join(out, runtimeName));
-must('chmod', ['0755', join(out, runtimeName)]);
+const names = { runtime: `bun-${target}` };
+copyFileSync(bunBinary, join(out, names.runtime));
+must('chmod', ['0755', join(out, names.runtime)]);
 
 // 2. The supervisor: process-compose, checked against its own checksums file, unpacked from the tarball it ships as.
 const pcGoos = platform === 'linux' ? 'linux' : 'darwin';
@@ -155,9 +141,9 @@ mkdirSync(pcDir, { recursive: true });
 must('tar', ['-xzf', pcTar, '-C', pcDir]);
 const pcBinary = join(pcDir, 'process-compose');
 if (!existsSync(pcBinary)) fail(`${pcAsset} has no process-compose at its root`);
-const supervisorName = `supervisor-${supervisorVersion}-${target}`;
-copyFileSync(pcBinary, join(out, supervisorName));
-must('chmod', ['0755', join(out, supervisorName)]);
+names.supervisor = `supervisor-${supervisorVersion}-${target}`;
+copyFileSync(pcBinary, join(out, names.supervisor));
+must('chmod', ['0755', join(out, names.supervisor)]);
 
 // 3. The host plug-in: hightea's ahp-host bundle at one named sha, built the way packages/cli/build.ts builds it (no
 // bare import, so the installed copy resolves nothing). A `-dev.<hash>` bundle is a build between cuts and refuses.
@@ -172,11 +158,11 @@ if (typeof pluginManifest.version !== 'string' || !new RegExp(`^${VERSION}$`, 'u
   fail(`the host plug-in manifest names ${String(pluginManifest.version)}, not an exact version`);
 if (/-dev\./u.test(pluginManifest.version) && !(allowDevPlugin && !publish))
   fail(`the host plug-in bundle is ${pluginManifest.version}: a build between cuts; cut the plugin release first, or use --allow-dev-plugin for a local proof that publishes nothing`);
-const pluginName = `host-plugin-${pluginManifest.version}.js`;
-copyFileSync(join(pluginDirectory, 'plugin.mjs'), join(out, pluginName));
+names.plugin = `host-plugin-${pluginManifest.version}.js`;
+copyFileSync(join(pluginDirectory, 'plugin.mjs'), join(out, names.plugin));
 
 // 4. The version every ahpd asset carries, the same formula scripts/pack-host-archive.mjs uses.
-const version = `${JSON.parse(readFileSync(join(root, 'packages/server/package.json'), 'utf8')).version}-beorn.${commit.slice(0, 8)}`;
+const version = ahpdVersion(JSON.parse(readFileSync(join(root, 'packages/server/package.json'), 'utf8')).version, commit);
 
 // 5. The deploy tarball: one bun bundle at package/dist/bin.js, in npm's own layout, so nothing installs on the host.
 const deployDir = join(work, 'deploy');
@@ -200,35 +186,31 @@ writeFileSync(
     2,
   )}\n`,
 );
-const deployName = `ahpd-deploy-${version}.tgz`;
+names.deploy = `ahpd-deploy-${version}.tgz`;
 const mtime = must('git', ['show', '-s', '--format=%ct', commit], { cwd: root });
 must('tar', [
   '--sort=name', `--mtime=@${mtime}`, '--owner=0', '--group=0', '--numeric-owner',
-  '-C', deployDir, '-cf', join(work, `${deployName}.tar`), 'package',
+  '-C', deployDir, '-cf', join(work, `${names.deploy}.tar`), 'package',
 ]);
-must('gzip', ['-n', '-9', join(work, `${deployName}.tar`)]);
-must('mv', [join(work, `${deployName}.tar.gz`), join(out, deployName)]);
+must('gzip', ['-n', '-9', join(work, `${names.deploy}.tar`)]);
+must('mv', [join(work, `${names.deploy}.tar.gz`), join(out, names.deploy)]);
 
 // 6. The pin-base for the three above, measured from these bytes, then the pack script writes the four-pin file.
 const pinBasePath = join(work, 'pin-base.json');
-const pin = (name, extra = {}) => ({
-  version: name === runtimeName ? runtimeVersion : name === supervisorName ? supervisorVersion : pluginManifest.version,
-  ...extra,
-  source: `${sourceBase}/${tag}/${name}`,
-  checksum: `sha256:${sha256(join(out, name))}`,
-});
+const checksums = Object.fromEntries([names.runtime, names.plugin, names.supervisor].map((name) => [name, sha256(join(out, name))]));
 writeFileSync(
   pinBasePath,
   `${JSON.stringify(
-    {
+    pinBase({
       version,
       platform,
-      pins: {
-        runtime: { ...pin(runtimeName), platform, arch },
-        hostPlugin: pin(pluginName),
-        supervisor: { ...pin(supervisorName), platform, arch },
-      },
-    },
+      arch,
+      tag,
+      sourceBase,
+      names,
+      versions: { runtime: runtimeVersion, hostPlugin: pluginManifest.version, supervisor: supervisorVersion },
+      checksums,
+    }),
     null,
     2,
   )}\n`,
@@ -241,21 +223,22 @@ must('node', [join(root, 'scripts/pack-host-archive.mjs'), '--commit', commit, '
   cwd: root,
   stdio: ['ignore', 'inherit', 'inherit'],
 });
-const archiveName = `ahpd-${version}-${target}.tar.gz`;
-const pinsName = `pins-${target}.json`;
+const all = assetNames({ version, runtimeVersion, supervisorVersion, pluginVersion: pluginManifest.version, target });
+const archiveName = all.archive;
+const pinsName = all.pins;
 copyFileSync(join(packOut, archiveName), join(out, archiveName));
 copyFileSync(join(packOut, pinsName), join(out, pinsName));
 
 // 7. The check @dev/6 will repeat against the published files: every pin's checksum is of the local bytes, and every
 // name is one the host-release route answers. A mismatch here is before anything is uploaded.
 const pins = JSON.parse(readFileSync(join(out, pinsName), 'utf8'));
-const names = [archiveName, pinsName, runtimeName, deployName, pluginName, supervisorName];
-for (const name of names) if (!inContract(name)) fail(`${name} is not a file the host-release route answers`);
+const released = [archiveName, pinsName, names.runtime, names.deploy, names.plugin, names.supervisor];
+for (const name of released) if (!inContract(name)) fail(`${name} is not a file the host-release route answers`);
 const artifacts = {
-  runtime: runtimeName,
+  runtime: names.runtime,
   ahpd: archiveName,
-  hostPlugin: pluginName,
-  supervisor: supervisorName,
+  hostPlugin: names.plugin,
+  supervisor: names.supervisor,
 };
 for (const key of ['runtime', 'ahpd', 'hostPlugin', 'supervisor']) {
   const one = pins.pins?.[key];
@@ -265,7 +248,7 @@ for (const key of ['runtime', 'ahpd', 'hostPlugin', 'supervisor']) {
 if (pins.version !== version) fail(`the pins file names ${String(pins.version)}, this cut is ${version}`);
 
 rmSync(work, { recursive: true, force: true });
-const lines = names.map((name) => `${sha256(join(out, name))}  ${name}`);
+const lines = released.map((name) => `${sha256(join(out, name))}  ${name}`);
 process.stdout.write(`${lines.join('\n')}\n`);
 process.stdout.write(
   [
@@ -273,7 +256,7 @@ process.stdout.write(
     'installer values for hightea site/public/hosts/install-ahpd-host.sh:',
     `  RELEASE_TAG="${tag}"`,
     `  DEPLOY_VERSION="${version}"`,
-    `  DEPLOY_SHA256="${sha256(join(out, deployName))}"`,
+    `  DEPLOY_SHA256="${sha256(join(out, names.deploy))}"`,
     `  PINS_SHA512_${target.toUpperCase().replace('-', '_')}="${createHash('sha512').update(readFileSync(join(out, pinsName))).digest('hex')}"`,
     '',
   ].join('\n'),
@@ -283,8 +266,8 @@ if (publish) {
   note(`publish: beorn/ahpd release ${tag} (immutable; an existing tag is refused)`);
   const existing = run('gh', ['release', 'view', tag, '--repo', 'beorn/ahpd']);
   if (existing.status === 0) fail(`beorn/ahpd already has a release ${tag}; releases are immutable, cut a new tag`);
-  must('gh', ['release', 'create', tag, '--repo', 'beorn/ahpd', '--title', `host ${tag}`, '--notes', `Customer host release ${version} for ${target}.`, ...names.map((name) => join(out, name))], {
+  must('gh', ['release', 'create', tag, '--repo', 'beorn/ahpd', '--title', `host ${tag}`, '--notes', `Customer host release ${version} for ${target}.`, ...released.map((name) => join(out, name))], {
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  note(`published ${tag}: ${names.join(', ')}`);
+  note(`published ${tag}: ${released.join(', ')}`);
 }
