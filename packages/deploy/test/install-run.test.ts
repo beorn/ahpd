@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { putService } from '@hallohuman/hightea-services';
 import { describe, expect, it } from 'vitest';
 import {
   applyInstall,
@@ -747,5 +748,64 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     const purged = uninstallInstall(manifest, io, { purge: true });
     expect(purged.ok).toBe(true);
     expect(io.paths.has(services)).toBe(false);
+  });
+
+  // @cto e46dd009 row 1: a fresh install boots with both files - the boot item names the pair, and both exist.
+  it('a fresh install boots with both files: the unit names the pair and apply wrote each one', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo();
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    const unit = io.content.get(`${manifest.root}/boot/systemd-user-unit`) ?? '';
+    const current = `${manifest.root}/state/deploy/ahpd/current`;
+    expect(unit).toContain(`-f ${current}/process-compose.yaml -f ${manifest.root}/state/services.yaml `);
+    expect(io.paths.has(`${releaseOf(manifest)}/process-compose.yaml`)).toBe(true);
+    expect(io.paths.has(`${manifest.root}/state/services.yaml`)).toBe(true);
+  });
+
+  // @cto e46dd009 row 2: the failed-start switch back runs the old release's own file, and the machine file is untouched.
+  it('a switch back after a failed start leaves the old release file as it was and keeps the machine file', async () => {
+    const io = fakeIo();
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, () => undefined)).ok).toBe(true);
+    const oldFile = `${releaseOf(first.manifest)}/process-compose.yaml`;
+    const oldText = io.content.get(oldFile);
+    const services = `${first.manifest.root}/state/services.yaml`;
+    const edited = 'processes:\n  web:\n    command: "/srv/web"\n';
+    io.content.set(services, edited);
+    io.failRun();
+    const failing = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    if (!failing.ok) throw new Error('expected a manifest');
+    const switched: string[] = [];
+    const result = await applyInstall(failing.manifest, io, ((_layout: unknown, version: string) => { switched.push(version); }) as never);
+    expect(result.ok).toBe(false);
+    expect(switched).toEqual(['0.16.0', '0.15.0']);
+    expect(io.content.get(oldFile)).toBe(oldText);
+    expect(oldText).toContain(`${releaseOf(first.manifest)}/runtime`);
+    expect(io.content.get(services)).toBe(edited);
+  });
+
+  // @cto e46dd009 row 3: on a real install, the services plugin refuses a machine entry that would shadow ahpd, by name.
+  it('the services plugin refuses a machine entry named after the release file\'s ahpd, naming that file', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'ahpd-shadow-')));
+    const archive = daemonArchive(HONEST.ahpd.source);
+    const pins: InstallPins = { ...HONEST, ahpd: { ...HONEST.ahpd, checksum: `sha256:${createHash('sha256').update(archive).digest('hex')}` } };
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home, version: '0.15.0-rc.4', pins });
+    if (!built.ok) throw new Error('expected a manifest');
+    const manifest = built.manifest;
+    const io: InstallIo = {
+      ...nodeInstallIo(),
+      fetchTo: async (source, path) => writeFileSync(path, source === pins.ahpd.source ? archive : bytesOf(source)),
+      run: () => ({ code: 0, output: '' }),
+    };
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    const release = `${releaseOf(manifest)}/process-compose.yaml`;
+    const services = `${manifest.root}/state/services.yaml`;
+    const machine = { name: 'test-machine', files: [release, services], configDir: `${manifest.root}/state`, changeLog: `${manifest.root}/state/changes.jsonl`, pc: {} as never };
+    const before = readFileSync(services, 'utf8');
+    const answer = await putService(machine, { principal: 'local:test', remote: false }, { service: { name: 'ahpd', command: '/bin/true' }, ifVersion: createHash('sha256').update(before).digest('hex') });
+    expect(answer).toMatchObject({ ok: false, code: 'READ_ONLY' });
+    if (!answer.ok) expect(answer.message).toContain(`it is defined in ${release}`);
+    expect(readFileSync(services, 'utf8')).toBe(before);
   });
 });
