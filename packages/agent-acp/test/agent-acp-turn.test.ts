@@ -1,5 +1,5 @@
 import { WAIT_MS } from '../../../tools/wait.ts';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,15 +84,34 @@ const text = async (source: ChangesetSource, uri: string): Promise<string | unde
   (await source.read?.(uri))?.data;
 
 /** A connected client with one ACP session, watching both its channels. */
-async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete' } = {}) {
+async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete'; silentAfterStart?: boolean; startAnswerMs?: number } = {}) {
   const path = mkdtempSync(join(tmpdir(), 'ahpd-acp-'));
+  /*
+   * #38705: a server that answers the first handshake and never a second.
+   *
+   * The live hang was a session whose child died mid-turn and whose next prompt
+   * re-opened onto a server that never said anything: the turn was taken, could
+   * never begin, and nothing in the protocol ends such a turn. A file-keyed
+   * wrapper is how a test reaches that window without a timer - the first start
+   * execs the fixture, and once `armed` exists every start says nothing and
+   * stays alive for two seconds, which is the shape the live seats were stuck
+   * behind: a server the host is waiting on and will never hear from.
+   */
+  const armed = join(path, 'armed');
+  const wrapper = join(path, 'server.sh');
+  if (options.silentAfterStart === true) {
+    const starts = join(path, 'starts');
+    writeFileSync(wrapper, `#!/bin/sh\necho start >> "${starts}"\nif [ -f "${armed}" ]; then exec sleep 2; fi\nexec "${process.execPath}" "${FIXTURE}"\n`, { mode: 0o755 });
+  }
   const host = createHost({
     path,
     agents: [acpAgent({
-      command: process.execPath,
-      args: [FIXTURE],
+      ...(options.silentAfterStart === true
+        ? { command: '/bin/sh', args: [wrapper] }
+        : { command: process.execPath, args: [FIXTURE] }),
       provider: 'acp',
       ...(options.cutTurns === undefined ? {} : { cutTurns: options.cutTurns }),
+      ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
     })],
     // The composer's `!` prefix is the host's shell, so the host has to hold one.
     terminals: shellTerminals(),
@@ -1172,3 +1191,71 @@ it('keeps a person\'s name when the agent offers one afterwards', async () => {
   expect(title.said).toEqual(['Mine, thanks']);
   expect(title.last).toBe('Mine, thanks');
 });
+
+/*
+ * #38705: a turn is the chat's running turn once its prompt begins.
+ *
+ * The host takes a turn the moment a client says one, before the server is even
+ * brought up, and it used to publish that as `activeTurn`. A server that never
+ * comes up therefore left every reader - `hab ps`, the wake driver, a person's
+ * window - told a turn was running that nothing could end: on 2026-11-26 two
+ * seats sat behind such a turn for 38 and 50 minutes, and cycling their host
+ * child did not clear it because the claim lives in the host process. What a
+ * client is shown as `activeTurn` is now the prompt, never the claim alone.
+ */
+
+/** The chat as a client reads it back, which is where `activeTurn` is published. */
+const chatNow = async (
+  client: Awaited<ReturnType<typeof talking>>['client'],
+  chatUri: string,
+): Promise<{ activeTurn?: { id?: string } }> =>
+  ((await client.handle({ method: 'subscribe', params: { channel: chatUri } })) as {
+    snapshot: { state: { activeTurn?: { id?: string } } };
+  }).snapshot.state;
+
+it('shows a turn as running once its prompt began', async () => {
+  const { client, chatUri } = await talking();
+  // The fixture holds this prompt until a cancel, so the running turn is readable.
+  begin(client, chatUri, 't-held', 'elicitcancel');
+  await until(async () => (await chatNow(client, chatUri)).activeTurn !== undefined);
+  expect((await chatNow(client, chatUri)).activeTurn?.id).toBe('t-held');
+});
+
+it('ends a turn whose re-opened server never answers, rather than showing it as running', async () => {
+  /*
+   * The bound the turn waits on, three hundred milliseconds: longer than a
+   * fixture's own boot, and the only way to watch a failure a person would
+   * otherwise wait an hour for. Nothing else in the case depends on its length.
+   */
+  const { client, peer: p, chatUri, path } = await talking({ silentAfterStart: true, startAnswerMs: 300 });
+  // The child dies mid-turn, as the live seat's did; that turn ends as its own failure.
+  begin(client, chatUri, 't-die', 'die');
+  const over = (): boolean => types(p, chatUri)
+    .some((type) => type === 'chat/turnComplete' || type === 'chat/turnCancelled' || type === 'chat/error');
+  await until(over);
+  // The host drops a connection when its child ends, but on an event rather than on the turn's own
+  // ending: settle that event before the next prompt, or this case measures the race between the two
+  // (a known separate defect - a prompt written into a pipe already dead) instead of the handshake.
+  await new Promise((r) => { setTimeout(r, 300); });
+  // From here every start stays alive and says nothing, so the next prompt re-opens onto a server
+  // that never answers its handshake.
+  writeFileSync(join(path, 'armed'), '');
+  begin(client, chatUri, 't-hang', 'hello');
+  const failed = (): Bag | undefined => actions(p, chatUri)
+    .map((one) => one.action)
+    .find((action) => action.type === 'chat/error' && action.turnId === 't-hang');
+  await until(() => failed() !== undefined);
+  // The re-open really happened - more than the one start the session was made with - and the turn it
+  // was for ended by its own name rather than being left running. The count is not pinned: a server
+  // that never answers is retried, and how many attempts fit in the window is the host's business.
+  expect(readFileSync(join(path, 'starts'), 'utf8').trim().split('\n').length).toBeGreaterThan(1);
+  const message = String(((failed()?.part as Bag | undefined)?.error as Bag | undefined)?.message ?? '');
+  expect(message).toContain('sent nothing for 300 ms during the handshake');
+  expect(message).toContain('nothing ran');
+  // And a reader is not told a turn runs that nothing will finish.
+  expect((await chatNow(client, chatUri)).activeTurn).toBeUndefined();
+  // Disarmed before the session is disposed, so the connections the teardown
+  // opens are answered by the fixture rather than waiting out the silence.
+  unlinkSync(join(path, 'armed'));
+}, 15_000);
+

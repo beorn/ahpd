@@ -72,6 +72,8 @@ export function createTurn(ctx: SessionContext): Turn {
    */
   const startTurn = (turnId: string, text: string, from: MessageFrom | undefined, attachments: MessageAttachment[] | undefined): void => {
     const attached = attachments !== undefined && attachments.length > 0 ? { attachments } : {};
+    // #38705: taken, not begun. The server can still fail, or never come up at all.
+    ctx.promptBegun = false;
     ctx.active = {
       id: turnId,
       startedAt: new Date().toISOString(),
@@ -192,6 +194,7 @@ export function createTurn(ctx: SessionContext): Turn {
     // Before the ending action, not after: the host reads `status()` as it
     // passes that action on, and a turn still active there reads as running.
     ctx.active = undefined;
+    ctx.promptBegun = false;
     if (ctx.mapping?.cost !== undefined) ctx.cumulative = ctx.mapping.cost.amount;
     ctx.mapping = undefined;
     ctx.cancelRequested = false;
@@ -423,6 +426,8 @@ export function createTurn(ctx: SessionContext): Turn {
         endTurn(turnId, 'cancelled');
         return;
       }
+      // #38705: the server took the turn and the prompt is going out: it is the chat's running turn from here.
+      ctx.promptBegun = true;
       /*
        * The turn's mapping, opened only now that the server has answered.
        *
