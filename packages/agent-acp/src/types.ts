@@ -409,6 +409,8 @@ export interface AcpConnectionOptions {
   exitGraceMs?: number;
   stderrBytes?: number;
   startAnswerMs?: number;
+  /** How long one open tool call may stay quiet before its turn is ended by name (#38695, 900 s by default). */
+  toolCallSilenceMs?: number;
   killGraceMs?: number;
 }
 

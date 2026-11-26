@@ -44,6 +44,7 @@ import type {
 import { bag, isRecord, levelIn, sdkVersion, str } from '@ahpd/sdk';
 import type { Account } from '@ahpd/sdk';
 import type { AcpConnection, AcpConnectionOptions } from './types.js';
+import { messageOf } from './session/common.js';
 
 /**
  * What this bridge answers a permission request with when nobody can be asked.
@@ -360,7 +361,15 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * never finished kept the turn alive for as long as the process did, which is the stall this issue is about. The
    * call's clock is restarted by the same chunks that restart the turn's, and by its own progress updates.
    */
-  const tools = new Map<string, { readonly name: string; at: number; timer: NodeJS.Timeout | undefined }>();
+  const tools = new Map<string, {
+    readonly name: string
+    readonly sessionId: string
+    /** When the server first said this call was open: the age a refusal reports. */
+    readonly openedAt: number
+    /** When the call last said anything, which is where its silence is measured from. */
+    at: number
+    timer: NodeJS.Timeout | undefined
+  }>();
   const clearTool = (id: string): void => {
     const held = tools.get(id);
     if (held?.timer !== undefined) clearTimeout(held.timer);
@@ -369,16 +378,29 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const clearTools = (): void => {
     for (const id of [...tools.keys()]) clearTool(id);
   };
-  /** The bound on one open call: it names the call and the age it reached, and ends the turn rather than clearing it quietly. */
-  const armTool = (id: string): NodeJS.Timeout => {
+  /**
+   * The bound on one open call (#38695).
+   *
+   * It ends the turn naming the call, how long it has been open, how long it has
+   * been silent and the bound it passed - never a silent clear, and never a
+   * bound the server declared it was still working inside. The session is also
+   * told to cancel, so the work behind the call stops rather than running on
+   * behind a turn no reader is shown (the cancel a person's stop sends).
+   */
+  const armTool = (id: string): NodeJS.Timeout | undefined => {
+    if (toolCallSilenceMs <= 0) return undefined;
     const timer = setTimeout(() => {
       const held = tools.get(id);
       if (held === undefined) return;
-      const ageMs = Date.now() - held.at;
+      const openMs = Date.now() - held.openedAt;
+      const quietMs = Date.now() - held.at;
       clearTool(id);
       const why =
-        `${options.command}: the tool call ${held.name} has been open ${ageMs} ms, past its ${toolCallSilenceMs} ms bound, ` +
-        `so the turn is ended`;
+        `${options.command}: the tool call ${held.name} has been open ${openMs} ms and silent for ${quietMs} ms, ` +
+        `past its ${toolCallSilenceMs} ms bound, so the turn is ended`;
+      connection.agent.notify(methods.agent.session.cancel, { sessionId: held.sessionId }).catch((error: unknown) => {
+        options.log?.(`${options.command}: could not cancel ${held.sessionId} after the ${held.name} bound: ${messageOf(error)}`, 'error');
+      });
       // Every call still owed an answer ends with the turn: the server was working on this call, not on those.
       for (const owedCall of [...owed]) {
         owed.delete(owedCall);
@@ -389,29 +411,35 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     timer.unref();
     return timer;
   };
-  const running = (update: SessionUpdate): void => {
+  const running = (update: SessionUpdate, sessionId: string): void => {
     if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') return;
-    const before = tools.size;
     const id = update.toolCallId;
     if (update.status === 'completed' || update.status === 'failed') clearTool(id);
     else if (update.sessionUpdate === 'tool_call' || update.status !== undefined) {
       const prior = tools.get(id);
-      if (prior?.timer !== undefined) clearTimeout(prior.timer);
       const title = typeof update.title === 'string' && update.title.trim().length > 0 ? update.title.trim() : 'unnamed';
-      tools.set(id, { name: `"${title}"`, at: Date.now(), timer: armTool(id) });
+      tools.set(id, {
+        name: `"${title}"`,
+        sessionId,
+        openedAt: prior?.openedAt ?? Date.now(),
+        at: Date.now(),
+        timer: prior?.timer,
+      });
     }
-    // The chunk restarted the clock before it was read; what it said decides whether one runs.
-    if (tools.size !== before) quiet();
+    // The chunk restarted the clock before it was read; what it said decides whether one runs, so the call's
+    // arm is decided in one place (quiet) rather than here and there.
+    quiet();
   };
   /** `heard`: the server wrote something, which is the first output of every call still owed one. */
   const quiet = (heard = false): void => {
     if (startAnswerMs <= 0) return;
     // #38695: a chunk is proof the server is working, so it restarts every open call's clock as well as the turn's.
-    if (heard) {
-      for (const [id, held] of tools) {
-        if (held.timer !== undefined) clearTimeout(held.timer);
-        tools.set(id, { name: held.name, at: Date.now(), timer: armTool(id) });
-      }
+    for (const [id, before] of tools) {
+      const held = heard ? { ...before, at: Date.now() } : before;
+      if (before.timer !== undefined) clearTimeout(before.timer);
+      // While this client owes the server an answer the silence is ours, not the server's (#38786): the call's clock
+      // waits with it and is armed again when the answer is given.
+      tools.set(id, { ...held, timer: ours > 0 ? undefined : armTool(id) });
     }
     for (const held of owed) {
       if (heard) held.spoke = true;
@@ -510,7 +538,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
      * an update for a session this bridge did not open and dropping it is
      * better than writing it into the wrong turn.
      */
-    running(context.params.update);
+    running(context.params.update, context.params.sessionId);
     handlers.update(context.params.sessionId, context.params.update);
   });
   /*

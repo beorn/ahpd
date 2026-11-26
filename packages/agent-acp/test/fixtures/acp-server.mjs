@@ -872,6 +872,62 @@ const promptScript = async (id, params) => {
     pending = id;
     return;
   }
+  if (text.includes('quietcall')) {
+    /*
+     * #38695: a call the server opens and does not finish.
+     *
+     * The live stall was a turn held open by a tool call nobody ever
+     * completed; the client used to disarm every bound while a call was open,
+     * so nothing could end such a turn. `quietcall` opens the call and then
+     * works in silence, which is the shape a server building its own thing
+     * takes for a legitimate pause - and what the per-call bound exists to
+     * distinguish from a call it will never finish.
+     *
+     * `quietcallbeat` sends progress every 100 ms, so the call is visibly
+     * working and must survive. `quietcallfinish` completes the call and ends
+     * the turn of its own accord, inside any bound a test sets. The title is
+     * `ctitle=<title>`, the same spelling the client-tool script uses.
+     */
+    const toolCallId = 'call-quiet';
+    const title = /ctitle=(\S+)/.exec(text)?.[1] ?? 'Build the thing';
+    notify({
+      sessionUpdate: 'tool_call',
+      toolCallId,
+      title,
+      name: 'shell',
+      kind: 'execute',
+      status: 'in_progress',
+      rawInput: { command: 'make test' },
+    });
+    if (text.includes('quietcallbeat')) {
+      // Never cleared: a call that keeps saying it is working is the case that
+      // must NOT be ended, and a test's teardown ends this process.
+      setInterval(() => notify({
+        sessionUpdate: 'tool_call_update',
+        toolCallId,
+        status: 'in_progress',
+        content: [{ type: 'content', content: { type: 'text', text: 'still building' } }],
+      }), 100);
+    }
+    pending = id;
+    if (text.includes('quietcallfinish')) {
+      setTimeout(() => {
+        notify({
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          status: 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: 'built it' } }],
+        });
+        notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'built it' } });
+        if (pending === id) {
+          pending = undefined;
+          respond(id, { stopReason: 'end_turn' });
+        }
+      }, 200);
+    }
+    return;
+  }
+
 
   if (text.includes('blocks')) {
     const blocks = Array.isArray(params?.prompt) ? params.prompt : [];
