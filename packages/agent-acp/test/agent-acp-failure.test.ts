@@ -905,6 +905,50 @@ it('fails a prompt the server goes quiet on, naming the step', async () => {
   expect(escaped).toEqual([]);
 }, 15_000);
 
+it('gives a prompt that has begun to answer ten times the bound before it ends it', async () => {
+  // One chunk, then quiet for three times the opening bound: a model thinking, not a dead turn.
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } } } });
+      setTimeout(() => { send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } }); }, 450);`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('ends a prompt that went quiet for ten times the bound after it began', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } } } });`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const began = Date.now();
+    await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
+      .rejects.toThrow('sent nothing for 1500 ms during session/prompt; the turn is ended');
+    expect(Date.now() - began).toBeGreaterThanOrEqual(1450);
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
 it('keeps a prompt whose server keeps streaming, however long the turn takes', async () => {
   const connection = connectAcp({
     command: process.execPath,
@@ -973,8 +1017,9 @@ it('fails a prompt that goes quiet once its tool is over', async () => {
   try {
     await connection.initialize();
     await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    // It had begun to answer, so it is held to the longer bound.
     await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
-      .rejects.toThrow('sent nothing for 150 ms during session/prompt');
+      .rejects.toThrow('sent nothing for 1500 ms during session/prompt');
   }
   finally {
     await connection.close();
