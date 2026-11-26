@@ -26,8 +26,9 @@ import {
   alwaysAsks, asksForTool, confirmationOptions, getAutoApproval as autoApprovalOf, isDeniedByPermissions, isForbiddenSnapshotWrite, managedDecision,
   permissionRulesOf,
 } from './permissions.js';
+import { permissionRuleProblem } from '../access/permissionrules.js';
 import { mcpServerOf } from './permissions.js';
-import type { ToolApproval } from './permissions.js';
+import type { PermissionRules, ToolApproval } from './permissions.js';
 import { vscodeRootProperties } from '../vscoderootconfig.js';
 import { PENDING_CONFIRMATION_FIELDS } from '../types/agent.js';
 import type { PendingConfirmation } from '../types/agent.js';
@@ -559,6 +560,24 @@ export function createSpawn(ctx: HostContext): Spawn {
     return ctx.principalFor(owner)?.can('config:permissions') === true;
   };
 
+  /**
+   * The rules a question is judged by, each one that can match nothing said
+   * once by name: a rule that does not parse, or a bare name with a wildcard,
+   * would otherwise answer every question with a plain no and leave its
+   * writer to find out why nothing was allowed.
+   */
+  const saidRules = new Set<string>();
+  const rulesSaid = (rules: PermissionRules): PermissionRules => {
+    for (const rule of [...rules.allow, ...rules.deny, ...rules.ask]) {
+      if (saidRules.has(rule)) continue;
+      const problem = permissionRuleProblem(rule);
+      if (problem === undefined) continue;
+      saidRules.add(rule);
+      ctx.log.warn(problem);
+    }
+    return rules;
+  };
+
   /** The rules the owner of a session keeps for their own sessions, or nothing. */
   const personRulesOf = (session: string): Bag | undefined => {
     const person = personOf(kept.owner(idOf(session)));
@@ -648,7 +667,7 @@ export function createSpawn(ctx: HostContext): Spawn {
       ...(commandLine === undefined ? {} : { commandLine }),
       ...(signal.requestSandboxBypass === true ? { requestSandboxBypass: true } : {}),
       // The session's rules, then its owner's own, then the host's.
-      rules: permissionRulesOf(owning?.config.permissions, personRulesOf(session), ctx.rootConfig.permissions),
+      rules: rulesSaid(permissionRulesOf(owning?.config.permissions, personRulesOf(session), ctx.rootConfig.permissions)),
       context: { ...(folders[0] === undefined ? {} : { workingDirectory: folders[0] }), homeDirectory: homedir(), ignorePathCase: process.platform === 'win32' || process.platform === 'darwin' },
       workingDirectories: folders,
       ...(attachments === undefined ? {} : { attachmentsDirectory: attachments }),
@@ -2135,6 +2154,18 @@ export function createSpawn(ctx: HostContext): Spawn {
     }
     const made = used.create(wired);
     const session = made instanceof Promise ? await made : made;
+    /*
+     * #38506: `close` is required of a Session, and every close of a chat
+     * calls it, but a plugin's agent is plain JavaScript and only the agent is
+     * checked at `registerAgent`, never what its `create` answers. A session
+     * without it holds nothing it can be asked to end, so it is let go of as
+     * closed, and said here once by chat and provider, rather than throwing
+     * half way through a removal and in every host stop.
+     */
+    if (typeof (session as Partial<Session>).close !== 'function') {
+      log.error(`${chatUri}: agent ${used.provider} made a session without close(); every Session needs one, so it is let go of as already closed`);
+      (session as { close: Session['close'] }).close = () => {};
+    }
     titled = session;
     const now = new Date().toISOString();
     const held = existing ?? {

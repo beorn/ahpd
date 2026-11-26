@@ -93,6 +93,7 @@ import { modelCatalog } from '../proxy/catalog.js';
 import { hostAdapters } from '../proxy/adapters.js';
 import { loadPlugins, pluginSet, type LoadOptions, type PluginSet } from '../plugins.js';
 import { applyPlugins, eventFailed, type Applied } from '../applyplugins.js';
+import { pluginFailuresOf, writePluginFailures } from '../pluginfailures.js';
 import { pluginsChannel } from '../pluginschannel.js';
 import { fileRecords } from '../records.js';
 import { applyPresets, planPresets, splitModels } from '../agents/migrate.js';
@@ -644,19 +645,26 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     configFile: options.configFile ?? configPath(),
     ...(users === undefined ? {} : { users }),
     ...(nodes === undefined ? {} : { nodes }),
-    running: () => ({
-      pid: process.pid,
-      url: `ws://${urlHost(boundHost)}:${boundPort}`,
-      host: boundHost,
-      port: boundPort,
-      paths: options.paths,
-      ...(options.startFolder === undefined ? {} : { startFolder: options.startFolder }),
-      startedAt,
-      automations: automationMode,
-      // The manager that started this process, so a served `ahpd status` says
-      // what a local one says about the same daemon.
-      ...(service === undefined ? {} : { service }),
-    }),
+    running: () => {
+      // What the running fold could not load, as a local record's `skipped`
+      // holds it: a served status that omitted it would say a host is whole
+      // when one of its plugins is not.
+      const skipped = pluginFailuresOf(alerts).map((failure) => failure.line);
+      return {
+        pid: process.pid,
+        url: `ws://${urlHost(boundHost)}:${boundPort}`,
+        host: boundHost,
+        port: boundPort,
+        paths: options.paths,
+        ...(options.startFolder === undefined ? {} : { startFolder: options.startFolder }),
+        startedAt,
+        ...(skipped.length === 0 ? {} : { skipped }),
+        automations: automationMode,
+        // The manager that started this process, so a served `ahpd status` says
+        // what a local one says about the same daemon.
+        ...(service === undefined ? {} : { service }),
+      };
+    },
     turning: () => turning(),
     usage: () => metered,
     vault: () => held,
@@ -1968,6 +1976,10 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
     // listing, the adapters and the routes without anything being rebuilt.
     loaded = answer.loaded;
     alerts = answer.alerts;
+    // What this fold could not load, beside the configuration: a reload that
+    // fixes a plugin removes the record, and one that breaks one writes it.
+    const unfixable = writePluginFailures(configDir(), answer.alerts);
+    if (unfixable !== undefined) stamp(unfixable);
     adapters = withHostAdapters(now.adapters);
     tunnelKinds = now.tunnelKinds ?? {};
     pluginTypes = pluginTriggerTypes(now.pluginTriggers);
@@ -1999,6 +2011,11 @@ export async function runForeground(options: Options, typed: Readonly<Record<str
   // The channel built above starts answering manifests from here.
   loaded = didLoad;
   alerts = didAlert;
+  // The start's own record of what did not load, so a host run by a service
+  // manager - which has no announcement anybody reads - still says so to
+  // `ahpd doctor` and to a supervisor that pages on it.
+  const unwritten = writePluginFailures(configDir(), didAlert);
+  if (unwritten !== undefined) stamp(unwritten);
   liveRoutes = registered;
   liveEvents = folded.events;
   // And the two channels start answering adapters, which is what a stored

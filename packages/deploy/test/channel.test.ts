@@ -71,7 +71,7 @@ describe('the deploy channel (#38276, @cto 2026-11-25)', () => {
     await expect(channel.operations.run({ id: 'remove' }, 'web', {}, undefined, { client: 'cli' })).rejects.toThrow('No operation called remove');
   });
 
-  it('reads one deploy\'s journal under deploy:read, and nobody else\'s without it', async () => {
+  it('reads one deploy\'s journal under deploy:status, and nobody else\'s without it', async () => {
     const stateDir = machine();
     journalOf(stateDir, 'web', [
       { at: '2026-11-25T01:00:00.000Z', event: 'started', deployId: 'one' },
@@ -83,8 +83,8 @@ describe('the deploy channel (#38276, @cto 2026-11-25)', () => {
     expect(logOf(`${CHANNEL}one`)).toBeUndefined();
     await expect(provider.authorize(uri, reader([]))).resolves.toBe(false);
     await expect(provider.authorize(uri, undefined)).resolves.toBe(false);
-    await expect(provider.authorize(uri, reader(['deploy:read']))).resolves.toBe(true);
-    const read = await provider.read(uri, undefined, reader(['deploy:read']));
+    await expect(provider.authorize(uri, reader(['deploy:status']))).resolves.toBe(true);
+    const read = await provider.read(uri, undefined, reader(['deploy:status']));
     expect(read.contentType).toBe('application/x-ndjson');
     expect(read.data).toContain('"deployId":"one"');
     // The other deploy's lines are not in this deploy's log.

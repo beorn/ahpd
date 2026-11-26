@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { listServices, machineOf, machineSwitches, REMOTE_COMMANDS_OFF, type Machine, type MachineSwitches } from '@hallohuman/hightea-services';
 import { readJournal, resolveVersion, status, writeJournalEntry } from './index.js';
 import type { DeployDeclaration, DeployLayout } from './index.js';
-import { CHANGED, CHANNEL, OPERATION, READS_SCHEME, SCHEME, deploysChannel, deploysProvider, deploysState, refusalError } from './channel.js';
+import { CHANGED, CHANNEL, OPERATION, READS_SCHEME, SCHEME, deploysChannel, deploysProvider, deploysState, refusalError, type DeploysState } from './channel.js';
 
 /** The plugin's id. */
 export const name = 'deploy';
@@ -250,7 +250,7 @@ export function deployMethods(options: DeployMethodsOptions): { run: DeployMetho
       },
     },
     report: {
-      grant: 'deploy:read',
+      grant: 'deploy:status',
       describe: () => ({ title: 'Read a deploy report', description: 'The release current points at, the deploy still running if one is, and the last journal line - which is the outcome of the last deploy, with its steps, exit codes and timings.' }),
       handle: async (params) => {
         const unknown = Object.keys(params).filter((key) => key !== 'service');
@@ -285,7 +285,7 @@ export interface HandedRequest {
 
 /** An old method's answer: refused, naming what replaced it and in which release, never a bare method-not-found. */
 const retiredMethod = (method: string, why: string): DeployMethod => ({
-  grant: 'deploy:read',
+  grant: 'deploy:status',
   describe: () => ({ title: `${method} (replaced)`, description: `Replaced by ${RETIRED[method]} in ${REPLACED_IN}.` }),
   handle: async () => {
     throw Object.assign(new Error(`${method} was replaced by ${RETIRED[method]} in ${REPLACED_IN}; update the caller to a release that uses it`), {
@@ -300,7 +300,7 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
   host.registerGrants('deploy', {
     title: 'Deploy',
     description: 'Placing this machine\'s services at a version, and reading what each deploy did.',
-    operations: ['deploy', 'read'],
+    operations: ['deploy', 'status'],
   });
   const stateDir = typeof options['stateDir'] === 'string' ? options['stateDir'] : host.configDir;
   const layout = (service: string): DeployLayout => ({ stateDir, service });
@@ -352,10 +352,19 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
     };
   };
   let handle: DeployChannelHandle | undefined;
+  // An unreadable services listing is this channel's own sentence, never a throw out of a snapshot: the services
+  // plugin's shape, so a wrong `files` path or a missing socket leaves the rest of the daemon serving (@dev/14).
+  const stateNow = (): DeploysState => {
+    try {
+      return deploysState(machine.name, servicesNow(), layout);
+    } catch (error) {
+      return { machine: machine.name, runs: [], operations: [OPERATION], error: `this machine's services could not be read: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  };
   // A state that cannot be published is said out loud, once per failure: a quiet channel is the failure this exists for.
   const publishState = (): void => {
     try {
-      handle?.publish(CHANNEL, { type: CHANGED, ...deploysState(machine.name, servicesNow(), layout) });
+      handle?.publish(CHANNEL, { type: CHANGED, ...stateNow() });
     } catch (error) {
       host.alert({ level: 'warning', text: `the deploy channel could not publish its new state: ${error instanceof Error ? error.message : String(error)}`, ref: 'deploy-publish' });
     }
@@ -378,7 +387,7 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
     machine: machine.name,
     services: servicesNow,
     layout,
-    state: () => deploysState(machine.name, servicesNow(), layout),
+    state: stateNow,
     deploy: async (input: Record<string, unknown>, caller: { readonly client: string; readonly owner?: string }): Promise<unknown> => {
       const answer = await methods.run.handle(input, undefined, caller.client, caller.owner) as Record<string, unknown> & { ok?: boolean; code?: string; message?: string };
       if (answer['ok'] === false) throw refusalError({ code: String(answer['code'] ?? 'DRIVER_FAILED'), message: String(answer['message'] ?? 'the deploy was refused') });

@@ -38,6 +38,13 @@ export const declareStatus = (registry: Registry<object>, served?: ServedFacts):
     let text = `${statusLine(found)}\n`;
     if (found.paths.length > 0) text += `sessions in ${found.paths.join(', ')}\n`;
     if (found.startFolder !== undefined) text += `start folder ${found.startFolder}\n`;
+    /*
+     * What the daemon started without, one line each, as `ahpd start` prints
+     * them. A host whose plugin did not load is running: the line is the only
+     * thing that says part of it is absent, and a status that omitted it would
+     * be the false green the record exists to end.
+     */
+    for (const line of found.skipped ?? []) text += `skipped: ${line}\n`;
     // Absent from a record written by an older daemon, which is the one case
     // where saying nothing is better than guessing which store it was given.
     if (found.automations !== undefined) text += `automations ${found.automations}\n`;
@@ -50,6 +57,7 @@ export const declareStatus = (registry: Registry<object>, served?: ServedFacts):
       url: found.url,
       paths: found.paths,
       ...(found.startFolder === undefined ? {} : { startFolder: found.startFolder }),
+      ...(found.skipped === undefined ? {} : { skipped: found.skipped }),
       startedAt: found.startedAt,
       ...(found.automations === undefined ? {} : { automations: found.automations }),
       ...(found.service === undefined ? {} : { service: found.service }),
