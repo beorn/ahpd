@@ -179,6 +179,11 @@ export const customerInstallManifest = (
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/runtime`, from: 'download:runtime', why: 'the pinned runtime: the customer Node is not used' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/host-plugin`, from: 'download:hostPlugin', why: 'our host plug-in' },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/supervisor`, from: 'download:supervisor', why: 'the supervisor the boot item starts' },
+    // #38277 S2: the project file the boot item runs, generated per release so a switch back restores the one that
+    // release started with. It names ahpd only; this machine's own services are in the next file.
+    { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/process-compose.yaml`, from: 'generated:compose', why: 'the project file the supervisor runs: ahpd itself, written for this release' },
+    // Created once and never rewritten: a release switch or switch back must not drop or revive a person's services.
+    { kind: 'file', path: `${stateDir}/services.yaml`, from: 'generated:services', why: "this machine's own services, the second project file; kept across releases and by uninstall without --purge" },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/deploy.log`, from: 'generated:journal', why: 'the deploy journal: what moved current, and when' },
     { kind: 'symlink', path: `${stateDir}/deploy/${INSTALL_SERVICE}/current`, from: `releases/${options.version}`, why: 'switched by one atomic rename; versions and switch-back read it' },
     { kind: 'dir', path: `${root}/boot`, why: 'the generated boot item, kept as a record next to the loaded copy' },

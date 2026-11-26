@@ -14,6 +14,7 @@ import {
   pruneReleaseFolders,
   releasesToPrune,
   renderInstallPlan,
+  SERVICES_FILE_SEED,
   uninstallInstall,
   type InstallIo,
   type InstallPins,
@@ -223,7 +224,7 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     const unit = linuxIo.content.get(`${linux.root}/boot/systemd-user-unit`) ?? '';
     const linuxCurrent = `${linux.root}/state/deploy/ahpd/current`;
     expect(unit).toContain(
-      `ExecStart=${linuxCurrent}/supervisor up -f ${linuxCurrent}/process-compose.yaml -t=false -U -u ${linux.root}/state/pc.sock -L ${linux.root}/state/process-compose.log`,
+      `ExecStart=${linuxCurrent}/supervisor up -f ${linuxCurrent}/process-compose.yaml -f ${linux.root}/state/services.yaml -t=false -U -u ${linux.root}/state/pc.sock -L ${linux.root}/state/process-compose.log`,
     );
     expect(unit).toContain('WantedBy=default.target');
     expect(unit).not.toContain('After=default.target');
@@ -236,7 +237,7 @@ describe('apply writes the plan, and refuses what it must (#38280)', () => {
     const spacedUnit = spacedIo.content.get(`${spaced.manifest.root}/boot/systemd-user-unit`) ?? '';
     const spacedCurrent = `${spaced.manifest.root}/state/deploy/ahpd/current`;
     expect(spacedUnit).toContain(
-      `ExecStart="${spacedCurrent}/supervisor" up -f "${spacedCurrent}/process-compose.yaml" -t=false -U -u "${spaced.manifest.root}/state/pc.sock" -L "${spaced.manifest.root}/state/process-compose.log"`,
+      `ExecStart="${spacedCurrent}/supervisor" up -f "${spacedCurrent}/process-compose.yaml" -f "${spaced.manifest.root}/state/services.yaml" -t=false -U -u "${spaced.manifest.root}/state/pc.sock" -L "${spaced.manifest.root}/state/process-compose.log"`,
     );
   });
 
@@ -552,6 +553,7 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     const manifest = manifestWith();
     const io = fakeIo(manifest.entries.map((entry) => entry.path));
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
+    io.content.set(`${manifest.root}/state/services.yaml`, SERVICES_FILE_SEED);
     const result = uninstallInstall(manifest, io);
     expect(result.ok).toBe(true);
     expect(io.commands).toEqual([manifest.bootItem.disable]);
@@ -566,6 +568,7 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     const state = `${manifest.root}/state`;
     const io = fakeIo([...manifest.entries.map((entry) => entry.path), `${state}/sessions.json`, `${state}/ahpd.out.log`]);
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
+    io.content.set(`${state}/services.yaml`, SERVICES_FILE_SEED);
     const keptResult = uninstallInstall(manifest, io);
     expect(keptResult.ok).toBe(true);
     expect(keptResult.kept).toEqual([
@@ -683,5 +686,66 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     expect(result.refusal).toMatchObject({ kind: 'step-failed', step: 'disable boot item' });
     expect(result.removed).toEqual([]);
     expect([...io.paths]).toHaveLength(manifest.entries.length);
+  });
+});
+
+/**
+ * #38277 S2: the boot item runs process-compose against two project files, and the install writes both.
+ * @failure the boot item names a project file no step writes; an upgrade rewrites or drops the machine's services; a
+ *   switch back runs one release's tree with another's project file; uninstall deletes services a person added
+ * @level l2 (applyInstall and uninstallInstall over the fake io; the real tmpdir run above covers the node io)
+ */
+describe('the install writes the project files the boot item runs (#38277 S2)', () => {
+  const releaseOf = (manifest: ReturnType<typeof manifestWith>, version = manifest.version) => `${manifest.root}/state/deploy/ahpd/releases/${version}`;
+
+  it('writes the release file inside the release folder, naming that release and nothing else, before the switch', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo();
+    const switched: string[] = [];
+    const result = await applyInstall(manifest, io, ((_layout: unknown, version: string) => {
+      // The project file is already in the release folder when current moves onto it.
+      expect(io.paths.has(`${releaseOf(manifest)}/process-compose.yaml`)).toBe(true);
+      switched.push(version);
+    }) as never);
+    expect(result.ok).toBe(true);
+    const release = releaseOf(manifest);
+    const compose = io.content.get(`${release}/process-compose.yaml`) ?? '';
+    expect(compose).toContain(`command: "'${release}/runtime' '${release}/packages/server/dist/main.js'"`);
+    expect(compose).toContain('- "PATH=/usr/local/bin:/usr/bin:/bin"');
+    expect(compose).not.toContain('/current/');
+    expect(result.wrote.indexOf(`${release}/process-compose.yaml`)).toBeGreaterThan(result.wrote.indexOf(release));
+    expect(switched).toEqual([manifest.version]);
+  });
+
+  it('seeds the services file once and an upgrade keeps a changed one byte for byte', async () => {
+    const first = manifestWith();
+    const io = fakeIo();
+    expect((await applyInstall(first, io, () => undefined)).ok).toBe(true);
+    const services = `${first.root}/state/services.yaml`;
+    expect(io.content.get(services)).toBe(SERVICES_FILE_SEED);
+    const edited = 'processes:\n  web:\n    command: "\'/srv/web\' --port 8080"\n';
+    io.content.set(services, edited);
+    const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0-rc.5', pins: HONEST });
+    if (!built.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(built.manifest, io, () => undefined)).ok).toBe(true);
+    expect(io.content.get(services)).toBe(edited);
+    // Each release keeps its own project file, so switching back to 0.15.0-rc.4 runs the file it was installed with.
+    expect(io.content.get(`${releaseOf(first)}/process-compose.yaml`)).toContain(`${releaseOf(first)}/runtime`);
+    expect(io.content.get(`${releaseOf(built.manifest)}/process-compose.yaml`)).toContain(`${releaseOf(built.manifest)}/runtime`);
+  });
+
+  it('uninstall keeps a services file a person changed, names it, and only purge deletes it', () => {
+    const manifest = manifestWith();
+    const services = `${manifest.root}/state/services.yaml`;
+    const io = fakeIo(manifest.entries.map((entry) => entry.path));
+    for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
+    io.content.set(services, 'processes:\n  web:\n    command: "/srv/web"\n');
+    const kept = uninstallInstall(manifest, io);
+    expect(kept.ok).toBe(true);
+    expect(kept.kept[0]).toBe(`kept ${services}: this machine's services; remove by hand or run uninstall --purge`);
+    expect(io.paths.has(services)).toBe(true);
+    const purged = uninstallInstall(manifest, io, { purge: true });
+    expect(purged.ok).toBe(true);
+    expect(io.paths.has(services)).toBe(false);
   });
 });

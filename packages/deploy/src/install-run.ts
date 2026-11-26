@@ -348,6 +348,20 @@ export const applyInstall = async (
     // The switch writes the symlink and the journal line; the boot item's own file is written below, before its
     // enable command runs.
     if (entry.kind === 'symlink' || entry.from === 'generated:journal') continue;
+    if (entry.from === 'generated:compose') {
+      const written = await attempt('write project file', entry.path, () => io.writeFile(entry.path, composeContent(manifest)));
+      if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
+      wrote.push(entry.path);
+      continue;
+    }
+    // Written only when absent: an upgrade keeps the machine's services byte for byte (#38277 S2).
+    if (entry.from === 'generated:services') {
+      if (io.exists(entry.path)) continue;
+      const written = await attempt('write services file', entry.path, () => io.writeFile(entry.path, SERVICES_FILE_SEED));
+      if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
+      wrote.push(entry.path);
+      continue;
+    }
     if (entry.from === 'generated:boot-item') {
       const written = await attempt('write boot item record', entry.path, () => io.writeFile(entry.path, bootContent(manifest)));
       if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
@@ -608,6 +622,12 @@ export const uninstallInstall = (
       removed.push(`${entry.path} (already gone)`);
       continue;
     }
+    // The machine's services are the person's, not ours: kept unless --purge, and said so (#38277 S2). A file still
+    // holding only the seed this install wrote is ours, and goes like any other file.
+    if (entry.from === 'generated:services' && options.purge !== true && io.readFile(entry.path) !== SERVICES_FILE_SEED) {
+      kept.push(`kept ${entry.path}: this machine's services; remove by hand or run uninstall --purge`);
+      continue;
+    }
     // A release is our tree, extracted from a pinned archive: it goes whole, and nothing in it was written by the
     // daemon (sessions and records live in `state/`, which this install never removes by default).
     if (entry.kind === 'archive') {
@@ -689,11 +709,53 @@ const supervisorArgv = (manifest: InstallManifest): readonly string[] => {
     `${current}/supervisor`,
     'up',
     '-f', `${current}/process-compose.yaml`,
+    // process-compose merges its -f files in order: the release's ahpd entry, then this machine's own services.
+    '-f', servicesFile(manifest),
     '-t=false',
     '-U',
     '-u', `${manifest.root}/state/pc.sock`,
     '-L', `${manifest.root}/state/process-compose.log`,
   ];
+};
+
+/** The machine's own project file: created once by the install, edited by the services plugin, kept across releases. */
+const servicesFile = (manifest: InstallManifest): string => `${manifest.root}/state/services.yaml`;
+
+/** What a new machine's services file holds: no services, and where the ahpd entry lives instead. */
+const SERVICES_FILE_SEED = [
+  '# This machine\'s own services. process-compose reads it after the release\'s process-compose.yaml.',
+  '# Installs and upgrades never rewrite it; uninstall keeps it unless --purge.',
+  'processes: {}',
+  '',
+].join('\n');
+
+/** A word for the shell process-compose runs a command with: single-quoted, so a path with spaces or ` #` stays one word. */
+const shellWord = (word: string): string => `'${word.replace(/'/gu, `'\\''`)}'`;
+
+/** A YAML double-quoted scalar: JSON's string escapes are valid YAML. */
+const yamlString = (text: string): string => JSON.stringify(text);
+
+/**
+ * The release's own project file (#38277 S2): one process, ahpd, started with this release's runtime against this
+ * release's server, every path absolute. It names the release folder, not `current`, so the file and the tree it starts
+ * always match, a switch back included. PATH is declared because a boot item's environment has none worth trusting
+ * (the #38120 trial: bun was not on the unit's PATH).
+ */
+const composeContent = (manifest: InstallManifest): string => {
+  const release = `${manifest.root}/state/deploy/ahpd/releases/${manifest.version}`;
+  const command = [`${release}/runtime`, `${release}/packages/server/dist/main.js`].map(shellWord).join(' ');
+  return [
+    `# Written by the ahpd installer for release ${manifest.version}. Rewritten by each install of a release; edit`,
+    `# ${servicesFile(manifest)} for this machine's own services.`,
+    'processes:',
+    '  ahpd:',
+    `    command: ${yamlString(command)}`,
+    '    environment:',
+    `      - ${yamlString('PATH=/usr/local/bin:/usr/bin:/bin')}`,
+    '    availability:',
+    '      restart: always',
+    '',
+  ].join('\n');
 };
 
 /** Starts the daemon from `current` in the user's own session; the token is the user's, not root's. */
@@ -736,4 +798,4 @@ const systemdUnit = (manifest: InstallManifest): string =>
     'WantedBy=default.target',
   ].join('\n');
 
-export { xmlEscape };
+export { SERVICES_FILE_SEED, xmlEscape };
