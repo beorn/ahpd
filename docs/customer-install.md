@@ -186,13 +186,16 @@ redirects to it. Only Linux can be built here, so a release is cut in three step
 creates a **draft**; `--append` on the second uploads only that machine's archive, pins, runtime and supervisor, refuses
 a name already present and checks the shared deploy/plugin bytes are identical; `--finalize` publishes the draft. It
 refuses to publish a draft with one machine's pins unless `--allow-single-target` is given, and then says which machine
-is not installable. An asset is never replaced — a fix is a new tag — and the tag's eight hex are its ahpd commit.
+is not installable. A release that names only one machine is installable only there: the installer's own stamped pin
+is the zero placeholder on the other machine, and it refuses that machine by name (`… was not built for this machine`)
+before it downloads anything, rather than failing a checksum against zeros. An asset is never replaced — a fix is a new
+tag — and the tag's eight hex are its ahpd commit.
 
 The builder prints its six sha256 lines and the four values the Hightea installer carries (`RELEASE_TAG`,
 `DEPLOY_VERSION`, `DEPLOY_SHA256`, `PINS_SHA512_<TARGET>`); stamping those is the last step before a host can install.
 
 The bun runtime is about 107 MiB raw, so it is served only from the GitHub release: the site caps assets at 25 MiB. The
-bootstrap should print each download's size before fetching it, so a customer on a slow link is not surprised.
+bootstrap prints each download's size before fetching it, so a customer on a slow link is not surprised.
 
 ## Still open
 
