@@ -252,15 +252,17 @@ export interface AcpOptions {
    */
   stderrBytes?: number;
   /**
-   * How long a server that has been spawned has to answer its handshake, in
+   * How long a spawned server may say nothing while the handshake, or a
+   * `session/new`, `session/load` or `session/resume`, is owed an answer, in
    * milliseconds; 60000 by default.
    *
-   * A server that never answers is not a slow one: the turn waiting on it is
-   * taken and can never begin, so nothing ends it and every reader is told a
-   * turn runs that no process will finish (#38705). The handshake is the one
-   * exchange with no legitimate slow case - a server boots and greets - so it
-   * is the one place a bound can fail a turn without cutting real work short.
-   * 0 turns the bound off.
+   * A server that greets and then goes quiet is not a slow one: the turn
+   * waiting on it has been taken and can never begin, so nothing ends it and
+   * every reader is told a turn runs that no process will finish (#38705).
+   * The bound is on silence rather than on time - every message the server
+   * sends restarts the clock - because a session read back from a long
+   * conversation streams `session/update` for as long as the replay takes and
+   * must not be cut short. 0 turns the bound off.
    */
   startAnswerMs?: number;
   /**

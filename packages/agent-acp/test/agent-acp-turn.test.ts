@@ -1250,8 +1250,8 @@ it('ends a turn whose re-opened server never answers, rather than showing it as 
   // that never answers is retried, and how many attempts fit in the window is the host's business.
   expect(readFileSync(join(path, 'starts'), 'utf8').trim().split('\n').length).toBeGreaterThan(1);
   const message = String(((failed()?.part as Bag | undefined)?.error as Bag | undefined)?.message ?? '');
-  expect(message).toContain('did not answer its handshake');
-  expect(message).toContain('300 ms');
+  expect(message).toContain('sent nothing for 300 ms during the handshake');
+  expect(message).toContain('nothing ran');
   // And a reader is not told a turn runs that nothing will finish.
   expect((await chatNow(client, chatUri)).activeTurn).toBeUndefined();
   // Disarmed before the session is disposed, so the connections the teardown
