@@ -14,7 +14,7 @@ const journalOf = (stateDir: string, service: string, lines: readonly Record<str
   return { stateDir, service };
 };
 
-const context = (stateDir: string, services: readonly string[], deploy = async () => ({ ok: true })): ChannelContext => ({
+const context = (stateDir: string, services: readonly string[], deploy: ChannelContext['deploy'] = async () => ({ ok: true })): ChannelContext => ({
   machine: 'alpha',
   services: () => services,
   layout: (service) => ({ stateDir, service }),

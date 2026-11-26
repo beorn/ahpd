@@ -33,8 +33,8 @@ const methods = (
       }, 40);
     },
   });
-  const call = async (method: string, params: Record<string, unknown>) => {
-    const one = found[method] as DeployMethod;
+  const call = async (method: keyof typeof found, params: Record<string, unknown>) => {
+    const one: DeployMethod = found[method];
     return await one.handle(params, undefined, 'test-client') as Record<string, unknown> & Partial<DeployRefusal>;
   };
   return { run: (params: Record<string, unknown>) => call('run', params), report: (params: Record<string, unknown>) => call('report', params), started };
