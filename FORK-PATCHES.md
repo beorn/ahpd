@@ -140,13 +140,14 @@ Upstream status is one of:
 - `326837da6` (PR #22; hh/integration `6dc16d309`, `ef7eb440a`, `50af536bbc`, `25d15c7dec`, `d6e8b735d`, `7eb7aae9a`) · count every write on an agent record and let a write say which revision it read; keep the secrets a saved row shows; let a plugin write a `user:`-owned record only while that owner lists it in `delegates` on the record, keeping the owner, logged after the write lands · #38233 (@cto dea0a98b) · upstream ask not written (host-side owner rule and write count; no upstream issue names either)
 
 ### Services: machine-local switches
-- `d82d697ed` (hh/integration `67799d139`) · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · upstream ask not written (new package; the process-compose driver follows in the same package)
-- `9b7bd1b3f` (hh/integration `1a7e8f52b`), `4027fc96d` (hh/integration `6e6f65762`) · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · upstream ask not written (new package)
-- `178dc5f65` (hh/integration `163563a48`), `52344b179` (hh/integration `4791459b9`), `540754037` (hh/integration `54e5d3de0`), `54fa98c0c` (hh/integration `5ce94713c`), `acb6a760a` (hh/integration `849057267`), `fccbe345e` (hh/integration `076967b87`) · `@ahpd/services` as a plugin: `x-ahpd/services/{list,put,remove,start,stop,restart,logs}` under the `services` grants (every caller remote: a handler is told no transport), drift alerts `services-drift:<what>` at start and every 5 minutes (names process-compose holds vs the `-f` files, file sha256 vs the hash last written or acknowledged in `services/drift.json`); plus `ahpd secrets exec` in `packages/server` (`commands/secrets.ts`, read in `main.ts` before the program), the wrapper process-compose starts a program through: reads `vault.json` with no daemon, values only in the child's environment, a missing value starts nothing · #38277 slice 2 (@cto) · upstream ask not written (new package; the server half is one new file and five lines of `main.ts`)
+- `d82d697ed` (hh/integration `67799d139`) · `@ahpd/services` `machineSwitches(configDir)`: allowRemoteCommands and allowRoomAsks under a `machine` key in config.json that root config does not serve · #38277 (@cto 8033ccb4) · not upstreamable: the services package, now `@hallohuman/hightea-services`; upstream has no services package (ADR-004 amendment 6)
+- `9b7bd1b3f` (hh/integration `1a7e8f52b`), `4027fc96d` (hh/integration `6e6f65762`) · `@ahpd/services` process-compose driver: `listServices`/`putService`/`removeService`/`controlService`/`serviceLogs`; last `-f` file only, sha256 ifVersion, range-splice edits, read-only rules, 0600 change log, reload over the Unix socket · #38277 slice 1 (@cto) · not upstreamable: same services package
+- `178dc5f65` (hh/integration `163563a48`), `540754037` (hh/integration `54e5d3de0`), `54fa98c0c` (hh/integration `5ce94713c`), `acb6a760a` (hh/integration `849057267`), `fccbe345e` (hh/integration `076967b87`) · `@ahpd/services` as a plugin: `x-ahpd/services/{list,put,remove,start,stop,restart,logs}` under the `services` grants (every caller remote: a handler is told no transport), drift alerts `services-drift:<what>` at start and every 5 minutes (names process-compose holds vs the `-f` files, file sha256 vs the hash last written or acknowledged in `services/drift.json`), a person at the machine driving services in-process, acknowledge, backup and create-only restore · #38277 slice 2 (@cto) · not upstreamable: same services package (`540754037`'s six lines of `main.ts` only load it)
+- `52344b179` (hh/integration `4791459b9`) · `ahpd secrets exec` in `packages/server` (`commands/secrets.ts`, read in `main.ts` before the program), the wrapper process-compose starts a program through: reads `vault.json` with no daemon, values only in the child's environment, a missing value starts nothing · #38277 slice 2 (@cto) · upstream ask not written (generic server command outside the services package; split from the services row on 2026-11-26)
 
 ### Deploy: a customer host install and a git deploy driver
-- `250b9a040`, `660c68dbd`, `e67e9ddc6`, `f4e97111d`, `b7f54963b`, `16fe9d2ed`, `1676d7a99`, `777d90ebe` · a customer host install manifest and plan, apply and uninstall from it, a step's exec modes, a resumable record, keep-vs-purge, named refusals for thrown effects, one `activateRelease` that journals the switch, an explicit install root so `$AHPD_HOME` is honoured, npm's own sha512 integrity beside sha256, and root tsc back to its 19-error baseline · #38280 (@dev/5) · upstream ask not written (generic installer; no upstream issue names it)
-- `dea9643b1`, `94828e260`, `902022937`, `8cec6324d`, `391703390` · a git deploy driver and the `ahpd deploy` verb: a step's own environment and timeout, gates before the switch, a lock that names its process, `started` answered only once the child holds the lock, the child stopped before refusing, and the driver served to a host as two AHP methods · #38276 (@dev/3) · upstream ask not written (generic deploy driver)
+- `250b9a040`, `660c68dbd`, `e67e9ddc6`, `f4e97111d`, `b7f54963b`, `16fe9d2ed`, `1676d7a99`, `777d90ebe` · a customer host install manifest and plan, apply and uninstall from it, a step's exec modes, a resumable record, keep-vs-purge, named refusals for thrown effects, one `activateRelease` that journals the switch, an explicit install root so `$AHPD_HOME` is honoured, npm's own sha512 integrity beside sha256, and root tsc back to its 19-error baseline · #38280 (@dev/5) · not upstreamable: our customer-host install; upstream has no deploy package
+- `dea9643b1`, `94828e260`, `902022937`, `8cec6324d`, `391703390` · a git deploy driver and the `ahpd deploy` verb: a step's own environment and timeout, gates before the switch, a lock that names its process, `started` answered only once the child holds the lock, the child stopped before refusing, and the driver served to a host as two AHP methods · #38276 (@dev/3) · not upstreamable: our deploy driver; upstream has no deploy package, and the `ahpd deploy` verb in `packages/server` only calls it
 - `b8d267b10`, `e81d6a162`, `795e070de`, `6ecc1f9e2` · `ahpd-host-install`, the command the customer bootstrap runs: takes the pins file and plans, applies or uninstalls; runs through a symlink, needs a HOME, refuses unknown flags by name, prints a prune failure as a warning, and prepack bundles the bin after tsc so the tarball ships one runnable file · #38280 · not upstreamable: our customer-host install, run by Hightea's bootstrap
 - `8d1b5829e`, `e5f55ea72`, `40f00c913` · the install writes the process-compose files its boot item runs (one per release, plus `state/services.yaml` seeded once) and ahpd's configuration as machine state at `state/config.json`, created once and kept across switches, with @cto's three S2 tests · #38277 S2 · not upstreamable: our customer-host install
 - `2f7b635c7`, `21d3be851` · the deploy driver is one channel, `x-hh-deploys://`, with one `deploy` operation run by `invokeOperation`; the old methods refuse naming it; the read grant is `deploy:status`, since `read` is reserved · #38276 · not upstreamable: speaks our `x-hh-deploys://` channel, named for its owner (ADR-004 amendment 6)
@@ -170,7 +171,7 @@ Upstream status is one of:
 - `ff37e12a2` · the plugins contracts table names grants · #38446 prior art (PR #9) · upstream ask not written (a generic docs table)
 
 ### Services: the grants its manifest applies
-- `eac0dabf0`, `31e23c05d` · the services manifest declares the grants `apply()` registers, and a test proves no daemon method, plugin hook or pipe path reaches `localServices` · #38277 · upstream ask not written (same new package as the rows above)
+- `eac0dabf0`, `31e23c05d` · the services manifest declares the grants `apply()` registers, and a test proves no daemon method, plugin hook or pipe path reaches `localServices` · #38277 · not upstreamable: same services package
 
 ### Services: the x-hh-services channel, its owner field and its alerts
 - `05f15b6f6`, `4b87c342c` · the services driver becomes the `x-hh-services://` channel, whose actions are its operations, and the package is published as `@hallohuman/hightea-services` · #38277 · not upstreamable: `@hallohuman/hightea-services` is a Hightea package that leaves this repo with the deploy plugin (ADR-004 amendment 6)
@@ -206,11 +207,13 @@ Measured 2026-11-26 (@dev/4, #38436) over the 190 commits `main` (`7b49d0cbb`) c
 (`1f3168c22`), counting each commit under its row's upstream status (a row naming a PR merge commit counts that
 merge's `^1..^2` commits):
 
-- 112 are absent upstream with no ask written — the real remaining work on the zero-patch target;
-- 74 are not upstreamable: 17 speak hab's `HAB_ACP_*` / `HAB_ID_TOKEN_FILE` child protocol, 5 read hh's inhab JSONL
-  journals pinned to an Ag commit, 40 are our customer-host install, deploy driver and release builder, 4 are the
+- 89 are absent upstream with no ask written — the real remaining work on the zero-patch target;
+- 97 are not upstreamable: 17 speak hab's `HAB_ACP_*` / `HAB_ID_TOKEN_FILE` child protocol, 5 read hh's inhab JSONL
+  journals pinned to an Ag commit, 53 are our customer-host install, deploy driver and release builder, 14 are the
   `@hallohuman/hightea-services` package, 2 are the users-read census harness, and 6 are our own process docs and
-  this ledger;
+  this ledger (the older deploy and services rows moved here from `upstream ask not written` on 2026-11-26, @cto
+  f8fac5d6: upstream has no deploy or services package, and their channels are ours by ADR-004 amendment 6;
+  `ahpd secrets exec`, generic server code, stays an ask in its own row);
 - 2 are posted (plugin channel operations, ahpio/ahpd#474): upstream carries its own version, so they leave the
   count when a sync takes upstream's;
 - 2 are superseded (`d17130bbf` and the test skip `0f92e1c41` it needs), replaced by #38158's `535303cf5`, which is
@@ -220,5 +223,5 @@ Not counted, because not on `main`: `c6f74e9d0` (#38159; ahpio/ahpd#462 was clos
 `535303cf5`. The one PR prepared (#38139) was posted and merged upstream (ahpio/ahpd#463, 2026-11-25), so none is
 waiting.
 
-The honest shape of the target is therefore: 112 upstream asks, and a decision on the 17 hab-protocol patches, which
-stay ours unless upstream grows hab's protocol. The other 57 fork-only commits are ours by nature.
+The honest shape of the target is therefore: 89 upstream asks, and a decision on the 17 hab-protocol patches, which
+stay ours unless upstream grows hab's protocol. The other 80 fork-only commits are ours by nature.
