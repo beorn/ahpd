@@ -355,9 +355,10 @@ export const applyInstall = async (
       continue;
     }
     // Written only when absent: an upgrade keeps the machine's services byte for byte (#38277 S2).
-    if (entry.from === 'generated:services') {
+    if (entry.from === 'generated:services' || entry.from === 'generated:config') {
       if (io.exists(entry.path)) continue;
-      const written = await attempt('write services file', entry.path, () => io.writeFile(entry.path, SERVICES_FILE_SEED));
+      const written = await attempt(entry.from === 'generated:config' ? 'write configuration' : 'write services file', entry.path, () =>
+        io.writeFile(entry.path, machineSeed(manifest, entry.from)));
       if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
       wrote.push(entry.path);
       continue;
@@ -624,8 +625,8 @@ export const uninstallInstall = (
     }
     // The machine's services are the person's, not ours: kept unless --purge, and said so (#38277 S2). A file still
     // holding only the seed this install wrote is ours, and goes like any other file.
-    if (entry.from === 'generated:services' && options.purge !== true && io.readFile(entry.path) !== SERVICES_FILE_SEED) {
-      kept.push(`kept ${entry.path}: this machine's services; remove by hand or run uninstall --purge`);
+    if ((entry.from === 'generated:services' || entry.from === 'generated:config') && options.purge !== true && io.readFile(entry.path) !== machineSeed(manifest, entry.from)) {
+      kept.push(`kept ${entry.path}: ${entry.from === 'generated:config' ? "ahpd's configuration, which it has changed" : "this machine's services"}; remove by hand or run uninstall --purge`);
       continue;
     }
     // A release is our tree, extracted from a pinned archive: it goes whole, and nothing in it was written by the
@@ -721,6 +722,20 @@ const supervisorArgv = (manifest: InstallManifest): readonly string[] => {
 /** The machine's own project file: created once by the install, edited by the services plugin, kept across releases. */
 const servicesFile = (manifest: InstallManifest): string => `${manifest.root}/state/services.yaml`;
 
+/** ahpd's configuration: machine state, which ahpd itself writes to, so no release carries it (@cto 65231d93). */
+const configFile = (manifest: InstallManifest): string => `${manifest.root}/state/config.json`;
+
+/**
+ * What a new machine's configuration holds: the host plug-in, named through `current` so a switch needs no rewrite.
+ * No secret goes here; credentials stay in state and are read at start.
+ */
+const configSeed = (manifest: InstallManifest): string =>
+  `${JSON.stringify({ plugins: [{ source: `${manifest.root}/state/deploy/ahpd/current/host-plugin` }] }, null, 2)}\n`;
+
+/** The bytes an install seeds a machine-state file with, which is also how uninstall tells an untouched one. */
+const machineSeed = (manifest: InstallManifest, from: string | undefined): string =>
+  from === 'generated:config' ? configSeed(manifest) : SERVICES_FILE_SEED;
+
 /** What a new machine's services file holds: no services, and where the ahpd entry lives instead. */
 const SERVICES_FILE_SEED = [
   '# This machine\'s own services. process-compose reads it after the release\'s process-compose.yaml.',
@@ -743,7 +758,7 @@ const yamlString = (text: string): string => JSON.stringify(text);
  */
 const composeContent = (manifest: InstallManifest): string => {
   const release = `${manifest.root}/state/deploy/ahpd/releases/${manifest.version}`;
-  const command = [`${release}/runtime`, `${release}/packages/server/dist/main.js`].map(shellWord).join(' ');
+  const command = [`${release}/runtime`, `${release}/packages/server/dist/main.js`, '--config-file', configFile(manifest)].map(shellWord).join(' ');
   return [
     `# Written by the ahpd installer for release ${manifest.version}. Rewritten by each install of a release; edit`,
     `# ${servicesFile(manifest)} for this machine's own services.`,
@@ -798,4 +813,4 @@ const systemdUnit = (manifest: InstallManifest): string =>
     'WantedBy=default.target',
   ].join('\n');
 
-export { SERVICES_FILE_SEED, xmlEscape };
+export { configSeed, SERVICES_FILE_SEED, xmlEscape };

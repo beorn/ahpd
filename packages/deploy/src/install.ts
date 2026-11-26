@@ -183,6 +183,10 @@ export const customerInstallManifest = (
     // release started with. It names ahpd only; this machine's own services are in the next file.
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/releases/${options.version}/process-compose.yaml`, from: 'generated:compose', why: 'the project file the supervisor runs: ahpd itself, written for this release' },
     // Created once and never rewritten: a release switch or switch back must not drop or revive a person's services.
+    // ahpd writes its own configuration at run time (agents it adds, plugin entries it rewrites), so it is machine
+    // state, not release content (@cto 65231d93): created once, never rewritten by an install, and its plugin entry
+    // names `current`, which every switch moves.
+    { kind: 'file', path: `${stateDir}/config.json`, from: 'generated:config', why: "ahpd's configuration, which ahpd itself writes to; created once and kept across releases and by uninstall without --purge" },
     { kind: 'file', path: `${stateDir}/services.yaml`, from: 'generated:services', why: "this machine's own services, the second project file; kept across releases and by uninstall without --purge" },
     { kind: 'file', path: `${stateDir}/deploy/${INSTALL_SERVICE}/deploy.log`, from: 'generated:journal', why: 'the deploy journal: what moved current, and when' },
     { kind: 'symlink', path: `${stateDir}/deploy/${INSTALL_SERVICE}/current`, from: `releases/${options.version}`, why: 'switched by one atomic rename; versions and switch-back read it' },

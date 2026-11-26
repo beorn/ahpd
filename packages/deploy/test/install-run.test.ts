@@ -16,6 +16,7 @@ import {
   releasesToPrune,
   renderInstallPlan,
   SERVICES_FILE_SEED,
+  configSeed,
   uninstallInstall,
   type InstallIo,
   type InstallPins,
@@ -555,6 +556,7 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     const io = fakeIo(manifest.entries.map((entry) => entry.path));
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
     io.content.set(`${manifest.root}/state/services.yaml`, SERVICES_FILE_SEED);
+    io.content.set(`${manifest.root}/state/config.json`, configSeed(manifest));
     const result = uninstallInstall(manifest, io);
     expect(result.ok).toBe(true);
     expect(io.commands).toEqual([manifest.bootItem.disable]);
@@ -570,6 +572,7 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     const io = fakeIo([...manifest.entries.map((entry) => entry.path), `${state}/sessions.json`, `${state}/ahpd.out.log`]);
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
     io.content.set(`${state}/services.yaml`, SERVICES_FILE_SEED);
+    io.content.set(`${state}/config.json`, configSeed(manifest));
     const keptResult = uninstallInstall(manifest, io);
     expect(keptResult.ok).toBe(true);
     expect(keptResult.kept).toEqual([
@@ -711,7 +714,7 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     expect(result.ok).toBe(true);
     const release = releaseOf(manifest);
     const compose = io.content.get(`${release}/process-compose.yaml`) ?? '';
-    expect(compose).toContain(`command: "'${release}/runtime' '${release}/packages/server/dist/main.js'"`);
+    expect(compose).toContain(`command: "'${release}/runtime' '${release}/packages/server/dist/main.js' '--config-file' '${manifest.root}/state/config.json'"`);
     expect(compose).toContain('- "PATH=/usr/local/bin:/usr/bin:/bin"');
     expect(compose).not.toContain('/current/');
     expect(result.wrote.indexOf(`${release}/process-compose.yaml`)).toBeGreaterThan(result.wrote.indexOf(release));
@@ -741,6 +744,7 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     const io = fakeIo(manifest.entries.map((entry) => entry.path));
     for (const entry of manifest.entries) if (entry.kind === 'dir') io.dirs.add(entry.path);
     io.content.set(services, 'processes:\n  web:\n    command: "/srv/web"\n');
+    io.content.set(`${manifest.root}/state/config.json`, configSeed(manifest));
     const kept = uninstallInstall(manifest, io);
     expect(kept.ok).toBe(true);
     expect(kept.kept[0]).toBe(`kept ${services}: this machine's services; remove by hand or run uninstall --purge`);
@@ -807,5 +811,29 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     expect(answer).toMatchObject({ ok: false, code: 'READ_ONLY' });
     if (!answer.ok) expect(answer.message).toContain(`it is defined in ${release}`);
     expect(readFileSync(services, 'utf8')).toBe(before);
+  });
+
+  // @cto 65231d93 row: ahpd's own config writes survive a switch, and a switch back.
+  it('an agent pair ahpd wrote into its configuration survives an upgrade and a failed-start switch back', async () => {
+    const io = fakeIo();
+    const first = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.15.0', pins: HONEST });
+    if (!first.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(first.manifest, io, () => undefined)).ok).toBe(true);
+    const config = `${first.manifest.root}/state/config.json`;
+    expect(JSON.parse(io.content.get(config) ?? '{}')).toEqual({ plugins: [{ source: `${first.manifest.root}/state/deploy/ahpd/current/host-plugin` }] });
+    // What ahpd writes at run time: an agents pair beside the plug-in entry.
+    const written = `${JSON.stringify({ plugins: [{ source: `${first.manifest.root}/state/deploy/ahpd/current/host-plugin` }], agents: [{ id: 'codex', account: 'a' }] }, null, 2)}\n`;
+    io.content.set(config, written);
+    const second = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.16.0', pins: HONEST });
+    if (!second.ok) throw new Error('expected a manifest');
+    expect((await applyInstall(second.manifest, io, () => undefined)).ok).toBe(true);
+    expect(io.content.get(config)).toBe(written);
+    io.failRun();
+    const third = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version: '0.17.0', pins: HONEST });
+    if (!third.ok) throw new Error('expected a manifest');
+    const switched: string[] = [];
+    expect((await applyInstall(third.manifest, io, ((_l: unknown, version: string) => { switched.push(version); }) as never)).ok).toBe(false);
+    expect(switched).toEqual(['0.17.0', '0.16.0']);
+    expect(io.content.get(config)).toBe(written);
   });
 });
