@@ -677,6 +677,25 @@ const bootContent = (manifest: InstallManifest): string =>
 const xmlEscape = (text: string): string =>
   text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;');
 
+/**
+ * The words the boot item runs: the pinned supervisor against the release `current` points at, with the flag set the
+ * #38120 trial ran under (@dev/6 df76c0d1). No working directory is needed because every path is absolute; the socket
+ * and the supervisor's own log live in `state/`, outside the release a switch replaces.
+ */
+const supervisorArgv = (manifest: InstallManifest): readonly string[] => {
+  // The service name `install.ts` files the release under (INSTALL_SERVICE is 'ahpd').
+  const current = `${manifest.root}/state/deploy/ahpd/current`;
+  return [
+    `${current}/supervisor`,
+    'up',
+    '-f', `${current}/process-compose.yaml`,
+    '-t=false',
+    '-U',
+    '-u', `${manifest.root}/state/pc.sock`,
+    '-L', `${manifest.root}/state/process-compose.log`,
+  ];
+};
+
 /** Starts the daemon from `current` in the user's own session; the token is the user's, not root's. */
 const launchdAgent = (manifest: InstallManifest): string => {
   const root = xmlEscape(manifest.root);
@@ -686,7 +705,7 @@ const launchdAgent = (manifest: InstallManifest): string => {
     '<plist version="1.0"><dict>',
     '  <key>Label</key><string>dev.hallohuman.ahpd</string>',
     '  <key>ProgramArguments</key><array>',
-    `    <string>${root}/state/deploy/ahpd/current/supervisor</string>`,
+    ...supervisorArgv(manifest).map((word) => `    <string>${xmlEscape(word)}</string>`),
     '  </array>',
     '  <key>RunAtLoad</key><true/>',
     '  <key>KeepAlive</key><true/>',
@@ -698,6 +717,10 @@ const launchdAgent = (manifest: InstallManifest): string => {
   ].join('\n');
 };
 
+/** systemd joins ExecStart's words with spaces unquoted, so a word with whitespace is double-quoted, `\` and `"` first. */
+const systemdWord = (word: string): string =>
+  /[\s"\\]/u.test(word) ? `"${word.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"` : word;
+
 /** `WantedBy` alone: pairing it with `After=default.target` is the ordering cycle systemd warns about. */
 const systemdUnit = (manifest: InstallManifest): string =>
   [
@@ -705,7 +728,7 @@ const systemdUnit = (manifest: InstallManifest): string =>
     'Description=ahpd (Hallohuman agent host), user session',
     '',
     '[Service]',
-    `ExecStart=${manifest.root}/state/deploy/ahpd/current/supervisor`,
+    `ExecStart=${supervisorArgv(manifest).map(systemdWord).join(' ')}`,
     'Restart=always',
     'RestartSec=2',
     '',
