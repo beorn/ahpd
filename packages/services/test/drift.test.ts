@@ -133,6 +133,20 @@ describe('checkDrift against files and a process-compose socket', () => {
     expect((await checkDrift(machine, stateFile)).map((one) => one.ref)).toEqual(['services-drift:not-loaded:web-1']);
   });
 
+  // process-compose 1.122.0 holds an explicit replicas: 1 under the plain name, not <name>-0 (probed
+  // /hh/var/@dev6/38277/replicas-probe: `one` with replicas: 1, `two-0`/`two-1` with replicas: 2), so a service
+  // declared with replicas: 1 must not false-alert.
+  it('takes a service with replicas: 1 under its plain name, as process-compose holds it', async () => {
+    writeFileSync(join(dir, 'local.yaml'), 'processes:\n  web:\n    command: sleep 2\n    replicas: 1\n');
+    held = ['shared', 'web'];
+    expect(await checkDrift(machine, stateFile)).toEqual([]);
+    held = ['shared', 'web-0'];
+    expect((await checkDrift(machine, stateFile)).map((one) => one.ref)).toEqual([
+      'services-drift:not-loaded:web',
+      'services-drift:not-in-files:web-0',
+    ]);
+  });
+
   it('says process-compose cannot be read, by its answer, and still compares the files', async () => {
     machine = { ...machine, pc: { socket: machine.pc.socket, tokenFile: join(dir, 'missing-token') } };
     await checkDrift(machine, stateFile);
