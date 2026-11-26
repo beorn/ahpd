@@ -92,6 +92,18 @@ const STDERR_BYTES = 8 * 1024;
 export const KILL_GRACE_MS = 5000;
 
 /**
+ * How long a spawned server has to answer its handshake, unless the record's
+ * `startAnswerMs` says otherwise.
+ *
+ * A server that boots and never greets leaves a turn taken and unable to
+ * begin: nothing in the protocol ends such a turn, and every reader is told
+ * one runs that no process will finish (#38705). Generous, because a cold
+ * machine starts a server slowly and this is a bound on silence rather than on
+ * work.
+ */
+const START_ANSWER_MS = 60_000;
+
+/**
  * Windows, which has no process group to signal and no SIGTERM to send: a
  * negative pid there throws, and the server and what it started were never
  * stopped. Its tree is ended with `taskkill` instead.
@@ -215,6 +227,7 @@ const exited = (command: string, code: number | null, signal: NodeJS.Signals | n
 export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const exitGraceMs = options.exitGraceMs ?? EXIT_GRACE_MS;
   const stderrBytes = options.stderrBytes ?? STDERR_BYTES;
+  const startAnswerMs = options.startAnswerMs ?? START_ANSWER_MS;
   // A second early, as a process's own start time is read back to the
   // millisecond and the two clocks need not agree on the last one.
   const spawnedAt = Date.now() - 1000;
@@ -445,6 +458,26 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   };
 
   /**
+   * A reply nobody gave, failed rather than waited on for ever.
+   *
+   * The handshake is the one exchange a server either answers in a moment or
+   * never answers at all, and the turn waiting on it cannot begin while it
+   * waits - so the silence is said out loud here, in the words a person needs,
+   * rather than left as a turn every reader thinks is running (#38705).
+   */
+  const answered = <T>(call: Promise<T>, what: string): Promise<T> => {
+    if (startAnswerMs <= 0) return call;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${options.command}: the ACP server did not answer ${what} within ${startAnswerMs} ms; nothing ran`));
+      }, startAnswerMs);
+      timer.unref();
+    });
+    return Promise.race([call, late]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+  };
+
+  /**
    * A signal to the server's whole group, which is the server and everything it
    * started.
    *
@@ -503,7 +536,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
         clientCapabilities,
         clientInfo: CLIENT_INFO,
       };
-      return heard(() => connection.agent.request(methods.agent.initialize, greeting)).then((reply) => {
+      return answered(heard(() => connection.agent.request(methods.agent.initialize, greeting)), 'its handshake').then((reply) => {
         initializeResponse = reply;
         const says = reply.agentCapabilities?._meta?.[AUTH_STATUS];
         announces = says !== undefined && says !== null;

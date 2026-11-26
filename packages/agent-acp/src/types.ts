@@ -252,6 +252,18 @@ export interface AcpOptions {
    */
   stderrBytes?: number;
   /**
+   * How long a server that has been spawned has to answer its handshake, in
+   * milliseconds; 60000 by default.
+   *
+   * A server that never answers is not a slow one: the turn waiting on it is
+   * taken and can never begin, so nothing ends it and every reader is told a
+   * turn runs that no process will finish (#38705). The handshake is the one
+   * exchange with no legitimate slow case - a server boots and greets - so it
+   * is the one place a bound can fail a turn without cutting real work short.
+   * 0 turns the bound off.
+   */
+  startAnswerMs?: number;
+  /**
    * How long the server's process group has between SIGTERM and SIGKILL, in
    * milliseconds; 5000 by default, VS Code's grace for ending a process tree.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/localModelBridge/shim/processRunner.ts#L344-L352
@@ -385,9 +397,10 @@ export interface AcpConnectionOptions {
   handlers: AcpHandlers;
   /** Where each line the server writes on stderr goes. */
   log?: (line: string, level?: LogLevel) => void;
-  /** The record's `exitGraceMs`, `stderrBytes` and `killGraceMs`. */
+  /** The record's `exitGraceMs`, `stderrBytes`, `startAnswerMs` and `killGraceMs`. */
   exitGraceMs?: number;
   stderrBytes?: number;
+  startAnswerMs?: number;
   killGraceMs?: number;
 }
 
