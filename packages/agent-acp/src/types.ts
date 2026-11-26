@@ -266,6 +266,12 @@ export interface AcpOptions {
    */
   startAnswerMs?: number;
   /**
+   * How long one open tool call may stay quiet before its turn is ended by name, in milliseconds; 900 s by default
+   * (#38695). A test seam only: the behaviour under test is which call ends the turn and what the reason says, and no
+   * suite can spend fifteen minutes watching a real one. 0 turns it off with the turn bounds it rides on.
+   */
+  toolCallSilenceMs?: number;
+  /**
    * How long the server's process group has between SIGTERM and SIGKILL, in
    * milliseconds; 5000 by default, VS Code's grace for ending a process tree.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/localModelBridge/shim/processRunner.ts#L344-L352
