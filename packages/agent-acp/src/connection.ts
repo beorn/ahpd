@@ -106,6 +106,14 @@ export const KILL_GRACE_MS = 5000;
 const START_ANSWER_MS = 60_000;
 
 /**
+ * How many times the opening bound a prompt is given once it has said
+ * anything (#38786, @cto 8c171c70): 600 s at the default. A model reasoning
+ * quietly mid-turn for over a minute is normal and its work is real; one that
+ * has said nothing for ten is not coming back.
+ */
+const AFTER_OUTPUT_FACTOR = 10;
+
+/**
  * Windows, which has no process group to signal and no SIGTERM to send: a
  * negative pid there throws, and the server and what it started were never
  * stopped. Its tree is ended with `taskkill` instead.
@@ -324,7 +332,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * gone quiet while a call is owed an answer fails - in the words a person
    * needs, rather than as a turn every reader thinks is running.
    */
-  const owed = new Set<{ step: string; tail: string; fail: (why: Error) => void; timer: NodeJS.Timeout | undefined }>();
+  const owed = new Set<{ step: string; tail: string; afterOutput: number | undefined; spoke: boolean; fail: (why: Error) => void; timer: NodeJS.Timeout | undefined }>();
   /*
    * #38786: the calls the server is waiting on this client to answer - a
    * person deciding a permission, a terminal it was told to wait for. While one
@@ -346,25 +354,34 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     // The chunk restarted the clock before it was read; what it said decides whether one runs.
     if (tools.size !== before) quiet();
   };
-  const quiet = (): void => {
+  /** `heard`: the server wrote something, which is the first output of every call still owed one. */
+  const quiet = (heard = false): void => {
     if (startAnswerMs <= 0) return;
     for (const held of owed) {
+      if (heard) held.spoke = true;
       if (held.timer !== undefined) clearTimeout(held.timer);
       held.timer = undefined;
       if (ours > 0 || tools.size > 0) continue;
+      const bound = held.spoke && held.afterOutput !== undefined ? held.afterOutput : startAnswerMs;
       held.timer = setTimeout(() => {
         owed.delete(held);
-        held.fail(new Error(`${options.command}: the ACP server sent nothing for ${startAnswerMs} ms during ${held.step}${held.tail}`));
-      }, startAnswerMs);
+        held.fail(new Error(`${options.command}: the ACP server sent nothing for ${bound} ms during ${held.step}${held.tail}`));
+      }, bound);
       held.timer.unref();
     }
   };
-  /** This call, failed by the server's silence rather than waited on for ever. */
-  const answered = <T>(step: string, call: Promise<T>, tail = '; nothing ran'): Promise<T> => {
+  /**
+   * This call, failed by the server's silence rather than waited on for ever.
+   *
+   * `afterOutput`, where given, is the bound once the call has heard anything:
+   * a turn that has begun to answer and then thinks quietly is working, and is
+   * given far longer than one that never started (#38786, @cto 8c171c70).
+   */
+  const answered = <T>(step: string, call: Promise<T>, tail = '; nothing ran', afterOutput?: number): Promise<T> => {
     if (startAnswerMs <= 0) return call;
     let fail!: (why: Error) => void;
     const silent = new Promise<never>((_resolve, no) => { fail = no; });
-    const held = { step, tail, fail, timer: undefined as NodeJS.Timeout | undefined };
+    const held = { step, tail, afterOutput, spoke: false, fail, timer: undefined as NodeJS.Timeout | undefined };
     owed.add(held);
     quiet();
     return Promise.race([call, silent]).finally(() => {
@@ -380,7 +397,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    */
   const speaking = new Transform({
     transform(chunk, _encoding, done) {
-      quiet();
+      quiet(true);
       done(undefined, chunk);
     },
   });
@@ -654,7 +671,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     prompt: (sessionId: string, prompt: ContentBlock[]): Promise<PromptResponse> => answered('session/prompt', heard(() => connection.agent.request(methods.agent.session.prompt, {
       sessionId,
       prompt,
-    })), '; the turn is ended').finally(() => { tools.clear(); }),
+    })), '; the turn is ended', startAnswerMs * AFTER_OUTPUT_FACTOR).finally(() => { tools.clear(); }),
     cancel: (sessionId: string): Promise<void> =>
       heard(() => connection.agent.notify(methods.agent.session.cancel, { sessionId })),
     closeSession: (sessionId: string): Promise<void> =>
