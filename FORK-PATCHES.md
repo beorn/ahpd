@@ -192,29 +192,33 @@ Upstream status is one of:
 ## PR prepared (not carried)
 
 Upstream fixes written straight against `upstream/main` and never carried on `hh/integration`. They
-are not in the patch count; each waits for the operator's upstream card.
+are not in the patch count. None is waiting now.
 
 - `92afb94db` on `fix/acp-backend-start-fails-creation` (base `upstream/main` `7d927326c`) · a
   backend that cannot start fails session creation: opt-in `Session.sendBringsUp`, agent-acp's send
   resolves once its server holds the session and rejects naming the command, its PATH and a capped
-  stderr tail · #38139 (@cto b1d6a0cf, amendment OK 491ba7d9) · PR pending card (text:
-  /hh/var/@dev12/38139-upstream/PR.md); carried on `hh/integration` only if a live seat needs it
-  before upstream answers
+  stderr tail · #38139 (@cto b1d6a0cf, amendment OK 491ba7d9) · posted
+  https://github.com/ahpio/ahpd/pull/463 (merged 2026-11-25; `sendBringsUp` is on `upstream/main`)
 
 ## What is left on the zero-patch target
 
-Measured over the 70 patches:
+Measured 2026-11-26 (@dev/4, #38436) over the 190 commits `main` (`7b49d0cbb`) carries over `upstream/main`
+(`1f3168c22`), counting each commit under its row's upstream status (a row naming a PR merge commit counts that
+merge's `^1..^2` commits):
 
-- 1 has an upstream PR posted (#38159, `c6f74e9d0`, ahpio/ahpd#462, 2026-11-24);
-- 1 is superseded (`d17130bbf`, replaced by #38158's `535303cf5`, whose text is also a
-  `PR pending card` and which is not counted in the 70 because it is not on `hh/integration` yet);
-- 22 are not upstreamable as written, all for one of two reasons: they speak hab's `HAB_ACP_*` /
-  `HAB_ID_TOKEN_FILE` child protocol (17), or they read hh's inhab JSONL journals pinned to an Ag
-  commit (5);
-- 46 are absent upstream with no ask written — the real remaining work on the zero-patch target.
-- Re-counted 2026-11-25 over `main` (#38436): the 29 newly rowed patches add 24 asks and 5
-  `not upstreamable`, so the target reads 70 upstream asks plus the 1 prepared, with 27 fork-only.
+- 112 are absent upstream with no ask written — the real remaining work on the zero-patch target;
+- 74 are not upstreamable: 17 speak hab's `HAB_ACP_*` / `HAB_ID_TOKEN_FILE` child protocol, 5 read hh's inhab JSONL
+  journals pinned to an Ag commit, 40 are our customer-host install, deploy driver and release builder, 4 are the
+  `@hallohuman/hightea-services` package, 2 are the users-read census harness, and 6 are our own process docs and
+  this ledger;
+- 2 are posted (plugin channel operations, ahpio/ahpd#474): upstream carries its own version, so they leave the
+  count when a sync takes upstream's;
+- 2 are superseded (`d17130bbf` and the test skip `0f92e1c41` it needs), replaced by #38158's `535303cf5`, which is
+  not on `main` yet.
 
+Not counted, because not on `main`: `c6f74e9d0` (#38159; ahpio/ahpd#462 was closed unmerged on 2026-11-24) and
+`535303cf5`. The one PR prepared (#38139) was posted and merged upstream (ahpio/ahpd#463, 2026-11-25), so none is
+waiting.
 
-The honest shape of the target is therefore: 46 upstream asks plus the 1 prepared, and a decision on
-the 22 fork-protocol patches, which stay ours unless upstream grows hab's protocol.
+The honest shape of the target is therefore: 112 upstream asks, and a decision on the 17 hab-protocol patches, which
+stay ours unless upstream grows hab's protocol. The other 57 fork-only commits are ours by nature.
