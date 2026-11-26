@@ -304,7 +304,9 @@ export const apply = (host: DeployHost, options: Record<string, unknown>): void 
   });
   const stateDir = typeof options['stateDir'] === 'string' ? options['stateDir'] : host.configDir;
   const layout = (service: string): DeployLayout => ({ stateDir, service });
-  const read = machineOf(host.configDir, options);
+  // The options read are this entry's, and the deploy plugin reads the same services the services plugin watches, so
+  // the sentence names `deploy` rather than sending a person to a services entry that is fine.
+  const read = machineOf(host.configDir, options, 'deploy plugin');
 
   if (typeof read === 'string') {
     // Loud and in place, as the services plugin does: the plugin's page says what is wrong, and the channel still

@@ -109,17 +109,24 @@ export const retiredMethod = (method: string): ServicesMethod => ({
   },
 });
 
-/** The plugin's options, read, or the sentence naming the one that is wrong. */
-export function machineOf(configDir: string, options: Record<string, unknown>): { machine: Machine; stateFile: string } | string {
+/**
+ * The plugin's options, read, or the sentence naming the one that is wrong.
+ *
+ * `who` is the plugin whose options these are. This reader serves more than the
+ * services plugin - the deploy plugin reads a machine's services from the same
+ * options - and a sentence that names the wrong entry sends a person to the
+ * configuration block that is fine.
+ */
+export function machineOf(configDir: string, options: Record<string, unknown>, who = 'services plugin'): { machine: Machine; stateFile: string } | string {
   const { files, socket, tokenFile, changeLog, machine } = options;
   const absolute = (value: unknown): value is string => typeof value === 'string' && isAbsolute(value);
   if (!Array.isArray(files) || files.length === 0 || !files.every(absolute)) {
-    return 'services plugin: "files" must list process-compose\'s -f files as absolute paths, in the order process-compose is given them';
+    return `${who}: "files" must list process-compose's -f files as absolute paths, in the order process-compose is given them`;
   }
-  if (!absolute(socket)) return 'services plugin: "socket" must be the absolute path of process-compose\'s Unix socket (its -u)';
-  if (tokenFile !== undefined && !absolute(tokenFile)) return 'services plugin: "tokenFile" must be an absolute path (process-compose\'s --token-file)';
-  if (changeLog !== undefined && !absolute(changeLog)) return 'services plugin: "changeLog" must be an absolute path';
-  if (machine !== undefined && (typeof machine !== 'string' || machine.trim() === '')) return 'services plugin: "machine" must be a non-empty name';
+  if (!absolute(socket)) return `${who}: "socket" must be the absolute path of process-compose's Unix socket (its -u)`;
+  if (tokenFile !== undefined && !absolute(tokenFile)) return `${who}: "tokenFile" must be an absolute path (process-compose's --token-file)`;
+  if (changeLog !== undefined && !absolute(changeLog)) return `${who}: "changeLog" must be an absolute path`;
+  if (machine !== undefined && (typeof machine !== 'string' || machine.trim() === '')) return `${who}: "machine" must be a non-empty name`;
   const own = join(configDir, 'services');
   return {
     machine: {
