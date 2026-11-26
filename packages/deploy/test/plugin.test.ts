@@ -234,7 +234,8 @@ describe('the deploy plugin as ahpd loads it', () => {
     const { one, registered, alerts } = host();
     apply(one, {});
     expect([...registered.keys()].sort()).toEqual([...METHODS].sort());
-    expect(alerts[0]).toContain('files');
+    // The sentence names the entry whose options are wrong - this one - and not a services entry that is fine.
+    expect(alerts[0]).toMatch(/^deploy plugin: "files" must list process-compose's -f files as absolute paths/u);
     for (const method of METHODS) {
       const refused = registered.get(method)?.handle({ service: 'web', version: 'main' }, undefined, 'test-client') as Promise<unknown>;
       await expect(refused).rejects.toMatchObject({ code: -32601, data: { release: REPLACED_IN } });
