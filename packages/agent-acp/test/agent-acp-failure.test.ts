@@ -853,6 +853,116 @@ it('waits for ever where the record turns the silence bound off', async () => {
   expect(escaped).toEqual([]);
 }, 15_000);
 
+/*
+ * #38786: the silence bound covers the prompt too.
+ *
+ * Two live turns were taken, began (`promptBegun`), and then heard nothing at
+ * all: the server never answered `session/prompt` and never sent an update, so
+ * the host held each turn as running for ever while the gateway gave up on it.
+ * The rule is the opening's rule - a server that owes an answer and has gone
+ * quiet fails, by name - with one difference a prompt needs: while the server
+ * is waiting on this client (a person deciding a permission, a terminal it was
+ * told to wait for), its silence is ours and does not count.
+ */
+
+/** A server that opens a session `s` and then does what it was told with the prompt. */
+const promptServer = (onPrompt: string, onAnswer = ''): string => `
+const send = (one) => process.stdout.write(JSON.stringify(one) + '\\n');
+let prompt;
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (blob) => {
+  for (const line of blob.split('\\n')) {
+    if (line.trim() === '') continue;
+    const message = JSON.parse(line);
+    if (message.method === undefined && message.id !== undefined) { ${onAnswer} continue; }
+    if (message.id === undefined) continue;
+    if (message.method === 'initialize') {
+      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '1', agentCapabilities: {} } });
+      continue;
+    }
+    if (message.method === 'session/new') { send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 's' } }); continue; }
+    if (message.method === 'session/prompt') { prompt = message; ${onPrompt} }
+  }
+});
+`;
+
+it('fails a prompt the server goes quiet on, naming the step', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer('')],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
+      .rejects.toThrow('sent nothing for 150 ms during session/prompt');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('keeps a prompt whose server keeps streaming, however long the turn takes', async () => {
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      let left = 12;
+      const tick = () => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'part' } } } });
+        if (--left === 0) {
+          send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+          return;
+        }
+        setTimeout(tick, 40);
+      };
+      tick();`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const began = Date.now();
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+    expect(Date.now() - began).toBeGreaterThan(150);
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('does not count the time a prompt waits on this client', async () => {
+  // The server asks a permission and says nothing until it has the answer,
+  // which a person takes longer than the bound to give.
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(
+      `send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: { sessionId: 's', toolCall: { toolCallId: 't', title: 'edit' }, options: [{ optionId: 'ok', name: 'Allow', kind: 'allow_once' }] } });`,
+      `if (message.id === 900) send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });`,
+    )],
+    handlers: {
+      update: () => {},
+      permission: () => new Promise((resolve) => { setTimeout(() => resolve({ optionId: 'ok' }), 450); }),
+    },
+    startAnswerMs: 150,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
 // A Node server cannot close its stdout on Windows while it keeps running:
 // libuv's stdout holds a copy of the pipe handle, and fs.closeSync(1) skips
 // fds 0-2, so the parent never reads an end. On POSIX, end() shuts the socket.
