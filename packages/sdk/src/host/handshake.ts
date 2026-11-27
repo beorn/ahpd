@@ -206,12 +206,12 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
   };
   /** The sessions already said to fall back to `auth/required` for an expired server token, so it is said once each. */
   const expiryFallbackSaid = new Set<string>();
-  const expireToken = (key: string): void => {
+  const expireToken = async (key: string): Promise<void> => {
     const held = connection.tokens.get(key);
     if (held?.expiresAt === undefined) return;
     const left = held.expiresAt - Date.now();
     if (left > 0) {
-      expiring.set(key, setTimeout(() => expireToken(key), Math.min(left, LONGEST)));
+      expiring.set(key, setTimeout(() => { void expireToken(key); }, Math.min(left, LONGEST)));
       expiring.get(key)?.unref?.();
       return;
     }
@@ -228,11 +228,20 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
     if (target !== undefined) {
       const chats = [...(sessions.get(target.session)?.chats.values() ?? [])];
       const telling = chats.filter((chat) => chat.expired !== undefined);
-      for (const chat of telling) void chat.expired?.(held.resource, target.customizationId);
-      if (telling.length > 0) return;
+      /*
+       * Asked, not announced: a backend that has the method can still answer
+       * false for this token — its CLI is not running, or the server is not one
+       * it holds — and it has then said nothing at all. Only a chat that took
+       * the expiry means the client already has it as the server's state.
+       */
+      const said = await Promise.all(telling.map((chat) => chat.expired!(held.resource, target.customizationId).catch((error: unknown) => {
+        log(`${target.session}'s backend failed to say an MCP server's token expired: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      })));
+      if (said.some(Boolean)) return;
       if (!expiryFallbackSaid.has(target.session)) {
         expiryFallbackSaid.add(target.session);
-        log(`${target.session}'s backend cannot say an MCP server's token expired as its state, so auth/required is sent on the session instead`);
+        log(`${target.session}'s backend did not say an MCP server's token expired as its state, so auth/required is sent on the session instead`);
       }
     }
     connection.peer.notify('auth/required', {
@@ -1089,7 +1098,7 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
         ...(expiresIn !== undefined ? { expiresAt: Date.now() + expiresIn * 1000 } : {}),
       });
       void fire({ type: 'authenticated', client: connection.clientId || 'anonymous', resource });
-      if (expiresIn !== undefined) expireToken(key);
+      if (expiresIn !== undefined) void expireToken(key);
       const at = target === undefined ? '' : ` at ${target.customizationId} in ${target.session}`;
       log(`${connection.clientId || 'a client'} authenticated for ${resource}${at}${expiresIn !== undefined ? `, for ${expiresIn}s` : ''}`);
       // A GitHub token is a reason to ask GitHub again: a lookup that

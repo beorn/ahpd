@@ -42,13 +42,14 @@ vi.mock('../../agent-claude/src/mcp.js', () => ({
  * A backend that cannot say an expiry as its server's state: the real Claude
  * servers with `expired` taken off, switched on per test.
  */
-const backend = vi.hoisted(() => ({ withoutExpiry: false }));
+const backend = vi.hoisted(() => ({ withoutExpiry: false, expirySaysFalse: false }));
 vi.mock('../../agent-claude/src/session/servers.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../agent-claude/src/session/servers.js')>();
   return {
     ...real,
     createServers: (...given: Parameters<typeof real.createServers>) => {
       const made = real.createServers(...given);
+      if (backend.expirySaysFalse) return { ...made, methods: { ...made.methods, expired: async () => false } };
       if (!backend.withoutExpiry) return made;
       const { expired: _off, ...methods } = made.methods;
       return { ...made, methods: methods as typeof made.methods };
@@ -59,6 +60,7 @@ vi.mock('../../agent-claude/src/session/servers.js', async (importOriginal) => {
 beforeEach(() => {
   resetSdk();
   backend.withoutExpiry = false;
+  backend.expirySaysFalse = false;
 });
 
 const DIR = WORK;
@@ -270,6 +272,35 @@ it('says a targeted token ran out as its server\'s state, drops the header, and 
     await vi.advanceTimersByTimeAsync(100);
     expect(header(two, 'tickets')).toBe('Bearer tickets-again');
     expect(await stateOf(client, TWO, 'tickets')).toEqual({ kind: 'ready' });
+  }
+  finally {
+    vi.useRealTimers();
+  }
+});
+
+/*
+ * A backend that has the method and cannot answer for this token: a CLI that
+ * is not running, or a server this session no longer holds. A client whose
+ * token ran out must still be told, exactly as it is told for a backend with
+ * no method at all — an expiry nothing is said about is a session that keeps
+ * failing calls with no way to find out why.
+ */
+it('keeps auth/required when the backend answers false for an expiry it was told about', async () => {
+  backend.expirySaysFalse = true;
+  const { client, wire } = await twoSessions();
+  vi.useFakeTimers();
+  try {
+    await client.handle({
+      method: 'authenticate',
+      params: { channel: ROOT, resource: DESK, token: 'tickets-short', expiresIn: 60, target: at(TWO, serverId('tickets')) },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const expired = wire.notes.filter((one) => one.method === 'auth/required'
+      && (one.params as { reason?: unknown }).reason === 'expired');
+    expect(expired).toEqual([{
+      method: 'auth/required',
+      params: { channel: TWO, resource: { resource: DESK }, reason: 'expired' },
+    }]);
   }
   finally {
     vi.useRealTimers();
