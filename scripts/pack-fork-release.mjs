@@ -23,6 +23,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, normalize } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** The packages hightea's dependency URLs pin today; `services` is here because hh-38499 left it out of every check. */
 export const PACKED = ['sdk', 'server', 'deploy', 'agent-acp', 'computer', 'services']
@@ -149,9 +150,15 @@ export const lockDisagreements = (lock, entries, siblings) => {
   return problems
 }
 
+/**
+ * Thrown, never `process.exit`: a refusal raised between stamping and restoring must unwind through the `finally` that
+ * puts every manifest back, and an exit ends the process without running it — leaving all six manifests stamped in the
+ * checkout (@dev/6's review of 8fffcd29). Only the entry point turns this into an exit code, after the unwinding.
+ */
+export class Refusal extends Error {}
+
 const refuse = (why) => {
-  console.error(`pack refused: ${why}`)
-  process.exit(1)
+  throw new Refusal(why)
 }
 
 /** pnpm is what the release workflow packs with; a checkout without it gets the same version through corepack. */
@@ -173,7 +180,7 @@ const readManifest = async (root, packageName) => {
 }
 
 const main = async () => {
-  const root = new URL('..', import.meta.url).pathname
+  const root = fileURLToPath(new URL('..', import.meta.url))
   const suffix = argsOf('suffix')[0] ?? `beorn.${execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()}`
   const only = argsOf('only')
   const out = argsOf('out')[0] ?? (await mkdtemp(join(tmpdir(), 'ahpd-fork-release-')))
@@ -199,6 +206,8 @@ const main = async () => {
   let packed = []
   try {
     for (const held of stamped) {
+      // The first `"version":` in each of these six manifests is the top-level one; a nested one would need a parse and
+      // a re-serialise, which reorders the file and makes the restore in the `finally` harder to trust.
       await writeFile(held.path, held.original.replace(/("version":\s*")[^"]+(")/u, `$1${held.expected}$2`))
       written.push(held)
     }
@@ -242,4 +251,12 @@ const main = async () => {
   console.log(`packed ${packed.length} package(s) into ${out} with suffix ${suffix}`)
 }
 
-if (process.argv[1] !== undefined && new URL(import.meta.url).pathname === process.argv[1]) await main()
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try {
+    await main()
+  } catch (error) {
+    if (!(error instanceof Refusal)) throw error
+    console.error(`pack refused: ${error.message}`)
+    process.exitCode = 1
+  }
+}
