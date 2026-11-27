@@ -911,10 +911,16 @@ export function createHandshake(ctx: HostContext, conn: ConnectionContext): Hand
        * sessions its client asks for and nowhere else, and these are the
        * ones whose servers' `authRequired` state it reads.
        */
-      const waiting = (target === undefined
+      /*
+       * A target was checked above to be an MCP server of that session, so its
+       * chats are told whether or not the server waits now: a renewal arrives
+       * while the server still holds the token it renews, and the backend is
+       * what knows whether that server takes the resource.
+       */
+      const waiting = target === undefined
         ? [...sessions].filter(([uri]) => subscribedAs(connection, uri) !== undefined).flatMap(([, held]) => [...held.chats.values()])
-        : [...(sessions.get(target.session)?.chats.values() ?? [])])
-        .filter((chat) => chat.awaiting?.().includes(resource) === true);
+          .filter((chat) => chat.awaiting?.().includes(resource) === true)
+        : [...(sessions.get(target.session)?.chats.values() ?? [])];
       if (target === undefined && waiting.length === 0 && !advertised().has(resource)) {
         throw new RpcError(INVALID_PARAMS, `${resource || 'That'} is not a resource this host advertises`);
       }
