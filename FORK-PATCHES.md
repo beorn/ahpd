@@ -136,6 +136,7 @@ Upstream status is one of:
 ### Our own process docs
 - `c17289eb2`, `4c403b657` · every upstream post gets `/pro` and an independent Fable critique first, and prior art is checked before any ahpd change · #38236 · not upstreamable: our review process
 - `594b14cc8` · this file moves to `main`, since `main` is the release line · #463 · not upstreamable: the fork's own ledger
+- `51ada35c0` · the fork release packs with `scripts/pack-fork-release.mjs`: every packed manifest is stamped to `<x.y.z>-<suffix>` before anything is packed (a sibling's `workspace:*` resolves from its manifest, so one-at-a-time stamping shipped deploy naming an unstamped services), every manifest is restored in one `finally`, and each tarball's sibling dependencies and the lock's importer entries are read back and refused unless they name the packed version · #38983 (@cto a76b1ed6, fd4b9906) · not upstreamable: the fork's own release step
 
 ### Rebase repairs and test-only fixups
 - `dae7f13d4` (PR #24; hh/integration `173a6ff76`, `c24cccacf`) · `@bearly/durable-file` from the registry, and each plugin-route daemon with its own `XDG_CONFIG_HOME` so the store's one-writer fence does not refuse the other three · #38185 · upstream ask not written (test-only; the durable-file change is a rebase repair named under Rebase below)
