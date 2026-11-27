@@ -14,13 +14,19 @@
  *   of refusing its own folder;
  * - `uninstall` removes what the install wrote and keeps anything else, naming it; only `--purge` deletes that;
  * - every effect that throws becomes a refusal naming the step and the path, never a crash.
+ *
+ * On Linux the boot item is a systemd user unit, and the services driver's systemd-user arm is its one writer
+ * (#38277, @cto): writing it, `enable --now`, `disable --now` and removing it all go through that arm, its effects
+ * carried by this io. The launchd agent on macOS is written and run here as before.
  */
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { basename, dirname } from 'node:path';
-import { activateRelease, DEFAULT_KEEP, releasesToPrune, type DeployLayout, type InstallManifest, type InstallPin } from './index.js';
+import { ABSENT, controlUnit, putUnit, removeUnit, unitText, type ServiceRecord, type SystemdMachine, type UnitHost } from '@hallohuman/hightea-services';
+import { activateRelease, DEFAULT_KEEP, releasesToPrune, unitChangeLog, UNIT_CHANGES, type DeployLayout, type InstallManifest, type InstallPin } from './index.js';
 import { unpackArchive } from './untar.js';
 
 export interface RunResult {
@@ -347,7 +353,8 @@ export const applyInstall = async (
     }
     // The switch writes the symlink and the journal line; the boot item's own file is written below, before its
     // enable command runs.
-    if (entry.kind === 'symlink' || entry.from === 'generated:journal') continue;
+    // The services driver's change log is written by the driver as it goes.
+    if (entry.kind === 'symlink' || entry.from === 'generated:journal' || entry.from === UNIT_CHANGES) continue;
     if (entry.from === 'generated:compose') {
       const written = await attempt('write project file', entry.path, () => io.writeFile(entry.path, composeContent(manifest)));
       if (!written.ok) return { ok: false, wrote, pruned: [], keptReleases: [], refusal: written.refusal };
@@ -371,6 +378,11 @@ export const applyInstall = async (
     }
     if (entry.kind === 'boot-item') {
       const written = await attempt('write boot item', entry.path, () => {
+        if (isUnit(manifest)) {
+          const put = putUnit(unitMachine(manifest, io), INSTALLER, { service: unitRecord(manifest), ifVersion: unitVersion(io, entry.path) });
+          if (!put.ok) throw new Error(put.message);
+          return;
+        }
         io.mkdir(dirname(entry.path));
         io.writeFile(entry.path, bootContent(manifest));
       });
@@ -487,7 +499,7 @@ export const applyInstall = async (
 
   // The loaded boot item points at `current`, so a switch needs it restarted; a first install just starts it.
   const stopped = upgrading
-    ? await attempt('stop the running release', manifest.bootItem.path, () => io.run(manifest.bootItem.disable))
+    ? await attempt('stop the running release', manifest.bootItem.path, () => bootSwitch(manifest, io, false))
     : { ok: true as const, value: { code: 0, output: '' } };
   const stoppedOutput = stopped.ok
     ? stopped.value.output
@@ -495,7 +507,7 @@ export const applyInstall = async (
       ? stopped.refusal.output
       : '';
   const stoppedClause = upgrading ? (stoppedOutput === '' ? 'stopping it said nothing' : stoppedOutput) : '';
-  const enabled = await attempt('enable boot item', manifest.bootItem.path, () => io.run(manifest.bootItem.enable));
+  const enabled = await attempt('enable boot item', manifest.bootItem.path, () => bootSwitch(manifest, io, true));
   const started = enabled.ok && enabled.value.code === 0;
   if (!started) {
     const failure = enabled.ok ? enabled.value.output : enabled.refusal.kind === 'step-failed' ? enabled.refusal.output : '';
@@ -510,7 +522,7 @@ export const applyInstall = async (
         () => switchTo(layout, previous.version, 'switching back after a failed start', { back: true }),
       );
       const restarted = await attempt('start the previous release', manifest.bootItem.path, () =>
-        io.run(manifest.bootItem.enable),
+        bootSwitch(manifest, io, true),
       );
       const restored = await attempt('restore install record', installedManifest, () =>
         io.writeFile(
@@ -633,7 +645,7 @@ export const uninstallInstall = (
 ): UninstallResult => {
   const removed: string[] = [];
   const kept: string[] = [];
-  const disabled = io.run(manifest.bootItem.disable);
+  const disabled = bootSwitch(manifest, io, false);
   // The boot item's own answer when it is already off, on either platform: uninstall runs twice, and a reinstall after
   // a partial removal must complete rather than stop on a service that is not there (#38280, codimac).
   const alreadyOff = BOOT_ITEM_ALREADY_OFF.some((pattern) => pattern.test(disabled.output));
@@ -703,6 +715,13 @@ export const uninstallInstall = (
       }
       continue;
     }
+    if (entry.kind === 'boot-item' && isUnit(manifest)) {
+      const gone = removeUnit(unitMachine(manifest, io), INSTALLER, { name: unitName(manifest), ifVersion: unitVersion(io, entry.path) });
+      if (!gone.ok)
+        return { ok: false, removed, kept, refusal: { kind: 'step-failed', step: 'remove file', path: entry.path, output: gone.message } };
+      removed.push(entry.path);
+      continue;
+    }
     try {
       io.remove(entry.path);
       removed.push(entry.path);
@@ -721,6 +740,57 @@ export const uninstallInstall = (
 /** The file a launchd agent or a systemd user unit reads: one copy loaded, one kept under the root as the record. */
 const bootContent = (manifest: InstallManifest): string =>
   manifest.bootItem.kind === 'launchd-agent' ? launchdAgent(manifest) : systemdUnit(manifest);
+
+/** Who the services driver logs a boot item change as. */
+const INSTALLER = { principal: 'local:ahpd-host-install', remote: false };
+
+const isUnit = (manifest: InstallManifest): boolean => manifest.bootItem.kind === 'systemd-user-unit';
+
+/** The unit's service name: `ahpd` for `ahpd.service`. */
+const unitName = (manifest: InstallManifest): string => basename(manifest.bootItem.path, '.service');
+
+/** A word `/bin/sh` reads as itself: plain when it is plain, so `systemctl --user enable --now ahpd.service` runs as printed. */
+const shellArg = (word: string): string => (/^[A-Za-z0-9@%+=:,./_-]+$/u.test(word) ? word : shellWord(word));
+
+/** The systemd-user arm's effects, carried by this io: the same fake a test holds, the same node fs a host runs. */
+const unitHost = (io: InstallIo): UnitHost => ({
+  read: (path) => (io.exists(path) ? io.readFile(path) : undefined),
+  write: (path, text) => {
+    io.mkdir(dirname(path));
+    io.writeFile(path, text);
+  },
+  remove: (path) => io.remove(path),
+  // A few lines per install, so a read and a rewrite is enough. The directory is made because a second uninstall
+  // logs its disable after the first removed the folder.
+  append: (path, text) => {
+    io.mkdir(dirname(path));
+    io.writeFile(path, `${io.exists(path) ? io.readFile(path) : ''}${text}`);
+  },
+  run: (argv) => io.run(argv.map(shellArg).join(' ')),
+});
+
+/** The machine the services driver writes the boot item on: its unit directory, with this io as its host. */
+const unitMachine = (manifest: InstallManifest, io: InstallIo): SystemdMachine => ({
+  name: hostname(),
+  configDir: `${manifest.root}/state`,
+  changeLog: unitChangeLog(manifest.root),
+  backend: { kind: 'systemd-user', unitDir: dirname(manifest.bootItem.path), host: unitHost(io) },
+});
+
+/** The version a put or remove is pinned to: the unit's text as it is now, or absent. */
+const unitVersion = (io: InstallIo, path: string): string =>
+  io.exists(path) ? createHash('sha256').update(io.readFile(path)).digest('hex') : ABSENT;
+
+/**
+ * Turn the boot item on or off. A systemd user unit goes through the services driver (`start` is `enable --now`,
+ * `stop` is `disable --now`); a launchd agent runs the manifest's own command. Answered as a command's result, so
+ * what follows reads one shape: systemctl's own words on a refusal, or the driver's sentence when it never ran.
+ */
+const bootSwitch = (manifest: InstallManifest, io: InstallIo, on: boolean): RunResult => {
+  if (!isUnit(manifest)) return io.run(on ? manifest.bootItem.enable : manifest.bootItem.disable);
+  const answer = controlUnit(unitMachine(manifest, io), INSTALLER, { name: unitName(manifest), verb: on ? 'start' : 'stop' });
+  return answer.ok ? { code: 0, output: answer.output ?? '' } : { code: 1, output: answer.output ?? answer.message };
+};
 
 /** A path inside XML text and attributes: `&` first, or the escapes escape each other. */
 const xmlEscape = (text: string): string =>
@@ -833,19 +903,18 @@ const launchdAgent = (manifest: InstallManifest): string => {
 const systemdWord = (word: string): string =>
   /[\s"\\]/u.test(word) ? `"${word.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"` : word;
 
-/** `WantedBy` alone: pairing it with `After=default.target` is the ordering cycle systemd warns about. */
-const systemdUnit = (manifest: InstallManifest): string =>
-  [
-    '[Unit]',
-    'Description=ahpd (Hallohuman agent host), user session',
-    '',
-    '[Service]',
-    `ExecStart=${supervisorArgv(manifest).map(systemdWord).join(' ')}`,
-    'Restart=always',
-    'RestartSec=2',
-    '',
-    '[Install]',
-    'WantedBy=default.target',
-  ].join('\n');
+/** The boot item as the neutral record the services driver writes: ExecStart quoted for systemd, restarted always. */
+const unitRecord = (manifest: InstallManifest): ServiceRecord => ({
+  name: unitName(manifest),
+  command: supervisorArgv(manifest).map(systemdWord).join(' '),
+  restart: { policy: 'always', backoff_seconds: 2 },
+});
+
+/** The unit's text in the driver's own rendering, so the record copy is byte for byte the loaded one. */
+const systemdUnit = (manifest: InstallManifest): string => {
+  const unit = unitText({ name: hostname() }, unitRecord(manifest));
+  if (!unit.ok) throw new Error(unit.message);
+  return unit.text;
+};
 
 export { configSeed, SERVICES_FILE_SEED, xmlEscape };

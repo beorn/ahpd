@@ -11,8 +11,9 @@ export { machineSwitches, MACHINE_KEY, REMOTE_COMMANDS_OFF, ROOM_ASKS_OFF, type 
 export {
   listServices, putService, removeService, controlService, serviceLogs, acknowledgeFiles, changesAt, CAPABILITIES, LOG_LINES_MAX,
   CHANGES_BYTES_MAX, ABSENT, isUnreadableLine, type UnreadableLine,
-  type Machine, type Caller, type Answer, type Refusal, type RefusalCode, type Listing, type PutParams, type AcknowledgeParams,
+  type Machine, type ComposeMachine, type ComposeBackend, type Caller, type Answer, type Refusal, type RefusalCode, type Listing, type PutParams, type AcknowledgeParams,
   type Changes, type ChangesRange,
 } from './compose.js';
+export { unitText, putUnit, removeUnit, controlUnit, type SystemdMachine, type SystemdUserBackend, type UnitHost, type UnitRun } from './systemd.js';
 export type { ServiceRecord, ServicePatch, ServiceSource, SourceKind, SecretRef, Schedule, Restart, Dependency, Health, RestartPolicy, Condition } from './record.js';
 export type { PcSocket } from './pc.js';

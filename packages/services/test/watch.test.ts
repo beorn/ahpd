@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { listServices, type Machine } from '../src/compose.js';
+import { listServices, type ComposeMachine } from '../src/compose.js';
 import { driftFacts } from '../src/drift.js';
 import { CUT_COMMAND_REF, GAVE_UP_REF, watchAlerts } from '../src/watch.js';
 
@@ -20,11 +20,11 @@ import { CUT_COMMAND_REF, GAVE_UP_REF, watchAlerts } from '../src/watch.js';
 let dir: string;
 afterEach(() => { if (dir !== undefined) rmSync(dir, { recursive: true, force: true }); });
 
-const machineFor = (text: string, socket = 'unused.sock'): Machine => {
+const machineFor = (text: string, socket = 'unused.sock'): ComposeMachine => {
   dir = mkdtempSync(join(tmpdir(), 'pcw-'));
   const file = join(dir, 'pc.yaml');
   writeFileSync(file, text);
-  return { name: 'test-machine', files: [file], configDir: dir, changeLog: join(dir, 'changes.jsonl'), pc: { socket: join(dir, socket) } };
+  return { name: 'test-machine', configDir: dir, changeLog: join(dir, 'changes.jsonl'), backend: { kind: 'process-compose', files: [file], pc: { socket: join(dir, socket) } } };
 };
 
 const CRASHER = `processes:
@@ -140,7 +140,7 @@ describe('the real process-compose, through the crash shape', () => {
       throw new Error('process-compose was not found: set PROCESS_COMPOSE_BIN or put it on PATH. This test is what proves the give-up alert matches what process-compose really reports.');
     }
     const machine = machineFor(CRASHER, 'pc.sock');
-    pc = spawn(binary, ['-f', machine.files[0]!, '--unix-socket', machine.pc.socket, '--use-uds', '-t=false', '-L', join(dir, 'pc.log'), 'up'],
+    pc = spawn(binary, ['-f', machine.backend.files[0]!, '--unix-socket', machine.backend.pc.socket, '--use-uds', '-t=false', '-L', join(dir, 'pc.log'), 'up'],
       { stdio: 'ignore', env: { ...process.env, PC_DISABLE_TUI: 'true' } });
     const listing = listServices(machine);
     let alerts: ReturnType<typeof watchAlerts> = [];

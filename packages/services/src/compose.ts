@@ -1,7 +1,9 @@
 /**
  * The process-compose driver (#38277): plain functions, no driver SDK,
  * registry or base class (@cto). The AHP method set and `list`'s capability
- * list are the interface; a second supervisor would be its own functions.
+ * list are the interface. The second supervisor, systemd --user units, is its
+ * own functions in systemd.ts; each function here hands a `systemd-user`
+ * machine to them, or refuses it by name, before reading anything.
  *
  * The rules this file carries out:
  *
@@ -39,19 +41,32 @@ import {
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
 import { ROUTES, pcFailure, pcRequest, type PcSocket } from './pc.js';
 import { cutCommand, cutReason } from './watch.js';
+import { controlUnit, putUnit, removeUnit, unsupported, type SystemdMachine, type SystemdUserBackend } from './systemd.js';
 
-/** One machine's process-compose, as the plugin that hosts the driver configures it. */
+/** A machine whose services process-compose runs. */
+export interface ComposeBackend {
+  readonly kind: 'process-compose';
+  /** process-compose's `-f` files, in the order given; the last is the one written. */
+  readonly files: readonly string[];
+  readonly pc: PcSocket;
+}
+
+/** One machine's services, as the plugin or the installer that hosts the driver configures it. */
 export interface Machine {
   /** The machine's name, as a person reading "edit it in <file> on <machine>" knows it. */
   readonly name: string;
-  /** process-compose's `-f` files, in the order given; the last is the one written. */
-  readonly files: readonly string[];
   /** The daemon's config directory, where `machineSwitches` reads `config.json`. */
   readonly configDir: string;
   /** The JSONL change log; created 0600. */
   readonly changeLog: string;
-  readonly pc: PcSocket;
+  readonly backend: ComposeBackend | SystemdUserBackend;
 }
+
+/** A machine under process-compose: what the drift check and the services plugin take. */
+export type ComposeMachine = Machine & { readonly backend: ComposeBackend };
+
+const isCompose = (machine: Machine): machine is ComposeMachine => machine.backend.kind === 'process-compose';
+const isSystemd = (machine: Machine): machine is SystemdMachine => machine.backend.kind === 'systemd-user';
 
 /** Who is asking. `remote` is anybody not on this machine (Hightea's pipe included). */
 export interface Caller {
@@ -62,7 +77,8 @@ export interface Caller {
 export type RefusalCode =
   | 'INVALID' | 'PLAIN_ENV_VALUE' | 'NOT_FOUND' | 'READ_ONLY' | 'STALE_VERSION' | 'REMOTE_COMMANDS_OFF'
   | 'SWITCHES_UNREADABLE' | 'UNSUPPORTED_LAYOUT' | 'FILE_UNREADABLE' | 'RELOAD_FAILED' | 'PC_REFUSED'
-  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED' | 'EXISTS' | 'CHANGES_REPLACED';
+  | 'CHANGE_LOG_UNWRITABLE' | 'DRIVER_FAILED' | 'NOT_CONFIGURED' | 'EXISTS' | 'CHANGES_REPLACED'
+  | 'NOT_SUPPORTED' | 'SYSTEMCTL_REFUSED';
 
 export interface Refusal {
   readonly ok: false;
@@ -70,6 +86,8 @@ export interface Refusal {
   readonly message: string;
   /** On STALE_VERSION: what changed between the version the caller read and now, when the driver still holds it. */
   readonly diff?: string;
+  /** On SYSTEMCTL_REFUSED: what systemctl printed, as it printed it. */
+  readonly output?: string;
 }
 
 export type Answer<T> = ({ readonly ok: true } & T) | Refusal;
@@ -165,7 +183,7 @@ const extendsOf = (file: string, doc: Document): string | undefined => {
 };
 
 /** The process names each shared file defines: every earlier `-f` file, and every file any of them (or the last) extends. */
-function sharedNames(machine: Machine, last: string, lastDoc: Document): Map<string, string> {
+function sharedNames(machine: ComposeMachine, last: string, lastDoc: Document): Map<string, string> {
   const names = new Map<string, string>();
   const seen = new Set<string>([last]);
   const visitFile = (file: string, depth: number): void => {
@@ -181,7 +199,7 @@ function sharedNames(machine: Machine, last: string, lastDoc: Document): Map<str
   };
   const lastParent = extendsOf(last, lastDoc);
   if (lastParent) visitFile(lastParent, 0);
-  for (const file of machine.files.slice(0, -1)) visitFile(resolve(file), 0);
+  for (const file of machine.backend.files.slice(0, -1)) visitFile(resolve(file), 0);
   return names;
 }
 
@@ -197,8 +215,8 @@ const usesAnchors = (node: unknown): boolean => {
   return found || Boolean((node as { anchor?: string } | null)?.anchor);
 };
 
-function readState(machine: Machine): State {
-  const last = machine.files[machine.files.length - 1];
+function readState(machine: ComposeMachine): State {
+  const last = machine.backend.files[machine.backend.files.length - 1];
   if (last === undefined) throw new FileError(`no process-compose files are configured for ${machine.name}`);
   const file = resolve(last);
   const { text, hash } = readText(file);
@@ -252,7 +270,8 @@ const openLog = (changeLog: string): Refusal | undefined => {
   }
 };
 
-interface LogLine {
+/** One line of the change log, whichever backend wrote it. */
+export interface LogLine {
   readonly at: string;
   readonly principal: string;
   readonly op: string;
@@ -328,10 +347,10 @@ function stale(state: Pick<State, 'file' | 'ifVersion' | 'text'>, ifVersion: unk
 }
 
 /** Reload process-compose from the files; a refusal naming what it said, or nothing when it reloaded. */
-async function reload(machine: Machine, file: string, hash: string): Promise<Refusal | undefined> {
+async function reload(machine: ComposeMachine, file: string, hash: string): Promise<Refusal | undefined> {
   const [method, path] = ROUTES.reload();
   try {
-    const answer = await pcRequest(machine.pc, method, path);
+    const answer = await pcRequest(machine.backend.pc, method, path);
     if (answer.status === 200) return undefined;
     return refuse('RELOAD_FAILED', `written to ${file} (now ${hash}) but not applied: ${pcFailure(answer)}`);
   }
@@ -342,6 +361,7 @@ async function reload(machine: Machine, file: string, hash: string): Promise<Ref
 
 /** `list`: every service the driver can edit, every one it cannot and why, and the version to write against. */
 export function listServices(machine: Machine): Answer<Listing> {
+  if (!isCompose(machine)) return unsupported('list', machine);
   try {
     const state = readState(machine);
     return {
@@ -364,7 +384,7 @@ export function listServices(machine: Machine): Answer<Listing> {
 }
 
 /** Every `-f` file's hash, remembering each text so a later stale acknowledge can show what changed. */
-const fileHashes = (machine: Machine): Record<string, string> => Object.fromEntries(machine.files.map((one) => {
+const fileHashes = (machine: ComposeMachine): Record<string, string> => Object.fromEntries(machine.backend.files.map((one) => {
   const file = resolve(one);
   const { text, hash } = readText(file);
   remember(hash, text);
@@ -389,6 +409,7 @@ export interface AcknowledgeParams {
 export function acknowledgeFiles(
   machine: Machine, caller: Caller, params: AcknowledgeParams, record: (file: string, hash: string) => void,
 ): Answer<{ files: Record<string, string> }> {
+  if (!isCompose(machine)) return unsupported('acknowledge', machine);
   const given = params?.hashes;
   const asked = given !== null && typeof given === 'object' ? Object.entries(given).map(([file, hash]) => [resolve(file), hash] as const) : [];
   const log = (refused?: Refusal): void => writeLog(machine.changeLog, {
@@ -399,7 +420,7 @@ export function acknowledgeFiles(
   try {
     const unwritable = openLog(machine.changeLog);
     if (unwritable) return unwritable;
-    const files = new Set(machine.files.map((one) => resolve(one)));
+    const files = new Set(machine.backend.files.map((one) => resolve(one)));
     if (asked.length === 0) {
       const refusal = refuse('INVALID', `acknowledge needs "hashes": each -f file's hash as list answered it (${[...files].join(', ')})`);
       log(refusal);
@@ -474,6 +495,8 @@ const newCommand = (before: ServiceRecord | undefined, after: ServiceRecord): bo
  * any put's is. A new entry is a new command, so the switch still decides.
  */
 export async function putService(machine: Machine, caller: Caller, params: PutParams): Promise<Answer<{ ifVersion: string; file: string; service: ServiceRecord; changed: boolean }>> {
+  if (isSystemd(machine)) return putUnit(machine, caller, params);
+  if (!isCompose(machine)) return unsupported('put', machine);
   const name = typeof params?.service?.name === 'string' ? params.service.name : '';
   let before: ServiceRecord | undefined;
   /** The record the put asked for, once it is known to be one; a refusal logs it too. */
@@ -561,6 +584,8 @@ export async function putService(machine: Machine, caller: Caller, params: PutPa
 
 /** `remove`: take one service out of the machine's file, then reload. Removing runs nothing, so it needs no switch. */
 export async function removeService(machine: Machine, caller: Caller, params: { readonly name: string; readonly ifVersion: string; readonly seen?: string }): Promise<Answer<{ ifVersion: string; file: string }>> {
+  if (isSystemd(machine)) return removeUnit(machine, caller, params);
+  if (!isCompose(machine)) return unsupported('remove', machine);
   const name = typeof params?.name === 'string' ? params.name : '';
   let before: ServiceRecord | undefined;
   let hashBefore: string | null = null;
@@ -612,8 +637,8 @@ export async function removeService(machine: Machine, caller: Caller, params: { 
   }
 }
 
-const currentHash = (machine: Machine): string | null => {
-  const last = machine.files[machine.files.length - 1];
+const currentHash = (machine: ComposeMachine): string | null => {
+  const last = machine.backend.files[machine.backend.files.length - 1];
   try {
     return last === undefined ? null : sha256(readFileSync(resolve(last)));
   }
@@ -628,7 +653,9 @@ const currentHash = (machine: Machine): string | null => {
  * whatever `allowRemoteCommands` says. Stopping a scheduled process pauses its
  * schedule until it is started again (process-compose's rule).
  */
-export async function controlService(machine: Machine, caller: Caller, params: { readonly name: string; readonly verb: 'start' | 'stop' | 'restart' }): Promise<Answer<{ name: string }>> {
+export async function controlService(machine: Machine, caller: Caller, params: { readonly name: string; readonly verb: 'start' | 'stop' | 'restart' }): Promise<Answer<{ name: string; output?: string }>> {
+  if (isSystemd(machine)) return controlUnit(machine, caller, params);
+  if (!isCompose(machine)) return unsupported(String(params?.verb), machine);
   const name = typeof params?.name === 'string' ? params.name : '';
   const verb = params?.verb;
   const hash = currentHash(machine);
@@ -652,7 +679,7 @@ export async function controlService(machine: Machine, caller: Caller, params: {
     const [method, path] = ROUTES[verb](name);
     let refusal: Refusal | undefined;
     try {
-      const answer = await pcRequest(machine.pc, method, path);
+      const answer = await pcRequest(machine.backend.pc, method, path);
       if (answer.status !== 200) refusal = refuse('PC_REFUSED', `${verb} ${name}: ${pcFailure(answer)}`);
     }
     catch (error) {
@@ -677,6 +704,7 @@ export const LOG_LINES_MAX = 1000;
  * refusal is logged.
  */
 export async function serviceLogs(machine: Machine, caller: Caller, params: { readonly name: string; readonly endOffset?: number; readonly limit?: number }): Promise<Answer<{ name: string; lines: readonly string[] }>> {
+  if (!isCompose(machine)) return unsupported('logs', machine);
   const name = typeof params?.name === 'string' ? params.name : '';
   const endOffset = params?.endOffset ?? 0;
   const limit = params?.limit ?? 100;
@@ -697,7 +725,7 @@ export async function serviceLogs(machine: Machine, caller: Caller, params: { re
     const [method, path] = ROUTES.logs(name, endOffset, limit);
     let answer;
     try {
-      answer = await pcRequest(machine.pc, method, path);
+      answer = await pcRequest(machine.backend.pc, method, path);
     }
     catch (error) {
       return refused(refuse('PC_REFUSED', `logs ${name}: ${(error as Error).message}`));
@@ -790,6 +818,8 @@ const nextNewline = (fd: number, from: number, size: number): number => {
  * a reader always moves past it. It reads only.
  */
 export function changesAt(machine: Machine, range: ChangesRange = {}, log?: string): Answer<Changes> {
+  // The systemd-user arm's log goes through its host, which this node-fs read would bypass.
+  if (!isCompose(machine)) return unsupported('changes', machine);
   const file = machine.changeLog;
   const position = range.position ?? 0;
   const length = Math.min(range.length ?? CHANGES_BYTES_MAX, CHANGES_BYTES_MAX);

@@ -110,6 +110,10 @@ export const INSTALL_ROOT_NAME = '.ahpd';
 export const BOOT_LABEL = 'dev.hallohuman.ahpd';
 /** The service name the install's release folders are filed under; the same name `ahpd deploy` uses. */
 export const INSTALL_SERVICE = 'ahpd';
+/** The `from` of the entry the services driver writes as it goes: its change log for the user unit (#38277). */
+export const UNIT_CHANGES = 'driver:changes';
+/** Where that change log sits: beside the boot item's record copy, inside the root. */
+export const unitChangeLog = (root: string): string => `${root}/boot/changes.jsonl`;
 
 const isPinned = (version: string): boolean => /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version);
 /** `sha256:<64 hex>` for an artifact we publish, or npm's own `sha512-<86 base64>==` integrity; each exact, never a
@@ -192,6 +196,11 @@ export const customerInstallManifest = (
     { kind: 'symlink', path: `${stateDir}/deploy/${INSTALL_SERVICE}/current`, from: `releases/${options.version}`, why: 'switched by one atomic rename; versions and switch-back read it' },
     { kind: 'dir', path: `${root}/boot`, why: 'the generated boot item, kept as a record next to the loaded copy' },
     { kind: 'file', path: `${root}/boot/${bootItem.kind}`, from: 'generated:boot-item', why: 'the boot item uninstall disables and removes' },
+    // #38277: a systemd user unit is written, enabled, disabled and removed by the services driver, which logs each
+    // change and refusal. Listed so uninstall removes it; it sits before the boot item so it goes after the unit does.
+    ...(options.platform === 'linux'
+      ? [{ kind: 'file' as const, path: unitChangeLog(root), from: UNIT_CHANGES, why: "the services driver's change log for the user unit: each write, enable, disable and remove" }]
+      : []),
     { kind: 'file', path: `${root}/install.json`, why: 'this manifest, so uninstall removes exactly what was created' },
     { kind: 'boot-item', path: bootItem.path, from: 'boot-item', why: `starts ahpd in the user session on ${options.platform}` },
   ]

@@ -104,7 +104,7 @@ const host = () => {
 
 const options = (extra: Record<string, unknown> = {}) => ({ files: [join(dir, 'local.yaml')], socket: join(dir, 'pc.sock'), machine: 'test-machine', ...extra });
 const ifVersion = (): string => {
-  const listing = listServices({ name: 'test-machine', files: [join(dir, 'local.yaml')], configDir: dir, changeLog: join(dir, 'services', 'changes.jsonl'), pc: { socket: join(dir, 'pc.sock') } });
+  const listing = listServices({ name: 'test-machine', configDir: dir, changeLog: join(dir, 'services', 'changes.jsonl'), backend: { kind: 'process-compose', files: [join(dir, 'local.yaml')], pc: { socket: join(dir, 'pc.sock') } } });
   if (!listing.ok) throw new Error(listing.message);
   return listing.ifVersion;
 };

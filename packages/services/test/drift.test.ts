@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Machine } from '../src/compose.js';
+import type { ComposeMachine } from '../src/compose.js';
 import { acknowledge, checkDrift, compareDrift, readKnown, type DriftFacts } from '../src/drift.js';
 
 /*
@@ -73,7 +73,7 @@ describe('checkDrift against files and a process-compose socket', () => {
   let dir: string;
   let server: Server;
   let held: string[];
-  let machine: Machine;
+  let machine: ComposeMachine;
   let stateFile: string;
 
   beforeEach(async () => {
@@ -91,10 +91,9 @@ describe('checkDrift against files and a process-compose socket', () => {
     await new Promise<void>((done) => server.listen(socket, done));
     machine = {
       name: 'test-machine',
-      files: [join(dir, 'base.yaml'), join(dir, 'local.yaml')],
       configDir: dir,
       changeLog: join(dir, 'changes.jsonl'),
-      pc: { socket, tokenFile: join(dir, 'token') },
+      backend: { kind: 'process-compose', files: [join(dir, 'base.yaml'), join(dir, 'local.yaml')], pc: { socket, tokenFile: join(dir, 'token') } },
     };
     stateFile = join(dir, 'services', 'drift.json');
   });
@@ -106,7 +105,7 @@ describe('checkDrift against files and a process-compose socket', () => {
   it('takes the files as they are on the first check, then names a hand edit until it is acknowledged', async () => {
     expect(await checkDrift(machine, stateFile)).toEqual([]);
     expect(statSync(stateFile).mode & 0o777).toBe(0o600);
-    expect(Object.keys(readKnown(stateFile)).sort()).toEqual(machine.files.slice().sort());
+    expect(Object.keys(readKnown(stateFile)).sort()).toEqual(machine.backend.files.slice().sort());
 
     const local = join(dir, 'local.yaml');
     writeFileSync(local, 'processes:\n  web:\n    command: sleep 3\n');
@@ -148,7 +147,7 @@ describe('checkDrift against files and a process-compose socket', () => {
   });
 
   it('says process-compose cannot be read, by its answer, and still compares the files', async () => {
-    machine = { ...machine, pc: { socket: machine.pc.socket, tokenFile: join(dir, 'missing-token') } };
+    machine = { ...machine, backend: { ...machine.backend, pc: { socket: machine.backend.pc.socket, tokenFile: join(dir, 'missing-token') } } };
     await checkDrift(machine, stateFile);
     writeFileSync(join(dir, 'base.yaml'), 'version: "0.5"\nprocesses: {}\n');
     const alerts = await checkDrift(machine, stateFile);
