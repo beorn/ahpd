@@ -192,6 +192,22 @@ const proxyOf = (ctx: SessionContext, name: string, server: { url: string; heade
 };
 
 /**
+ * The host's servers this record is offered, by the names it declares (#39079).
+ *
+ * A record that declares nothing is handed the whole map, which is what every
+ * record written before the field did. A record that declares names is handed
+ * exactly those; a name the host does not offer fails here, loudly and by name,
+ * rather than opening a session short a server its record said it had.
+ */
+export const offeredServers = <T>(all: Record<string, T> | undefined, declared: readonly string[] | undefined, who: string): Record<string, T> => {
+  const offered = all ?? {};
+  if (declared === undefined) return offered;
+  const missing = declared.filter((name) => !(name in offered));
+  if (missing.length > 0) throw new Error(`MCP_SERVER_UNKNOWN: ${who} names ${missing.join(', ')}, which the host does not offer`);
+  return Object.fromEntries(Object.entries(offered).filter(([name]) => declared.includes(name)));
+};
+
+/**
  * The MCP servers a session is opened with, in ACP's shape.
  *
  * The host's own map, less whatever the handshake says this server cannot take,
@@ -202,6 +218,8 @@ const proxyOf = (ctx: SessionContext, name: string, server: { url: string; heade
  */
 const serversFor = async (
   start: Start,
+  declaredServers: readonly string[] | undefined,
+  who: string,
   own: () => ToolsEndpoint | undefined,
   capabilities: AgentCapabilities | undefined,
   hostTools: boolean,
@@ -224,7 +242,7 @@ const serversFor = async (
     const at = reached ?? url;
     return reached === undefined && !toolsReachable(at, machine === undefined ? undefined : `computer://${machine}`) ? undefined : at;
   };
-  for (const [name, one] of Object.entries(start.mcpServers ?? {})) {
+  for (const [name, one] of Object.entries(offeredServers(start.mcpServers, declaredServers, who))) {
     // ACP has one shape per transport and this host has two, so a stdio server
     // is a name, a command and a list of variables, and an HTTP one is a name,
     // a URL and a list of headers.
@@ -767,8 +785,12 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * session runs in cannot reach them.
        */
       const left = new Map<string, string>();
+      /** The record, as an operator knows it, for a server it named and the host does not have. */
+      const who = options.displayName ?? options.provider ?? 'this record';
       const servers = await serversFor(
         start,
+        options.mcpServers,
+        who,
         toolsServer,
         agentCapabilities,
         options.hostTools !== false,
@@ -790,7 +812,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * server answers the open, `error` for one this server could not take.
        * The host's own tools are not among them: their token is the host's.
        */
-      publishServers(ctx, Object.keys(start.mcpServers ?? {}), (name) => left.has(name)
+      publishServers(ctx, Object.keys(offeredServers(start.mcpServers, options.mcpServers, who)), (name) => left.has(name)
         ? { kind: 'error', error: { errorType: 'mcpServerFailed', message: left.get(name) } }
         : { kind: 'starting' });
       /*

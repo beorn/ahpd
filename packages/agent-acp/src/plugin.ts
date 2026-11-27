@@ -125,6 +125,11 @@ const RECORD_FIELDS: Record<string, Record<string, unknown>> = {
     description: 'The sign-in to send after the handshake, as the methodId of a method the server lists in authMethods. A value naming one it does not offer fails the turn that opened.',
   },
   honoursTrust: { type: 'boolean', description: "Whether this agent asks before it loads a project's own settings and hooks. Absent, a session of it in a folder the host did not vouch for is refused rather than started, because ACP carries no trust field." },
+  mcpServers: {
+    type: 'array',
+    items: { type: 'string' },
+    description: "The MCP servers this record is offered, by their names in the host's mcpServers. Absent, it inherits them all; present, it is handed exactly these, and a name the host does not have fails the session rather than leaving it short a server.",
+  },
   // Read by `machineOf` as well as described here, so a wrongly written block
   // is refused with a line naming the field and never a value. A variable's
   // value is read where the machine is made, so a `$secret` reaches this
@@ -228,6 +233,25 @@ const kindSchema = (): Record<string, unknown> => ({
 /** One of the two ways an agent hears its list moved, for a value that says one. */
 const changedOf = (value: unknown): ToolsChanged | undefined =>
   value === 'notify' || value === 'list' ? value : undefined;
+
+/**
+ * A record's own list of MCP server names, read as written (#39079).
+ *
+ * A list that is not a list of names refuses the record, naming the field and
+ * the position of the entry that is not one: dropping the entry instead would
+ * open a session with a narrower list than the record wrote, which is the
+ * failure this field exists to prevent.
+ */
+const serverNamesOf = (record: string, declared: unknown): string[] => {
+  if (!Array.isArray(declared)) {
+    throw new Error(`${record}.mcpServers is not a list of names; a record's field is read as written`);
+  }
+  const bad = declared.findIndex((one) => typeof one !== 'string');
+  if (bad !== -1) {
+    throw new Error(`${record}.mcpServers[${bad}] is not a name; a record's list is read as written rather than shrunk`);
+  }
+  return declared as string[];
+};
 
 /**
  * What the plugin's own options are for every agent of one load.
@@ -416,6 +440,11 @@ const optionsOfRecord = (shared: Shared, record: AgentView): AcpOptions => {
   const hostTools = typeof config['hostTools'] === 'boolean' ? config['hostTools'] : shared.hostTools;
   const toolsChanged = changedOf(config['toolsChanged']) ?? shared.toolsChanged;
   const honoursTrust = typeof config['honoursTrust'] === 'boolean' ? config['honoursTrust'] : row?.honoursTrust;
+  // #39079: the servers this record is offered by name. Absent inherits the host's whole map, so a record written
+  // before this field keeps the sessions it had; a written list is taken as written, empty included, and an entry
+  // that is not a name refuses the record rather than leaving the list shorter than the one it wrote.
+  const declaredServers = config['mcpServers'];
+  const mcpServers = declaredServers === undefined ? row?.mcpServers : serverNamesOf(record.id, declaredServers);
   const cutTurns = config['cutTurns'] === 'error' || config['cutTurns'] === 'complete' ? config['cutTurns'] : undefined;
   const stderrTail = config['stderrTail'] === 'sentence' || config['stderrTail'] === 'log' ? config['stderrTail'] : undefined;
   const portFailures = config['portFailures'] === 'spawn' || config['portFailures'] === 'message' ? config['portFailures'] : undefined;
@@ -451,6 +480,7 @@ const optionsOfRecord = (shared: Shared, record: AgentView): AcpOptions => {
     ...(signedIn === undefined ? {} : { authenticate: signedIn }),
     ...(hostTools === undefined ? {} : { hostTools }),
     ...(honoursTrust === undefined ? {} : { honoursTrust }),
+    ...(mcpServers === undefined ? {} : { mcpServers }),
     ...(toolsChanged === undefined ? {} : { toolsChanged }),
     ...(cutTurns === undefined ? {} : { cutTurns }),
     ...(stderrTail === undefined ? {} : { stderrTail }),
