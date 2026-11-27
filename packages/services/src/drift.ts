@@ -23,7 +23,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isMap, isScalar, parseDocument } from 'yaml';
-import type { Machine } from './compose.js';
+import type { ComposeMachine } from './compose.js';
 import { ROUTES, pcFailure, pcRequest } from './pc.js';
 import { processesOf } from './splice.js';
 
@@ -185,7 +185,7 @@ const namesIn = (file: string): { names: { name: string; replicas?: number }[]; 
  * process-compose merges them. A program with `replicas` above 1 is held as `<name>-0` … `<name>-<n-1>` (#38277,
  * seen on process-compose 1.122.0), so it is named that way here; the last file to set `replicas` decides.
  */
-function definedNames(machine: Machine): Map<string, string> {
+function definedNames(machine: ComposeMachine): Map<string, string> {
   const defined = new Map<string, string>();
   const replicas = new Map<string, number>();
   const read = (file: string, depth: number, seen: Set<string>): void => {
@@ -198,7 +198,7 @@ function definedNames(machine: Machine): Map<string, string> {
       if (one.replicas !== undefined) replicas.set(one.name, one.replicas);
     }
   };
-  for (const file of machine.files) read(resolve(file), 0, new Set());
+  for (const file of machine.backend.files) read(resolve(file), 0, new Set());
   const held = new Map<string, string>();
   for (const [name, file] of defined) {
     const count = replicas.get(name) ?? 1;
@@ -209,11 +209,11 @@ function definedNames(machine: Machine): Map<string, string> {
 }
 
 /** Read every fact the comparison needs: process-compose over its socket, the files, and the state file. Never throws. */
-export async function driftFacts(machine: Machine, stateFile: string): Promise<DriftFacts> {
+export async function driftFacts(machine: ComposeMachine, stateFile: string): Promise<DriftFacts> {
   let running: DriftFacts['running'];
   try {
     const [method, path] = ROUTES.processes();
-    const answer = await pcRequest(machine.pc, method, path);
+    const answer = await pcRequest(machine.backend.pc, method, path);
     const data = (answer.body as { data?: unknown } | undefined)?.data;
     if (answer.status !== 200) running = pcFailure(answer);
     else if (!Array.isArray(data) || data.some((one) => typeof (one as { name?: unknown })?.name !== 'string')) {
@@ -239,7 +239,7 @@ export async function driftFacts(machine: Machine, stateFile: string): Promise<D
     defined = (error as Error).message;
   }
   const hashes = new Map<string, { hash: string } | { error: string }>();
-  for (const file of machine.files.map((one) => resolve(one))) {
+  for (const file of machine.backend.files.map((one) => resolve(one))) {
     try {
       hashes.set(file, { hash: sha256(readFileSync(file)) });
     }
@@ -262,7 +262,7 @@ export async function driftFacts(machine: Machine, stateFile: string): Promise<D
  * as it is now, and answer the alerts. Never throws; a state file that cannot
  * be written is one more alert.
  */
-export async function checkDrift(machine: Machine, stateFile: string, seen: (facts: DriftFacts) => void = () => {}): Promise<DriftAlert[]> {
+export async function checkDrift(machine: ComposeMachine, stateFile: string, seen: (facts: DriftFacts) => void = () => {}): Promise<DriftAlert[]> {
   const facts = await driftFacts(machine, stateFile);
   // What the check read, for a reader that shows it (the services channel's rows): one read of process-compose, not two.
   seen(facts);

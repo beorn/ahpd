@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 const version = (): string => {
-  const listing = listServices({ name: 'm', files: [local], configDir: dir, changeLog: join(dir, 'services', 'changes.jsonl'), pc: { socket } });
+  const listing = listServices({ name: 'm', configDir: dir, changeLog: join(dir, 'services', 'changes.jsonl'), backend: { kind: 'process-compose', files: [local], pc: { socket } } });
   if (!listing.ok) throw new Error(listing.message);
   return listing.ifVersion;
 };

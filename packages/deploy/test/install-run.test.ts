@@ -837,7 +837,7 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
     const release = `${releaseOf(manifest)}/process-compose.yaml`;
     const services = `${manifest.root}/state/services.yaml`;
-    const machine = { name: 'test-machine', files: [release, services], configDir: `${manifest.root}/state`, changeLog: `${manifest.root}/state/changes.jsonl`, pc: {} as never };
+    const machine = { name: 'test-machine', configDir: `${manifest.root}/state`, changeLog: `${manifest.root}/state/changes.jsonl`, backend: { kind: 'process-compose' as const, files: [release, services], pc: {} as never } };
     const before = readFileSync(services, 'utf8');
     const answer = await putService(machine, { principal: 'local:test', remote: false }, { service: { name: 'ahpd', command: '/bin/true' }, ifVersion: createHash('sha256').update(before).digest('hex') });
     expect(answer).toMatchObject({ ok: false, code: 'READ_ONLY' });
@@ -867,5 +867,95 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     expect((await applyInstall(third.manifest, io, ((_l: unknown, version: string) => { switched.push(version); }) as never)).ok).toBe(false);
     expect(switched).toEqual(['0.17.0', '0.16.0']);
     expect(io.content.get(config)).toBe(written);
+  });
+});
+
+/**
+ * #38277 row 9 (@cto): the services driver's systemd-user arm is the one writer of user units, so the Linux boot item
+ * is written, enabled, disabled and removed through it. Its change log is the proof: only the driver writes it.
+ * @level l2 (applyInstall and uninstallInstall over the fake io)
+ */
+describe('the Linux boot item goes through the services driver (#38277)', () => {
+  const logOf = (io: Fake, manifest: ReturnType<typeof manifestWith>) =>
+    (io.content.get(`${manifest.root}/boot/changes.jsonl`) ?? '').trim().split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  // Requirement: install writes the unit and enables it through the driver; the loaded unit is the driver's rendering
+  // and the record copy under the root is byte for byte the same. Apart from the final newline it is byte for byte the
+  // unit the installer wrote before the driver (origin/main f3b617ceb systemdUnit), Description included (@cto aed9c6e8).
+  it('install puts the unit and starts it through the driver', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo();
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    const loaded = io.content.get(manifest.bootItem.path) ?? '';
+    const current = `${manifest.root}/state/deploy/ahpd/current`;
+    expect(loaded).toBe([
+      '[Unit]',
+      'Description=ahpd (Hallohuman agent host), user session',
+      '',
+      '[Service]',
+      `ExecStart=${current}/supervisor up -f ${current}/process-compose.yaml -f ${manifest.root}/state/services.yaml -t=false -U -u ${manifest.root}/state/pc.sock -L ${manifest.root}/state/process-compose.log`,
+      'Restart=always',
+      'RestartSec=2',
+      '',
+      '[Install]',
+      'WantedBy=default.target',
+      '',
+    ].join('\n'));
+    expect(io.content.get(`${manifest.root}/boot/systemd-user-unit`)).toBe(loaded);
+    expect(io.commands).toEqual(['systemctl --user enable --now ahpd.service']);
+    expect(logOf(io, manifest).map((line) => [line['op'], line['name'], line['principal']])).toEqual([
+      ['put', 'ahpd', 'local:ahpd-host-install'],
+      ['start', 'ahpd', 'local:ahpd-host-install'],
+    ]);
+  });
+
+  // Requirement: an upgrade stops and starts the unit through the driver, and a unit that is already right is not rewritten.
+  it('an upgrade stops and starts through the driver without rewriting an unchanged unit', async () => {
+    const io = fakeIo();
+    for (const version of ['0.15.0', '0.16.0']) {
+      const built = customerInstallManifest({ platform: 'linux', arch: 'x64', home: '/home/customer', version, pins: HONEST });
+      if (!built.ok) throw new Error('expected a manifest');
+      expect((await applyInstall(built.manifest, io, () => undefined)).ok).toBe(true);
+    }
+    const manifest = manifestWith();
+    expect(logOf(io, manifest).map((line) => line['op'])).toEqual(['put', 'start', 'put', 'stop', 'start']);
+    expect(logOf(io, manifest)[2]).toMatchObject({ fileHashBefore: logOf(io, manifest)[2]!['fileHashAfter'] });
+    expect(io.commands).toEqual([
+      'systemctl --user enable --now ahpd.service',
+      'systemctl --user disable --now ahpd.service',
+      'systemctl --user enable --now ahpd.service',
+    ]);
+  });
+
+  // Requirement: uninstall disables and removes the unit through the driver, and takes the driver's log with the rest.
+  it('uninstall stops and removes the unit through the driver, then removes its log', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo();
+    expect((await applyInstall(manifest, io, () => undefined)).ok).toBe(true);
+    let seen: Record<string, unknown>[] = [];
+    // The log as uninstall leaves it just before removing it: read at the moment the log entry is removed.
+    const watched: InstallIo = {
+      ...io,
+      remove: (path) => {
+        if (path === `${manifest.root}/boot/changes.jsonl`) seen = logOf(io, manifest);
+        io.remove(path);
+      },
+    };
+    expect(uninstallInstall(manifest, watched).ok).toBe(true);
+    expect(seen.map((line) => line['op'])).toEqual(['put', 'start', 'stop', 'remove']);
+    expect(io.commands.at(-1)).toBe('systemctl --user disable --now ahpd.service');
+    expect(io.paths.has(manifest.bootItem.path)).toBe(false);
+    expect(io.paths.has(`${manifest.root}/boot/changes.jsonl`)).toBe(false);
+  });
+
+  // Requirement: the macOS launchd agent is not the driver's: it is written and run by the installer, with no driver log.
+  it('leaves the launchd agent to the installer', async () => {
+    const built = customerInstallManifest({ platform: 'darwin', arch: 'arm64', home: '/home/customer', version: '0.15.0-rc.4', pins: HONEST });
+    if (!built.ok) throw new Error('expected a manifest');
+    const io = fakeIo();
+    expect((await applyInstall(built.manifest, io, () => undefined)).ok).toBe(true);
+    expect(io.commands).toEqual([built.manifest.bootItem.enable]);
+    expect(built.manifest.entries.some((entry) => entry.path.endsWith('/boot/changes.jsonl'))).toBe(false);
+    expect([...io.paths].some((path) => path.endsWith('/boot/changes.jsonl'))).toBe(false);
   });
 });

@@ -34,7 +34,7 @@ import {
   rpcError, servicesChannel, serviceProvider, servicesProvider, servicesState,
   type Driver, type ServicesChannel, type ServicesProvider, type ServicesState,
 } from './channel.js';
-import { isUnreadableLine, type Machine } from './compose.js';
+import { isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
 import { watchAlerts } from './watch.js';
 
@@ -117,7 +117,7 @@ export const retiredMethod = (method: string): ServicesMethod => ({
  * options - and a sentence that names the wrong entry sends a person to the
  * configuration block that is fine.
  */
-export function machineOf(configDir: string, options: Record<string, unknown>, who = 'services plugin'): { machine: Machine; stateFile: string } | string {
+export function machineOf(configDir: string, options: Record<string, unknown>, who = 'services plugin'): { machine: ComposeMachine; stateFile: string } | string {
   const { files, socket, tokenFile, changeLog, machine } = options;
   const absolute = (value: unknown): value is string => typeof value === 'string' && isAbsolute(value);
   if (!Array.isArray(files) || files.length === 0 || !files.every(absolute)) {
@@ -131,10 +131,9 @@ export function machineOf(configDir: string, options: Record<string, unknown>, w
   return {
     machine: {
       name: (machine as string | undefined) ?? hostname(),
-      files: files as string[],
       configDir,
       changeLog: (changeLog as string | undefined) ?? join(own, 'changes.jsonl'),
-      pc: { socket, ...(tokenFile === undefined ? {} : { tokenFile: tokenFile as string }) },
+      backend: { kind: 'process-compose', files: files as string[], pc: { socket, ...(tokenFile === undefined ? {} : { tokenFile: tokenFile as string }) } },
     },
     stateFile: join(own, 'drift.json'),
   };

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
   CHANGES_BYTES_MAX, acknowledgeFiles, changesAt, controlService, listServices, putService, removeService, serviceLogs,
-  type Machine,
+  type ComposeMachine,
 } from '../src/compose.js';
 import { REMOTE_COMMANDS_OFF } from '../src/switches.js';
 
@@ -25,7 +25,7 @@ let server: Server;
 let seen: Seen[];
 /** What the fake process-compose answers, by "METHOD url"; anything else is 200 {name}. */
 let answers: Map<string, [number, unknown]>;
-let machine: Machine;
+let machine: ComposeMachine;
 
 const LOCAL_ONLY = { principal: 'local:bjorn', remote: false };
 const REMOTE = { principal: 'plugin:hightea-pipe', remote: true };
@@ -56,10 +56,9 @@ beforeEach(async () => {
   await new Promise<void>((done) => server.listen(socket, done));
   machine = {
     name: 'test-machine',
-    files: [base, local],
     configDir: dir,
     changeLog: join(dir, 'changes.jsonl'),
-    pc: { socket, tokenFile: join(dir, 'token') },
+    backend: { kind: 'process-compose', files: [base, local], pc: { socket, tokenFile: join(dir, 'token') } },
   };
 });
 afterEach(async () => {
@@ -414,7 +413,7 @@ describe('process-compose over its Unix socket (rule: reload from disk; one rout
   });
 
   it('answers a refusal, never a throw, when process-compose is not there', async () => {
-    const away = { ...machine, pc: { socket: join(dir, 'nobody.sock') } };
+    const away = { ...machine, backend: { ...machine.backend, pc: { socket: join(dir, 'nobody.sock') } } };
     const answer = await controlService(away, LOCAL_ONLY, { name: 'web', verb: 'start' });
     expect(answer).toMatchObject({ ok: false, code: 'PC_REFUSED' });
     if (!answer.ok) expect(answer.message).toContain('nobody.sock');
@@ -429,7 +428,7 @@ describe('refusals, never throws (@cto: the condition for running inside ahpd)',
       .toMatchObject({ ok: false, code: 'INVALID', message: expect.stringContaining('"log_location" is not a service field') as unknown });
     expect(await removeService(machine, LOCAL_ONLY, { name: 'nobody', ifVersion: 'x' })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
     expect(await controlService(machine, LOCAL_ONLY, { name: 'web', verb: 'kill' as never })).toMatchObject({ ok: false, code: 'INVALID' });
-    const missing = { ...machine, files: [join(dir, 'absent.yaml')] };
+    const missing = { ...machine, backend: { ...machine.backend, files: [join(dir, 'absent.yaml')] } };
     expect(listServices(missing)).toMatchObject({ ok: false, code: 'FILE_UNREADABLE' });
     expect(await putService(missing, LOCAL_ONLY, { service: { name: 'web', command: 'two' }, ifVersion: 'x' })).toMatchObject({ ok: false, code: 'FILE_UNREADABLE' });
   });
