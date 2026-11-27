@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { chatReducer } from '@microsoft/agent-host-protocol';
 import type { ChatAction, ChatState } from '@microsoft/agent-host-protocol';
 import { Status } from '../../sdk/src/sessions/catalog.js';
@@ -13,6 +13,7 @@ import { createHost } from '../../sdk/src/host.js';
 import { gitChanges } from '../../sdk/src/sessions/changes.js';
 import { shellTerminals } from '../../sdk/src/machines/terminals.js';
 import { acpAgent } from '../src/index.js';
+import { STOP_END_BOUND_MS } from '../src/session.js';
 import { anyone, signIn } from './people.js';
 import type { ChangesetFile, ChangesetSource } from '../../sdk/src/types/changes.js';
 import type { Peer } from '../../sdk/src/types/rpc.js';
@@ -84,7 +85,7 @@ const text = async (source: ChangesetSource, uri: string): Promise<string | unde
   (await source.read?.(uri))?.data;
 
 /** A connected client with one ACP session, watching both its channels. */
-async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete'; silentAfterStart?: boolean; startAnswerMs?: number; toolCallSilenceMs?: number } = {}) {
+async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete'; silentAfterStart?: boolean; startAnswerMs?: number; toolCallSilenceMs?: number; log?: (line: string) => void; countStarts?: boolean } = {}) {
   const path = mkdtempSync(join(tmpdir(), 'ahpd-acp-'));
   /*
    * #38705: a server that answers the first handshake and never a second.
@@ -99,20 +100,26 @@ async function talking(options: { changes?: ChangesetSource; tools?: HostTool[];
    */
   const armed = join(path, 'armed');
   const wrapper = join(path, 'server.sh');
+  /** One line per server start, for a test that has to see a second one. */
+  const starts = join(path, 'starts');
   if (options.silentAfterStart === true) {
-    const starts = join(path, 'starts');
-    writeFileSync(wrapper, `#!/bin/sh\necho start >> "${starts}"\nif [ -f "${armed}" ]; then exec sleep 2; fi\nexec "${process.execPath}" "${FIXTURE}"\n`, { mode: 0o755 });
+    writeFileSync(wrapper, `#!/bin/sh\necho start >> "${starts}"\nif [ -f "${armed}" ]; then exec sleep 2; fi\nexec "${process.execPath}" "${FIXTURE}" "$@"\n`, { mode: 0o755 });
   }
+  if (options.countStarts === true) {
+    writeFileSync(wrapper, `#!/bin/sh\necho start >> "${starts}"\nexec "${process.execPath}" "${FIXTURE}" "$@"\n`, { mode: 0o755 });
+  }
+  const fixtureArgs = [FIXTURE];
   const host = createHost({
     path,
     agents: [acpAgent({
-      ...(options.silentAfterStart === true
-        ? { command: '/bin/sh', args: [wrapper] }
-        : { command: process.execPath, args: [FIXTURE] }),
+      ...(options.silentAfterStart === true || options.countStarts === true
+        ? { command: '/bin/sh', args: [wrapper, ...fixtureArgs.slice(1)] }
+        : { command: process.execPath, args: fixtureArgs }),
       provider: 'acp',
       ...(options.cutTurns === undefined ? {} : { cutTurns: options.cutTurns }),
       ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
       ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
+      ...(options.log === undefined ? {} : { log: options.log }),
     })],
     // The composer's `!` prefix is the host's shell, so the host has to hold one.
     terminals: shellTerminals(),
@@ -157,7 +164,7 @@ async function talking(options: { changes?: ChangesetSource; tools?: HostTool[];
   }).snapshot.state.defaultChat;
   await client.handle({ method: 'subscribe', params: { channel: chatUri } });
   opened.push({ client, uri });
-  return { host, client, peer: p, uri, chatUri, path };
+  return { host, client, peer: p, uri, chatUri, path, starts };
 }
 
 /** The sessions this file started, so each one's subprocess is stopped. */
@@ -763,6 +770,80 @@ it('ends a cancelled turn as turnCancelled, once, with the cancel reaching the s
   expect(said.filter((e) => e.action.type === 'chat/turnCancelled').map((e) => e.action.turnId)).toEqual(['t1']);
   expect(said.filter((e) => e.action.type === 'chat/turnComplete').map((e) => e.action.turnId)).toEqual(['t2']);
 });
+
+/*
+ * #38889: a stop reaches the server as a notification, and the server's answer
+ * to the prompt it stopped is what ends the turn. A server that says one word
+ * and then never answers the prompt leaves the turn's start row standing with
+ * no terminal row after it, on the chat and in the journal, and every wake
+ * handed behind it waits on a turn nothing will end.
+ *
+ * The bound is the code's own thirty seconds and the case does not wait it out:
+ * the one timer of exactly that length is the stop's clock, and the test fires
+ * it at once. Nothing else in the case depends on the length.
+ */
+it('ends a stopped turn here when the server never answers the prompt it stopped (#38889)', async () => {
+  const logged: string[] = [];
+  const { client, peer: p, chatUri, starts } = await talking({
+    countStarts: true, log: (line) => { logged.push(line); },
+  });
+  begin(client, chatUri, 't1', 'deafen now');
+  // The fixture's one word is what proves the prompt reached the server before
+  // the stop did, so the case measures the unanswered prompt rather than a
+  // turn ended before it was sent.
+  await until(() => types(p, chatUri).includes('chat/delta'));
+  const spawns = (): number => readFileSync(starts, 'utf8').trim().split('\n').length;
+  const spawnsBefore = spawns();
+
+  const realSetTimeout = globalThis.setTimeout;
+  let fired = 0;
+  const clock = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]
+  ) => {
+    if (ms === STOP_END_BOUND_MS && fired === 0) {
+      fired += 1;
+      queueMicrotask(() => { callback(...args); });
+      return { unref: () => {} } as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(callback as never, ms as never, ...(args as never[]));
+  }) as typeof setTimeout);
+  try {
+    client.handle({
+      method: 'dispatchAction',
+      params: { channel: chatUri, action: { type: 'chat/turnCancelled', turnId: 't1', duration: 0 } },
+    });
+  /*
+   * The host says the stop itself when it is taken, so a client's state shows
+   * the turn ended whether or not the backend ever heard it. What this case
+   * watches is the bridge's own account - the line it logs when the bound ends
+   * the turn it still holds - and then a turn handed after it: the backend runs
+   * that only once nothing runs, which a turn the server never answered would
+   * otherwise hold behind it for ever. That turn runs on a server of its own,
+   * because one that ignored the stop is not reused: it still holds the prompt
+   * the person stopped, and what it said next would land in the new turn.
+   */
+    const endedHere = (): string[] => logged.filter((line) => line.includes(`turn t1 was still open ${STOP_END_BOUND_MS} ms after the stop`));
+    await until(() => endedHere().length > 0);
+    // Said once, and it names the session, the turn, the wait and the pid it
+    // ended: what an operator counting these has to read.
+    expect(endedHere()).toHaveLength(1);
+    const told = endedHere()[0] ?? '';
+    expect(told).toMatch(/session \S+ turn t1 was still open/);
+    // Not only the handle: the process the stop could not reach is gone. It is
+    // the pid the line named, read back rather than assumed.
+    const endedPid = Number(/server pid (\d+) never answered/.exec(told)?.[1]);
+    expect(endedPid).toBeGreaterThan(0);
+    const gone = (): boolean => { try { process.kill(endedPid, 0); return false; } catch { return true; } };
+    await until(gone);
+    begin(client, chatUri, 't2', 'hi');
+    await until(() => actions(p, chatUri).some((e) => e.action.type === 'chat/turnComplete' && e.action.turnId === 't2'));
+    // The turn after the stop runs on a server opened for it, never on the one
+    // that went on holding the prompt.
+    expect(spawns()).toBe(spawnsBefore + 1);
+  } finally {
+    clock.mockRestore();
+  }
+}, 15_000);
 
 /*
  * A steering message to this backend is refused, a turn running or not: it

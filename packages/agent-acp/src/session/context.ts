@@ -300,6 +300,11 @@ export interface SessionContext extends Config, Handlers, Opening, Turn, ClientC
   startedWith: string;
   /** Whether a client asked to stop, read when the prompt settles. */
   cancelRequested: boolean;
+  /**
+   * The clock a stop armed for the turn the server was told to stop, while it
+   * waits for the server's own answer to end that turn (#38889).
+   */
+  stopBound: { turnId: string; timer: ReturnType<typeof setTimeout> } | undefined;
   /** Whether the session was disposed, after which no turn starts. */
   disposed: boolean;
   /** Why the last turn failed, or nothing. Cleared when a turn starts. */

@@ -27,6 +27,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ensureWorkspacelessScratchDir, idOf, isUUID, machineAsked, statusOf, uriOf } from '@ahpd/sdk';
 import type { Bag, Chosen, Session, Start } from '@ahpd/sdk';
+import { childProcessOf } from './connection.js';
 import { bag, UNTITLED } from './session/common.js';
 import { createClientCalls } from './session/clientcalls.js';
 import { createConfig } from './session/config.js';
@@ -45,6 +46,19 @@ import type { AcpOptions, AcpTurn, ConfirmationOption, PermissionAnswer, Watched
  * not wait would kill a process half way through releasing it.
  */
 const CLOSE_GRACE_MS = 1000;
+
+/**
+ * How long a stopped turn is given to be ended by the server's own answer
+ * before this bridge ends it here (#38889).
+ *
+ * A stop reaches an ACP server as a notification and the server's answer to the
+ * prompt is what ends the turn. One that goes on holding the prompt - alive,
+ * never answering - would otherwise leave the turn open for ever, with the next
+ * send queued behind it. There is no setting for this: the value at which a
+ * stop stops being a stop is not a record's business, and an off switch would
+ * be the bug itself.
+ */
+export const STOP_END_BOUND_MS = 30_000;
 
 /**
  * One conversation over one ACP server.
@@ -218,6 +232,7 @@ export function acpSession(
     failedOpen: undefined,
     startedWith: '',
     cancelRequested: false,
+    stopBound: undefined,
     disposed: false,
     error: undefined,
     title: UNTITLED,
@@ -399,6 +414,12 @@ export function acpSession(
      * stop reason it answers the prompt with is what reports the turn's end,
      * once. A turn still preparing ends before its prompt is sent.
      *
+     * A server that never answers the prompt it stopped ends nothing, so the
+     * stop arms a bound of its own: past it the turn is ended here `cancelled`,
+     * with a line saying the server never answered, and the server is let go
+     * (#38889): one that ignored the stop still runs the prompt, and what it
+     * says next would be read as the next turn's.
+     *
      * The permissions and the questions are answered before it goes, because a
      * server told to stop while it is blocked on one of this client's is a
      * server that never gets past it. A question is answered `cancel` rather
@@ -411,15 +432,43 @@ export function acpSession(
     abort: () => {
       ctx.pendingTurns.length = 0;
       if (ctx.active === undefined || ctx.cancelRequested) return;
+      const turnId = String(ctx.active.id);
       ctx.cancelRequested = true;
       ctx.settlePermissions();
       ctx.settleElicitations();
       ctx.calls.release('The turn was stopped');
       const connection = ctx.live;
       if (connection !== undefined && ctx.acpSessionId !== undefined) {
-        // Fire and forget: the prompt's own resolution is what ends the turn.
+        // Fire and forget: the prompt's own resolution is what ends the turn,
+        // and the bound below is what ends it when that resolution never comes.
         void connection.cancel(ctx.acpSessionId).catch(() => {});
       }
+      const timer = setTimeout(() => {
+        // A later stop, or a turn that ended and a new one that stopped, keeps
+        // its own clock: only the record this timer was armed under is cleared.
+        if (ctx.stopBound?.timer !== timer) return;
+        ctx.stopBound = undefined;
+        if (!ctx.cancelRequested || ctx.active === undefined || String(ctx.active.id) !== turnId) return;
+        const held = ctx.live;
+        const pid = held === undefined ? undefined : childProcessOf(held)?.pid;
+        ctx.options.log?.(
+          `${ctx.provider}: session ${String(ctx.acpSessionId)} turn ${turnId} was still open ${STOP_END_BOUND_MS} ms after the ` +
+            `stop - server pid ${String(pid)} never answered its prompt; the turn is ended here and that server is ended`,
+          'warn',
+        );
+        ctx.endTurn(turnId, 'cancelled');
+        /*
+         * A server that ignored the stop this long is not one the next turn
+         * may share the session with: its prompt still runs, and everything it
+         * says from here would be read as the next turn's. It is let go as a
+         * send that failed lets it go, and the next turn opens its own.
+         */
+        ctx.opening = undefined;
+        ctx.live = undefined;
+        if (held !== undefined) void held.close();
+      }, STOP_END_BOUND_MS);
+      timer.unref();
+      ctx.stopBound = { turnId, timer };
     },
 
     /*
