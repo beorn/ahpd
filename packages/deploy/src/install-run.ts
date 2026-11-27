@@ -426,6 +426,24 @@ export const applyInstall = async (
           await attempt('remove unpacked tree', tree, () => io.removeTree(tree));
           return { ok: false, wrote, pruned: [], keptReleases: [], refusal: unpacked.refusal };
         }
+        // A tree without the entry unpacks cleanly and starts nothing, so it is refused here, by name, rather than by a
+        // boot item that runs and exits (#38280).
+        if (!io.exists(`${tree}/${RELEASE_ENTRY}`)) {
+          await attempt('remove staged download', staging, () => io.remove(staging));
+          await attempt('remove unpacked tree', tree, () => io.removeTree(tree));
+          return {
+            ok: false,
+            wrote,
+            pruned: [],
+            keptReleases: [],
+            refusal: {
+              kind: 'step-failed',
+              step: 'unpack archive',
+              path: entry.path,
+              output: `the archive has no ${RELEASE_ENTRY}, so the project file would start nothing; nothing was placed`,
+            },
+          };
+        }
         const placedTree = await attempt('place release tree', entry.path, () => io.move(tree, entry.path));
         if (!placedTree.ok) {
           await attempt('remove staged download', staging, () => io.remove(staging));
@@ -751,6 +769,13 @@ const shellWord = (word: string): string => `'${word.replace(/'/gu, `'\\''`)}'`;
 const yamlString = (text: string): string => JSON.stringify(text);
 
 /**
+ * The server inside a release folder, and the one path the project file starts. The archive is a pnpm-deploy bundle
+ * of `packages/server`, so the tree has no `packages/` of its own: naming `<release>/packages/server/dist/main.js`
+ * gave a release that unpacked and then started nothing (#38280, 48 launchd restarts on the first Mac).
+ */
+const RELEASE_ENTRY = 'dist/main.js';
+
+/**
  * The release's own project file (#38277 S2): one process, ahpd, started with this release's runtime against this
  * release's server, every path absolute. It names the release folder, not `current`, so the file and the tree it starts
  * always match, a switch back included. PATH is declared because a boot item's environment has none worth trusting
@@ -758,7 +783,7 @@ const yamlString = (text: string): string => JSON.stringify(text);
  */
 const composeContent = (manifest: InstallManifest): string => {
   const release = `${manifest.root}/state/deploy/ahpd/releases/${manifest.version}`;
-  const command = [`${release}/runtime`, `${release}/packages/server/dist/main.js`, '--config-file', configFile(manifest)].map(shellWord).join(' ');
+  const command = [`${release}/runtime`, `${release}/${RELEASE_ENTRY}`, '--config-file', configFile(manifest)].map(shellWord).join(' ');
   return [
     `# Written by the ahpd installer for release ${manifest.version}. Rewritten by each install of a release; edit`,
     `# ${servicesFile(manifest)} for this machine's own services.`,

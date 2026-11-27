@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import * as ts from 'typescript';
 import { run, USAGE } from '../src/cli.js';
 import { nodeInstallIo, type InstallIo } from '../src/install-run.js';
+import { daemonArchive } from './daemon-archive.js';
 
 const pinsFile = (overrides: Record<string, unknown> = {}) => {
   const file = join(mkdtempSync(join(tmpdir(), 'ahpd-cli-')), 'pins.json');
@@ -48,17 +49,6 @@ const honestPinsFile = () => {
 };
 
 /** A real archive in the shape the installer accepts, so the apply reaches its prune step for the right reason. */
-const daemonArchive = (source: string): Buffer => {
-  const top = source.split('/').pop()!.replace(/\.tar\.gz$/u, '');
-  const dir = mkdtempSync(join(tmpdir(), 'ahpd-cli-archive-'));
-  mkdirSync(join(dir, top), { recursive: true });
-  writeFileSync(join(dir, top, 'package.json'), JSON.stringify({ name: 'ahpd-server' }));
-  const out = join(dir, 'archive.tgz');
-  const tarred = spawnSync('tar', ['-czf', out, '-C', dir, top], { encoding: 'utf8' });
-  if (tarred.status !== 0) throw new Error(`tar failed: ${tarred.stderr}`);
-  return readFileSync(out);
-};
-
 const noopIo = () =>
   ({}) as InstallIo;
 
