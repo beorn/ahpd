@@ -3,7 +3,7 @@
  * binary - a stock Mac - can cut its half; the proof it must pass is that the installer's own reader (node-tar) sees
  * the same archive GNU tar wrote: one top folder, real symlinks, the excluded pnpm shims gone, fixed order and time.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as tar from 'tar';
@@ -21,6 +21,10 @@ const tree = () => {
   writeFileSync(join(stage, 'node_modules', '.bin', 'shim'), '#!/bin/sh\n');
   writeFileSync(join(stage, 'node_modules', '.pnpm', 'pkg', 'node_modules', '.bin', 'shim'), '#!/bin/sh\n');
   symlinkSync('../dist/nested/main.js', join(stage, 'link.js'));
+  // A pnpm store link runs past the 100-byte ustar link field, and the reader must still get every byte (#38280).
+  mkdirSync(join(stage, 'c'.repeat(120)), { recursive: true });
+  writeFileSync(join(stage, 'c'.repeat(120), 'target.txt'), 'target\n');
+  symlinkSync(`./${'c'.repeat(120)}/target.txt`, join(stage, 'longlink.js'));
   const long = 'a'.repeat(90) + '/' + 'b'.repeat(90) + '/file.txt';
   mkdirSync(join(stage, 'a'.repeat(90), 'b'.repeat(90)), { recursive: true });
   writeFileSync(join(stage, long), 'long\n');
@@ -51,10 +55,18 @@ describe('the release archive writer', () => {
       expect([...seen.keys()].every((path) => path === 'top/' || path.startsWith('top/'))).toBe(true);
       expect(seen.has('top/')).toBe(true);
       expect(seen.get('top/link.js')).toBe('../dist/nested/main.js');
+      expect(seen.get('top/longlink.js')).toBe(`./${'c'.repeat(120)}/target.txt`);
       expect(seen.get('top/dist/nested/main.js')).toBe('file');
       expect([...seen.keys()].some((path) => path.includes('/.bin/'))).toBe(false);
       expect([...seen.keys()].some((path) => path.endsWith('.modules.yaml'))).toBe(false);
       expect([...seen.keys()].some((path) => path.includes('a'.repeat(90)))).toBe(true);
+
+      // Read back, not just listed: a truncated link target lists fine and dangles on disk.
+      const out = join(root, 'unpacked');
+      mkdirSync(out);
+      await tar.x({ file: join(root, 'a.tar.gz'), cwd: out });
+      expect(readlinkSync(join(out, 'top', 'longlink.js'))).toBe(`./${'c'.repeat(120)}/target.txt`);
+      expect(statSync(join(out, 'top', 'longlink.js')).isFile()).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

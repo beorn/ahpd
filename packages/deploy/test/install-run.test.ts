@@ -21,6 +21,7 @@ import {
   type InstallIo,
   type InstallPins,
 } from '../src/index.js';
+import { daemonArchive } from './daemon-archive.js';
 
 const sha = (letter: string) => `sha256:${letter.repeat(64)}`;
 const PINS: InstallPins = {
@@ -37,18 +38,6 @@ const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex
  * A real archive for the daemon pin, in the shape the installer accepts: one top-level directory named after the
  * file, with the tree inside. The unpacker is exercised for real on it, not faked.
  */
-const daemonArchive = (source: string): Buffer => {
-  const top = source.split('/').pop()!.replace(/\.tar\.gz$/u, '');
-  const dir = mkdtempSync(join(tmpdir(), 'ahpd-archive-'));
-  mkdirSync(join(dir, top, 'node_modules', '@ahpd', 'server'), { recursive: true });
-  writeFileSync(join(dir, top, 'package.json'), JSON.stringify({ name: 'ahpd-server' }));
-  writeFileSync(join(dir, top, 'node_modules', '@ahpd', 'server', 'index.js'), 'export const started = true\n');
-  const out = join(dir, 'archive.tgz');
-  const tarred = spawnSync('tar', ['-czf', out, '-C', dir, top], { encoding: 'utf8' });
-  if (tarred.status !== 0) throw new Error(`tar failed: ${tarred.stderr}`);
-  return readFileSync(out);
-};
-
 /** Every pin correct for what the fake fetch returns, so a case fails only where it means to. */
 const HONEST: InstallPins = {
   runtime: { ...PINS.runtime, checksum: `sha256:${digest(bytesOf(PINS.runtime.source))}` },
@@ -73,7 +62,12 @@ interface Fake extends InstallIo {
   readonly content: Map<string, string>;
 }
 
-const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> = new Set()): Fake => {
+const fakeIo = (
+  existing: readonly string[] = [],
+  failing: ReadonlySet<string> = new Set(),
+  options: { readonly omitEntry?: boolean } = {},
+): Fake => {
+  const { omitEntry = false } = options;
   const paths = new Set<string>(existing);
   const dirs = new Set<string>();
   const modes = new Map<string, number>();
@@ -120,10 +114,15 @@ const fakeIo = (existing: readonly string[] = [], failing: ReadonlySet<string> =
       modes.delete(from);
       if (mode !== undefined) modes.set(to, mode);
     },
-    // The real reader's refusals are tested against real archives; here the tree simply exists after unpacking.
+    // The real reader's refusals are tested against real archives; here the tree simply exists after unpacking, with
+    // the one entry a release is started from (see RELEASE_ENTRY).
     unpack: (_archive, into) => {
       paths.add(into);
       dirs.add(into);
+      if (!omitEntry) {
+        paths.add(`${into}/dist/main.js`);
+        content.set(`${into}/dist/main.js`, '// the server');
+      }
     },
     remove: (path) => {
       paths.delete(path);
@@ -714,11 +713,27 @@ describe('the install writes the project files the boot item runs (#38277 S2)', 
     expect(result.ok).toBe(true);
     const release = releaseOf(manifest);
     const compose = io.content.get(`${release}/process-compose.yaml`) ?? '';
-    expect(compose).toContain(`command: "'${release}/runtime' '${release}/packages/server/dist/main.js' '--config-file' '${manifest.root}/state/config.json'"`);
+    expect(compose).toContain(`command: "'${release}/runtime' '${release}/dist/main.js' '--config-file' '${manifest.root}/state/config.json'"`);
     expect(compose).toContain('- "PATH=/usr/local/bin:/usr/bin:/bin"');
     expect(compose).not.toContain('/current/');
     expect(result.wrote.indexOf(`${release}/process-compose.yaml`)).toBeGreaterThan(result.wrote.indexOf(release));
     expect(switched).toEqual([manifest.version]);
+  });
+
+  // @level l2 @consumer a release that unpacked but has no server entry is refused by name, never switched to.
+  it('refuses an archive without the entry the project file starts, and places nothing', async () => {
+    const manifest = manifestWith();
+    const io = fakeIo([], new Set(), { omitEntry: true });
+    const switched: string[] = [];
+    const result = await applyInstall(manifest, io, ((_layout: unknown, version: string) => {
+      switched.push(version);
+    }) as never);
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatchObject({ step: 'unpack archive', path: `${releaseOf(manifest)}` });
+    expect(JSON.stringify(result.refusal)).toContain('dist/main.js');
+    expect(switched).toEqual([]);
+    expect(io.paths.has(releaseOf(manifest))).toBe(false);
+    expect(io.paths.has(`${releaseOf(manifest)}.staging`)).toBe(false);
   });
 
   it('seeds the services file once and an upgrade keeps a changed one byte for byte', async () => {
