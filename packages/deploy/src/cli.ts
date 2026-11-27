@@ -174,6 +174,29 @@ export const run = async (
     return 0;
   }
   if (flags.has('--uninstall')) {
+    // Uninstall removes exactly what an install recorded, so it needs that record: a root without install.json is not
+    // provably ours, and guessing paths from the pins could delete a stranger's folder (#38280, codimac). --purge is
+    // the person's own word for deleting the root whole, record or not.
+    const record = manifest.root + '/install.json';
+    if (!io.exists(record)) {
+      if (!flags.has('--purge')) {
+        err('refused: ' + record + ' is missing, so this install did not write ' + manifest.root + '; nothing was removed. Run --uninstall --purge to delete the whole root, or remove it by hand.');
+        return 1;
+      }
+      // A root that is not there is already what --purge asks for, so a second purge says so instead of failing.
+      if (!io.exists(manifest.root)) {
+        out('nothing at ' + manifest.root + '; nothing to remove');
+        return 0;
+      }
+      try {
+        io.removeTree(manifest.root);
+      } catch (error) {
+        err('refused: remove ' + manifest.root + ': ' + (error instanceof Error ? error.message : String(error)));
+        return 1;
+      }
+      out('removed ' + manifest.root + ' (no install.json: --purge deleted the whole root)');
+      return 0;
+    }
     const done = uninstallInstall(manifest, io, { purge: flags.has('--purge') });
     for (const line of done.removed) out(`removed ${line}`);
     for (const line of done.kept) out(line);

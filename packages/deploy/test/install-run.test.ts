@@ -690,6 +690,23 @@ describe('uninstall removes what install wrote, and keeps what it did not (#3828
     expect(result.removed).toEqual([]);
     expect([...io.paths]).toHaveLength(manifest.entries.length);
   });
+
+  // @level l2 @consumer uninstall runs twice: a boot item that is already off is a fact, not a failure.
+  it('finishes when the boot item answers that it is already off', () => {
+    const manifest = manifestWith();
+    const io = fakeIo(manifest.entries.map((entry) => entry.path));
+    const answers = [
+      { code: 3, output: 'Boot-out failed: 3: No such process' },
+      { code: 3, output: 'Could not find service "dev.hallohuman.ahpd" in domain for user gui: 501' },
+    ];
+    for (const answer of answers) {
+      const run = { ...io, run: () => answer };
+      const result = uninstallInstall(manifest, run);
+      expect(result.ok).toBe(true);
+      expect(result.refusal).toBeUndefined();
+      expect(result.removed.length).toBeGreaterThan(0);
+    }
+  });
 });
 
 /**

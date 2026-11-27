@@ -598,6 +598,13 @@ export const applyInstall = async (
   return { ok: true, wrote, pruned: prunedNow.removed, keptReleases: prunedNow.kept };
 };
 
+/** The boot item's own answer when it is already off, on macOS's launchctl and on Linux's systemctl. */
+const BOOT_ITEM_ALREADY_OFF = [
+  /Boot-out failed: 3: No such process/u,
+  /Could not find service ".+" in domain/u,
+  /Failed to disable unit: Unit file .* does not exist/u,
+];
+
 export interface UninstallOptions {
   /** Also delete what the install did not write - the daemon's sessions, records and logs. Never the default. */
   readonly purge?: boolean;
@@ -627,7 +634,10 @@ export const uninstallInstall = (
   const removed: string[] = [];
   const kept: string[] = [];
   const disabled = io.run(manifest.bootItem.disable);
-  if (disabled.code !== 0)
+  // The boot item's own answer when it is already off, on either platform: uninstall runs twice, and a reinstall after
+  // a partial removal must complete rather than stop on a service that is not there (#38280, codimac).
+  const alreadyOff = BOOT_ITEM_ALREADY_OFF.some((pattern) => pattern.test(disabled.output));
+  if (disabled.code !== 0 && !alreadyOff)
     return {
       ok: false,
       removed,
