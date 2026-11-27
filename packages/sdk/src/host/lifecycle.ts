@@ -915,7 +915,14 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       forgetChats(id);
       kept.forget(id);
       ctx.leaveForgotten(uri, config);
+      /*
+       * Both names. The reader lists the conversation under the backend's own
+       * id, and with the row's chats forgotten nothing claims that id any
+       * more: marked under the host's id alone, it comes back as a fresh row
+       * on the next listing. The answer's `providerSessionId` is that id.
+       */
       kept.setUnlisted?.(id, true);
+      if (providerSessionId !== id) kept.setUnlisted?.(providerSessionId, true);
       ctx.removeListedSession(uri);
       removeNotifiedSummary(uri);
       for (const [channel, open] of ctx.heldStates) {

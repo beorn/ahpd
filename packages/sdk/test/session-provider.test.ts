@@ -791,6 +791,31 @@ describe('a row two harnesses both list', () => {
     expect(one).toEqual([]);
   });
 
+  /*
+   * And one whose conversation has a name of its own, as a codex session's
+   * does: the reader lists it under that name, so the mark holds it too, and
+   * the answer's `providerSessionId` is the name the mark holds.
+   */
+  it('keeps a disposed orphan gone when its conversation has an id of its own', async () => {
+    const one: string[] = [];
+    const store = memorySessions();
+    store.setProvider('host-id', 'two');
+    store.setChats('host-id', [{ uri: chatUriFor('two:/host-id'), backendId: 'conv-1', default: true }]);
+    const { client } = serving(store, [harness('one', ['conv-1'], one)]);
+    await settle();
+    // Every row a backend lists, so a resurrected conversation would show.
+    await showExternal(client);
+    expect(await catalogue(client)).toEqual(['two:/host-id']);
+
+    expect(await client.handle({ method: 'disposeSession', params: { channel: 'two:/host-id', preserveProviderSession: true } })).toMatchObject({
+      kind: 'disposed-orphan', provider: 'two', providerSessionId: 'conv-1', chatsRemoved: 1,
+    });
+    expect(store.unlisted?.('host-id')).toBe(true);
+    expect(store.unlisted?.('conv-1')).toBe(true);
+    expect(await catalogue(client)).toEqual([]);
+    expect(one).toEqual([]);
+  });
+
   it('leaves a row only one harness lists alone', async () => {
     const one: string[] = [];
     const two: string[] = [];
