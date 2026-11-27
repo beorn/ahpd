@@ -125,6 +125,22 @@ const AFTER_OUTPUT_FACTOR = 10;
 export const TOOL_CALL_SILENCE_MS = 900_000;
 
 /**
+ * The last-resort bound on a call that still owes an answer when nothing else is timing it (#38919, @cto 2026-11-27).
+ *
+ * The other three clocks are conditional by design: the opening bound stops once a call has spoken, the turn bound is
+ * skipped while an open tool call or a request this client owes the server is in flight, and a tool call's own clock is
+ * armed only while the client owes the server nothing. Each is right for what it measures, and together they leave a
+ * reachable state with NO clock at all - a request this client never answers, or a tool call whose clock was disarmed
+ * and never re-armed - in which a turn stays open for as long as the process does. Measured: one hosted seat held a
+ * turn open for 2 h 15 m with a live child at 0.0% CPU and no line anywhere saying why (#38919).
+ *
+ * So one clock is always armed, and only progress resets it: a chunk the server writes, an update it sends, or a request
+ * this client owes settling. A quiet build and a person deciding a permission are both fine for a while; sixty minutes of
+ * no progress is a turn nobody is working on, and it ends by name, saying everything that was open.
+ */
+export const LAST_RESORT_TURN_MS = 60 * 60_000;
+
+/**
  * Windows, which has no process group to signal and no SIGTERM to send: a
  * negative pid there throws, and the server and what it started were never
  * stopped. Its tree is ended with `taskkill` instead.
@@ -250,6 +266,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const stderrBytes = options.stderrBytes ?? STDERR_BYTES;
   const startAnswerMs = options.startAnswerMs ?? START_ANSWER_MS;
   const toolCallSilenceMs = options.toolCallSilenceMs ?? TOOL_CALL_SILENCE_MS;
+  const lastResortMs = options.lastResortMs ?? LAST_RESORT_TURN_MS;
   // A second early, as a process's own start time is read back to the
   // millisecond and the two clocks need not agree on the last one.
   const spawnedAt = Date.now() - 1000;
@@ -344,13 +361,30 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * gone quiet while a call is owed an answer fails - in the words a person
    * needs, rather than as a turn every reader thinks is running.
    */
-  const owed = new Set<{ step: string; tail: string; afterOutput: number | undefined; spoke: boolean; fail: (why: Error) => void; timer: NodeJS.Timeout | undefined }>();
+  const owed = new Set<{
+    step: string;
+    tail: string;
+    afterOutput: number | undefined;
+    spoke: boolean;
+    fail: (why: Error) => void;
+    timer: NodeJS.Timeout | undefined;
+    /** #38919: the last-resort clock, which is armed whenever this entry is owed and reset only by progress. */
+    lastResort: NodeJS.Timeout | undefined;
+  }>();
   /*
    * #38786: the calls the server is waiting on this client to answer - a
    * person deciding a permission, a terminal it was told to wait for. While one
    * is open the silence is this client's, not the server's, so no clock runs.
    */
   let ours = 0;
+  /** #38919: what this client owes the server, by step, so a turn that ends says what it was waiting on. */
+  const oursSteps = new Map<string, number>();
+  /**
+   * #38919: what the last line about the state where only the last-resort clock runs named, so the same set is said
+   * once rather than on every chunk - and a thing that joins it is still said, which is what a reader of that line
+   * needs to know.
+   */
+  let namedLastResortOnly: string | undefined;
   /*
    * #38786: the tool calls the server said it is running and has not said are
    * over. A server running a build of its own can be quiet for minutes and is
@@ -379,6 +413,19 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     for (const id of [...tools.keys()]) clearTool(id);
   };
   /**
+   * Every call still owed an answer, and both clocks riding it, dropped (#38919).
+   *
+   * The connection is closing, so what it was waiting for will never be answered: leaving the timers armed would end a
+   * turn that no longer exists, on a connection no reader is shown.
+   */
+  const clearOwed = (): void => {
+    for (const held of [...owed]) {
+      owed.delete(held);
+      if (held.timer !== undefined) clearTimeout(held.timer);
+      if (held.lastResort !== undefined) clearTimeout(held.lastResort);
+    }
+  };
+  /**
    * The bound on one open call (#38695).
    *
    * It ends the turn naming the call, how long it has been open, how long it has
@@ -405,6 +452,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       for (const owedCall of [...owed]) {
         owed.delete(owedCall);
         if (owedCall.timer !== undefined) clearTimeout(owedCall.timer);
+        if (owedCall.lastResort !== undefined) clearTimeout(owedCall.lastResort);
         owedCall.fail(new Error(why));
       }
     }, toolCallSilenceMs);
@@ -427,12 +475,58 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       });
     }
     // The chunk restarted the clock before it was read; what it said decides whether one runs, so the call's
-    // arm is decided in one place (quiet) rather than here and there.
+    // arm is decided in one place (quiet) rather than here and there. It is the chunk, read above, that has already
+    // restarted the last-resort clock (#38919): an update only ever arrives inside one.
     quiet();
+  };
+  /**
+   * #38919: everything open right now, as a person would need to read it in one line - the tool calls the server said it
+   * is running, and the requests this client owes it, by step.
+   */
+  const openThings = (): string => {
+    const calls = [...tools.values()].map((held) => `${held.name} for ${Date.now() - held.openedAt} ms`);
+    const owedSteps = [...oursSteps.entries()].map(([step, count]) => (count === 1 ? step : `${step} x${count}`));
+    const said = [...calls, ...owedSteps];
+    return said.length === 0 ? 'nothing' : said.join(', ');
+  };
+  /** #38919: the same things by name only, so two readings a millisecond apart compare equal. */
+  const openNames = (): string =>
+    [...[...tools.values()].map((held) => held.name), ...oursSteps.keys()].join(', ');
+  /**
+   * #38919 (@cto 2026-11-27): the one clock that is always armed.
+   *
+   * The opening bound, the turn bound and a tool call's own bound are each conditional, and their conditions can all hold
+   * together - a request this client never settles while a call it disarmed sits open - which leaves a turn running with
+   * nothing timing it at all. This one rides every owed call and is reset only by progress: a chunk, an update, or a
+   * client-owed request settling. When it fires the turn ends saying everything that was still open.
+   */
+  const armLastResort = (held: { step: string; lastResort: NodeJS.Timeout | undefined; fail: (why: Error) => void }): void => {
+    if (lastResortMs <= 0) return;
+    if (held.lastResort !== undefined) clearTimeout(held.lastResort);
+    held.lastResort = setTimeout(() => {
+      held.lastResort = undefined;
+      for (const outstanding of [...owed]) {
+        owed.delete(outstanding);
+        if (outstanding.timer !== undefined) clearTimeout(outstanding.timer);
+        if (outstanding.lastResort !== undefined) clearTimeout(outstanding.lastResort);
+        outstanding.lastResort = undefined;
+      }
+      const why =
+        `${options.command}: the turn made no progress for ${lastResortMs} ms during ${held.step} - ` +
+        `still open: ${openThings()}; so the turn is ended`;
+      held.fail(new Error(why));
+    }, lastResortMs);
+    held.lastResort.unref();
+  };
+  /** #38919: progress happened, so every owed call's last-resort clock starts again. */
+  const madeProgress = (): void => {
+    for (const outstanding of owed) armLastResort(outstanding);
   };
   /** `heard`: the server wrote something, which is the first output of every call still owed one. */
   const quiet = (heard = false): void => {
     if (startAnswerMs <= 0) return;
+    // #38919: a chunk is progress for the always-armed clock too, whatever it does to the three conditional ones.
+    if (heard) madeProgress();
     // #38695: a chunk is proof the server is working, so it restarts every open call's clock as well as the turn's.
     for (const [id, before] of tools) {
       const held = heard ? { ...before, at: Date.now() } : before;
@@ -453,6 +547,28 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       }, bound);
       held.timer.unref();
     }
+    /*
+     * #38919 (@cto 2026-11-27): say it, once, at the moment a turn enters the state where nothing but the last-resort
+     * clock is running - the state a turn can otherwise sit in for hours with no line anywhere saying why. Named rather
+     * than counted, because "which of the conditional clocks was disarmed, and by what" is exactly what the next reader
+     * would have to guess from a stuck turn otherwise.
+     */
+    const disarmed = ours > 0 || tools.size > 0;
+    // By name rather than by age: the same open things read on every chunk must not be said again, and one that joins
+    // them must be.
+    const open = disarmed && owed.size > 0 ? openNames() : undefined;
+    if (open !== undefined) {
+      if (namedLastResortOnly !== open) {
+        namedLastResortOnly = open;
+        options.log?.(
+          `${options.command}: only the last-resort clock runs during ${[...owed].map((held) => held.step).join(', ')}: ` +
+            `still open: ${openThings()}; the turn ends after ${lastResortMs} ms without progress`,
+          'warn',
+        );
+      }
+    }
+    // Said once per entry into that state, and said again if the turn leaves it and comes back.
+    else namedLastResortOnly = undefined;
   };
   /**
    * This call, failed by the server's silence rather than waited on for ever.
@@ -465,12 +581,23 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     if (startAnswerMs <= 0) return call;
     let fail!: (why: Error) => void;
     const silent = new Promise<never>((_resolve, no) => { fail = no; });
-    const held = { step, tail, afterOutput, spoke: false, fail, timer: undefined as NodeJS.Timeout | undefined };
+    const held = {
+      step,
+      tail,
+      afterOutput,
+      spoke: false,
+      fail,
+      timer: undefined as NodeJS.Timeout | undefined,
+      lastResort: undefined as NodeJS.Timeout | undefined,
+    };
     owed.add(held);
     quiet();
+    // #38919: armed the moment the call is owed, so a turn is never left with no clock at all.
+    armLastResort(held);
     return Promise.race([call, silent]).finally(() => {
       owed.delete(held);
       if (held.timer !== undefined) clearTimeout(held.timer);
+      if (held.lastResort !== undefined) clearTimeout(held.lastResort);
     });
   };
 
@@ -544,13 +671,25 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   /*
    * A person's answer, or the protocol's refusal.
    */
-  /** One call the server asked of this client, during which its silence does not count (#38786). */
-  const waitingOnUs = <T>(answer: () => T | Promise<T>): Promise<T> => {
+  /**
+   * One call the server asked of this client, during which its silence does not count (#38786).
+   *
+   * `step` is the protocol method that is owed, so a turn ended by the last-resort clock (#38919) says which answer it
+   * was waiting on rather than only that it was waiting.
+   */
+  const waitingOnUs = <T>(step: string, answer: () => T | Promise<T>): Promise<T> => {
     ours += 1;
+    oursSteps.set(step, (oursSteps.get(step) ?? 0) + 1);
     quiet();
     const done = (): void => {
       ours -= 1;
+      const left = (oursSteps.get(step) ?? 1) - 1;
+      if (left > 0) oursSteps.set(step, left);
+      else oursSteps.delete(step);
       quiet();
+      // #38919: a request this client owed settling is progress for the always-armed clock, whether or not the turn went
+      // back to the server's own silence - that answer may well have been the only thing it was waiting on.
+      madeProgress();
     };
     // Called at once, as the handler was before: the order it says things in
     // against the server's own updates is part of what a client reads.
@@ -563,7 +702,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
     return Promise.resolve(result).finally(done);
   };
   app.onRequest(methods.client.session.requestPermission, async (context): Promise<RequestPermissionResponse> => {
-    const answer = await waitingOnUs(() => handlers.permission?.(context.params));
+    const answer = await waitingOnUs(methods.client.session.requestPermission, () => handlers.permission?.(context.params));
     if (answer === undefined || answer === 'cancelled') return REFUSED;
     return { outcome: { outcome: 'selected', optionId: answer.optionId } };
   });
@@ -580,18 +719,19 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
    * question off the chat before the server's own waiting ends.
    */
   if (elicitation !== undefined) {
-    app.onRequest(methods.client.elicitation.create, (context): Promise<CreateElicitationResponse> => waitingOnUs(() => elicitation(context.params, context.signal)));
+    app.onRequest(methods.client.elicitation.create, (context): Promise<CreateElicitationResponse> =>
+      waitingOnUs(methods.client.elicitation.create, () => elicitation(context.params, context.signal)));
   }
   if (elicitationComplete !== undefined) {
     app.onNotification(methods.client.elicitation.complete, (context) => elicitationComplete(context.params));
   }
-  if (readTextFile !== undefined) app.onRequest(methods.client.fs.readTextFile, (context) => waitingOnUs(() => readTextFile(context.params)));
-  if (writeTextFile !== undefined) app.onRequest(methods.client.fs.writeTextFile, (context) => waitingOnUs(() => writeTextFile(context.params)));
-  if (createTerminal !== undefined) app.onRequest(methods.client.terminal.create, (context) => waitingOnUs(() => createTerminal(context.params)));
-  if (terminalOutput !== undefined) app.onRequest(methods.client.terminal.output, (context) => waitingOnUs(() => terminalOutput(context.params)));
-  if (waitForTerminalExit !== undefined) app.onRequest(methods.client.terminal.waitForExit, (context) => waitingOnUs(() => waitForTerminalExit(context.params)));
-  if (killTerminal !== undefined) app.onRequest(methods.client.terminal.kill, (context) => waitingOnUs(() => killTerminal(context.params)));
-  if (releaseTerminal !== undefined) app.onRequest(methods.client.terminal.release, (context) => waitingOnUs(() => releaseTerminal(context.params)));
+  if (readTextFile !== undefined) app.onRequest(methods.client.fs.readTextFile, (context) => waitingOnUs(methods.client.fs.readTextFile, () => readTextFile(context.params)));
+  if (writeTextFile !== undefined) app.onRequest(methods.client.fs.writeTextFile, (context) => waitingOnUs(methods.client.fs.writeTextFile, () => writeTextFile(context.params)));
+  if (createTerminal !== undefined) app.onRequest(methods.client.terminal.create, (context) => waitingOnUs(methods.client.terminal.create, () => createTerminal(context.params)));
+  if (terminalOutput !== undefined) app.onRequest(methods.client.terminal.output, (context) => waitingOnUs(methods.client.terminal.output, () => terminalOutput(context.params)));
+  if (waitForTerminalExit !== undefined) app.onRequest(methods.client.terminal.waitForExit, (context) => waitingOnUs(methods.client.terminal.waitForExit, () => waitForTerminalExit(context.params)));
+  if (killTerminal !== undefined) app.onRequest(methods.client.terminal.kill, (context) => waitingOnUs(methods.client.terminal.kill, () => killTerminal(context.params)));
+  if (releaseTerminal !== undefined) app.onRequest(methods.client.terminal.release, (context) => waitingOnUs(methods.client.terminal.release, () => releaseTerminal(context.params)));
 
   /*
    * The account the server is signed in as, which a harness that signs in out
@@ -768,6 +908,8 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       // kill is for one that does not, and it goes to the whole group so what
       // the server started goes with it.
       closing = true;
+      // #38919: nothing is owed an answer once the connection is going, so no clock is left to end a turn later.
+      clearOwed();
       child.stdin.end();
       signal('SIGTERM');
       // Armed only while the server is still there, and disarmed by the wait

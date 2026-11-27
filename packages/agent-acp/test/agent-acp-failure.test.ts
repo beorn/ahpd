@@ -1054,6 +1054,125 @@ it('does not count the time a prompt waits on this client', async () => {
   expect(escaped).toEqual([]);
 }, 15_000);
 
+/*
+ * #38919: the last-resort bound.
+ *
+ * The opening bound stops once a call has spoken, the turn bound is skipped while an open tool call or a request this
+ * client owes the server is in flight, and a tool call's own clock is armed only while nothing is owed - so each of
+ * the three can be disarmed at once and leave a turn running with no clock at all. Measured: one hosted seat held a
+ * turn open for 2 h 15 m at 0.0% CPU with no line anywhere saying why. One clock is therefore always armed, and only
+ * progress - a chunk, an update, or a request this client owes settling - restarts it.
+ */
+
+it('ends a turn whose only open thing is a tool call no clock is timing', async () => {
+  // The call is open, so the turn bound is disarmed; its own 900 s clock is what a last resort backs up.
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 'b', title: 'build', status: 'in_progress' } } });`)],
+    handlers: { update: () => {} },
+    startAnswerMs: 5_000,
+    lastResortMs: 200,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
+      .rejects.toThrow(/the turn made no progress for 200 ms during session\/prompt - still open: "build" for \d+ ms; so the turn is ended/);
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('ends a turn whose only open thing is a request this client never answered', async () => {
+  // A permission nobody decides: this client owes the server, so no clock of the server's own runs.
+  let answered!: () => void;
+  const decided = new Promise<{ optionId: string }>((resolve) => {
+    answered = () => { resolve({ optionId: 'ok' }); };
+  });
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(
+      `send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: { sessionId: 's', toolCall: { toolCallId: 't', title: 'edit' }, options: [{ optionId: 'ok', name: 'Allow', kind: 'allow_once' }] } });`,
+    )],
+    handlers: { update: () => {}, permission: () => decided },
+    startAnswerMs: 5_000,
+    lastResortMs: 200,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
+      .rejects.toThrow(/the turn made no progress for 200 ms during session\/prompt - still open: session\/request_permission; so the turn is ended/);
+  }
+  finally {
+    await connection.close();
+    answered();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('names every open thing when the last-resort bound ends a turn', async () => {
+  const logged: string[] = [];
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(`
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 'b', title: 'build', status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: { sessionId: 's', toolCall: { toolCallId: 'b', title: 'build' }, options: [{ optionId: 'ok', name: 'Allow', kind: 'allow_once' }] } });`)],
+    handlers: { update: () => {}, permission: () => new Promise(() => {}) },
+    log: (line) => { logged.push(line); },
+    startAnswerMs: 5_000,
+    lastResortMs: 200,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    await expect(connection.prompt('s', [{ type: 'text', text: 'hello' }]))
+      .rejects.toThrow(/still open: "build" for \d+ ms, session\/request_permission; so the turn is ended/);
+    // Said when the state is entered, and again when the permission joins the tool call - never twice for the same
+    // set, and never silently.
+    const said = logged.filter((line) => line.includes('only the last-resort clock runs'));
+    expect(said).toHaveLength(2);
+    expect(said[0]).toContain('still open: "build" for');
+    expect(said[0]).not.toContain('session/request_permission');
+    expect(said[1]).toMatch(/"build" for \d+ ms, session\/request_permission; the turn ends after 200 ms without progress/);
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('restarts the last-resort bound when a permission is decided at the last minute', async () => {
+  // Decided two thirds of the way through the bound, then the server thinks for most of another one: without the
+  // answer counting as progress the clock armed at the permission request would end this turn.
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(
+      `send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: { sessionId: 's', toolCall: { toolCallId: 't', title: 'edit' }, options: [{ optionId: 'ok', name: 'Allow', kind: 'allow_once' }] } });`,
+      `if (message.id === 900) setTimeout(() => { send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } }); }, 350);`,
+    )],
+    handlers: {
+      update: () => {},
+      permission: () => new Promise((resolve) => { setTimeout(() => resolve({ optionId: 'ok' }), 400); }),
+    },
+    startAnswerMs: 5_000,
+    lastResortMs: 600,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  expect(escaped).toEqual([]);
+}, 15_000);
+
 // A Node server cannot close its stdout on Windows while it keeps running:
 // libuv's stdout holds a copy of the pipe handle, and fs.closeSync(1) skips
 // fds 0-2, so the parent never reads an end. On POSIX, end() shuts the socket.

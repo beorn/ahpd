@@ -272,6 +272,14 @@ export interface AcpOptions {
    */
   toolCallSilenceMs?: number;
   /**
+   * How long a call that owes an answer may make no progress at all before its turn is ended by name, in milliseconds;
+   * 60 min by default (#38919). This is the one clock that is always armed: the opening bound, the turn bound and a
+   * tool call's own bound are each conditional, and their conditions can all hold at once, which leaves a turn open with
+   * no clock running at all. Progress is a chunk the server writes, an update it sends or a request this client owes
+   * settling. 0 turns it off with the bounds it backs up.
+   */
+  lastResortMs?: number;
+  /**
    * How long the server's process group has between SIGTERM and SIGKILL, in
    * milliseconds; 5000 by default, VS Code's grace for ending a process tree.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/localModelBridge/shim/processRunner.ts#L344-L352
@@ -405,12 +413,14 @@ export interface AcpConnectionOptions {
   handlers: AcpHandlers;
   /** Where each line the server writes on stderr goes. */
   log?: (line: string, level?: LogLevel) => void;
-  /** The record's `exitGraceMs`, `stderrBytes`, `startAnswerMs` and `killGraceMs`. */
+  /** The record's `exitGraceMs`, `stderrBytes`, `startAnswerMs`, `lastResortMs` and `killGraceMs`. */
   exitGraceMs?: number;
   stderrBytes?: number;
   startAnswerMs?: number;
   /** How long one open tool call may stay quiet before its turn is ended by name (#38695, 900 s by default). */
   toolCallSilenceMs?: number;
+  /** How long a call may make no progress before its turn is ended by name (#38919, 60 min by default). */
+  lastResortMs?: number;
   killGraceMs?: number;
 }
 
