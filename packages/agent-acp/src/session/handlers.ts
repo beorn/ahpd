@@ -26,7 +26,7 @@ import type {
 } from '@agentclientprotocol/sdk';
 import { hostPathOf, str, withSkillArgumentHintMeta } from '@ahpd/sdk';
 import type { Bag, BackgroundTask, OpenTerminal, PendingConfirmation, PermissionKind, Session } from '@ahpd/sdk';
-import { callPartOf, confirmationOptions, contentOf, mapUpdate, questionsFor, typedOf } from '../mapping.js';
+import { callPartOf, confirmationOptions, contentOf, glossOf, mapUpdate, questionsFor, typedOf } from '../mapping.js';
 import type { AcpTurn, PermissionAnswer } from '../types.js';
 import { messageIdOf } from '../transcript.js';
 import { bag } from './common.js';
@@ -191,7 +191,11 @@ export function createHandlers(ctx: SessionContext): Handlers {
     if (action.type !== 'chat/toolCallComplete') return;
     const result = bag(action.result);
     if (!Array.isArray(result.content)) return;
-    const label = typeof result.pastTenseMessage === 'string' ? result.pastTenseMessage : '';
+    // The call's own name labels the row, not the sentence a finished row
+    // reads: a work list shows what the work is, not that it has run.
+    const call = ctx.mapping?.calls.get(String(action.toolCallId));
+    const said = typeof result.pastTenseMessage === 'string' ? result.pastTenseMessage : '';
+    const label = call?.displayName ?? said;
     for (const block of result.content as Bag[]) {
       if (block.type !== 'terminal') continue;
       const held = terminals.get(String(block.resource));
@@ -680,7 +684,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
     const call = existing === undefined ? {
       toolCallId,
       toolName: tool?.name ?? request.toolCall.name ?? request.toolCall.title ?? toolCallId,
-      displayName: request.toolCall.title ?? request.toolCall.name ?? toolCallId,
+      displayName: glossOf(request.toolCall.title ?? request.toolCall.name ?? toolCallId),
       ...(request.toolCall.rawInput === undefined ? {} : { toolInput: JSON.stringify(request.toolCall.rawInput) }),
     } as Bag : bag(bag(existing).toolCall);
     // The arguments are on the question as well as on the row: a server sends
@@ -690,7 +694,7 @@ export function createHandlers(ctx: SessionContext): Handlers {
       call.toolInput = JSON.stringify(request.toolCall.rawInput);
     }
     call.status = 'pending-confirmation';
-    call.invocationMessage = request.toolCall.title ?? call.toolName;
+    call.invocationMessage = `Running ${glossOf(request.toolCall.title ?? String(call.toolName))}`;
     call.confirmationTitle = request.toolCall.title ?? call.displayName;
     if (offered.length > 0) call.options = offered;
     delete call.confirmed;
