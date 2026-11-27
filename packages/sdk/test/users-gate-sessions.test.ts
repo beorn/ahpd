@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { ROOT } from '../src/host.js';
 import { uriOf } from '../src/resources/resources.js';
 import { memorySessions } from '../src/sessions/sessions.js';
@@ -442,8 +442,14 @@ it('asks an automation\'s owner for computer:write, and refuses a run it cannot 
       session: { ...session, config: { ...session.config } }, triggers: [],
     }, owner);
     await call(admin.client, 'runAutomation', { channel: 'ahp-automations://', automation: resource, requestId: resource });
+    // The answer names the run before its checks settle it (a refusal lands
+    // about 3 ms later), so wait for it to leave `pending`. Reading it at once
+    // saw `pending` every time, and the `not.toBe('failed')` cases below then
+    // passed without the gate having decided anything.
     // `!`: the run was just made, so the entry already shows it.
-    return store.get(resource)!.runs[0] as { lifecycle: { status: string; error?: { message: string } } };
+    const run = () => store.get(resource)!.runs[0] as { lifecycle: { status: string; error?: { message: string } } };
+    await vi.waitFor(() => { expect(run().lifecycle.status).not.toBe('pending'); });
+    return run();
   };
 
   // An owner who may not make machines, refused in the words the boundary

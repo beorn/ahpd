@@ -142,7 +142,11 @@ Upstream status is one of:
 ### Plugins: service identity
 - `88f113085`, `379acf190` · delegate plugin service identity to exact source bindings, and prove record refs cannot recover the startup credential · #35090 · not upstreamable: reads `HAB_ID_TOKEN_FILE`/`AHPD_SERVICE_TOKEN_FILE`, the token files hab writes; `serviceIdentityEnvironment` does not exist upstream
 
+### Host: agent terminals
+- `3816350c8` · an agent session's zsh gets the reference's fixups: `VSCODE_AGENT_ZSH_FIXUPS=1` for a session claim on zsh, so the shipped `shellIntegration-rc.zsh` turns off bang history and turns on inline `#` comments, as VS Code's agent host does (`agentHostTerminalManager.ts`, `createTerminal`) · #38983 · upstream ask not written (checked: upstream main `3bbd6d5f6` sets no `VSCODE_AGENT_ZSH_FIXUPS`; its `shell-tools.test.ts` zsh case is red wherever zsh is installed)
+
 ### Test infrastructure
+- `080627f51` · `users-gate-sessions.test.ts` reads an automation run once it has left `pending`: `runAutomation` answers before the run's checks settle it · #38983 · upstream ask not written (upstream's test reads the run at once)
 - `0535e7929`, `bb37b23c8` · detect checkout Git mutations during ahpd tests, and isolate ahpd workspaces from ancestor Git discovery · #37182 · upstream ask not written (tests only; `AHPD_TEST_REPOSITORY` absent upstream)
 
 ### usage: inhab JSONL source
