@@ -880,7 +880,8 @@ describe('the Linux boot item goes through the services driver (#38277)', () => 
     (io.content.get(`${manifest.root}/boot/changes.jsonl`) ?? '').trim().split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, unknown>);
 
   // Requirement: install writes the unit and enables it through the driver; the loaded unit is the driver's rendering
-  // and the record copy under the root is byte for byte the same.
+  // and the record copy under the root is byte for byte the same. Apart from the final newline it is byte for byte the
+  // unit the installer wrote before the driver (origin/main f3b617ceb systemdUnit), Description included (@cto aed9c6e8).
   it('install puts the unit and starts it through the driver', async () => {
     const manifest = manifestWith();
     const io = fakeIo();
@@ -889,7 +890,7 @@ describe('the Linux boot item goes through the services driver (#38277)', () => 
     const current = `${manifest.root}/state/deploy/ahpd/current`;
     expect(loaded).toBe([
       '[Unit]',
-      'Description=ahpd',
+      'Description=ahpd (Hallohuman agent host), user session',
       '',
       '[Service]',
       `ExecStart=${current}/supervisor up -f ${current}/process-compose.yaml -f ${manifest.root}/state/services.yaml -t=false -U -u ${manifest.root}/state/pc.sock -L ${manifest.root}/state/process-compose.log`,

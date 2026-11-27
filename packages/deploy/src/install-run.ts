@@ -379,7 +379,7 @@ export const applyInstall = async (
     if (entry.kind === 'boot-item') {
       const written = await attempt('write boot item', entry.path, () => {
         if (isUnit(manifest)) {
-          const put = putUnit(unitMachine(manifest, io), INSTALLER, { service: unitRecord(manifest), ifVersion: unitVersion(io, entry.path) });
+          const put = putUnit(unitMachine(manifest, io), INSTALLER, { service: unitRecord(manifest), ifVersion: unitVersion(io, entry.path), description: BOOT_DESCRIPTION });
           if (!put.ok) throw new Error(put.message);
           return;
         }
@@ -904,6 +904,9 @@ const systemdWord = (word: string): string =>
   /[\s"\\]/u.test(word) ? `"${word.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"` : word;
 
 /** The boot item as the neutral record the services driver writes: ExecStart quoted for systemd, restarted always. */
+/** What a customer sees in `systemctl --user status ahpd` (@cto aed9c6e8: kept as it was before the driver). */
+const BOOT_DESCRIPTION = 'ahpd (Hallohuman agent host), user session';
+
 const unitRecord = (manifest: InstallManifest): ServiceRecord => ({
   name: unitName(manifest),
   command: supervisorArgv(manifest).map(systemdWord).join(' '),
@@ -912,7 +915,7 @@ const unitRecord = (manifest: InstallManifest): ServiceRecord => ({
 
 /** The unit's text in the driver's own rendering, so the record copy is byte for byte the loaded one. */
 const systemdUnit = (manifest: InstallManifest): string => {
-  const unit = unitText({ name: hostname() }, unitRecord(manifest));
+  const unit = unitText({ name: hostname() }, unitRecord(manifest), BOOT_DESCRIPTION);
   if (!unit.ok) throw new Error(unit.message);
   return unit.text;
 };

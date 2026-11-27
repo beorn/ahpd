@@ -88,14 +88,16 @@ const CARRIED = new Set(['name', 'command', 'restart']);
 /**
  * The unit text for a record, or why this arm cannot write it. `command` is
  * ExecStart's value as systemd reads it (words split on spaces, `"` quotes),
- * not a shell line: the caller quotes for systemd.
+ * not a shell line: the caller quotes for systemd. `description` is the unit's
+ * Description= (what `systemctl status` shows); it defaults to the record's name.
  */
-export function unitText(machine: Pick<Machine, 'name'>, record: ServiceRecord): Answer<{ text: string }> {
+export function unitText(machine: Pick<Machine, 'name'>, record: ServiceRecord, description?: string): Answer<{ text: string }> {
   for (const [field, value] of Object.entries(record)) {
     if (value !== undefined && !CARRIED.has(field)) return refuse('NOT_SUPPORTED', `${field} is not supported by the systemd-user driver on ${machine.name}`);
   }
   if (/[\r\n]/u.test(record.command)) return refuse('INVALID', 'command holds a line break, which would end ExecStart= in the unit');
-  const lines = ['[Unit]', `Description=${record.name}`, '', '[Service]', `ExecStart=${record.command}`];
+  if (description !== undefined && (description.trim() === '' || /[\r\n]/u.test(description))) return refuse('INVALID', 'description must be one non-empty line: it is the Description= of the unit');
+  const lines = ['[Unit]', `Description=${description ?? record.name}`, '', '[Service]', `ExecStart=${record.command}`];
   if (record.restart !== undefined) {
     const word = RESTART[record.restart.policy];
     if (word === undefined) return refuse('NOT_SUPPORTED', `restart policy ${record.restart.policy} is not supported by the systemd-user driver on ${machine.name}`);
@@ -109,7 +111,7 @@ export function unitText(machine: Pick<Machine, 'name'>, record: ServiceRecord):
 }
 
 /** `put`: write one unit from the record, pinned to the unit's version as the caller read it. */
-export function putUnit(machine: SystemdMachine, caller: Caller, params: PutParams): Answer<{ ifVersion: string; file: string; service: ServiceRecord; changed: boolean }> {
+export function putUnit(machine: SystemdMachine, caller: Caller, params: PutParams & { readonly description?: string }): Answer<{ ifVersion: string; file: string; service: ServiceRecord; changed: boolean }> {
   const name = typeof params?.service?.name === 'string' ? params.service.name : '';
   const { host, unitDir } = machine.backend;
   let intended: ServiceRecord | null = null;
@@ -144,7 +146,7 @@ export function putUnit(machine: SystemdMachine, caller: Caller, params: PutPara
       }
       if (!allowed) return done(refuse('REMOTE_COMMANDS_OFF', REMOTE_COMMANDS_OFF));
     }
-    const unit = unitText(machine, after);
+    const unit = unitText(machine, after, params.description);
     if (!unit.ok) return done(unit);
     const changed = unit.text !== now;
     if (changed) host.write(file, unit.text);

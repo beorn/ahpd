@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DRIVER } from '../src/channel.js';
-import type { SystemdMachine, UnitRun } from '../src/systemd.js';
+import { putUnit, type SystemdMachine, type UnitRun } from '../src/systemd.js';
 
 /*
  * #38277, @cto row 9: the second services driver is systemd --user units, behind
@@ -98,6 +98,17 @@ describe('the systemd-user arm writes, starts, stops and removes a user unit (#3
     const injected = await DRIVER.put(machine, LOCAL, { service: { name: 'ahpd', command: '/bin/true\nExecStartPre=/bin/evil' }, ifVersion: 'absent' });
     expect(injected).toMatchObject({ ok: false, code: 'INVALID' });
     expect(files.has(`${UNIT_DIR}/ahpd.service`)).toBe(false);
+  });
+
+  // Requirement: a caller may name the unit's Description= (the installer keeps what customers see in systemctl
+  // status, @cto aed9c6e8); it defaults to the name, and a line break in it is refused before anything is written.
+  it('put writes the description it is given as Description=, and refuses one that breaks the line', () => {
+    const put = putUnit(machine, LOCAL, { service: AHPD, ifVersion: 'absent', description: 'ahpd (Hallohuman agent host), user session' });
+    expect(put).toMatchObject({ ok: true, changed: true });
+    expect(files.get(`${UNIT_DIR}/ahpd.service`)).toBe(UNIT.replace('Description=ahpd\n', 'Description=ahpd (Hallohuman agent host), user session\n'));
+    const broken = putUnit(machine, LOCAL, { service: { ...AHPD, name: 'other' }, ifVersion: 'absent', description: 'two\nlines' });
+    expect(broken).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(files.has(`${UNIT_DIR}/other.service`)).toBe(false);
   });
 
   // Requirement: a remote caller cannot write a unit's command while allowRemoteCommands is off, as in the process-compose arm.
