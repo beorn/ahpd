@@ -449,6 +449,14 @@ export function createTerminal(
    * one is what keeps a `%` out of what an agent reads back.
    */
   if (options.preventShellHistory === true) environment.VSCODE_PREVENT_SHELL_HISTORY = '1';
+  /*
+   * zsh's two fixups for a terminal an agent session holds, which the shipped
+   * shellIntegration-rc.zsh applies only when asked: no bang history, so a `!`
+   * in double quotes neither expands nor waits at `dquote>`, and inline `#`
+   * comments. VS Code's agent host sets this for a session claim on zsh, apart
+   * from the history flag (agentHostTerminalManager.ts, createTerminal).
+   */
+  if (claim?.kind === 'session' && (file === 'zsh' || file === 'zsh.exe')) environment.VSCODE_AGENT_ZSH_FIXUPS = '1';
   if (options.nonInteractive === true) {
     environment.LC_ALL = 'C.UTF-8';
     environment.PAGER = '';
