@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import type { Bag, Emit, Session, Start } from '@ahpd/sdk';
+import type { Bag, ComputerPort, Emit, Session, Start } from '@ahpd/sdk';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { toolServers } from '../../sdk/src/tools/server.js';
 import type { ToolsServers } from '../../sdk/src/tools/server.js';
@@ -90,7 +90,7 @@ const requests = (log: string): { method?: string; params?: Record<string, unkno
 };
 
 /** A session over the fixture, with one configured HTTP server and the host's pass-through. */
-async function talking(id: string) {
+async function talking(id: string, machine?: { reach: (id: string, url: string) => Promise<string | undefined> }) {
   const dir = mkdtempSync(join(tmpdir(), 'ahpd-acp-proxy-'));
   made.push(dir);
   const log = join(dir, 'requests.jsonl');
@@ -100,7 +100,17 @@ async function talking(id: string) {
   const start: Start = {
     uri: `ahp-session:/${id}`,
     chatUri: `ahp-chat:/${id}`,
-    settings: {},
+    settings: machine === undefined ? {} : { computer: 'computer://box' },
+    ...(machine === undefined ? {} : {
+      computers: {
+        how: async (_id: string, spawn: { command?: string; args?: string[]; env?: Record<string, string> }) => ({
+          command: spawn.command,
+          args: spawn.args ?? [],
+          ...(spawn.env === undefined ? {} : { env: spawn.env }),
+        }),
+        reach: machine.reach,
+      } as ComputerPort,
+    }),
     schema: () => ({ type: 'object', properties: {} }),
     emit,
     clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
@@ -127,6 +137,18 @@ async function talking(id: string) {
   const desk = (): Bag | undefined => session.customizations().find((one) => one.id === DESK);
   return { session, log, handed, call, desk, turn };
 }
+
+it('claims no pass-through for a machine that cannot reach the daemon', async () => {
+  // The daemon is on this host's loopback, and the machine has no address for
+  // it: the agent is handed the server itself, so a token given to a
+  // pass-through would never reach anything.
+  const { session, handed } = await talking('unreachable', { reach: async () => undefined });
+
+  expect(handed.url).toBe(at);
+  // It is connected either way: what it cannot take is a token renewed later,
+  // so none is taken and it is not said ready on one it never received.
+  expect(await session.authenticated?.('https://desk.example/', 'tok-1', DESK)).toBe(false);
+});
 
 it('hands the agent the pass-through, never the server or its token', async () => {
   const { handed } = await talking('handed');
