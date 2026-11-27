@@ -51,7 +51,7 @@ afterEach(async () => {
 });
 
 /** A signed-in client with one ACP session, opened with two configured servers. */
-async function talking() {
+async function talking(turn = true) {
   const path = mkdtempSync(join(tmpdir(), 'ahpd-acp-target-'));
   const host = createHost({
     path,
@@ -83,6 +83,7 @@ async function talking() {
   }).snapshot.state.defaultChat;
   await client.handle({ method: 'subscribe', params: { channel: chatUri } });
   opened.push({ client, uri });
+  if (!turn) return { client, p, uri };
   // The server is opened for the first turn, which is where it is handed its servers.
   void client.handle({
     method: 'dispatchAction',
@@ -124,4 +125,17 @@ it('still refuses a target that names no server of the session', async () => {
     method: 'authenticate',
     params: { resource: 'https://desk.example/', token: 'x', target: { kind: 'mcpServer', session: uri, customizationId: 'acp-internal:/mcp/nope#mcp=nope' } },
   })).rejects.toMatchObject({ message: 'Authentication target must identify an MCP server in an existing session' });
+});
+
+it('takes a token aimed at a configured server before the first turn, by the id the session published', async () => {
+  // The session has run no turn, so nothing is opened yet. The servers it was
+  // configured with are its customizations from creation, so the target
+  // resolves and the token is held for the open rather than refused with
+  // -32602 for a session that published nothing.
+  const { client, uri } = await talking(false);
+
+  await expect(client.handle({
+    method: 'authenticate',
+    params: { resource: 'https://desk.example/', token: 'early', target: { kind: 'mcpServer', session: uri, customizationId: 'acp-internal:/mcp/desk#mcp=desk' } },
+  })).resolves.toEqual({});
 });

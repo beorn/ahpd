@@ -90,7 +90,11 @@ const requests = (log: string): { method?: string; params?: Record<string, unkno
 };
 
 /** A session over the fixture, with one configured HTTP server and the host's pass-through. */
-async function talking(id: string, machine?: { reach: (id: string, url: string) => Promise<string | undefined> }) {
+async function talking(
+  id: string,
+  machine?: { reach: (id: string, url: string) => Promise<string | undefined> },
+  before?: (session: Session) => Promise<void>,
+) {
   const dir = mkdtempSync(join(tmpdir(), 'ahpd-acp-proxy-'));
   made.push(dir);
   const log = join(dir, 'requests.jsonl');
@@ -120,6 +124,7 @@ async function talking(id: string, machine?: { reach: (id: string, url: string) 
   };
   const session = await agent.create(start);
   started.push(session);
+  if (before !== undefined) await before(session);
   const turn = async (turnId: string, text: string): Promise<void> => {
     const ended = () => actions.filter((one) => one.type === 'chat/turnComplete' || one.type === 'chat/turnCancelled' || one.type === 'chat/error').length;
     const before = ended();
@@ -171,6 +176,19 @@ it('sends a targeted token from the next request on, and a renewal from the one 
   expect(seen).toEqual([{ authorization: 'Bearer tok-1', tenant: 'acme' }, { authorization: 'Bearer tok-2', tenant: 'acme' }]);
   // The session was opened once: the renewal reached the server without one.
   expect(requests(log).filter((one) => one.method === 'session/new' || one.method === 'session/load' || one.method === 'session/resume')).toHaveLength(1);
+});
+
+it('takes a token before the session opens, and the pass-through sends it from the first request', async () => {
+  // A client that signs in before the first turn names a server the session
+  // was configured with. Nothing is opened yet, so the token is held and read
+  // when the pass-through opens, instead of being refused for that reason.
+  const { call } = await talking('early', undefined, async (session) => {
+    expect(await session.authenticated?.('https://desk.example/', 'tok-early', DESK)).toBe(true);
+  });
+
+  await call();
+
+  expect(seen).toEqual([{ authorization: 'Bearer tok-early', tenant: 'acme' }]);
 });
 
 it('says a 401 as authRequired, from the metadata the server named, and a token after clears it', async () => {
