@@ -557,7 +557,7 @@ describe('the MCP servers a session is opened with', () => {
 
   it('fails a record that names a server the host does not offer, and says both (#39079)', async () => {
     const { agent } = withLog({ mcpServers: ['files', 'not-configured'] });
-    await expect(start(agent, 'stdio', { mcpServers: servers })).rejects.toThrow(/MCP_SERVER_UNKNOWN: this record names not-configured/u);
+    await expect(start(agent, 'stdio', { mcpServers: servers })).rejects.toThrow(/MCP_SERVER_UNKNOWN: acp names not-configured/u);
   });
 
   const published = (session: Session): Record<string, Bag> => Object.fromEntries(session.customizations()

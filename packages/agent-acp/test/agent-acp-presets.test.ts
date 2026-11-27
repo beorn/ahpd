@@ -328,6 +328,19 @@ it('refuses a record whose base names no shipped row, naming the rows it ships',
   expect(kind.open(viewOf('codex', () => ({}))).provider).toBe('codex');
 });
 
+it('refuses a record whose server list holds something that is not a name, by position (#39079)', async () => {
+  const { problems, kind } = await load();
+  expect(problems).toEqual([]);
+  // A filter here would have opened the session with one server fewer than the
+  // record wrote, which is the failure the field exists to prevent.
+  expect(() => kind.open(viewOf('files', () => ({ command: 'mcp-files', mcpServers: ['notes', 7] })))).toThrow(
+    "files.mcpServers[1] is not a name; a record's list is read as written rather than shrunk",
+  );
+  expect(() => kind.open(viewOf('files', () => ({ command: 'mcp-files', mcpServers: 'notes' })))).toThrow(
+    "files.mcpServers is not a list of names; a record's field is read as written",
+  );
+});
+
 it('applies a row\'s sign-in once the daemon\'s own environment has its variable', async () => {
   delete process.env.CODEX_API_KEY;
   delete process.env.OPENAI_API_KEY;

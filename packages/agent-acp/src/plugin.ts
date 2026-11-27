@@ -235,6 +235,25 @@ const changedOf = (value: unknown): ToolsChanged | undefined =>
   value === 'notify' || value === 'list' ? value : undefined;
 
 /**
+ * A record's own list of MCP server names, read as written (#39079).
+ *
+ * A list that is not a list of names refuses the record, naming the field and
+ * the position of the entry that is not one: dropping the entry instead would
+ * open a session with a narrower list than the record wrote, which is the
+ * failure this field exists to prevent.
+ */
+const serverNamesOf = (record: string, declared: unknown): string[] => {
+  if (!Array.isArray(declared)) {
+    throw new Error(`${record}.mcpServers is not a list of names; a record's field is read as written`);
+  }
+  const bad = declared.findIndex((one) => typeof one !== 'string');
+  if (bad !== -1) {
+    throw new Error(`${record}.mcpServers[${bad}] is not a name; a record's list is read as written rather than shrunk`);
+  }
+  return declared as string[];
+};
+
+/**
  * What the plugin's own options are for every agent of one load.
  *
  * `hostTools` and `toolsChanged` are the daemon's answer for every agent it
@@ -422,10 +441,10 @@ const optionsOfRecord = (shared: Shared, record: AgentView): AcpOptions => {
   const toolsChanged = changedOf(config['toolsChanged']) ?? shared.toolsChanged;
   const honoursTrust = typeof config['honoursTrust'] === 'boolean' ? config['honoursTrust'] : row?.honoursTrust;
   // #39079: the servers this record is offered by name. Absent inherits the host's whole map, so a record written
-  // before this field keeps the sessions it had; a written list is taken as written, empty included.
-  const mcpServers = Array.isArray(config['mcpServers'])
-    ? config['mcpServers'].filter((one): one is string => typeof one === 'string')
-    : row?.mcpServers;
+  // before this field keeps the sessions it had; a written list is taken as written, empty included, and an entry
+  // that is not a name refuses the record rather than leaving the list shorter than the one it wrote.
+  const declaredServers = config['mcpServers'];
+  const mcpServers = declaredServers === undefined ? row?.mcpServers : serverNamesOf(record.id, declaredServers);
   const cutTurns = config['cutTurns'] === 'error' || config['cutTurns'] === 'complete' ? config['cutTurns'] : undefined;
   const stderrTail = config['stderrTail'] === 'sentence' || config['stderrTail'] === 'log' ? config['stderrTail'] : undefined;
   const portFailures = config['portFailures'] === 'spawn' || config['portFailures'] === 'message' ? config['portFailures'] : undefined;
