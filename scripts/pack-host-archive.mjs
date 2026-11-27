@@ -16,9 +16,9 @@
 // two builds can be compared.
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { writeTarGz } from './tar-writer.mjs';
 
 const PLATFORMS = { linux: 'linux', darwin: 'darwin' };
 const ARCHES = { x64: 'x64', arm64: 'arm64' };
@@ -68,8 +68,8 @@ if (existsSync(out) && readdirSync(out).length > 0) fail(`--out ${out} is not em
 
 const platform = PLATFORMS[process.platform] ?? fail(`platform ${process.platform} is not one we ship`);
 const arch = ARCHES[process.arch] ?? fail(`arch ${process.arch} is not one we ship`);
-const tar = process.platform === 'darwin' ? 'gtar' : 'tar';
-if (!/GNU tar/.test(run(tar, ['--version']).stdout ?? '')) fail(`${tar} is not GNU tar; the archive needs --sort and --mtime`);
+// The archive is written by scripts/tar-writer.mjs: plain Node/Bun with the order, mtime and zero
+// ownership fixed here, so a machine with no GNU tar and no gzip binary can still cut its half (#38280).
 
 // The pins the host CLI reads, checked the way it checks them, so a base it would refuse is refused here first.
 const SEMVER = /^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/;
@@ -93,11 +93,25 @@ for (const key of ['runtime', 'hostPlugin', 'supervisor']) {
   checkPin(`--pin-base ${key}`, basePins[key]);
 }
 
+// pnpm is run through corepack when the machine has it, through pnpm itself when that is on PATH, and otherwise
+// through bunx at the version package.json pins: a Mac with only Bun can still cut its half (nothing is installed).
+const hasTool = (command) => spawnSync(command, ['--version'], { encoding: 'utf8' }).status === 0;
+const pinned = String(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).packageManager ?? '');
+const pinnedVersion = /^pnpm@/u.test(pinned) ? pinned.slice('pnpm@'.length) : null;
+const PNPM = hasTool('corepack')
+  ? ['corepack', 'pnpm']
+  : hasTool('pnpm')
+    ? ['pnpm']
+    : pinnedVersion === null
+      ? fail('no corepack, no pnpm, and package.json pins no pnpm version to run through bunx')
+      : ['bunx', `pnpm@${pinnedVersion}`];
+const pnpm = (args, options) => must(PNPM[0], [...PNPM.slice(1), ...args], options);
+
 const versions = {
   node: process.version,
-  pnpm: must('corepack', ['pnpm', '--version'], { cwd: root }),
+  pnpm: must(PNPM[0], [...PNPM.slice(1), '--version'], { cwd: root }),
   bun: run('bun', ['--version']).stdout?.trim() || 'absent',
-  tar: must(tar, ['--version']).split('\n')[0],
+  tar: 'scripts/tar-writer.mjs',
 };
 process.stdout.write(`pack-host-archive: node ${versions.node}, pnpm ${versions.pnpm}, bun ${versions.bun}, ${versions.tar}\n`);
 
@@ -107,9 +121,9 @@ const lock = readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8');
 const foreignInLock = [...new Set([...lock.matchAll(/^ {2}'?(@ahpd\/[^@\s']+)@([^:\s']+)'?:\s*$/gm)].map((m) => `${m[1]}@${m[2]}`))];
 if (foreignInLock.length > 0) fail(`pnpm-lock.yaml resolves @ahpd packages from outside the workspace: ${foreignInLock.join(', ')}`);
 
-must('corepack', ['pnpm', 'install', '--frozen-lockfile'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+pnpm(['install', '--frozen-lockfile'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
 // tsc in dependency order over the server's closure. A release compiles clean: any type error refuses (@cto c96c46ad).
-const built = run('corepack', ['pnpm', '--filter', '@ahpd/server...', '-r', '--workspace-concurrency=1', 'exec', 'tsc', '-p', '.'], { cwd: root });
+const built = run(PNPM[0], [...PNPM.slice(1), '--filter', '@ahpd/server...', '-r', '--workspace-concurrency=1', 'exec', 'tsc', '-p', '.'], { cwd: root });
 const typeErrors = ((built.stdout ?? '') + (built.stderr ?? '')).split('\n').filter((line) => /error TS\d+/.test(line));
 if (typeErrors.length > 0) fail(`the build has ${typeErrors.length} type error(s):\n${typeErrors.join('\n')}`);
 if (built.status !== 0) fail(`the build exited ${built.status}\n${(built.stdout ?? '').slice(-2000)}${(built.stderr ?? '').slice(-2000)}`);
@@ -117,7 +131,7 @@ if (!existsSync(join(root, 'packages/server/dist/main.js'))) fail('no packages/s
 
 mkdirSync(out, { recursive: true });
 const stage = join(out, 'stage');
-must('corepack', ['pnpm', '--filter', '@ahpd/server', '--config.inject-workspace-packages=true', 'deploy', '--prod', stage], { cwd: root });
+pnpm(['--filter', '@ahpd/server', '--config.inject-workspace-packages=true', 'deploy', '--prod', stage], { cwd: root });
 if (must('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: root }) !== '') fail('the build changed tracked files');
 
 // The staged tree, checked again: every @ahpd/* in it is a workspace copy (pnpm names those `@ahpd+<name>@file+…`).
@@ -133,14 +147,13 @@ const archive = join(out, name);
 const mtime = must('git', ['show', '-s', '--format=%ct', commit], { cwd: root });
 // pnpm's .bin shims and its own state files hold the absolute staging path: on a host they point nowhere, and they
 // would publish this machine's folder names. The server starts from dist/main.js and needs none of them.
-must(tar, [
-  '--sort=name', `--mtime=@${mtime}`, '--owner=0', '--group=0', '--numeric-owner',
-  '--exclude=node_modules/.bin', '--exclude=.modules.yaml', '--exclude=.pnpm-workspace-state-v1.json',
-  '-C', out, '-cf', `${archive}.tar`, `--transform=s,^stage,${top},`, 'stage',
-]);
-must('gzip', ['-n', '-9', `${archive}.tar`]);
-must('mv', [`${archive}.tar.gz`, archive]);
-const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
+const sha256 = writeTarGz({
+  dir: stage,
+  prefix: top,
+  mtime: new Date(Number(mtime) * 1000),
+  exclude: ['node_modules/.bin', '.modules.yaml', '.pnpm-workspace-state-v1.json'],
+  out: archive,
+});
 
 const ahpdPin = { version, platform, arch, source: `${sourceBase}/${tag}/${name}`, checksum: `sha256:${sha256}` };
 checkPin('ahpd', ahpdPin);
