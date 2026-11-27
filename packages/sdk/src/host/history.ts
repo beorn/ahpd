@@ -349,6 +349,15 @@ export function createHistory(ctx: HostContext): History {
     // first, and nothing is listed to find a row that is in them.
     const held = listedSummaries.find((item) => idFor(item.resource) === id);
     if (held) return held;
+    /*
+     * An id somebody unlisted or disposed has no row to find, whatever a
+     * backend would say: the mark is the answer, as `loadUnlisted` reads it
+     * before any load. Read before anybody is asked, because a disposed row's
+     * record is gone and so the lookup below would be one more listing of
+     * every backend - seconds on a host with a large codex catalogue, for a
+     * question the store already answers (#39031).
+     */
+    if (ctx.kept.unlisted?.(id) === true) return undefined;
     const record = ctx.kept.nested?.(id);
     const runs = record === undefined ? undefined : ctx.agents.get(record.provider);
     if (record !== undefined && runs !== undefined) {
