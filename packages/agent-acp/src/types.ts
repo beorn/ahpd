@@ -135,6 +135,17 @@ export interface AcpOptions {
    */
   hostTools?: boolean;
   /**
+   * The MCP servers this record is offered, by the name the host's `mcpServers` gives them.
+   *
+   * Absent, the record inherits every server the host offers, which is what
+   * every record written before this field did. Present, it is handed exactly
+   * these and no others: a name the host does not have fails the session that
+   * asked for it, rather than a session that quietly runs short a server. This
+   * is what keeps one deployment's server out of an agent that cannot take it
+   * (a Claude bridge accepts one authenticated host HTTP server and no more).
+   */
+  mcpServers?: readonly string[];
+  /**
    * Whether this agent asks before it loads a project's own configuration.
    *
    * ACP carries no trust field and this host reads none of a project's files

@@ -519,6 +519,47 @@ describe('the MCP servers a session is opened with', () => {
   });
 
   /** The MCP servers a session publishes, by name, with their state. */
+  it('opens a session with only the servers its record declares (#39079)', async () => {
+    const { agent, log } = withLog({ mcpServers: ['files'] });
+    const { session, watch } = await start(agent, 'stdio', { mcpServers: servers });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+
+    expect(opened(log)).toEqual([
+      { name: 'files', command: 'mcp-files', args: ['--root', '/tmp'], env: [{ name: 'KEY', value: 'k-1' }] },
+    ]);
+  });
+
+  it('opens a session with none when its record declares an empty list (#39079)', async () => {
+    // The Claude board record's case: a bridge that accepts one authenticated host HTTP server is handed none of the
+    // host's, so the handshake it refuses on never happens.
+    const { agent, log } = withLog({ mcpServers: [] });
+    const { session, watch } = await start(agent, 'stdio', { mcpServers: servers });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+
+    expect(opened(log)).toEqual([]);
+  });
+
+  it('carries the record\'s list on a load too, not the host\'s whole map (#39079)', async () => {
+    const { agent, log } = withLog({ mcpServers: ['files'] });
+    const { session, watch } = await start(agent, 'loaded', { mcpServers: servers, resume: 'old-one' });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+
+    expect(requests(log).find((one) => one.method === 'session/load')?.params?.['mcpServers']).toEqual([
+      { name: 'files', command: 'mcp-files', args: ['--root', '/tmp'], env: [{ name: 'KEY', value: 'k-1' }] },
+    ]);
+  });
+
+  it('fails a record that names a server the host does not offer, and says both (#39079)', async () => {
+    const { agent } = withLog({ mcpServers: ['files', 'not-configured'] });
+    await expect(start(agent, 'stdio', { mcpServers: servers })).rejects.toThrow(/MCP_SERVER_UNKNOWN: this record names not-configured/u);
+  });
+
   const published = (session: Session): Record<string, Bag> => Object.fromEntries(session.customizations()
     .filter((one) => one.type === 'mcpServer')
     .map((one) => [String(one.name), one]));

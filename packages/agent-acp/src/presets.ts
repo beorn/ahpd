@@ -59,6 +59,8 @@ export interface AcpPreset {
    * so the folder is otherwise the agent's to read.
    */
   honoursTrust?: boolean;
+  /** The MCP servers this row is offered by name; absent, every server the host offers. */
+  mcpServers?: readonly string[];
   /**
    * The approval modes the agent's server names, as the server names them.
    *
@@ -348,6 +350,7 @@ export const templates = (): AgentTemplate[] => Object.entries(presets).map(([id
       ...(Object.keys(env).length === 0 ? {} : { env }),
       ...(row.authenticate === undefined ? {} : { authenticate: { methodId: row.authenticate.methodId } }),
       ...(row.honoursTrust === undefined ? {} : { honoursTrust: row.honoursTrust }),
+      ...(row.mcpServers === undefined ? {} : { mcpServers: [...row.mcpServers] }),
       ...(row.machine === undefined ? {} : { machine: structuredClone(row.machine) }),
       ...(known?.install === undefined ? {} : { install: structuredClone(known.install) }),
       ...(known?.page === undefined ? {} : { page: known.page }),

@@ -200,8 +200,25 @@ const proxyOf = (ctx: SessionContext, name: string, server: { url: string; heade
  * rather than dropped, because a deployment that configured a server and
  * watches a session not reach it has no other way to find out.
  */
+/**
+ * The host's servers this record is offered, by the names it declares (#39079).
+ *
+ * A record that declares nothing is handed the whole map, which is what every
+ * record written before the field did. A record that declares names is handed
+ * exactly those; a name the host does not offer fails here, loudly and by name,
+ * rather than opening a session short a server its record said it had.
+ */
+export const offeredServers = <T>(all: Record<string, T> | undefined, declared: readonly string[] | undefined): Record<string, T> => {
+  const offered = all ?? {};
+  if (declared === undefined) return offered;
+  const missing = declared.filter((name) => !(name in offered));
+  if (missing.length > 0) throw new Error(`MCP_SERVER_UNKNOWN: this record names ${missing.join(', ')}, which the host does not offer`);
+  return Object.fromEntries(Object.entries(offered).filter(([name]) => declared.includes(name)));
+};
+
 const serversFor = async (
   start: Start,
+  declaredServers: readonly string[] | undefined,
   own: () => ToolsEndpoint | undefined,
   capabilities: AgentCapabilities | undefined,
   hostTools: boolean,
@@ -224,7 +241,7 @@ const serversFor = async (
     const at = reached ?? url;
     return reached === undefined && !toolsReachable(at, machine === undefined ? undefined : `computer://${machine}`) ? undefined : at;
   };
-  for (const [name, one] of Object.entries(start.mcpServers ?? {})) {
+  for (const [name, one] of Object.entries(offeredServers(start.mcpServers, declaredServers))) {
     // ACP has one shape per transport and this host has two, so a stdio server
     // is a name, a command and a list of variables, and an HTTP one is a name,
     // a URL and a list of headers.
@@ -769,6 +786,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
       const left = new Map<string, string>();
       const servers = await serversFor(
         start,
+        options.mcpServers,
         toolsServer,
         agentCapabilities,
         options.hostTools !== false,
@@ -790,7 +808,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * server answers the open, `error` for one this server could not take.
        * The host's own tools are not among them: their token is the host's.
        */
-      publishServers(ctx, Object.keys(start.mcpServers ?? {}), (name) => left.has(name)
+      publishServers(ctx, Object.keys(offeredServers(start.mcpServers, options.mcpServers)), (name) => left.has(name)
         ? { kind: 'error', error: { errorType: 'mcpServerFailed', message: left.get(name) } }
         : { kind: 'starting' });
       /*
