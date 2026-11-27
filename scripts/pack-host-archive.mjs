@@ -16,7 +16,7 @@
 // two builds can be compared.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { writeTarGz } from './tar-writer.mjs';
 
@@ -138,6 +138,22 @@ if (must('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: ro
 const store = join(stage, 'node_modules', '.pnpm');
 const foreignInStage = readdirSync(store).filter((name) => name.startsWith('@ahpd+') && !/^@ahpd\+[^@]+@file\+/.test(name));
 if (foreignInStage.length > 0) fail(`the staged tree holds @ahpd packages that are not from the workspace: ${foreignInStage.join(', ')}`);
+
+// A link that resolves to nothing is a bundle that cannot start, and it shows up only when the daemon runs (#38280: a
+// 100-byte ustar linkname cut a pnpm store path on the Mac, and the installed daemon restarted 48 times into "Cannot
+// find module @ahpd/sdk"). Refused here, before anything is published.
+const dangling = [];
+const walkLinks = (dir) => {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) {
+      if (!existsSync(path)) dangling.push(path);
+    } else if (stat.isDirectory()) walkLinks(path);
+  }
+};
+walkLinks(stage);
+if (dangling.length > 0) fail(`the staged tree has ${dangling.length} symlink(s) that resolve to nothing: ${dangling.slice(0, 3).join(', ')}`);
 
 const version = `${JSON.parse(readFileSync(join(root, 'packages/server/package.json'), 'utf8')).version}-beorn.${commit.slice(0, 8)}`;
 // The installer accepts exactly one top-level folder, named after the archive without `.tar.gz` (@dev/5, @cto).

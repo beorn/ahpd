@@ -6,10 +6,11 @@
 // runs over the same tree produce the same bytes.
 //
 // The shape is what the installer reads with node-tar: ustar headers, a pax `path` record only when a name cannot be
-// split across the ustar prefix and name fields, symlinks kept as symlinks, and directory entries ending in `/`.
+// split across the ustar prefix and name fields, a pax `linkpath` record when a link target cannot fit the 100-byte
+// ustar field, symlinks kept as symlinks, and directory entries ending in `/`.
 
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
@@ -49,6 +50,20 @@ const header = ({ name, prefix, mode, size, mtime, type, link }) => {
 
 const pad = (length) => Buffer.alloc((BLOCK - (length % BLOCK)) % BLOCK, 0);
 
+/**
+ * One pax extended-header record: `LENGTH key=value\n`, where LENGTH counts its own digits. GNU tar refuses a header
+ * without it ("Malformed extended header: missing length"), and a reader that tolerates it still drops the record.
+ */
+const paxRecord = (key, value) => {
+  const body = ` ${key}=${value}\n`;
+  let length = Buffer.byteLength(body) + 1;
+  for (;;) {
+    const next = Buffer.byteLength(`${length}${body}`);
+    if (next === length) return `${length}${body}`;
+    length = next;
+  }
+};
+
 /** Every entry under `dir`, in sorted order, skipping whole subtrees named in `exclude`. */
 export const tarEntries = (dir, { exclude = [] } = {}) => {
   // A pattern matches at any depth, the way GNU tar --exclude does: node_modules/.bin covers every
@@ -84,9 +99,6 @@ export const tarEntries = (dir, { exclude = [] } = {}) => {
   return entries;
 };
 
-import { readlinkSync } from 'node:fs';
-const readlink = (path) => readlinkSync(path);
-
 /** The tar bytes for one tree: `prefix` replaces the folder `dir` is named after, as `--transform` used to. */
 export const writeTar = (dir, { prefix, mtime, exclude = [] }) => {
   const seconds = Math.floor(mtime.getTime() / 1000);
@@ -95,14 +107,17 @@ export const writeTar = (dir, { prefix, mtime, exclude = [] }) => {
   for (const entry of tarEntries(dir, { exclude })) {
     const name = `${prefix}/${entry.relative}`;
     const split = entry.relative.endsWith('/') ? { prefix: '', name } : splitName(name);
-    if (split === null) {
-      const pax = `path=${name}\n`;
-      const bytes = Buffer.from(pax, 'utf8');
+    // ustar holds 100 bytes of link target; anything longer is written as pax `linkpath`, or the reader gets a
+    // truncated link that dangles (a pnpm store link runs past 100 bytes on macOS, #38280).
+    const longLink = entry.link !== undefined && Buffer.byteLength(entry.link) > 99;
+    const records = [...(split === null ? [paxRecord('path', name)] : []), ...(longLink ? [paxRecord('linkpath', entry.link)] : [])];
+    if (records.length > 0) {
+      const bytes = Buffer.from(records.join(''), 'utf8');
       parts.push(
         header({ name: `PaxHeaders/${Buffer.byteLength(name)}`, prefix: '', mode: 0o644, size: bytes.length, mtime: seconds, type: 'x' }),
         bytes,
         pad(bytes.length),
-        header({ name: name.slice(0, 100), prefix: '', mode: entry.mode, size: entry.size, mtime: seconds, type: entry.type, link: entry.link }),
+        header({ name: split?.name ?? name.slice(0, 100), prefix: split?.prefix ?? '', mode: entry.mode, size: entry.size, mtime: seconds, type: entry.type, link: entry.link }),
       );
     } else {
       parts.push(header({ ...split, mode: entry.mode, size: entry.size, mtime: seconds, type: entry.type, link: entry.link }));
