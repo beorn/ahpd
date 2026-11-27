@@ -38,7 +38,30 @@ vi.mock('../../agent-claude/src/mcp.js', () => ({
   }),
 }));
 
-beforeEach(resetSdk);
+/*
+ * A backend that cannot say an expiry as its server's state: the real Claude
+ * servers with `expired` taken off, switched on per test.
+ */
+const backend = vi.hoisted(() => ({ withoutExpiry: false, expirySaysFalse: false }));
+vi.mock('../../agent-claude/src/session/servers.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../agent-claude/src/session/servers.js')>();
+  return {
+    ...real,
+    createServers: (...given: Parameters<typeof real.createServers>) => {
+      const made = real.createServers(...given);
+      if (backend.expirySaysFalse) return { ...made, methods: { ...made.methods, expired: async () => false } };
+      if (!backend.withoutExpiry) return made;
+      const { expired: _off, ...methods } = made.methods;
+      return { ...made, methods: methods as typeof made.methods };
+    },
+  };
+});
+
+beforeEach(() => {
+  resetSdk();
+  backend.withoutExpiry = false;
+  backend.expirySaysFalse = false;
+});
 
 const DIR = WORK;
 const DESK = 'https://desk.example/';
@@ -205,7 +228,87 @@ it('withdraws a targeted token and keeps the one pushed for the resource', async
   expect(spent()).toBe('sk-agent');
 });
 
-it('says a targeted token ran out on the session of its server', async () => {
+/** One server's customization state in a session, as a client subscribed to it reads it. */
+const stateOf = async (client: Awaited<ReturnType<typeof twoSessions>>['client'], session: string, name: string): Promise<Record<string, unknown> | undefined> => {
+  const snapshot = (await client.handle({ method: 'subscribe', params: { channel: session } }) as {
+    snapshot: { state: { customizations: { id: string; state?: Record<string, unknown> }[] } };
+  }).snapshot.state;
+  return snapshot.customizations.find((one) => one.id === serverId(name))?.state;
+};
+
+/*
+ * A targeted token running out is the server's own state, as the spec has it:
+ * no `auth/required` notification for an MCP server, and the header that no
+ * longer works is taken out of the CLI's set.
+ * AHP 1.1.0 types/channels-session/state.ts, McpServerAuthRequiredState and McpAuthRequiredReason.Expired.
+ */
+it('says a targeted token ran out as its server\'s state, drops the header, and takes a new token after', async () => {
+  const { client, wire, two } = await twoSessions();
+  // The server the token reaches connects with it.
+  sdk.mcp = [
+    { name: 'desk', status: 'needs-auth' },
+    { name: 'tickets', status: 'connected' },
+    { name: 'keys', status: 'needs-auth' },
+  ];
+  vi.useFakeTimers();
+  try {
+    await client.handle({
+      method: 'authenticate',
+      params: { channel: ROOT, resource: DESK, token: 'tickets-short', expiresIn: 60, target: at(TWO, serverId('tickets')) },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(header(two, 'tickets')).toBe('Bearer tickets-short');
+    expect(await stateOf(client, TWO, 'tickets')).toEqual({ kind: 'ready' });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(wire.notes.filter((one) => one.method === 'auth/required')).toEqual([]);
+    expect(header(two, 'tickets')).toBeUndefined();
+    expect(await stateOf(client, TWO, 'tickets')).toMatchObject({ kind: 'authRequired', reason: 'expired', resource: { resource: DESK } });
+
+    await client.handle({
+      method: 'authenticate',
+      params: { channel: ROOT, resource: DESK, token: 'tickets-again', target: at(TWO, serverId('tickets')) },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(header(two, 'tickets')).toBe('Bearer tickets-again');
+    expect(await stateOf(client, TWO, 'tickets')).toEqual({ kind: 'ready' });
+  }
+  finally {
+    vi.useRealTimers();
+  }
+});
+
+/*
+ * A backend that has the method and cannot answer for this token: a CLI that
+ * is not running, or a server this session no longer holds. A client whose
+ * token ran out must still be told, exactly as it is told for a backend with
+ * no method at all — an expiry nothing is said about is a session that keeps
+ * failing calls with no way to find out why.
+ */
+it('keeps auth/required when the backend answers false for an expiry it was told about', async () => {
+  backend.expirySaysFalse = true;
+  const { client, wire } = await twoSessions();
+  vi.useFakeTimers();
+  try {
+    await client.handle({
+      method: 'authenticate',
+      params: { channel: ROOT, resource: DESK, token: 'tickets-short', expiresIn: 60, target: at(TWO, serverId('tickets')) },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const expired = wire.notes.filter((one) => one.method === 'auth/required'
+      && (one.params as { reason?: unknown }).reason === 'expired');
+    expect(expired).toEqual([{
+      method: 'auth/required',
+      params: { channel: TWO, resource: { resource: DESK }, reason: 'expired' },
+    }]);
+  }
+  finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps auth/required on the session for a backend that cannot say an expiry as state', async () => {
+  backend.withoutExpiry = true;
   const { client, wire } = await twoSessions();
   vi.useFakeTimers();
   try {
@@ -226,6 +329,7 @@ it('says a targeted token ran out on the session of its server', async () => {
     vi.useRealTimers();
   }
 });
+
 
 /*
  * A targeted renewal reaches its server while that server runs on the token it

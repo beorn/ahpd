@@ -58,6 +58,7 @@ export interface Servers {
     setCustomizationEnabled: (id: string, enabled: boolean) => Promise<boolean>;
     startMcpServer: (id: string) => Promise<boolean>;
     authenticated: (resource: string, token: string, server?: string) => Promise<boolean>;
+    expired: (resource: string, server: string) => Promise<boolean>;
     awaiting: () => string[];
     stopMcpServer: (id: string) => Promise<boolean>;
   };
@@ -92,6 +93,16 @@ export function createServers(ctx: SessionContext): Servers {
    * not only once the old token has run out and the server asks again.
    */
   const signedIn = new Map<string, Published>();
+  /** The servers whose client token ran out, by name: `authRequired` with reason `expired` until a new one arrives. */
+  const lapsed = new Set<string>();
+  /** A server gone from the session's set holds no sign-in to renew or expire. */
+  const prune = (): void => {
+    for (const name of [...signedIn.keys(), ...lapsed]) {
+      if (ctx.mcpServers[name] !== undefined) continue;
+      signedIn.delete(name);
+      lapsed.delete(name);
+    }
+  };
 
   /**
    * The servers a client's stop switched off, by name.
@@ -178,7 +189,7 @@ export function createServers(ctx: SessionContext): Servers {
     const own = (given: unknown[]): unknown[] => given.filter((raw) => !skills.mine(str(bag(raw).name) ?? ''));
     ctx.customizations = customizationsOf(
       { ...reported.init, ...(Array.isArray(reported.init.commands) ? { commands: own(reported.init.commands) } : {}) },
-      reported.mcp, own(reported.skills), wanted, plugins, handed, off, diskNow(), stopRequested,
+      reported.mcp, own(reported.skills), wanted, plugins, handed, off, diskNow(), stopRequested, lapsed,
     );
     skills.lay(ctx.customizations);
     if (JSON.stringify(ctx.customizations) !== was) {
@@ -250,6 +261,7 @@ export function createServers(ctx: SessionContext): Servers {
   const refreshMcp = async (): Promise<void> => {
     const to = ctx.query;
     if (to === undefined) return;
+    prune();
     const found = await to.mcpServerStatus().then(reportedServers).catch(() => undefined);
     // A CLI that does not answer, or was put away meanwhile, says nothing of its servers.
     if (found === undefined || ctx.disposed || ctx.query !== to) return;
@@ -261,7 +273,7 @@ export function createServers(ctx: SessionContext): Servers {
       const name = str(server.name);
       if (!name) continue;
       const held = ctx.customizations.find((entry) => str(entry.type) === 'mcpServer' && str(entry.name) === name);
-      const fresh = bag(customizationsOf({}, [server], [], wanted, [], undefined, [], disk, stopRequested)
+      const fresh = bag(customizationsOf({}, [server], [], wanted, [], undefined, [], disk, stopRequested, lapsed)
         .find((entry) => str(entry.type) === 'mcpServer'));
       if (!held) {
         ctx.customizations.push(fresh);
@@ -537,7 +549,7 @@ export function createServers(ctx: SessionContext): Servers {
       .map((name) => ({ name }));
     const skills = named('skill');
     const handed = new Set((ctx.options.plugins ?? []).map((one) => one.path));
-    const scanned = customizationsOf({ commands: skills, agents: named('agent') }, named('mcpServer'), skills, wanted, [], handed, [], disk, stopRequested);
+    const scanned = customizationsOf({ commands: skills, agents: named('agent') }, named('mcpServer'), skills, wanted, [], handed, [], disk, stopRequested, lapsed);
     const own = (ctx.options.seedCustomizations ?? []).filter((one) => str(one.type) !== 'mcpServer');
     const held = new Set(own.map((one) => str(one.id)));
     return [...own, ...scanned.filter((one) => !held.has(str(one.id)))].map((one) => {
@@ -822,8 +834,44 @@ export function createServers(ctx: SessionContext): Servers {
         // instead of claiming a token it never got.
         wanted.delete(named);
         signedIn.set(named, published);
+        lapsed.delete(named);
       }
-      catch { return false; }
+      catch (error) {
+        // Said, not swallowed: a renewal that fails here leaves the server on
+        // a token that is about to run out.
+        ctx.options.log?.(`the token for ${named} was not applied: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+        return false;
+      }
+      await refreshMcp();
+      return true;
+    },
+
+    /*
+     * A client's token for one server ran out, as the host's clock says.
+     *
+     * The spec's signal for an MCP server is its customization's state, not a
+     * notification: the server goes back to `authRequired` with reason
+     * `expired`, and the header that no longer works is taken out of the set
+     * the CLI holds. A token that arrives after it applies as a first one does.
+     */
+    expired: async (resource, server) => {
+      const named = serverNamed(server);
+      const published = named === undefined ? undefined : signedIn.get(named) ?? wanted.get(named);
+      const to = ctx.query;
+      if (named === undefined || published?.resource !== resource || to === undefined) return false;
+      const config = ctx.mcpServers[named];
+      if (config === undefined) return false;
+      const { Authorization: _gone, ...headers } = (typeof config.headers === 'object' && config.headers !== null
+        ? config.headers
+        : {}) as Record<string, string>;
+      ctx.mcpServers[named] = Object.keys(headers).length > 0 ? { ...config, headers } : (({ headers: _none, ...rest }) => rest)(config);
+      signedIn.delete(named);
+      wanted.set(named, published);
+      lapsed.add(named);
+      try { await to.setMcpServers(ctx.mcpServers as never); }
+      catch (error) {
+        ctx.options.log?.(`the expired token for ${named} was not taken out: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+      }
       await refreshMcp();
       return true;
     },
