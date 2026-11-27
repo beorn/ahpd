@@ -51,9 +51,11 @@ export const packedVersion = (tarball) => packedManifest(tarball).version
  * A `workspace:` range surviving into a tarball, or the sibling's unstamped version, means the pair cannot install
  * together — which is the whole of #38983.
  *
- * Only dependencies are refused. A peer range is a claim about the tree an installer builds, not bytes we ship: the
- * fork is a prerelease of the same base, and a range written for that base (`>=0.15.0 <0.16.0-0`) excludes every
- * prerelease by semver even while naming the release everybody installs. `siblingWarnings` says so out loud instead.
+ * Peers are held to the same rule. A peer range written for the base (`>=0.15.0 <0.16.0-0`) excludes every prerelease
+ * by semver, this fork's own `0.15.0-beorn.*` included. Once the registry held a real `@ahpd/sdk@0.15.0`, npm put that
+ * in place of the packed sdk to satisfy the peer, and `@ahpd/server`'s exact `0.15.0-beorn.<sha>` then had nothing to
+ * resolve to (ETARGET in hightea's publish proof, hh-38983-0357db55). hh-38499-dc5a62e1 installed because its peers
+ * were written as the exact stamped version by hand; `stampManifestText` now writes them.
  */
 export const siblingDisagreements = (packed, versions) => {
   const problems = []
@@ -66,25 +68,35 @@ export const siblingDisagreements = (packed, versions) => {
         problems.push(`packages/${packageName} depends on ${dependency} at ${range}, and this release packed ${dependency}@${stamped}`)
       }
     }
+    for (const [dependency, range] of Object.entries(manifest.peerDependencies ?? {})) {
+      const stamped = versions.get(dependency)
+      if (stamped === undefined) continue
+      if (range !== stamped) {
+        problems.push(`packages/${packageName} peers ${dependency} at ${range}, and this release packed ${dependency}@${stamped}`)
+      }
+    }
   }
   return problems
 }
 
-/** A packed sibling's peer range that does not even name the base version this release stamped — a different line. */
-export const siblingWarnings = (packed, versions) => {
-  const warnings = []
-  for (const { packageName, manifest } of packed) {
-    for (const [dependency, range] of Object.entries(manifest.peerDependencies ?? {})) {
-      const stamped = versions.get(dependency)
-      if (stamped === undefined) continue
-      const base = stamped.replace(/-.*$/u, '')
-      const lower = /(\d+\.\d+\.\d+)/u.exec(range)?.[1]
-      if (lower !== undefined && lower !== base) {
-        warnings.push(`packages/${packageName} peers ${dependency} at ${range}, and this release packed ${base} (${stamped})`)
-      }
-    }
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\/]/gu, '\\$&')
+
+/**
+ * A manifest's text as it is packed: its top-level version stamped, and every peer it names on a packed sibling set to
+ * that sibling's stamped version. Text edits, not a parse and re-serialise, so the restore in the `finally` puts back
+ * exactly the bytes it found. The first `"version":` in each packed manifest is the top-level one.
+ */
+export const stampManifestText = (text, version, versions) => {
+  const stamped = text.replace(/("version":\s*")[^"]+(")/u, `$1${version}$2`)
+  const at = stamped.search(/"peerDependencies"\s*:\s*\{/u)
+  if (at < 0) return stamped
+  const open = stamped.indexOf('{', at)
+  const close = stamped.indexOf('}', open)
+  let block = stamped.slice(open, close)
+  for (const [name, sibling] of versions) {
+    block = block.replace(new RegExp(`("${escapeRegExp(name)}"\\s*:\\s*")[^"]*(")`, 'u'), `$1${sibling}$2`)
   }
-  return warnings
+  return stamped.slice(0, open) + block + stamped.slice(close)
 }
 
 /**
@@ -206,9 +218,7 @@ const main = async () => {
   let packed = []
   try {
     for (const held of stamped) {
-      // The first `"version":` in each of these six manifests is the top-level one; a nested one would need a parse and
-      // a re-serialise, which reorders the file and makes the restore in the `finally` harder to trust.
-      await writeFile(held.path, held.original.replace(/("version":\s*")[^"]+(")/u, `$1${held.expected}$2`))
+      await writeFile(held.path, stampManifestText(held.original, held.expected, versions))
       written.push(held)
     }
     for (const held of stamped.filter((one) => packing.includes(one.packageName))) {
@@ -246,7 +256,6 @@ const main = async () => {
     ),
   ]
   if (disagreements.length > 0) refuse(disagreements.join('\n  '))
-  for (const warning of siblingWarnings(packed, versions)) console.error(`pack warning: ${warning}`)
   for (const { manifest } of packed) console.log(`${manifest.name}@${manifest.version}`)
   console.log(`packed ${packed.length} package(s) into ${out} with suffix ${suffix}`)
 }

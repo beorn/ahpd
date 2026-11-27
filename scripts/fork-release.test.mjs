@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
-import { PACKED, lockDisagreements, packedManifest, packedVersion, siblingDisagreements, siblingWarnings, stampedVersion } from './pack-fork-release.mjs'
+import { PACKED, lockDisagreements, packedManifest, packedVersion, siblingDisagreements, stampManifestText, stampedVersion } from './pack-fork-release.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 
@@ -63,15 +63,19 @@ test('a tarball whose sibling dependency disagrees with what was packed is refus
   expect(siblingDisagreements([{ packageName: 'deploy', manifest: { dependencies: { '@hallohuman/hightea-services': 'workspace:*' } } }], versions)).toHaveLength(1)
 })
 
-// agent-acp and computer peer sdk at `>=0.15.0 <0.16.0-0`, which by semver excludes every prerelease - including this
-// fork's own stamped 0.15.0-beorn.* that the fleet installs. Said out loud, not refused: a peer range describes the
-// installer's tree, and refusing here would block every fork release on a manifest that has shipped this way for months.
-test('a peer range naming another base version is reported, and one naming this base is not', () => {
+// agent-acp and computer peer sdk at `>=0.15.0 <0.16.0-0`, which by semver excludes every prerelease, this fork's own
+// 0.15.0-beorn.* included. With @ahpd/sdk@0.15.0 on the registry, npm swapped it in for the packed sdk and
+// @ahpd/server's exact pin then failed (ETARGET in hightea's publish proof, hh-38983-0357db55).
+test('a peer on a packed sibling is packed as its exact stamped version, and an unstamped peer is refused', () => {
   const versions = new Map([['@ahpd/sdk', '0.15.0-beorn.0badf00d']])
+  const text = '{\n  "name": "@ahpd/agent-acp",\n  "version": "0.15.0",\n  "peerDependencies": {\n    "@ahpd/sdk": ">=0.15.0 <0.16.0-0",\n    "other": "^1.0.0"\n  }\n}\n'
+  const manifest = JSON.parse(stampManifestText(text, '0.15.0-beorn.0badf00d', versions))
+  expect(manifest.version).toBe('0.15.0-beorn.0badf00d')
+  expect(manifest.peerDependencies).toEqual({ '@ahpd/sdk': '0.15.0-beorn.0badf00d', other: '^1.0.0' })
+  expect(stampManifestText('{\n  "version": "1.0.0"\n}\n', '1.0.0-beorn.0badf00d', versions)).toBe('{\n  "version": "1.0.0-beorn.0badf00d"\n}\n')
   const peer = (range) => [{ packageName: 'agent-acp', manifest: { peerDependencies: { '@ahpd/sdk': range } } }]
-  expect(siblingWarnings(peer('>=0.15.0 <0.16.0-0'), versions)).toEqual([])
-  expect(siblingDisagreements(peer('>=0.15.0 <0.16.0-0'), versions)).toEqual([])
-  expect(siblingWarnings(peer('>=0.14.0 <0.15.0-0'), versions)).toHaveLength(1)
+  expect(siblingDisagreements(peer('0.15.0-beorn.0badf00d'), versions)).toEqual([])
+  expect(siblingDisagreements(peer('>=0.15.0 <0.16.0-0'), versions)).toHaveLength(1)
 })
 
 // @dev/6 at 8fffcd29: refuse() was process.exit(1), and the two refusals raised between stamping and restoring sat
