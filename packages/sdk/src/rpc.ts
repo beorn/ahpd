@@ -150,12 +150,29 @@ export function createPeer(wire: Wire, bounding?: Bounding): Peer {
   }>();
   let bound = bounding;
 
+  /*
+   * The frames written and not yet known to have been handed on, oldest
+   * first, and the bytes this host has given the wire in all.
+   *
+   * The queue the socket reports holds frames, not bytes, and the frame at its
+   * head is the one being written. Counting that frame is what closed every
+   * client whose session snapshot outweighs the limit: the snapshot was sent,
+   * the next frame found the queue past it and closed a connection that was
+   * reading. So the sizes are kept here, to set the frame in flight aside.
+   */
+  const sizes: number[] = [];
+  const encoder = new TextEncoder();
+  let written = 0;
+
   /**
-   * Whether this client is already holding more than it may.
+   * How far behind this client is, once the frame being written is set aside.
    *
    * The wire's own number rather than a count kept here, because it is what
    * the socket has not handed over yet: a frame the client read is a client
-   * keeping up, whatever this host has sent it.
+   * keeping up, whatever this host has sent it. What it is measured against is
+   * the queue behind one frame, not the queue whole: a frame larger than the
+   * limit still goes out, and a client that reads it is never closed for
+   * having been sent it.
    *
    * False for a wire that cannot say - the in-process pair - and for a peer
    * nobody bounded: a connection with no queue behind it cannot fall behind.
@@ -163,14 +180,22 @@ export function createPeer(wire: Wire, bounding?: Bounding): Peer {
   const behind = (): number | undefined => {
     if (bound === undefined) return undefined;
     const queued = wire.buffered?.();
-    return queued !== undefined && queued > bound.limit() ? queued : undefined;
+    if (queued === undefined) return undefined;
+    // What the socket has handed on in all. A wire that counts its own framing
+    // can answer a little more than was written; a frame not yet reached
+    // simply stays at the head.
+    let flushed = written - queued;
+    while (sizes.length > 1 && (sizes[0] ?? 0) <= flushed) flushed -= sizes.shift() ?? 0;
+    const inFlight = sizes[0] ?? 0;
+    const held = Math.max(0, queued - inFlight);
+    return held > bound.limit() ? held : undefined;
   };
 
   const peer: Peer = {
     send: (message) => {
       if (!wire.isOpen()) return;
-      const queued = behind();
-      if (queued !== undefined && bound !== undefined) {
+      const held = behind();
+      if (held !== undefined && bound !== undefined) {
         /*
          * Closed rather than queued behind the frames already held, and the
          * frame dropped with them: a client this far behind is not reading
@@ -178,11 +203,17 @@ export function createPeer(wire: Wire, bounding?: Bounding): Peer {
          * more for somebody who has stopped. What it missed is what a
          * reconnect is answered with.
          */
-        bound?.log?.(`held ${queued} bytes for a client that is not reading, past the ${bound.limit()} it is allowed, and was closed`, 'warn');
+        bound.log?.(`held ${held} bytes behind the frame in flight for a client that is not reading, past the ${bound.limit()} it is allowed, and was closed`, 'warn');
         peer.close();
         return;
       }
-      wire.send(JSON.stringify(message));
+      const text = JSON.stringify(message);
+      if (wire.buffered !== undefined) {
+        const size = encoder.encode(text).length;
+        written += size;
+        sizes.push(size);
+      }
+      wire.send(text);
     },
     notify: (method, params) => {
       peer.send({ jsonrpc: '2.0', method, params });

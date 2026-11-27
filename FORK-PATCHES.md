@@ -91,6 +91,9 @@ Upstream status is one of:
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
 - not on main: `c6f74e9d0`, awaiting its author's PR · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
 
+### Host: a slow client is bounded
+- `d4eda7617` · a client is closed for the queue behind the frame in flight, not for the frame, so a session snapshot heavier than `clientQueueBytes` no longer turns into a close-and-reconnect loop · #38703 · upstream ask not written (the bound is our own; upstream has no `clientQueueBytes`)
+
 ### acp: openings, native identity and custody
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written
 - `0f5066257`, `ba2b264b8`, `e6d0fde75`, `710f46432` · publish selected child custody before initialize, clear the owned stat after a partial publication, with the catalog-exclusion and cleanup tests · #34599 · not upstreamable as written: the custody record is keyed on `HAB_ACP_PID_PREFIX`/`HAB_ACP_SESSION_URI`/`HAB_ACP_CHAT_URI`, which hab sets for the child it launches; the underlying early-publication bug is upstreamable against upstream's own identity

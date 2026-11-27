@@ -170,6 +170,34 @@ describe('a question this host asks', () => {
 describe('a client that is not reading', () => {
   const LIMIT = 1024 * 1024;
 
+  /**
+   * A socket whose queue moves only when the test moves it.
+   *
+   * `buffered` is what was written and the client has not taken, in bytes, and
+   * `read` is the client taking some of it. One frame is always in flight: the
+   * oldest frame the queue still holds, which is what the peer sets aside.
+   */
+  const holding = () => {
+    const written: Record<string, unknown>[] = [];
+    const frames: number[] = [];
+    let read = 0;
+    let open = true;
+    const socket: Wire & { written: Record<string, unknown>[] } = {
+      written,
+      send: (text) => {
+        written.push(JSON.parse(text) as Record<string, unknown>);
+        frames.push(new TextEncoder().encode(text).length);
+      },
+      close: () => { open = false; },
+      isOpen: () => open,
+      buffered: () => frames.reduce((sum, size) => sum + size, 0) - read,
+    };
+    return { socket, read: (bytes: number) => { read += bytes; } };
+  };
+
+  /** A frame whose JSON text weighs `bytes`, to the byte. */
+  const weighing = (bytes: number): Record<string, unknown> => ({ jsonrpc: '2.0', method: 'action', params: { frame: 'x'.repeat(bytes) } });
+
   it('is written to while its queue is under the limit, whatever the frame weighs', () => {
     const socket = wire(() => LIMIT);
     const peer = createPeer(socket, { limit: () => LIMIT });
@@ -180,29 +208,51 @@ describe('a client that is not reading', () => {
     expect(socket.isOpen()).toBe(true);
   });
 
-  it('is closed, with the frame dropped and the queue said, past the limit', () => {
+  it('is written to again while the frame in flight is what fills its queue', () => {
+    // The shape of the bug this guards (#38703): a session snapshot larger than
+    // the limit was sent, the next frame read a queue past the limit and closed
+    // a client that was reading it. The snapshot is one frame; the limit is on
+    // what waits behind it.
+    const { socket } = holding();
+    const peer = createPeer(socket, { limit: () => LIMIT });
+    peer.send(weighing(4 * LIMIT));
+    peer.send({ jsonrpc: '2.0', method: 'action', params: { frame: 'small' } });
+    peer.send({ jsonrpc: '2.0', method: 'action', params: { frame: 'small' } });
+    expect(socket.written).toHaveLength(3);
+    expect(socket.isOpen()).toBe(true);
+  });
+
+  it('is closed, with the frame dropped and the queue said, once more than the limit waits behind it', () => {
     const said: string[] = [];
-    const socket = wire(() => LIMIT + 1);
+    const { socket } = holding();
     const peer = createPeer(socket, { limit: () => LIMIT, log: (line) => { said.push(line); } });
-    peer.notify('action', {});
-    expect(socket.written).toEqual([]);
+    // A frame in flight, and behind it one and a half limits' worth of frames.
+    const frame = weighing(LIMIT);
+    const frameBytes = new TextEncoder().encode(JSON.stringify(frame)).length;
+    peer.send(frame);
+    peer.send(frame);
+    expect(socket.isOpen()).toBe(true);
+    peer.send(frame);
+    expect(socket.written).toHaveLength(2);
     expect(socket.isOpen()).toBe(false);
     expect(said).toEqual([
-      `held ${LIMIT + 1} bytes for a client that is not reading, past the ${LIMIT} it is allowed, and was closed`,
+      `held ${frameBytes} bytes behind the frame in flight for a client that is not reading, past the ${LIMIT} it is allowed, and was closed`,
     ]);
   });
 
   it('is read at each send, so a limit pushed while the host runs applies to the next frame', () => {
     let limit = 2 * LIMIT;
-    const socket = wire(() => LIMIT + 1);
+    const { socket } = holding();
     const peer = createPeer(socket, { limit: () => limit });
-    peer.notify('action', {});
-    expect(socket.written).toHaveLength(1);
+    peer.send(weighing(LIMIT));
+    peer.send(weighing(LIMIT));
+    peer.send(weighing(LIMIT));
+    expect(socket.written).toHaveLength(3);
     // A lower value under the same key, which is what a client's push leaves
     // behind: the number is asked for rather than held at the binding.
     limit = LIMIT;
     peer.notify('action', {});
-    expect(socket.written).toHaveLength(1);
+    expect(socket.written).toHaveLength(3);
     expect(socket.isOpen()).toBe(false);
   });
 

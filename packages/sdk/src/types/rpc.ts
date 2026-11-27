@@ -42,7 +42,13 @@ export interface Wire {
  * frame after it rather than at the next restart.
  */
 export interface Bounding {
-  /** The most this host's wire may hold for this client, in bytes, as it is set now. */
+  /**
+   * The most this host's wire may hold for this client behind the frame it is
+   * writing, in bytes, as it is set now.
+   *
+   * One frame is not a queue: a frame larger than the limit still goes out, and
+   * a client is closed for what waits behind it rather than for being sent one.
+   */
   limit(): number;
   /**
    * Where a client closed for being behind is said, and what it was holding.
