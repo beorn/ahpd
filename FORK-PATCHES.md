@@ -11,6 +11,8 @@ list of what we carry lives here. Every row names commits on `main`. A row whose
 `hh/integration` says `not on main: <sha>, awaiting its author's PR` and is not counted as carried. A patch that
 reached `main` under a different hash names the `main` commit, with the `hh/integration` one after it.
 `hh/integration` is retired by its owner under the branch-cleanup rule once no commit of it is missing from `main`.
+On 2026-11-27 `bdfc82e75` merged `hh/integration` into `main` (#38983, @cto 200ee90a, 8db35be8), so it is an ancestor of `main` and
+takes no further commits; new ahpd work targets `main`. A row naming an `hh/integration` commit reached `main` through that merge.
 
 Upstream status is one of:
 - `PR pending card` — upstream text is ready and is posted only on the operator's upstream card;
@@ -89,17 +91,19 @@ Upstream status is one of:
 - `d0e6bf9b5`, `2453628ee`, `e107907ed` · scope nested child sessions by hub and inner id, dispose joined sessions from their durable scope, with the two-host test · #37250 · upstream ask not written (`joinedSessionIds` absent upstream)
 - `780688f0f` · avoid duplicate provider assignments and track fork identity honestly · #34955 · upstream ask not written
 - `adcbeece7` · list each record's own folder so a same-account thread is not credited to another record · no issue filed (context #32996) · upstream ask not written
-- not on main: `c6f74e9d0`, awaiting its author's PR · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
-- not on main: `27f6093df`, `c46e0acf0`, awaiting their author's PR · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses puts the row back nobody's · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
-- `f3e4911f1` · each open tool call carries its own silence bound (900 s by default, per-call timers, the turn ended naming the call, its open age, its silence and the bound) · #38695 (@cto fb984750) · upstream ask not written (the disarm it replaces is fork-only, #38786 `tools.size > 0`, absent upstream; a bound on an unreported open call is plausibly upstreamable and no ask is prepared yet)
+- `bdfc82e75` (merge; hh/integration `c6f74e9d0`) · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
+- `bdfc82e75` (merge; hh/integration `27f6093df`, `c46e0acf0`) · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses puts the row back nobody's · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
+- `bdfc82e75` (merge; hh/integration `36e74920d`, `f3e4911f1`) · each open tool call carries its own silence bound (900 s by default, per-call timers, the turn ended naming the call, its open age, its silence and the bound) · #38695 (@cto fb984750) · upstream ask not written (the disarm it replaces is fork-only, #38786 `tools.size > 0`, absent upstream; a bound on an unreported open call is plausibly upstreamable and no ask is prepared yet)
 
 ### acp: openings, native identity and custody
+- `bdfc82e75` (merge; hh/integration `923c7472e`) · a session that declared tools says so when `hostTools` leaves them out · #38864 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
+- `bdfc82e75` (merge; hh/integration `bbf98bd01`) · the six custody and session diagnostics are said in their sink, not on the console · #38631 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written
 - `0f5066257`, `ba2b264b8`, `e6d0fde75`, `710f46432` · publish selected child custody before initialize, clear the owned stat after a partial publication, with the catalog-exclusion and cleanup tests · #34599 · not upstreamable as written: the custody record is keyed on `HAB_ACP_PID_PREFIX`/`HAB_ACP_SESSION_URI`/`HAB_ACP_CHAT_URI`, which hab sets for the child it launches; the underlying early-publication bug is upstreamable against upstream's own identity
 - `3400a70d0`, `1d14f2ce8`, `322b91d98`, `e5fb82b7a` · project only the current successful native chat identity, checkpoint it per start, and preserve identity capabilities and opening failures · #32996 · not upstreamable as written: same `HAB_ACP_*` protocol (`successfulOpening` absent upstream)
 - `4ec4c8a2f` · retain shared capabilities with isolated launch options · #32996 · upstream ask not written
 - `accd216d6`, `e9a357c66`, `109fb842c`, `11d020247` · a host-owned custody record kept through the child's end under one per-seat lock, carrying the verified host service identity · #34599 · not upstreamable as written: `HAB_ACP_*` lock and `HAB_ACP_HOST_SERVICE_IDENTITY`; the per-seat lock is hab's seat model
-- not on main: `4ba34f69e`, awaiting its author's PR · the custody record carries `spawnedAt` and the spawning turn id from its `spawning` write through `ended`, so hab fences a hosted child's turn events without the file's mtime · #38456 · not upstreamable as written: same `HAB_ACP_*` custody record
+- `bdfc82e75` (merge; hh/integration `4ba34f69e`) · the custody record carries `spawnedAt` and the spawning turn id from its `spawning` write through `ended`, so hab fences a hosted child's turn events without the file's mtime · #38456 · not upstreamable as written: same `HAB_ACP_*` custody record
 - `9063cd7ae`, `0321cd8b1`, `ce669d44b` · retain inherited occurrence custody across host crashes, reject guard overrides and verify escaped child custody, and keep retained plugin resumes off probe authority · #34599 · not upstreamable as written: the spawn guard is `HAB_ACP_SPAWN_GUARD`, a hab-launched child protocol upstream does not have
 - `861b34309` · pass the server's opening `_meta` through on the session state · #37272 · upstream ask not written (`openedMeta` absent upstream)
 - `8d79ff977` · a session's summary says whether it was offered the host's tools, and why not, as `ahpd/hostTools` · #38499 · upstream ask not written (`ahpd/hostTools` absent upstream)
@@ -110,6 +114,7 @@ Upstream status is one of:
 - `dec3c1424`, `64ddcd26b` · one bounded backoff policy for respawning a host server and for `failedOnHost` listings · #37753 · upstream ask not written
 
 ### acp: prompt and opening silence bounds
+- `bdfc82e75` (merge; hh/integration `1690a1487`) · one clock is always armed (`LAST_RESORT_TURN_MS`, 60 min), so a turn whose only open thing is a tool call or a request this client owes cannot wait for ever · #38919 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
 - `63213b86b`, `130b99603`, `84b2752b1` · a turn is the chat's running turn only once its prompt began; a server that never answers the handshake, `session/new`, `session/load` or `session/resume` fails its turn by name after `startAnswerMs` of silence (60 s; the clock restarts on every chunk) · #38705 · upstream ask not written (`startAnswerMs`, `promptBegun` absent upstream)
 - `436268cd8`, `ff51a9ad7`, `ab776c51f`, `ddfddb621`, `54efa8483` · bound `session/prompt` too: a prompt the server goes quiet on ends its turn by name and frees the chat; no clock while the server waits on us or runs a tool it reported; ten times the bound once the prompt has begun to answer; a comment names the Gateway deadlines the bounds stay under (@dev/6, PR #73) · #38786 · upstream ask not written (no prompt bound upstream)
 
@@ -175,6 +180,9 @@ Upstream status is one of:
 - `153edb33c` · `tsconfig.base.json` loads only Node's global types (`types: ["node"]`, plus `es2024.promise`), so the build no longer depends on the folder above the checkout · #38280 · upstream ask not written (neither setting is upstream)
 
 ### Host: plugin grants reach every path
+- `bdfc82e75` (merge; hh/integration `33683afcd`) · a manifest declares caller grants and its own grants, in two lists · #38459 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
+- `bdfc82e75` (merge; hh/integration `c64e54bfb`) · a served install grants only what its caller holds · #38618 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
+- `bdfc82e75` (merge; hh/integration `86b6953a3`) · plugin update reads the manifest of the version it lands · #38600 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
 - `fe791140b`, `2c18ddc14`, `e838dfb01`, `3a38b2fa6`, `68a74eee8`, `dcc52429c`, `a58415897`, `bdf1b98bb` · every grant refusal logged once at the boundary, `-32009` logged once rather than at four sites, one `heldToGrants` check plus four more paths a plugin skipped its grants with no users directory, a plugin's own connection held to its entry's grants, a refusal line escaping what the caller chose with capped windows, a transcript excerpt left off for `session:read` logged once, and a `host.connect()` connection always carrying `principal.plugin` · #38446 (@cto rulings; PRs #8-#11) · upstream ask not written (host-side grant enforcement)
 - `523f50534`, `e42b06de9` · the users-read census runs git through `gitSync` and counts copies of a line, so a fourth identical read is not lost · #38446 · not upstreamable: the census is our own test harness
 - `ff37e12a2` · the plugins contracts table names grants · #38446 prior art (PR #9) · upstream ask not written (a generic docs table)
@@ -199,7 +207,7 @@ Upstream status is one of:
 - `dae7f13d4` (PR #24; hh/integration `173a6ff76`, `c24cccacf`) · `@bearly/durable-file` from the registry, and each plugin-route daemon with its own `XDG_CONFIG_HOME` so the store's one-writer fence does not refuse the other three · #38185 · upstream ask not written (test-only; the durable-file change is a rebase repair named under Rebase below)
 
 ### Superseded
-- `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 (@cto ruling C 1e5710d0) · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0); not on main: `535303cf5`, awaiting its author's PR. Upstream's test "shows a file a shell command wrote in the session's own changeset" (packages/sdk/test/changes-refresh.test.ts) needs these checkpoints and is skipped on `main` with this reason (#463 sync, `0f92e1c41`), so the next sync shows it again
+- `d17130bbf` · remove per-turn git checkpoint capture, keeping `removeCheckpoints` · #35139 (@cto ruling C 1e5710d0) · superseded by `535303cf5` (#38158, PR pending card: an unreferenced in-memory baseline tree; no baseline reads unknown, never 0); on `main` through `bdfc82e75` (hh/integration `535303cf5`). Upstream's test "shows a file a shell command wrote in the session's own changeset" (packages/sdk/test/changes-refresh.test.ts) needs these checkpoints and is skipped on `main` with this reason (#463 sync, `0f92e1c41`), so the next sync shows it again
 
 ## PR prepared (not carried)
 
