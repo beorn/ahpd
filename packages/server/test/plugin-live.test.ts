@@ -652,6 +652,8 @@ it('raises no alert for a plugin the set does not hold', async () => {
 /** A plugin whose channel offers one operation, and whose closer waits to be let go. */
 const operationPlugin = (id: string): string => {
   const file = pluginFile(id);
+  // Its channel asks a caller for svc:restart, so its manifest says so (#38459): undeclared, the load reports a problem.
+  writeFileSync(join(home, id, 'plugin.json'), JSON.stringify({ id, main: `./${id}.mjs`, callerGrants: ['svc:restart'] }));
   writeFileSync(file, `
 export const name = ${JSON.stringify(id)};
 export function apply(host, options) {
