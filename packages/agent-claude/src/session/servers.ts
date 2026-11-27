@@ -826,13 +826,15 @@ export function createServers(ctx: SessionContext): Servers {
       ctx.mcpServers[named] = { ...config, headers: { ...headers, Authorization: `Bearer ${token}` } };
       try {
         await to.setMcpServers(ctx.mcpServers as never);
+        await to.reconnectMcpServer(named);
         // Discovered again next time: a server that connects is no longer one
         // anybody needs to sign into. It is kept as signed in, so a renewal
-        // reaches it before the token it holds runs out.
+        // reaches it before the token it holds runs out. Recorded only once
+        // the reconnect has taken, so a failure leaves the server where it was
+        // instead of claiming a token it never got.
         wanted.delete(named);
         signedIn.set(named, published);
         lapsed.delete(named);
-        await to.reconnectMcpServer(named);
       }
       catch (error) {
         // Said, not swallowed: a renewal that fails here leaves the server on
@@ -875,7 +877,6 @@ export function createServers(ctx: SessionContext): Servers {
     },
 
     awaiting: () => [...wanted.values()].map((published) => published.resource),
-
     /**
      * Stop one, by the CLI's disabled flag.
      *
