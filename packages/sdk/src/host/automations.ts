@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { continues, retargeted, targetOf } from '../automations/targets.js';
 import { computerSource } from '../machines/computers.js';
 import { Status, idOf, uriFor } from '../sessions/catalog.js';
-import { INTERNAL_ERROR, INVALID_PARAMS, RpcError } from '../rpc.js';
+import { INTERNAL_ERROR, INVALID_PARAMS, OWNED_CREATION_NOT_FOUND, RESUME_METADATA_MISSING, RpcError } from '../rpc.js';
 import { EVENT_TRIGGERS, pluginTriggerTypes, wrongIn } from '../automations/automations.js';
 import { sameOwnerOrHost, withConnectorChoices } from '../connectors/fields.js';
 import { presetById } from '../automations/triggerpresets.js';
@@ -883,13 +883,17 @@ export function createAutomations(ctx: HostContext): Automations {
       const id = idOf(uri);
       const creation = kept.creation(id);
       if (given.owner === undefined || kept.uri?.(id) !== uri || creation === undefined || kept.owner(id) !== given.owner) {
-        throw new Error(`Cannot resume ${uri}: exact owned creation reservation not found`);
+        // #39008: a code, not just prose. A client restarting with a mapping saved before its owned creation was
+        // recorded cannot resume it, and that is ONE session's problem: the code is what a host parks it on instead
+        // of failing every other session it was asked to bring back. `reason` is the name a client reads when it has
+        // never heard of the number, in the shape -32602's `reason: dirtyWorkingTree` already uses.
+        throw new RpcError(OWNED_CREATION_NOT_FOUND, `Cannot resume ${uri}: exact owned creation reservation not found`, { reason: 'OWNED_CREATION_NOT_FOUND' });
       }
       const provider = kept.provider(id);
       const chat = kept.chats(id).find((one) => one.default === true);
       const config = kept.config(id);
       if (provider === undefined || chat === undefined || config === undefined) {
-        throw new Error(`Cannot resume ${uri}: required provider, config or default chat metadata is missing`);
+        throw new RpcError(RESUME_METADATA_MISSING, `Cannot resume ${uri}: required provider, config or default chat metadata is missing`, { reason: 'RESUME_METADATA_MISSING' });
       }
       const trusted = kept.trustedFolder?.(id);
       const directory = kept.workingDirectory?.(id);
