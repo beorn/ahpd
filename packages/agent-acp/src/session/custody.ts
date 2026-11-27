@@ -8,6 +8,9 @@
  *   atomic replace. It names the boot, this host process, this opening, a sequence number, the state (`spawning`,
  *   `running`, `ended`) and the child as its pid and raw `/proc/<pid>/stat` text (the stamped parent and birth hab's
  *   orphan check reads). It is kept through `ended`: the moment a child dies is the moment a stop needs its record.
+ *   From its `spawning` write on, an opening's record also carries `spawnedAt`, when that write landed, and
+ *   `spawningTurnId`, the turn open as it landed (#38456): hab fences the child's turn events at `spawnedAt` and
+ *   admits that one earlier turn by id, rather than reading the file's mtime, which every later write moves.
  * - `<prefix>.lock`: one flock(2), never deleted or replaced (deleting a flock file breaks exclusion). An opening
  *   holds it from admission until it has recorded its own child's end; hab's stop holds it across its final read and
  *   its `stopped` commit. The descriptor is close-on-exec, so no child inherits it.
@@ -23,6 +26,13 @@ import type { FlockHandle } from '@bearly/flock';
 import { messageOf } from './common.js';
 
 export type CustodyState = 'spawning' | 'running' | 'ended';
+/**
+ * Where a custody diagnostic is said, when the opening that holds it has a log.
+ *
+ * The host builds every opening from the plugin context's `log`, so a daemon always has one; a library consumer that
+ * passes none gets the record it wrote and no line about it, which is the same contract `AcpOptions.log` already has.
+ */
+export type CustodyLog = (line: string, level?: 'warn' | 'error') => void;
 export interface CustodyIdentity { readonly pid: number; readonly stat: string }
 interface HostServiceSession { readonly sessionId: string; readonly generation: number }
 export interface CustodySpawnGuard {
@@ -42,6 +52,10 @@ export interface CustodyRecord {
   readonly state: CustodyState;
   readonly child: CustodyIdentity | null;
   readonly spawnGuard?: CustodySpawnGuard;
+  /** When this opening's `spawning` write landed, as ISO 8601; kept unchanged through `running` and `ended` (#38456). */
+  readonly spawnedAt?: string;
+  /** The turn open when that write landed, the turn this child was spawned to serve; absent when none was open. */
+  readonly spawningTurnId?: string;
 }
 
 /** How long between two lock tries while a predecessor or a stop holds custody. */
@@ -71,14 +85,14 @@ const serviceSessionOf = (value: unknown): HostServiceSession | undefined => {
 };
 
 /** The adapter has already verified the signed identity. The daemon receives only this projection. */
-function hostServiceSession(provider: string): HostServiceSession | undefined {
+function hostServiceSession(provider: string, log?: CustodyLog): HostServiceSession | undefined {
   const text = process.env.HAB_ACP_HOST_SERVICE_IDENTITY;
   if (text === undefined) return undefined;
   try {
     const identity = serviceSessionOf(JSON.parse(text) as unknown);
     if (identity !== undefined) return identity;
   } catch { /* The diagnostic below covers invalid JSON as well as an invalid shape. */ }
-  console.error(`${provider}: invalid HAB_ACP_HOST_SERVICE_IDENTITY; custody records will not prove service-restart continuity`);
+  log?.(`${provider}: invalid HAB_ACP_HOST_SERVICE_IDENTITY; custody records will not prove service-restart continuity`, 'warn');
   return undefined;
 }
 
@@ -106,13 +120,18 @@ export function readCustody(prefix: string): CustodyRecord | 'absent' | 'malform
     || typeof guard.device !== 'string' || !/^\d+$/.test(guard.device)
     || typeof guard.inode !== 'string' || !/^\d+$/.test(guard.inode))) return 'malformed';
   if (raw.serviceSession !== undefined && serviceSession === undefined) return 'malformed';
+  if (raw.spawnedAt !== undefined && (typeof raw.spawnedAt !== 'string' || !Number.isFinite(Date.parse(raw.spawnedAt)))) return 'malformed';
+  if (raw.spawningTurnId !== undefined && (typeof raw.spawningTurnId !== 'string' || raw.spawningTurnId === ''
+    || raw.spawnedAt === undefined)) return 'malformed';
   if (raw.v !== 1 || typeof raw.bootId !== 'string' || raw.bootId === '' || host === undefined
     || typeof raw.opening !== 'string' || raw.opening === '' || typeof raw.seq !== 'number' || !Number.isSafeInteger(raw.seq)
     || (raw.state !== 'spawning' && raw.state !== 'running' && raw.state !== 'ended') || child === undefined
     || (raw.state === 'running' && child === null)) return 'malformed';
   return { v: 1, bootId: raw.bootId, host, ...(serviceSession === undefined ? {} : { serviceSession }),
     opening: raw.opening, seq: raw.seq, state: raw.state, child,
-    ...(guard === undefined ? {} : { spawnGuard: guard as CustodySpawnGuard }) };
+    ...(guard === undefined ? {} : { spawnGuard: guard as CustodySpawnGuard }),
+    ...(raw.spawnedAt === undefined ? {} : { spawnedAt: raw.spawnedAt as string }),
+    ...(raw.spawningTurnId === undefined ? {} : { spawningTurnId: raw.spawningTurnId as string }) };
 }
 
 /** Whether a recorded child is proved gone: no live process at its pid with its recorded birth. */
@@ -171,8 +190,11 @@ export interface Custody {
   readonly inheritedFd?: number;
   /** Close the host duplicate after the child inherited it at OS spawn. */
   releaseInherited(): void;
-  /** Record a state. Returns false, having reported why, when the write did not land. */
-  write(state: CustodyState, child: CustodyIdentity | null): boolean;
+  /**
+   * Record a state. Returns false, having reported why, when the write did not land. The `spawning` write takes the
+   * turn open as it lands and stamps `spawnedAt`; every later write of this opening carries both unchanged (#38456).
+   */
+  write(state: CustodyState, child: CustodyIdentity | null, spawningTurnId?: string): boolean;
   /** Record the end of this opening's child (or that it spawned none), then release the lock. */
   end(child: CustodyIdentity | null): void;
   /** Release without recording: only before anything was spawned. */
@@ -185,7 +207,7 @@ export interface Custody {
  * Admit one opening: take the custody lock (retrying on a timer until `boundMs` passes), then decide from the record
  * read under it. Throws when custody is held past the bound or the record forbids a spawn; nothing is written then.
  */
-export async function admitCustody(prefix: string, boundMs: number, provider: string, guarded = false): Promise<Custody> {
+export async function admitCustody(prefix: string, boundMs: number, provider: string, guarded = false, log?: CustodyLog): Promise<Custody> {
   const lockPath = `${prefix}.lock`;
   const deadline = Date.now() + boundMs;
   let handle: FlockHandle | null = tryAcquireFlock(lockPath);
@@ -204,7 +226,7 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     const why = forbids(before, boot);
     if (why !== undefined) throw new Error(`${provider}: no new ACP child for this seat: ${why}; nothing was spawned`);
     const hostIdentity = { pid: process.pid, stat: statOf(process.pid) };
-    const serviceSession = hostServiceSession(provider);
+    const serviceSession = hostServiceSession(provider, log);
     const opening = randomUUID();
     let spawnGuard: CustodySpawnGuard | undefined;
     if (guarded) {
@@ -217,6 +239,8 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
     const inheritedFd = inherited?.fd;
     const releaseInherited = (): void => { inherited?.release(); inherited = null; };
     let seq = typeof before === 'object' ? before.seq : 0;
+    /** Set by this opening's `spawning` write and carried by each write after it (#38456). */
+    let spawn: { readonly spawnedAt: string; readonly spawningTurnId?: string } | undefined;
     let released = false;
     const release = (): void => {
       if (released) return;
@@ -224,23 +248,27 @@ export async function admitCustody(prefix: string, boundMs: number, provider: st
       releaseInherited();
       held.release();
     };
-    const write = (state: CustodyState, child: CustodyIdentity | null): boolean => {
+    const write = (state: CustodyState, child: CustodyIdentity | null, spawningTurnId?: string): boolean => {
       try {
         const now = readCustody(prefix);
         // A guard against a bug, not the exclusion: after this opening's first write, the record is its own.
         if (seq > (typeof before === 'object' ? before.seq : 0) && (typeof now !== 'object' || now.opening !== opening)) {
-          console.error(`${provider}: ACP custody record at ${prefix}.custody is no longer opening ${opening}'s; not writing ${state}`);
+          log?.(`${provider}: ACP custody record at ${prefix}.custody is no longer opening ${opening}'s; not writing ${state}`, 'error');
           return false;
         }
+        const stamp = spawn ?? (state === 'spawning'
+          ? { spawnedAt: new Date().toISOString(), ...(spawningTurnId === undefined || spawningTurnId === '' ? {} : { spawningTurnId }) }
+          : undefined);
         seq += 1;
         const record: CustodyRecord = { v: 1, bootId: boot, host: hostIdentity,
           ...(serviceSession === undefined ? {} : { serviceSession }), opening, seq, state, child,
-          ...(spawnGuard === undefined ? {} : { spawnGuard }) };
+          ...(spawnGuard === undefined ? {} : { spawnGuard }), ...stamp };
         atomicWriteFileSync(`${prefix}.custody`, `${JSON.stringify(record)}\n`);
+        spawn = stamp;
         return true;
       }
       catch (error) {
-        console.error(`${provider}: could not record ACP custody ${state} at ${prefix}.custody: ${messageOf(error)}`);
+        log?.(`${provider}: could not record ACP custody ${state} at ${prefix}.custody: ${messageOf(error)}`, 'error');
         return false;
       }
     };

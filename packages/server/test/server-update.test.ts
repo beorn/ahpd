@@ -120,7 +120,12 @@ const plugins = (dependencies: Record<string, string>, installed: Record<string,
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies }));
   for (const [name, held] of Object.entries(installed)) {
     mkdirSync(join(dir, 'node_modules', name), { recursive: true });
-    writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({ name, version: held }));
+    // A plugin's package.json carries its `ahpd` field; the sdk is not a plugin.
+    writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({
+      name,
+      version: held,
+      ...(name === '@ahpd/sdk' ? {} : { ahpd: { entry: './index.mjs' } }),
+    }));
   }
   return dir;
 };
@@ -151,7 +156,13 @@ const fakeNpm = (answer: (argv: readonly string[]) => Ran = () => ({ code: 0, st
       const held = found?.[2];
       if (name === undefined || held === undefined) continue;
       mkdirSync(join(into, 'node_modules', name), { recursive: true });
-      writeFileSync(join(into, 'node_modules', name, 'package.json'), JSON.stringify({ name, version: held }));
+      // What npm leaves for a plugin: its package.json with the `ahpd` field,
+      // which is what an update now reads before it keeps the version.
+      writeFileSync(join(into, 'node_modules', name, 'package.json'), JSON.stringify({
+        name,
+        version: held,
+        ...(name === '@ahpd/sdk' ? {} : { ahpd: { entry: './index.mjs' } }),
+      }));
     }
     return done;
   };

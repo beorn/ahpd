@@ -462,6 +462,9 @@ async function serverIn(options: AcpOptions, machine: SessionMachine, handlers: 
     handlers,
     ...(options.log === undefined ? {} : { log: options.log }),
     ...(options.exitGraceMs === undefined ? {} : { exitGraceMs: options.exitGraceMs }),
+    ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
+    ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
+    ...(options.lastResortMs === undefined ? {} : { lastResortMs: options.lastResortMs }),
     ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
     ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
   });
@@ -517,6 +520,9 @@ const server = (options: AcpOptions, handlers: AcpHandlers): AcpConnection => co
   ...(options.log === undefined ? {} : { log: options.log }),
   ...(options.exitGraceMs === undefined ? {} : { exitGraceMs: options.exitGraceMs }),
   ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
+  ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
+  ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
+  ...(options.lastResortMs === undefined ? {} : { lastResortMs: options.lastResortMs }),
   ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
 });
 

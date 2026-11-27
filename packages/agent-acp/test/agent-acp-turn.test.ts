@@ -84,7 +84,7 @@ const text = async (source: ChangesetSource, uri: string): Promise<string | unde
   (await source.read?.(uri))?.data;
 
 /** A connected client with one ACP session, watching both its channels. */
-async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete'; silentAfterStart?: boolean; startAnswerMs?: number } = {}) {
+async function talking(options: { changes?: ChangesetSource; tools?: HostTool[]; cutTurns?: 'error' | 'complete'; silentAfterStart?: boolean; startAnswerMs?: number; toolCallSilenceMs?: number } = {}) {
   const path = mkdtempSync(join(tmpdir(), 'ahpd-acp-'));
   /*
    * #38705: a server that answers the first handshake and never a second.
@@ -112,6 +112,7 @@ async function talking(options: { changes?: ChangesetSource; tools?: HostTool[];
       provider: 'acp',
       ...(options.cutTurns === undefined ? {} : { cutTurns: options.cutTurns }),
       ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
+      ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
     })],
     // The composer's `!` prefix is the host's shell, so the host has to hold one.
     terminals: shellTerminals(),
@@ -1296,3 +1297,66 @@ it('runs a turn handed behind a turn whose live server went quiet, without a res
   expect((await chatNow(client, chatUri)).activeTurn).toBeUndefined();
 }, 15_000);
 
+
+/*
+ * #38695: a turn an open tool call can no longer hold for ever.
+ *
+ * The live stall: @dev/19's turn stayed open 31.7 minutes behind a tool call
+ * the server never finished, and the bound above was disarmed the moment a
+ * call was open - `if (ours > 0 || tools.size > 0) continue` skipped every
+ * clock. Each call now carries its own, measured from the last thing it said,
+ * and its expiry ends the turn naming the call rather than clearing it.
+ */
+
+/** The message a turn ended with, as a client reads it back. */
+const errorFor = (p: ReturnType<typeof peer>, chatUri: string, turnId: string): string => String((((actions(p, chatUri)
+  .map((one) => one.action)
+  .find((action) => action.type === 'chat/error' && action.turnId === turnId))?.part as Bag | undefined)?.error as Bag | undefined)?.message ?? '');
+
+/** Whether a turn ended as an error rather than a completion. */
+const errored = (p: ReturnType<typeof peer>, chatUri: string, turnId: string): boolean => actions(p, chatUri)
+  .some((one) => one.action.type === 'chat/error' && one.action.turnId === turnId);
+
+it('ends a turn whose open call is quiet past the call bound, naming the call, its age and the bound', async () => {
+  // The turn's own bound is far away, so only the call's clock can end this.
+  const { client, peer: p, chatUri } = await talking({ startAnswerMs: 5_000, toolCallSilenceMs: 200 });
+  // The fixture opens the call and then works in silence, the shape a build takes.
+  begin(client, chatUri, 't-quiet', 'quietcall');
+  await until(() => errored(p, chatUri, 't-quiet'));
+  const message = errorFor(p, chatUri, 't-quiet');
+  expect(message).toContain('"Build the thing"');
+  expect(message).toContain('has been open');
+  expect(message).toContain('silent for');
+  expect(message).toContain('past its 200 ms bound');
+  expect(message).toContain('so the turn is ended');
+  // A reader is not left told a turn runs that nothing will finish.
+  expect((await chatNow(client, chatUri)).activeTurn).toBeUndefined();
+}, 15_000);
+
+it('leaves an open call alone while it keeps saying it is working', async () => {
+  // Three of the call's own bounds pass, each restarted by a progress update.
+  const { client, peer: p, chatUri } = await talking({ startAnswerMs: 5_000, toolCallSilenceMs: 300 });
+  begin(client, chatUri, 't-beat', 'quietcallbeat');
+  await new Promise((r) => { setTimeout(r, 900); });
+  // A call streaming progress is working, which is the pause this bound must respect.
+  expect(types(p, chatUri)).not.toContain('chat/error');
+  expect((await chatNow(client, chatUri)).activeTurn?.id).toBe('t-beat');
+}, 15_000);
+
+it('lets a call that finishes inside its bound end the turn as a complete turn', async () => {
+  const { client, peer: p, chatUri } = await talking({ startAnswerMs: 5_000, toolCallSilenceMs: 2_000 });
+  begin(client, chatUri, 't-done', 'quietcallfinish');
+  await until(() => ended(p, chatUri));
+  expect(types(p, chatUri)).toContain('chat/turnComplete');
+  expect(types(p, chatUri)).not.toContain('chat/error');
+  expect(prose(p, chatUri)).toContain('built it');
+}, 15_000);
+
+it('keeps the turn\'s own bound for a turn with no open call, even when a call bound is set', async () => {
+  // `wait` says nothing after the handshake, so no call is open and only the turn's clock can run. A prompt that
+  // has spoken is given ten times its bound (#38786), which is why this one is 3000 ms and not 300.
+  const { client, peer: p, chatUri } = await talking({ startAnswerMs: 300, toolCallSilenceMs: 150 });
+  begin(client, chatUri, 't-none', 'wait');
+  await until(() => errored(p, chatUri, 't-none'));
+  expect(errorFor(p, chatUri, 't-none')).toContain('sent nothing for 3000 ms');
+}, 15_000);

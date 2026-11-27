@@ -47,7 +47,7 @@ const METHOD_OF: Record<typeof ORDER[number], string> = {
  * two lists that drift: a client that offers what the first says can put in a
  * role and the gate answers from the second.
  */
-const schemeOperations = (provider: ResourceProvider): string[] => {
+export const schemeOperations = (provider: ResourceProvider): string[] => {
   const held = provider as unknown as Record<string, unknown>;
   return ORDER.filter((one) => typeof held[METHOD_OF[one]] === 'function');
 };

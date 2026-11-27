@@ -68,6 +68,7 @@
   },
   "ahpd": {
     "entry": "./dist/index.js",
+    "callerGrants": ["push:read", "push:put", "push:delete"],
     "i18n": "i18n",
     "title": "Push",
     "description": "Send push notifications to your devices when a session needs your attention.",

@@ -6,7 +6,7 @@ import { localPath, uriOf } from '../resources/fileuri.js';
 import { isDeepStrictEqual } from 'node:util';
 import { isWorkspaceless } from './lifecycle.js';
 import type { Summary, SummaryChat } from '../types/catalog.js';
-import type { ChangesSummary } from '../types/changes.js';
+import { CHANGES_UNKNOWN_META, isChangesUnknown, type ChangesSummary, type ChangesUnknown } from '../types/changes.js';
 import { computerId, computersFor } from '../machines/computers.js';
 import type { Agent, Listed, SessionMachine } from '../types/agent.js';
 import type { Account } from '../types/probe.js';
@@ -35,6 +35,16 @@ export interface MoveRefusal {
   reason: string;
   message: string;
 }
+
+/**
+ * What a row's `provider` says when no record and no single harness can name
+ * one: the catalogue's own word for "nobody's" (#38259).
+ *
+ * A row two harnesses list that this host has no record for is a conversation
+ * whose CLI wrote the transcript and whose starter is not in it, so naming
+ * either reader would be a guess that opens it under the wrong agent's record.
+ */
+export const NO_PROVIDER = '';
 
 /**
  * The root's `showExternalSessions` values, `ChatExternalSessionsMode`'s five,
@@ -140,6 +150,17 @@ export interface Catalogue {
    * which is what names an old row in its provider's scheme.
    */
   registerListedSession(agent: Agent, row: Listed, waiting?: string, stored?: boolean): Summary;
+  /**
+   * A listed row nobody's, claimed by the agent the opening caller names: its
+   * owner, its provider in the store, and the name a client holds it by, all
+   * written as a session this host ran has them (#38259).
+   *
+   * The claim is not final until the open that proves it has started: a start
+   * that refuses (agent-acp's "no matching configured ACP process authority")
+   * calls `undo`, and the row is nobody's again, under the neutral name its
+   * listing gave it, so the harness that can open it adopts it next.
+   */
+  adoptListedSession(id: string, agent: Agent, row: Summary): { summary: Summary; undo: () => void } | undefined;
   /** Announce to every client a listed session this host did not have. */
   announceSurfacedSession(summary: Summary): void;
   /**
@@ -722,8 +743,31 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    * what goes in a row is what was read the last time the counts moved.
    */
   const changesOf = (uri: string): Bag => {
+    // Counts nobody can give are none at all, never zero: the reason is said
+    // beside them, under the row's `_meta`.
+    if (unknownChanges.has(uri)) return { changes: {} };
     const read = kept.changes(idOf(uri));
     return read?.files ? { changes: read } : {};
+  };
+  /**
+   * Why a session's counts are unknown, by its URI, where the last read could
+   * not give them: its source holds no baseline for it.
+   *
+   * In memory, as the baseline it is about is: a read that gives counts again
+   * clears it, and the stored counts are left as the last ones read.
+   */
+  const unknownChanges = new Map<string, string>();
+  /** A row's `_meta`, with the reason its counts are unknown where they are. */
+  /** A description, its `_meta` carrying the same reason. */
+  const withChangesMeta = (uri: string, described: Bag): Bag => {
+    const { _meta: meta, ...rest } = described;
+    return { ...rest, ...metaOf(uri, meta) };
+  };
+  const metaOf = (uri: string, meta: unknown): Bag => {
+    const why = unknownChanges.get(uri);
+    const own = typeof meta === 'object' && meta !== null ? meta as Bag : undefined;
+    if (why === undefined) return own === undefined ? {} : { _meta: own };
+    return { _meta: { ...own, [CHANGES_UNKNOWN_META]: why } };
   };
   /**
    * A running session's catalogue row: the summary fields of the state the
@@ -780,7 +824,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       // it, so it is added here, to the row.
       ...changesOf(uri),
       ...(state.project !== undefined ? { project: state.project } : {}),
-      ...(state._meta !== undefined ? { _meta: state._meta } : {}),
+      ...metaOf(uri, state._meta),
     };
   };
   /**
@@ -952,7 +996,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
   const rowOf = (uri: string): Bag => {
     const summary = summaryOf(uri);
     const counts = { changes: NO_CHANGES, ...changesOf(uri) };
-    if (summary === undefined) return { status: statusOf(uri), ...counts };
+    if (summary === undefined) return { status: statusOf(uri), ...counts, ...metaOf(uri, undefined) };
     const { resource: _resource, provider: _provider, createdAt: _createdAt, ...mutable } = summary;
     return { ...mutable, ...counts };
   };
@@ -1052,8 +1096,8 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    *
    * Called where the checkpoint is taken, because reading it is a `git diff`
    * and a catalogue of a hundred rows is asked a hundred times per listing.
-   * The session's own id, which names its checkpoints: they are commits under
-   * `refs/agents/<id>`.
+   * The session's own id, which names its checkpoints: trees its source holds
+   * under that id.
    *
    * A source that cannot answer for a session leaves the counts as they were,
    * so a row nobody could read for keeps whatever it had. That is every source
@@ -1104,7 +1148,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
         if (dir === undefined) return;
         const source = options.changes;
         const branch = getSummaryChangesetKind(uri) === 'branch';
-        let read: ChangesSummary | undefined;
+        let read: ChangesSummary | ChangesUnknown | undefined;
         try {
           const tree = ctx.worktreeOf(uri);
           read = branch
@@ -1112,19 +1156,31 @@ export function createCatalogue(ctx: HostContext): Catalogue {
             : await source?.sessionSummary?.(dir, idOf(uri), whileRunning);
         }
         catch { /* a count that could not be read is the count that was there */ }
+        /*
+         * Counts nobody can give leave the stored ones as they were read last
+         * and say unknown on the row, with why; counts read again clear it.
+         */
+        const unknown = read !== undefined && isChangesUnknown(read) ? read : undefined;
+        const counted = read !== undefined && !isChangesUnknown(read) ? read : undefined;
         if (read !== undefined && (sessions.has(uri) || ctx.respawning.has(uri))) {
-          kept.setChanges(idOf(uri), read);
+          if (unknown !== undefined) unknownChanges.set(uri, unknown.reason);
+          else {
+            unknownChanges.delete(uri);
+            if (counted !== undefined) kept.setChanges(idOf(uri), counted);
+          }
           markSummaryDirty(uri);
         }
         const held = sessions.get(uri);
         for (const chat of held?.chats.keys() ?? []) {
           let own: ChangesSummary | undefined;
           if (chat === held?.defaultChat) {
-            own = branch ? undefined : read;
+            let mine: ChangesSummary | ChangesUnknown | undefined = branch ? undefined : read;
             if (branch) {
-              try { own = await source?.sessionSummary?.(dir, idOf(uri), whileRunning); }
+              try { mine = await source?.sessionSummary?.(dir, idOf(uri), whileRunning); }
               catch { /* a count that could not be read is the count that was there */ }
             }
+            // A chat's entry has no `_meta` of its own: unknown is no counts.
+            own = mine === undefined ? undefined : isChangesUnknown(mine) ? {} : mine;
           }
           else {
             // The chat's turns as its state holds them, the one running last.
@@ -1381,15 +1437,41 @@ export function createCatalogue(ctx: HostContext): Catalogue {
        * the reader's id it would be opened by whichever agent answered, and a
        * conversation would move to another endpoint on a daemon that merely
        * failed to load one plugin. It waits for its agent, and no owner is
-       * recorded, so nothing can open it here. A session recorded before anything was has no agent to wait
-       * for and still goes to the first one that listed it.
+       * recorded, so nothing can open it here.
+       *
+       * A row recorded before anything was has no agent to be given to
+       * either, and two harnesses reading one folder cannot say whose it is:
+       * answering with the one that listed it first is a guess, and on a host
+       * where two seats share an account it hands one seat's conversation to
+       * the other's record, whose ACP process is configured for a different
+       * session and refuses the open (#38259, @cto b41e5443). So such a row is
+       * nobody's: it keeps the name it is listed by, no owner is recorded, and
+       * the open that names an agent is what makes it that agent's
+       * (`adoptListedSession`). One harness alone is not a guess - its answer
+       * is the only one there is - and stays as it was.
        */
       const recorded = kept.provider(id);
       const waiting = recorded !== undefined && !agents.has(recorded) ? recorded : undefined;
-      const one = waiting === undefined ? both.find((it) => it.agent.provider === recorded) ?? both[0] : both[0];
-      // Never empty: an id is in the map only because an agent listed it.
-      if (one === undefined) continue;
-      found.push(registerListedSession(one.agent, one.row, waiting, stored.has(id)));
+      // One harness, however many times it read the folder: a row a backend
+      // lists twice is still that backend's only answer.
+      const listers = new Set(both.map((it) => it.agent.provider));
+      const one = waiting !== undefined
+        ? both[0]
+        : both.find((it) => it.agent.provider === recorded) ?? (listers.size === 1 ? both[0] : undefined);
+      if (one !== undefined) {
+        found.push(registerListedSession(one.agent, one.row, waiting, stored.has(id)));
+        continue;
+      }
+      /*
+       * Nobody's, and listed all the same: a conversation a person can see
+       * reads differently from one nothing found. The row is registered under
+       * the reader's id so the transcript it was listed from still titles it,
+       * and the empty provider says what the catalogue cannot answer - which
+       * agent runs it - rather than naming one of them.
+       */
+      const reader = both[0];
+      if (reader === undefined) continue;
+      found.push(registerListedSession(reader.agent, reader.row, NO_PROVIDER, stored.has(id), false));
     }
     /*
      * The nested sessions, from what this host recorded of them.
@@ -1602,19 +1684,25 @@ export function createCatalogue(ctx: HostContext): Catalogue {
    * Register one listed session, its name, owner, folders, dates and `_meta`
    * recorded, and project its row, as VS Code's registry registers a session
    * its listing found and the listing projects its entry.
+   *
+   * `mine` is whether anything here may open the row: a row two harnesses
+   * list that no record names is registered with no owner, so the answer to
+   * "which agent runs it" stays the empty provider rather than a guess.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/agentSessionRegistry.ts#L92-L99
    */
-  const registerListedSession = (agent: Agent, row: Listed, waiting?: string, stored = false): Summary => {
+  const registerListedSession = (agent: Agent, row: Listed, waiting?: string, stored = false, mine = true): Summary => {
     const provider = waiting ?? agent.provider;
     const keptName = kept.uri?.(row.id);
-    const resource = keptName ?? (stored ? `${provider}:/${row.id}` : uriFor(row.id));
+    // A row nobody's is named by its id alone: there is no provider to name it
+    // under, and a name with an empty one in front of it is not a name.
+    const resource = keptName ?? (stored && provider !== NO_PROVIDER ? `${provider}:/${row.id}` : uriFor(row.id));
     // An old row keeps the name its clients already hold, and stores it so the
     // next listing does not derive it again. A row this host has none for is
     // named but not remembered: a listing must not write a file per session it
     // finds on the machine.
     if (keptName === undefined && stored) kept.setUri?.(row.id, resource);
     names.set(row.id, resource);
-    if (waiting === undefined) owners.set(resource, agent);
+    if (waiting === undefined && mine) owners.set(resource, agent);
     wheres.set(resource, row.workingDirectories);
     const folder = row.workingDirectories[0];
     if (folder !== undefined && kept.provider(row.id) !== undefined && kept.workingDirectory?.(row.id) === undefined) {
@@ -1649,7 +1737,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       workingDirectories: row.workingDirectories,
       ...storedChatsOf(row.id, row.title),
       ...changesOf(resource),
-      ...ctx.describes(resource),
+      ...withChangesMeta(resource, ctx.describes(resource)),
     };
   };
   /**
@@ -1896,6 +1984,80 @@ export function createCatalogue(ctx: HostContext): Catalogue {
     void reconcileExternalSessions();
   };
   /**
+   * A listed row nobody's, made one agent's by the open that names it.
+   *
+   * #38259 (@cto b41e5443): the host may not decide from a listing order
+   * which of two harnesses reading one folder a transcript it never ran
+   * belongs to - on a host where seats share an account, the record it guessed
+   * is configured for another session and refuses the open. The caller knows
+   * what the listing cannot: the plugin a turn comes through starts exactly
+   * one agent, and `agent` is that one. Adopting the row under it writes the
+   * owner, the name a client holds it by, and the provider through the same
+   * record write a running session makes, so the next restart reads the
+   * provider and binds the row to this record instead of guessing again.
+   *
+   * Only a row the catalogue holds with no owner and no provider can be
+   * adopted, and only under the neutral name it was listed by: a row a record
+   * already names is opened as that record's, and one already adopted is.
+   */
+  const adoptListedSession = (id: string, agent: Agent, row: Summary): { summary: Summary; undo: () => void } | undefined => {
+    const neutral = names.get(id);
+    if (neutral === undefined || neutral !== row.resource || neutral !== uriFor(id)) return undefined;
+    if (owners.has(neutral) || kept.provider(id) !== undefined || kept.uri?.(id) !== undefined) return undefined;
+    const listed: Listed = {
+      id,
+      title: row.title,
+      createdAt: row.createdAt,
+      modifiedAt: row.modifiedAt,
+      workingDirectories: row.workingDirectories,
+    };
+    // Named as a session this host ran is named, which is the spelling the
+    // caller asked with and the one its ACP process is configured for, so the
+    // open that adopts this row is not also a move of it.
+    const held = `${agent.provider}:/${id}`;
+    // The record first, so registering the row reads a provider and does not
+    // mark this host's own session external.
+    kept.setProvider(id, agent.provider);
+    kept.setExternal?.(id, false);
+    kept.setUri?.(id, held);
+    const found = registerListedSession(agent, listed, undefined, true);
+    /** What the neutral name carried, kept for the undo before the keys are dropped. */
+    const neutralMeta = listedMeta.get(neutral);
+    // One name per row: the keys the neutral spelling left behind are dropped,
+    // so nothing answers for a session by the name it had before an agent
+    // named it.
+    for (const map of [wheres, births, moves, listedMeta, externalSessions]) map.delete(neutral);
+    /*
+     * #38259 (@dev/review2): the claim is durable before the open has proved
+     * it. A start that refuses - the shared-account case this fix is about,
+     * where the row was another seat's - must not leave this record holding
+     * it, because `kept.provider(id)` is then set and no later listing adopts
+     * the row again: the seat that can open it would be refused for good.
+     * Undoing restores the record's absence, the neutral name, and the row's
+     * place in the maps the listing answers from, so the row is nobody's and
+     * the next open claims it.
+     */
+    const undo = (): void => {
+      kept.setProvider(id, undefined);
+      kept.setExternal?.(id, false);
+      kept.setUri?.(id, undefined);
+      names.set(id, neutral);
+      owners.delete(held);
+      for (const map of [wheres, births, moves, listedMeta, externalSessions]) map.delete(held);
+      wheres.set(neutral, row.workingDirectories);
+      births.set(neutral, row.createdAt);
+      moves.set(neutral, row.modifiedAt);
+      if (neutralMeta !== undefined) listedMeta.set(neutral, neutralMeta);
+      // A row nobody's is external: no record says this host ran it.
+      externalSessions.add(neutral);
+    };
+    if (found.resource !== held) {
+      undo();
+      return undefined;
+    }
+    return { summary: found, undo };
+  };
+  /**
    * A held listed session's summary with what this host knows about it read
    * again, as VS Code's host keeps a surfaced session's summary current with
    * its flags and its metadata.
@@ -1926,7 +2088,7 @@ export function createCatalogue(ctx: HostContext): Catalogue {
       ...(started === undefined ? {} : { origin: started }),
       ...storedChatsOf(idFor(row.resource), row.title),
       ...changesOf(row.resource),
-      ...ctx.describes(row.resource),
+      ...withChangesMeta(row.resource, ctx.describes(row.resource)),
     };
   };
 
@@ -2246,6 +2408,6 @@ export function createCatalogue(ctx: HostContext): Catalogue {
     activityOf, markSessionProvisional, sessionAdded, provisional: (uri: string) => provisionalSessionKeys.has(uri), materialized, failSessionCreationIfStillCreating,
     markSummaryDirty, flushPendingSessionSummaries, refreshSessionChangesSummary, removeNotifiedSummary, activeSessionsChanged, setAgentModels, publishAgentInfos, publishAccountInfo,
     listing, registerListedSession, announceSurfacedSession, getOverlaySessionSummaries, listSessions, publishSurfacedSessions, unavailableProvider, readStored,
-    isExternal: (uri: string) => externalSessions.has(uri), adoptExternalSession, reconcileExternalSessions,
+    isExternal: (uri: string) => externalSessions.has(uri), adoptExternalSession, adoptListedSession, reconcileExternalSessions,
   };
 }

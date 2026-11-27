@@ -62,6 +62,28 @@ export interface ChangesSummary {
 }
 
 /**
+ * A session's own counts that cannot be given, and why.
+ *
+ * What a source answers for a session in a repository whose baseline it does
+ * not hold: one started before this host process was, or whose baseline tree
+ * git has collected. Not zero - zero is a session that did nothing - and not
+ * the edit tracker's count either, which misses every file a shell wrote. A
+ * row carries no counts for it (`changes: {}`, which the protocol's optional
+ * fields allow) and says the reason under `_meta[CHANGES_UNKNOWN_META]`.
+ */
+export interface ChangesUnknown {
+  unknown: true;
+  reason: string;
+}
+
+/** Whether a session's counts were an answer or a reason there is none. */
+export const isChangesUnknown = (read: ChangesSummary | ChangesUnknown): read is ChangesUnknown =>
+  (read as Partial<ChangesUnknown>).unknown === true;
+
+/** The row's `_meta` key that says why its counts are unknown. */
+export const CHANGES_UNKNOWN_META = 'ahpd.changesUnknown';
+
+/**
  * One scope of change a directory can be asked about.
  *
  * The protocol nests changesets under the session's own URI - `uncommitted`,
@@ -372,10 +394,9 @@ export type ChangesetWatch = (() => void) & { ready?: Promise<void> };
 /**
  * The turn a session's baseline is checkpointed under.
  *
- * What a session changed is a difference between two of its own commits, and
+ * What a session changed is a difference between two of its own trees, and
  * the first of them is the tree as the session found it - before a turn had
- * run, so it is named as one no backend would name a turn: a checkpoint lives
- * at `refs/agents/<session>/checkpoints/turn/<turn>`.
+ * run, so it is named as one no backend would name a turn.
  */
 export const BASELINE_TURN = '0';
 
@@ -429,11 +450,15 @@ export interface ChangesetSource {
    * folder that is not a repository and a turn that has not ended. A source
    * without it answers nothing, and a caller falls back to `summary`.
    *
+   * {@link ChangesUnknown} where the session is in a repository and its
+   * baseline is not there - a host that restarted, or a tree git collected -
+   * since the tracker alone would be counts that look whole and are not.
+   *
    * `running` says a turn is in flight, so its work is not in a checkpoint
    * yet: the working tree is the second side, and the counts are the baseline
    * against what is on disk now. Without it the last finished turn answers.
    */
-  sessionSummary?(dir: string, session: string, running?: boolean): Promise<ChangesSummary>;
+  sessionSummary?(dir: string, session: string, running?: boolean): Promise<ChangesSummary | ChangesUnknown>;
   /**
    * And the roll-up of the branch a session's worktree is on.
    *
@@ -470,7 +495,7 @@ export interface ChangesetSource {
    */
   read?(uri: string): Promise<{ data: string; encoding: string } | undefined>;
   /**
-   * Write the tree as it is now as a commit of the session's own.
+   * Write the tree as it is now as a checkpoint of the session's own.
    *
    * What makes a session's changes the session's. The `uncommitted` diff says
    * what a working tree looks like, which is not what a conversation did: a
@@ -481,20 +506,22 @@ export interface ChangesetSource {
    * the session's own work, whatever wrote it.
    *
    * Nothing happens in a directory that is not a repository, and the person's
-   * branch, index and working tree are never touched. Like `refresh`, this is
-   * a read of the directory that writes only what is the session's: a failure
-   * is a checkpoint that is not there, not a rejection.
+   * branch, index, working tree and refs are never touched: the git source
+   * writes a tree object that nothing names and holds its name in memory. Like
+   * `refresh`, this is a read of the directory that writes only what is the
+   * session's: a failure is a checkpoint that is not there, not a rejection.
    *
-   * `session` is the session's own id, which is what names those refs and
-   * what a later `removeCheckpoints` is given.
+   * `session` is the session's own id, which is what a later
+   * `removeCheckpoints` is given.
    */
   checkpoint?(dir: string, session: string, turn: string): Promise<void>;
   /**
-   * The checkpoints of a session that is gone, and the refs that name them.
+   * The checkpoints of a session that is gone, and any refs that name them.
    *
-   * Nothing else will ever point at those commits, so a repository that keeps
-   * the refs keeps them for ever. Called when the host removes the session, on
-   * the directory it ran in.
+   * The git source lets go of the trees it held and removes the refs builds
+   * before it wrote under `refs/agents/`, which nothing else would ever
+   * remove. Called when the host removes the session, on the directory it ran
+   * in.
    */
   removeCheckpoints?(dir: string, session: string): Promise<void>;
   /** Look again, answering whether anything moved. */

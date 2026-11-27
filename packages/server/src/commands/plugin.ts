@@ -11,6 +11,7 @@ import { check, output } from '@cofold/commands';
 import type { Command, CommandContext, JsonSchema, Output, Registry } from '@cofold/commands';
 import { scopeOf, sdkVersion, secretRef } from '@ahpd/sdk';
 import { configDir, configPath } from '../config.js';
+import { answering, confirm, here } from '../ask.js';
 import { running } from '../daemon.js';
 import { API_PREFIX } from '../http.js';
 import {
@@ -21,7 +22,7 @@ import { describePlugin, sourceOf, optionsSchemaOf, pluginIdOf, pluginIdsOf, plu
 import { availablePlugins, configuredMarketplaces } from '../pluginlist.js';
 import type { Available, InstalledRow } from '../pluginlist.js';
 import type { Where } from '../plugins.js';
-import type { PluginSpec } from '@ahpd/sdk';
+import type { Grant, PluginSpec, Principal } from '@ahpd/sdk';
 import { keyed, maskOption, schemasFor, withoutSpecSecrets, withoutUserinfoIn } from './config.js';
 import { namedOptionsFrom, pluginWriteFields, flagFields, serverFields, servedPluginWriteFields, splitPluginOption, stop, typedValue } from './options.js';
 import { reachable, tokenIn } from './paths.js';
@@ -73,6 +74,9 @@ const recordedOverride = (argv: readonly string[], plugin: readonly string[], ke
 };
 
 export const declarePlugin = (registry: Registry<object>, served?: ServedFacts): Command[] => {
+  /** The file a command edits: the daemon's own when served, whatever the request names. */
+  const fileOf = (named: string | undefined): string => (served === undefined ? named : served.configFile) ?? configPath();
+
   const list = registry.action({
     id: 'plugin.list',
     summary: 'What the configuration names, and what a run would load',
@@ -281,6 +285,8 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
         if (payload) context.error(line);
         else context.write(`${line}\n`);
       };
+      /** What an install asked for and whether it was granted, for the payload. */
+      let reported: { asked: ReadonlyMap<string, string[]>; declaredCallerGrants: ReadonlyMap<string, string[]>; consented: boolean; granted: boolean } | undefined;
       try {
         if (sub === 'install') {
           await installPlugins(names, {
@@ -288,6 +294,24 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
             sdk: sdkVersion(), enable: !context.flag('noEnable'), run: runProgram, fetch, say,
             marketplaces: served === undefined ? configuredMarketplaces(namedFile) : served.options.pluginMarketplaces,
             marketplace: context.optional<string>('marketplace'),
+            grant: context.flag('grant'),
+            /*
+             * Served, the grants a manifest asks the new entry for are the
+             * caller's to give and only up to what the caller holds: the
+             * deployment token holds every one, and a person's are their roles.
+             * The terminal's own run is the owner and passes nothing here.
+             */
+            ...(served === undefined ? {} : {
+              mayGrant: (one: Grant) => (context.request?.actor as Principal | undefined)?.can(one) === true,
+            }),
+            report: (facts) => { reported = facts; },
+            /*
+             * A pipe, a payload and a daemon serving a request have nobody to
+             * ask: the install prints the list and the command that would write
+             * it, rather than reading an end, a JSON stream or the daemon's own
+             * keyboard as an answer.
+             */
+            ...(!payload && served === undefined && answering(here) ? { confirm: (question: string) => confirm(question, false) } : {}),
           });
         }
         else {
@@ -306,7 +330,18 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
        * that did not answer at all.
        */
       const restart = await saidSo(say, namedFile);
-      return output({ plugins: names, ...(restart ? { restart: true } : {}) }, '');
+      return output({
+        plugins: names,
+        ...(restart ? { restart: true } : {}),
+        ...(reported === undefined ? {} : {
+          grants: {
+            asked: Object.fromEntries(reported.asked),
+            declaredCallerGrants: Object.fromEntries(reported.declaredCallerGrants),
+            consented: reported.consented,
+            granted: reported.granted,
+          },
+        }),
+      }, '');
     }),
   });
 
@@ -341,9 +376,27 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
         moved = await updatePlugins(asked.length === 1 && asked[0] === 'all' ? 'all' : asked, {
           configDir: configDir(), sdk: sdkVersion(), run: runProgram, fetch, say,
           marketplaces: served === undefined ? configuredMarketplaces() : served.options.pluginMarketplaces,
+          configFile: fileOf(undefined),
         });
       }
       catch (error) {
+        /*
+         * A refusal does not undo the packages already moved. They are on disk
+         * and not running, so they are imported again before the refusal ends
+         * the command, exactly as a call that moved them and refused nothing
+         * would have.
+         */
+        const already = (error as { moved?: Moved[] }).moved;
+        if (already !== undefined && already.length > 0) {
+          try {
+            await saidToReload(say, already.map((one) => one.name));
+          }
+          catch (again) {
+            // The refusal is the answer; a daemon that would not load is said
+            // beside it rather than in place of it.
+            say(`The packages above moved, and the daemon could not load them again (${again instanceof Error ? again.message : String(again)}).`);
+          }
+        }
         stop(failure(error));
       }
       /*
@@ -432,9 +485,6 @@ export const declarePlugin = (registry: Registry<object>, served?: ServedFacts):
       return output({ plugins: names, ...(restart ? { restart: true } : {}) }, '');
     }),
   });
-
-  /** The file a command edits: the daemon's own when served, whatever the request names. */
-  const fileOf = (named: string | undefined): string => (served === undefined ? named : served.configFile) ?? configPath();
 
   /*
    * `plugin config` shows a plugin's options, `plugin config set` writes one

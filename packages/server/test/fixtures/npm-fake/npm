@@ -4,21 +4,29 @@
 # caller named. With FAKE_NPM_LOG set it appends a line to that
 # file as it starts and as it ends, so a case can see whether two runs overlapped.
 # With FAKE_NPM_LANDS set to "<name> <version>", an install writes that
-# package's package.json under the --prefix directory's node_modules.
+# package's package.json under the --prefix directory's node_modules, with the
+# `ahpd` field a plugin's has - except for the sdk, which is not a plugin.
 # An install of a plugin names its sources after a `--`; for each one the fake
 # writes a package.json with an `ahpd` field and an `index.mjs` exporting the
 # unscoped name, which is what npm really leaves and what the install path
 # checks for. An update has no `--` and lands nothing, so a package it did not
 # move stays at the version it had.
+# With FAKE_NPM_GRANTS set to a JSON list such as '["probe:write"]', the `ahpd`
+# field of a landed plugin also declares that list as `grants`, so a case can
+# see what an install does with a manifest that asks its entry for powers.
 
 [ -n "$FAKE_NPM_LOG" ] && echo "start $*" >> "$FAKE_NPM_LOG"
 [ -n "$FAKE_NPM_SLEEP" ] && sleep "$FAKE_NPM_SLEEP"
+ahpd="{\"entry\":\"./index.mjs\"${FAKE_NPM_GRANTS:+,\"grants\":$FAKE_NPM_GRANTS}}"
 echo "npm noise"
 if [ "$1" = install ] && [ "$2" = --prefix ]; then
   if [ -n "$FAKE_NPM_LANDS" ]; then
     dir="$3/node_modules/${FAKE_NPM_LANDS% *}"
     mkdir -p "$dir"
-    printf '{"name":"%s","version":"%s"}\n' "${FAKE_NPM_LANDS% *}" "${FAKE_NPM_LANDS#* }" > "$dir/package.json"
+    case "${FAKE_NPM_LANDS% *}" in
+      @ahpd/sdk) printf '{"name":"%s","version":"%s"}\n' "${FAKE_NPM_LANDS% *}" "${FAKE_NPM_LANDS#* }" > "$dir/package.json" ;;
+      *) printf '{"name":"%s","version":"%s","type":"module","main":"./index.mjs","ahpd":%s}\n' "${FAKE_NPM_LANDS% *}" "${FAKE_NPM_LANDS#* }" "$ahpd" > "$dir/package.json" ;;
+    esac
   else
     source=''
     for arg do
@@ -35,7 +43,7 @@ if [ "$1" = install ] && [ "$2" = --prefix ]; then
       ''|.*|/*|*:*) ;;
       *)
         mkdir -p "$3/node_modules/$name"
-        printf '{"name":"%s","version":"%s","type":"module","main":"./index.mjs","ahpd":{"entry":"./index.mjs"}}\n' "$name" "$version" > "$3/node_modules/$name/package.json"
+        printf '{"name":"%s","version":"%s","type":"module","main":"./index.mjs","ahpd":%s}\n' "$name" "$version" "$ahpd" > "$3/node_modules/$name/package.json"
         printf "export const name = '%s';\nexport const apply = () => {};\n" "${name##*/}" > "$3/node_modules/$name/index.mjs"
         ;;
     esac

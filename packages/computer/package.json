@@ -76,6 +76,7 @@
   },
   "ahpd": {
     "entry": "./dist/index.js",
+    "callerGrants": ["computer:read", "computer:put", "computer:delete"],
     "i18n": "i18n",
     "title": "Computer",
     "description": "Isolated machines for agent sessions: Docker containers, libvirt or Proxmox VMs, and ssh boxes.",

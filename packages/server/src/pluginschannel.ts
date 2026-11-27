@@ -894,6 +894,7 @@ export const pluginsChannel = (options: PluginsChannelOptions): PluginsChannel =
         try {
           const all = await updatePlugins([packageName], {
             configDir: where.configDir,
+            configFile,
             sdk: sdk(),
             run: npm,
             fetch: registryFetch,
