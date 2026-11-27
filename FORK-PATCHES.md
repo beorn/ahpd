@@ -92,7 +92,7 @@ Upstream status is one of:
 - not on main: `c6f74e9d0`, awaiting its author's PR · agent-acp marks and reports the turns an agent starts itself; an update outside every turn is counted and warned, never dropped silently · #38159 · posted https://github.com/ahpio/ahpd/pull/462 (2026-11-24, operator D292; beorn fix/updates-outside-a-turn-r6, rebased on upstream 7d927326c)
 
 ### Host: a slow client is bounded
-- `d4eda7617` · a client is closed for the queue behind the frame in flight, not for the frame, so a session snapshot heavier than `clientQueueBytes` no longer turns into a close-and-reconnect loop · #38703 · upstream ask not written (the bound is our own; upstream has no `clientQueueBytes`)
+- `7b995dde4` · a client is closed for the queue behind the frame in flight, not for the frame, so a session snapshot heavier than `clientQueueBytes` no longer turns into a close-and-reconnect loop · #38703 · upstream ask not written (the bound is our own; upstream has no `clientQueueBytes`)
 
 ### acp: openings, native identity and custody
 - `19c3eec8a`, `37bceecb9` · reject superseded asynchronous openings before spawn, and discard obsolete native replies before changing opening state · #32996 · upstream ask not written
