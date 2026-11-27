@@ -55,7 +55,7 @@ const LIVE_KEYS = [
   'authenticate', 'authenticateInMachine', 'hostTools', 'honoursTrust', 'toolsChanged', 'machine', 'variant',
   'cutTurns', 'stderrTail', 'portFailures', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
   'listingIdleMs', 'sessionListMaxPages', 'exitGraceMs', 'stderrBytes', 'startAnswerMs', 'toolCallSilenceMs',
-  'killGraceMs', 'closeGraceMs',
+  'lastResortMs', 'killGraceMs', 'closeGraceMs',
 ] as const;
 
 /** What a spawned server is built from, as one string to compare an edit by. */
@@ -679,6 +679,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         ...(options.exitGraceMs === undefined ? {} : { exitGraceMs: options.exitGraceMs }),
         ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
         ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
+        ...(options.lastResortMs === undefined ? {} : { lastResortMs: options.lastResortMs }),
         ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
         ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
         });
