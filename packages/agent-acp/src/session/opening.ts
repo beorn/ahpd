@@ -55,7 +55,7 @@ const LIVE_KEYS = [
   'authenticate', 'authenticateInMachine', 'hostTools', 'honoursTrust', 'toolsChanged', 'machine', 'variant',
   'cutTurns', 'stderrTail', 'portFailures', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
   'listingIdleMs', 'sessionListMaxPages', 'exitGraceMs', 'stderrBytes', 'startAnswerMs', 'toolCallSilenceMs',
-  'lastResortMs', 'killGraceMs', 'closeGraceMs',
+  'lastResortMs', 'toolRequestBoundMs', 'toolRequestBounds', 'killGraceMs', 'closeGraceMs',
 ] as const;
 
 /** What a spawned server is built from, as one string to compare an edit by. */
