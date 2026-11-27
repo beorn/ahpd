@@ -4,7 +4,7 @@
 //   node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> \
 //     --hightea <hightea checkout> --hightea-sha <sha> --out <empty dir> [--publish]
 //   node scripts/build-host-release.mjs --commit <full sha> --tag hh-<issue>-<8hex> \
-//     --out <empty dir> --append
+//     --out <empty dir> --append [--shared <dir>]
 //   node scripts/build-host-release.mjs --tag <tag> --finalize [--allow-single-target]
 //
 // Two of the six already had their one producer: scripts/pack-host-archive.mjs writes
@@ -20,6 +20,9 @@
 //               plug-in — from the draft instead of rebuilding them: both pins files then name the same bytes by
 //               construction. So --append needs no hightea checkout and no GNU tar (macOS's bsdtar refuses the flags
 //               the deploy tarball is built with, and a Mac's bundle is not byte-identical to Linux's anyway).
+//               --shared <dir> is for a machine with no GitHub client at all (a stock Mac): the directory holds the
+//               first machine's two shared assets, the run writes its four here and prints the one gh command that
+//               uploads them, for a machine that has one (@dev/5 2026-11-27).
 //   --finalize  publishes the draft once both pins files are on it; --allow-single-target publishes with one and says
 //               which machine is then not installable.
 // An asset is never replaced; a fix is a new tag.
@@ -91,8 +94,19 @@ const releaseState = (name) => {
   return JSON.parse(answer.stdout);
 };
 const releaseAssetNames = (state) => new Set(state.assets.map((asset) => asset.name));
+// A machine that cuts the other target may have no GitHub client at all (a stock Mac). --shared names a directory
+// holding the first machine's two shared assets: the run reads them, and prints the upload command for a machine that
+// does have one, instead of skipping the upload silently.
+const sharedDir = arg('shared', false);
 const downloadAsset = (name, directory) => {
   mkdirSync(directory, { recursive: true });
+  if (sharedDir !== undefined) {
+    const source = join(sharedDir, name);
+    if (!existsSync(source)) fail('--shared ' + sharedDir + ' holds no ' + name + '; it must hold every shared asset --append reads');
+    const destination = join(directory, name);
+    copyFileSync(source, destination);
+    return destination;
+  }
   must('gh', ['release', 'download', tag, '--repo', 'beorn/ahpd', '--pattern', name, '--dir', directory], { stdio: ['ignore', 'pipe', 'pipe'] });
   return join(directory, name);
 };
@@ -177,10 +191,16 @@ mkdirSync(work, { recursive: true });
 // --publish carries all six, so a shared name that is missing or doubled means this is not that draft.
 let draftPresent;
 if (append) {
-  const state = releaseState(tag);
-  if (state === undefined) fail(`--append needs a draft release ${tag}; run --publish on the first machine`);
-  if (!state.isDraft) fail(`${tag} is already published; release assets are immutable, cut a new tag`);
-  draftPresent = releaseAssetNames(state);
+  if (sharedDir !== undefined) {
+    if (!existsSync(sharedDir)) fail('--shared ' + sharedDir + ' is not a directory');
+    draftPresent = new Set(readdirSync(sharedDir));
+    note('shared assets read from ' + sharedDir + '; this run prints its upload command instead of using a GitHub client');
+  } else {
+    const state = releaseState(tag);
+    if (state === undefined) fail(`--append needs a draft release ${tag}; run --publish on the first machine`);
+    if (!state.isDraft) fail(`${tag} is already published; release assets are immutable, cut a new tag`);
+    draftPresent = releaseAssetNames(state);
+  }
 }
 const sharedOnDraft = (prefix) => {
   const found = [...draftPresent].filter((name) => name.startsWith(prefix));
@@ -404,11 +424,16 @@ if (publish || append) {
     });
     if (!plan.ok) fail(plan.refusal);
     const upload = plan.upload;
+    if (sharedDir !== undefined) {
+      process.stdout.write(['gh', 'release', 'upload', tag, '--repo', 'beorn/ahpd', ...upload.map((name) => join(out, name))].join(' ') + '\n');
+      note('append: ' + upload.join(', ') + ' written to ' + out + '; upload them with the command above, then --finalize');
+    } else {
     note(`append: uploading ${upload.join(', ')} to DRAFT ${tag}`);
     must('gh', ['release', 'upload', tag, '--repo', 'beorn/ahpd', ...upload.map((name) => join(out, name))], {
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     note(`appended ${tag}: ${upload.join(', ')}`);
+    }
   }
 }
 
