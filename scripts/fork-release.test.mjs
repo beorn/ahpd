@@ -4,13 +4,14 @@
  * 0.16.0-beorn.dc5a62e1, so hightea 0.1.34 could not install).
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { PACKED, lockDisagreements, packedManifest, packedVersion, siblingDisagreements, siblingWarnings, stampedVersion } from './pack-fork-release.mjs'
 
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 
 test('a package carries its own base version and the release suffix, never two suffixes', () => {
   expect(stampedVersion('0.16.0', 'beorn.dc5a62e1')).toBe('0.16.0-beorn.dc5a62e1')
@@ -71,6 +72,33 @@ test('a peer range naming another base version is reported, and one naming this 
   expect(siblingWarnings(peer('>=0.15.0 <0.16.0-0'), versions)).toEqual([])
   expect(siblingDisagreements(peer('>=0.15.0 <0.16.0-0'), versions)).toEqual([])
   expect(siblingWarnings(peer('>=0.14.0 <0.15.0-0'), versions)).toHaveLength(1)
+})
+
+// @dev/6 at 8fffcd29: refuse() was process.exit(1), and the two refusals raised between stamping and restoring sat
+// inside the try — an exit ends the process without running pending finally blocks, so a refused pack left all six
+// manifests stamped in the checkout. A pnpm that packs nothing forces exactly that refusal, mid-pack.
+test('a refusal after stamping still restores every manifest', async () => {
+  const manifests = PACKED.map((name) => join(root, `packages/${name}/package.json`))
+  const before = await Promise.all(manifests.map((path) => readFile(path, 'utf8')))
+  const fake = await mkdtemp(join(tmpdir(), 'ahpd-fake-pnpm-'))
+  const bin = join(fake, 'pnpm')
+  await writeFile(bin, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.0.0; exit 0; fi\nexit 0\n', { mode: 0o755 })
+  const out = await mkdtemp(join(tmpdir(), 'ahpd-fork-release-test-'))
+  let status = 0
+  let stderr = ''
+  try {
+    execFileSync(process.execPath, ['scripts/pack-fork-release.mjs', '--only', 'services', '--suffix', 'beorn.0badf00d', '--out', out], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${fake}:${process.env.PATH ?? ''}` },
+    })
+  } catch (error) {
+    status = error.status
+    stderr = String(error.stderr)
+  }
+  expect(status).toBe(1)
+  expect(stderr).toContain('pack refused: packages/services packed no readable tarball')
+  expect(await Promise.all(manifests.map((path) => readFile(path, 'utf8')))).toEqual(before)
 })
 
 test('the lock resolves a packed sibling to its workspace copy, not to a registry version', async () => {
