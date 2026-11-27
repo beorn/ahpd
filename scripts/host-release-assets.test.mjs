@@ -13,7 +13,7 @@ const checksums = Object.fromEntries(
 );
 
 describe('the six names match the host-release route', () => {
-  for (const target of ['linux-x64', 'darwin-arm64']) {
+  for (const target of ['linux-x64', 'darwin-arm64', 'darwin-x64']) {
     it(`answers every name for ${target}`, () => {
       const names = assetNames({ ...versions, target });
       expect(Object.values(names)).toHaveLength(6);
@@ -121,6 +121,11 @@ describe('a second machine appends to the draft, never replaces an asset', () =>
 describe('which machines a draft can be published for', () => {
   it('is the pins files that are on it', () => {
     expect(finalizeTargets(new Set(['pins-linux-x64.json', 'pins-darwin-arm64.json']))).toEqual(['linux-x64', 'darwin-arm64']);
+    expect(finalizeTargets(new Set(['pins-linux-x64.json', 'pins-darwin-arm64.json', 'pins-darwin-x64.json']))).toEqual([
+      'linux-x64',
+      'darwin-arm64',
+      'darwin-x64',
+    ]);
     expect(finalizeTargets(new Set(['pins-linux-x64.json']))).toEqual(['linux-x64']);
     expect(finalizeTargets(new Set())).toEqual([]);
   });
