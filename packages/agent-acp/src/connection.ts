@@ -13,7 +13,7 @@ import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { Readable, Transform, Writable } from 'node:stream';
-import { PROTOCOL_VERSION, client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
+import { PROTOCOL_VERSION, RequestError, client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import type {
   AuthenticateRequest,
   AuthenticateResponse,
@@ -145,6 +145,16 @@ export const TOOL_CALL_SILENCE_MS = 900_000;
  * no progress is a turn nobody is working on, and it ends by name, saying everything that was open.
  */
 export const LAST_RESORT_TURN_MS = 60 * 60_000;
+/**
+ * How long a request this client owes the server may stay unanswered before the request itself is answered with an
+ * error, unless a per-method bound or the record's `toolRequestBoundMs` says otherwise (#39045, @cto 2026-11-27).
+ *
+ * Measured: while a tool call or an owed request is open, the only clock running is the sixty-minute last resort, so a
+ * request nobody answered cost up to an hour and then took the turn with it. A wedged request is one tool's failure and
+ * the agent can go on from an error; ending the turn loses its work. Fifteen minutes is long enough for a person to
+ * decide a permission and far short of an hour of nothing.
+ */
+export const TOOL_REQUEST_BOUND_MS = 15 * 60_000;
 
 /**
  * Windows, which has no process group to signal and no SIGTERM to send: a
@@ -273,6 +283,8 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const startAnswerMs = options.startAnswerMs ?? START_ANSWER_MS;
   const toolCallSilenceMs = options.toolCallSilenceMs ?? TOOL_CALL_SILENCE_MS;
   const lastResortMs = options.lastResortMs ?? LAST_RESORT_TURN_MS;
+  const toolRequestBoundMs = options.toolRequestBoundMs ?? TOOL_REQUEST_BOUND_MS;
+  const toolRequestBounds = options.toolRequestBounds ?? {};
   // A second early, as a process's own start time is read back to the
   // millisecond and the two clocks need not agree on the last one.
   const spawnedAt = Date.now() - 1000;
@@ -686,8 +698,43 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
   const waitingOnUs = <T>(step: string, answer: () => T | Promise<T>): Promise<T> => {
     ours += 1;
     oursSteps.set(step, (oursSteps.get(step) ?? 0) + 1);
+    /*
+     * #39045 (@cto 2026-11-27): this request carries its own bound, armed here - the spot that disarms the server's own
+     * clocks - and cleared by its answer. A request nobody answers used to ride the sixty-minute last resort and take
+     * the turn with it; now that request is itself answered, with an error naming the method and the wait, and the
+     * agent goes on. Nothing here ends the turn.
+     */
+    const openedAt = Date.now();
+    const bound = toolRequestBounds[step] ?? toolRequestBoundMs;
+    let expire!: (why: Error) => void;
+    // Read only through the race below; caught here so a handler that answers after the bound is not an unhandled
+    // rejection on a daemon nobody is watching.
+    const expired = new Promise<never>((_settle, no) => { expire = no; });
+    expired.catch(() => {});
+    const timers: NodeJS.Timeout[] = [];
+    if (bound > 0) {
+      timers.push(setTimeout(() => {
+        const waited = Date.now() - openedAt;
+        options.log?.(`${options.command}: tool request ${step} got no reply in ${waited} ms, so that error is its answer`, 'warn');
+        // A plain Error would reach the server as -32603 "Internal error" and lose the method with it, so this is typed
+        // by the SDK's own error: the server is told which request it was and how long it waited.
+        expire(new RequestError(-32603, `tool request ${step} got no reply in ${waited} ms`, { method: step, waitedMs: waited }));
+      }, bound));
+    }
+    // Said once, when the request outlives the normal idle bound, naming the bound it waits for - never per chunk.
+    if (startAnswerMs > 0 && (bound <= 0 || startAnswerMs < bound)) {
+      timers.push(setTimeout(() => {
+        options.log?.(
+          `${options.command}: tool request ${step} is still open after ${Date.now() - openedAt} ms ` +
+            `(answered with an error at ${bound > 0 ? `${bound} ms` : 'no bound'})`,
+          'warn',
+        );
+      }, startAnswerMs));
+    }
+    for (const timer of timers) timer.unref();
     quiet();
     const done = (): void => {
+      for (const timer of timers) clearTimeout(timer);
       ours -= 1;
       const left = (oursSteps.get(step) ?? 1) - 1;
       if (left > 0) oursSteps.set(step, left);
@@ -705,7 +752,7 @@ export function connectAcp(options: AcpConnectionOptions): AcpConnection {
       done();
       return Promise.reject(why);
     }
-    return Promise.resolve(result).finally(done);
+    return Promise.race([Promise.resolve(result), expired]).finally(done);
   };
   app.onRequest(methods.client.session.requestPermission, async (context): Promise<RequestPermissionResponse> => {
     const answer = await waitingOnUs(methods.client.session.requestPermission, () => handlers.permission?.(context.params));

@@ -1173,6 +1173,126 @@ it('restarts the last-resort bound when a permission is decided at the last minu
   expect(escaped).toEqual([]);
 }, 15_000);
 
+/*
+ * #39045 (@cto 2026-11-27): a request this client owes the server carries its
+ * own bound, armed where it opens and cleared by its answer. While one is open
+ * no clock of the server's own runs, so before this the only clock left was
+ * the sixty-minute last resort: a permission nobody decided cost up to an hour
+ * and then ended the turn, and the work it had done with it. Now that request
+ * is itself answered, with an error naming the method and the wait, and the
+ * agent goes on from it. The hour stays as the outer last resort.
+ */
+
+/** A server that asks for one permission, and then says on its own wire what came back. */
+const askingServer = `
+      send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: { sessionId: 's', toolCall: { toolCallId: 't', title: 'edit' }, options: [{ optionId: 'ok', name: 'Allow', kind: 'allow_once' }] } });`;
+const askedBack = `
+      if (message.id === 900) {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'wire:' + (message.error === undefined ? 'result' : message.error.message) } } } });
+        send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+      }`;
+
+it('answers an unanswered request with a typed error at its own bound, and the turn goes on', async () => {
+  const said: string[] = [];
+  const logged: string[] = [];
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(askingServer, askedBack)],
+    handlers: {
+      update: (_sessionId, update) => {
+        const text = (update as { content?: { text?: string } }).content?.text;
+        if (text !== undefined) said.push(text);
+      },
+      permission: () => new Promise(() => {}),
+    },
+    log: (line) => { logged.push(line); },
+    startAnswerMs: 50,
+    lastResortMs: 30_000,
+    toolRequestBoundMs: 200,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    // Resolved, not rejected: the server ended this turn once its request was answered.
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  // The request was answered on the wire, by name, with the typed error.
+  expect(said).toHaveLength(1);
+  expect(said[0]).toMatch(/^wire:tool request session\/request_permission got no reply in \d+ ms$/);
+  // Said once when it outlived the normal idle bound, and once at expiry - never silently, never per chunk.
+  expect(logged.filter((line) => /still open after \d+ ms/.test(line))).toHaveLength(1);
+  expect(logged.filter((line) => /got no reply in \d+ ms, so that error is its answer/.test(line))).toHaveLength(1);
+  // And no clock ended the turn: the only line naming the outer last resort says what it would do, not that it did.
+  expect(logged.filter((line) => /so the turn is ended/.test(line))).toEqual([]);
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('clears a request answered inside its bound, and says nothing about it', async () => {
+  const logged: string[] = [];
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(askingServer, `
+      if (message.id === 900) send({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });`)],
+    handlers: {
+      update: () => {},
+      permission: () => new Promise((resolve) => { setTimeout(() => resolve({ optionId: 'ok' }), 50); }),
+    },
+    log: (line) => { logged.push(line); },
+    startAnswerMs: 5_000,
+    lastResortMs: 30_000,
+    toolRequestBoundMs: 2_000,
+  });
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  // Answered inside its bound: the error was never armed and nothing was said about a wait.
+  expect(logged.filter((line) => /got no reply|still open after/.test(line))).toEqual([]);
+  expect(escaped).toEqual([]);
+}, 15_000);
+
+it('uses the per-method bound where the record names one', async () => {
+  const said: string[] = [];
+  const connection = connectAcp({
+    command: process.execPath,
+    args: ['-e', promptServer(askingServer, askedBack)],
+    handlers: {
+      update: (_sessionId, update) => {
+        const text = (update as { content?: { text?: string } }).content?.text;
+        if (text !== undefined) said.push(text);
+      },
+      permission: () => new Promise(() => {}),
+    },
+    startAnswerMs: 5_000,
+    lastResortMs: 30_000,
+    toolRequestBoundMs: 10_000,
+    toolRequestBounds: { 'session/request_permission': 100 },
+  });
+  const began = Date.now();
+  try {
+    await connection.initialize();
+    await connection.newSession({ cwd: '/', mcpServers: [] } as never);
+    const answer = await connection.prompt('s', [{ type: 'text', text: 'hello' }]);
+    expect(answer.stopReason).toBe('end_turn');
+  }
+  finally {
+    await connection.close();
+  }
+  // Well inside the ten seconds the default would have taken: this method's own bound decided it.
+  expect(Date.now() - began).toBeLessThan(3_000);
+  expect(said[0]).toMatch(/^wire:tool request session\/request_permission got no reply in \d+ ms$/);
+  expect(escaped).toEqual([]);
+}, 15_000);
+
 // A Node server cannot close its stdout on Windows while it keeps running:
 // libuv's stdout holds a copy of the pipe handle, and fs.closeSync(1) skips
 // fds 0-2, so the parent never reads an end. On POSIX, end() shuts the socket.

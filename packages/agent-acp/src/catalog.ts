@@ -465,6 +465,8 @@ async function serverIn(options: AcpOptions, machine: SessionMachine, handlers: 
     ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
     ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
     ...(options.lastResortMs === undefined ? {} : { lastResortMs: options.lastResortMs }),
+    ...(options.toolRequestBoundMs === undefined ? {} : { toolRequestBoundMs: options.toolRequestBoundMs }),
+    ...(options.toolRequestBounds === undefined ? {} : { toolRequestBounds: options.toolRequestBounds }),
     ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
     ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
   });
@@ -523,6 +525,8 @@ const server = (options: AcpOptions, handlers: AcpHandlers): AcpConnection => co
   ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
   ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
   ...(options.lastResortMs === undefined ? {} : { lastResortMs: options.lastResortMs }),
+  ...(options.toolRequestBoundMs === undefined ? {} : { toolRequestBoundMs: options.toolRequestBoundMs }),
+  ...(options.toolRequestBounds === undefined ? {} : { toolRequestBounds: options.toolRequestBounds }),
   ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
 });
 

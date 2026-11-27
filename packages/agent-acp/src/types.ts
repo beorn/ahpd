@@ -280,6 +280,17 @@ export interface AcpOptions {
    */
   lastResortMs?: number;
   /**
+   * How long a request this client owes the server may stay unanswered before that request is answered with an error of
+   * its own, in milliseconds; 15 min by default (#39045, @cto 2026-11-27). A wedged request is one tool's failure and the
+   * agent continues from the error; ending the turn would throw its work away. 0 turns the bound off.
+   */
+  toolRequestBoundMs?: number;
+  /**
+   * Per-method bounds for the requests this client owes, keyed by protocol method (`session/request_permission`,
+   * `terminal/wait_for_exit`, ...), each overriding `toolRequestBoundMs` for that method alone.
+   */
+  toolRequestBounds?: Record<string, number>;
+  /**
    * How long the server's process group has between SIGTERM and SIGKILL, in
    * milliseconds; 5000 by default, VS Code's grace for ending a process tree.
    * https://github.com/microsoft/vscode/blob/6b68d3fe7dd7db9a3aaa052efc1f3a1fd4432eb2/src/vs/platform/agentHost/node/copilot/localModelBridge/shim/processRunner.ts#L344-L352
@@ -413,7 +424,8 @@ export interface AcpConnectionOptions {
   handlers: AcpHandlers;
   /** Where each line the server writes on stderr goes. */
   log?: (line: string, level?: LogLevel) => void;
-  /** The record's `exitGraceMs`, `stderrBytes`, `startAnswerMs`, `lastResortMs` and `killGraceMs`. */
+  /** The record's `exitGraceMs`, `stderrBytes`, `startAnswerMs`, `toolRequestBoundMs`, `toolRequestBounds`, `lastResortMs`
+   * and `killGraceMs`. */
   exitGraceMs?: number;
   stderrBytes?: number;
   startAnswerMs?: number;
@@ -421,6 +433,10 @@ export interface AcpConnectionOptions {
   toolCallSilenceMs?: number;
   /** How long a call may make no progress before its turn is ended by name (#38919, 60 min by default). */
   lastResortMs?: number;
+  /** How long a request this client owes the server may stay unanswered before it is answered with an error (#39045, 15 min by default). */
+  toolRequestBoundMs?: number;
+  /** Per-method bounds for the requests this client owes, each overriding `toolRequestBoundMs` for that method alone. */
+  toolRequestBounds?: Record<string, number>;
   killGraceMs?: number;
 }
 
