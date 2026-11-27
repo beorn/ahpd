@@ -54,7 +54,8 @@ const LIVE_KEYS = [
   'command', 'args', 'env', 'cwd', 'provider', 'displayName', 'description', 'model',
   'authenticate', 'authenticateInMachine', 'hostTools', 'honoursTrust', 'toolsChanged', 'machine', 'variant',
   'cutTurns', 'stderrTail', 'portFailures', 'modesFrom', 'unreportedClientCalls', 'findFreshMs',
-  'listingIdleMs', 'sessionListMaxPages', 'exitGraceMs', 'stderrBytes', 'startAnswerMs', 'killGraceMs', 'closeGraceMs',
+  'listingIdleMs', 'sessionListMaxPages', 'exitGraceMs', 'stderrBytes', 'startAnswerMs', 'toolCallSilenceMs',
+  'lastResortMs', 'killGraceMs', 'closeGraceMs',
 ] as const;
 
 /** What a spawned server is built from, as one string to compare an edit by. */
@@ -267,9 +268,25 @@ const serversFor = async (
       env: Object.entries(one.env ?? {}).map(([variable, value]) => ({ name: variable, value })),
     });
   }
+  /*
+   * A session that declared tools and is handed none of them is said as well
+   * as answered. The answer reaches the client that opened the session, and
+   * nobody reading this host's log: a turn that ran with no tools then looks
+   * like an agent that thought better of it. So the host log names the reason,
+   * once per session that actually lost something - a session that declared
+   * nothing has lost nothing.
+   */
+  const declared = start.tools?.length ?? 0;
+  const sayLeftOut = (why: string): void => {
+    say(`${HOST_TOOLS}: ${why}, so this session's ${String(declared)} declared tool${declared === 1 ? ' was' : 's were'} left out`);
+  };
   // A host that offers its sessions no tools has nothing to answer about them.
-  if (start.toolsServer === undefined) return taken;
+  if (start.toolsServer === undefined) {
+    if (declared > 0) sayLeftOut('this host serves no tools endpoint');
+    return taken;
+  }
   if (!hostTools) {
+    if (declared > 0) sayLeftOut('this agent runs with hostTools off');
     toolsAnswer({ available: false, reason: 'Host tools are turned off for this agent.' });
     return taken;
   }
@@ -577,12 +594,14 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
       }
       if (prefix !== undefined) {
         // Admission waits, on a timer, for a predecessor still inside its kill grace to record its end (#34599).
-        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider, options.spawnGuard === 'inherited-fd-v1');
+        const held = await admitCustody(prefix, (options.killGraceMs ?? KILL_GRACE_MS) + ADMIT_MARGIN_MS, provider, options.spawnGuard === 'inherited-fd-v1', options.log);
         if (ctx.disposed || ctx.opening !== pending || spawnOf(options) !== startingWith) {
           held.release();
           throw new Error(`${provider}: this opening was superseded before the ACP server could start`);
         }
-        if (!held.write('spawning', null)) {
+        // The turn open now is the one this child is spawned to serve: its start was logged before this write (#38456).
+        const spawningTurn = ctx.active === undefined ? undefined : String(ctx.active.id);
+        if (!held.write('spawning', null, spawningTurn)) {
           held.release();
           throw new Error(`${provider}: could not record ACP custody at ${prefix}.custody; nothing was spawned`);
         }
@@ -604,8 +623,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
           child.on('error', (error) => {
             if (!setupFailed) return; // The ordinary transport owns errors after setup succeeds.
             const line = `${provider}: retained transport child reported ${messageOf(error)}`;
-            if (options.log !== undefined) options.log(line, 'error');
-            else console.error(line);
+            options.log?.(line, 'error');
           });
           child.once('close', () => { if (setupFailed) custody?.end(escapedIdentity); });
         },
@@ -665,6 +683,8 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         ...(options.log === undefined ? {} : { log: options.log }),
         ...(options.exitGraceMs === undefined ? {} : { exitGraceMs: options.exitGraceMs }),
         ...(options.startAnswerMs === undefined ? {} : { startAnswerMs: options.startAnswerMs }),
+        ...(options.toolCallSilenceMs === undefined ? {} : { toolCallSilenceMs: options.toolCallSilenceMs }),
+        ...(options.lastResortMs === undefined ? {} : { lastResortMs: options.lastResortMs }),
         ...(options.stderrBytes === undefined ? {} : { stderrBytes: options.stderrBytes }),
         ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
         });
@@ -681,8 +701,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
             custody.write('running', escapedIdentity);
           } catch (identityError) {
             const line = `${provider}: failed transport child remains unstamped: ${messageOf(identityError)}`;
-            if (options.log !== undefined) options.log(line, 'error');
-            else console.error(line);
+            options.log?.(line, 'error');
           }
           custody.releaseInherited();
         }
@@ -703,6 +722,9 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         if (ctx.live !== connection) return;
         ctx.live = undefined;
         ctx.opening = undefined;
+        // A turn the server started itself has no prompt to fail with it, so
+        // it ends here, or no client would ever see it end.
+        if (ctx.agentTurnId !== undefined) ctx.agentTurn({ turnId: ctx.agentTurnId, phase: 'end', reason: 'abandoned' });
       });
       if (custody !== undefined) {
         // A failed stamp keeps `spawning` and the lock until the child's end is recorded: nothing manufactures `ended`.

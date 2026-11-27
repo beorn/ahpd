@@ -67,6 +67,7 @@
   },
   "ahpd": {
     "entry": "./dist/index.js",
+    "callerGrants": ["session:read"],
     "i18n": "i18n",
     "title": "Tasks",
     "description": "One shared list of tasks and plans for every agent.",

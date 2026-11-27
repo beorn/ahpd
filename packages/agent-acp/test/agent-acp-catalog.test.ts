@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { uriOf } from '@ahpd/sdk';
-import type { Agent, Bag, Emit, McpServer, MessageAttachment, Session, Start } from '@ahpd/sdk';
+import type { Agent, Bag, BoundTool, Emit, McpServer, MessageAttachment, Session, Start } from '@ahpd/sdk';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { loadPlugins } from '../../server/src/plugins.js';
 import { echo } from '../../../examples/echo/agent.js';
@@ -341,6 +341,10 @@ describe('the MCP servers a session is opened with', () => {
   /** The host's own tools server, as `Start.toolsServer` opens one. */
   const hostTools = { url: 'http://127.0.0.1:4242/ahp-mcp/one', token: 't-kn', setTools: () => {}, close: () => {} };
 
+  /** What a client declared for the session, as `Start.tools` carries it. */
+  const declaredTools = (names: string[]): BoundTool[] =>
+    names.map((name) => ({ definition: { name, description: `${name}, declared by the client` } }));
+
   const servers: Record<string, McpServer> = {
     files: { type: 'stdio', command: 'mcp-files', args: ['--root', '/tmp'], env: { KEY: 'k-1' } },
     api: { type: 'http', url: 'https://example.test/mcp', headers: { authorization: 'Bearer k-2' } },
@@ -421,9 +425,12 @@ describe('the MCP servers a session is opened with', () => {
     expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools']).toEqual({ available: true });
   });
 
-  it('leaves the host\'s tools out where the deployment said hostTools: false', async () => {
-    const { agent, log } = withLog({ hostTools: false });
-    const { session, watch } = await start(agent, 'notools', { toolsServer: () => hostTools });
+  it('leaves the host\'s tools out where the deployment said hostTools: false, and names what that cost', async () => {
+    const { agent, log, said } = withLog({ hostTools: false });
+    const { session, watch } = await start(agent, 'notools', {
+      toolsServer: () => hostTools,
+      tools: declaredTools(['hightea_thread_read', 'hightea_thread_post']),
+    });
     const before = watch.endings().length;
     session.sendMessage('t1', 'hi');
     await until(() => watch.endings().length > before);
@@ -431,6 +438,34 @@ describe('the MCP servers a session is opened with', () => {
     expect(opened(log)).toEqual([]);
     expect((session.sessionState()._meta as Bag | undefined)?.['ahpd/hostTools'])
       .toEqual({ available: false, reason: 'Host tools are turned off for this agent.' });
+    // The client is answered either way. The host log is what an operator reads
+    // when a turn runs with no tools, so the reason is named there too.
+    expect(said).toEqual(['host: this agent runs with hostTools off, so this session\'s 2 declared tools were left out']);
+  });
+
+  it('says nothing about host tools where the session declared none to lose', async () => {
+    const { agent, log, said } = withLog({ hostTools: false });
+    const { session, watch } = await start(agent, 'notoolsnone', { toolsServer: () => hostTools });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+
+    expect(opened(log)).toEqual([]);
+    expect(said).toEqual([]);
+  });
+
+  it('names the declared tools a host with no tools endpoint could not serve', async () => {
+    const { agent, log, said } = withLog();
+    // No toolsServer at all: a host with nothing to serve on, as a stdio daemon is.
+    const { session, watch } = await start(agent, 'noendpoint', {
+      tools: declaredTools(['hightea_thread_read']),
+    });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+
+    expect(opened(log)).toEqual([]);
+    expect(said).toEqual(['host: this host serves no tools endpoint, so this session\'s 1 declared tool was left out']);
   });
 
   it('leaves the host\'s own tools out of a server that takes none over HTTP, and says which', async () => {

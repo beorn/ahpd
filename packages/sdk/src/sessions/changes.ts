@@ -6,11 +6,11 @@ import { lstat, readFile, readlink, realpath, rm, writeFile } from 'node:fs/prom
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
-  ChangeWords, ChangesSummary, ChangesetFile, ChangesetOperation, ChangesetOperationResult, ChangesetScope, ChangesetSource, ChangesetState,
+  ChangeWords, ChangesSummary, ChangesUnknown, ChangesetFile, ChangesetOperation, ChangesetOperationResult, ChangesetScope, ChangesetSource, ChangesetState,
 } from '../types/changes.js';
 import type { PullRequests } from '../types/github.js';
 import { commitPrompt, cutDiff, pullRequestPrompt, splitWords } from './changewords.js';
-import { baselineOf, latestOf, removeAll } from './checkpoints.js';
+import { removeAll, sessionTrees, type CheckpointEnds } from './checkpoints.js';
 import { runGit } from '../repo/hardened.js';
 import { githubRemoteOf } from '../repo/git.js';
 import { uriOf } from '../resources/fileuri.js';
@@ -575,6 +575,9 @@ export function gitChanges(): ChangesetSource {
    */
   const seen = new Map<string, Map<string, Map<string, Captured>>>();
 
+  /** The trees each session's own changes are a difference between. */
+  const trees = sessionTrees();
+
   /** The text held for a captured side, by `sideKey` of its session, turn, phase and path. */
   const kept = new Map<string, string>();
   const sideKey = (session: string, turn: string, phase: string, path: string): string =>
@@ -843,18 +846,24 @@ export function gitChanges(): ChangesetSource {
    * What a session did, as the difference between two of its checkpoints.
    *
    * Its baseline and the last turn it finished, which are the two ends of a
-   * conversation. Nothing where either is missing, and nothing where they are
-   * the same commit: the baseline is what `latestOf` answers until a turn has
-   * ended, and a turn that is running *now* is in no checkpoint yet - so the
-   * edit tracker answers until one is, which is the fallback the reference
-   * host takes for a turn with no checkpoint pair.
+   * conversation. Nothing where either is missing: until a turn has ended,
+   * and while a turn that is running *now* is in no checkpoint yet, the edit
+   * tracker answers, which is the fallback the reference host takes for a
+   * turn with no checkpoint pair. Two ends that are the same tree are a
+   * session whose turns left the tree as they found it, which is no files.
    */
-  const inCheckpoints = async (dir: string, session: string): Promise<Map<string, Captured> | undefined> => {
-    const from = await baselineOf(dir, session);
-    const to = from === undefined ? undefined : await latestOf(dir, session);
-    if (from === undefined || to === undefined || from === to) {
+  const inCheckpoints = async (dir: string, session: string, read?: CheckpointEnds): Promise<Map<string, Captured> | undefined> => {
+    const ends = read ?? await trees.ends(dir, session);
+    const from = ends.kind === 'known' ? ends.baseline : undefined;
+    const to = ends.kind === 'known' ? ends.latest : undefined;
+    if (from === undefined || to === undefined) {
       fromCheckpoints.delete(session);
       return undefined;
+    }
+    if (from === to) {
+      const none = new Map<string, Captured>();
+      fromCheckpoints.set(session, { from, to, files: none });
+      return none;
     }
     const known = fromCheckpoints.get(session);
     if (known !== undefined && known.from === from && known.to === to) return known.files;
@@ -868,8 +877,8 @@ export function gitChanges(): ChangesetSource {
   };
 
   /** A session's changes: its checkpoints where they answer, the tracker where they do not. */
-  const sessionFiles = async (dir: string, session: string): Promise<Map<string, Captured>> =>
-    await inCheckpoints(dir, session) ?? across(session);
+  const sessionFiles = async (dir: string, session: string, read?: CheckpointEnds): Promise<Map<string, Captured>> =>
+    await inCheckpoints(dir, session, read) ?? across(session);
 
   /** Those files as a row's counts. */
   const summaryOf = (files: Map<string, Captured>): ChangesSummary => {
@@ -1710,8 +1719,26 @@ export function gitChanges(): ChangesetSource {
       proposed.delete(uri);
     },
 
-    /** And the refs of a session that is gone, which nothing else would remove. */
-    removeCheckpoints: (dir, session) => removeAll(dir, session),
+    /*
+     * The session's own trees, written where nobody's branch, index or refs
+     * can see them.
+     *
+     * A turn's changeset is what the tools the session saw wrote, which is not
+     * what a terminal command wrote. A checkpoint is the tree itself, so two
+     * of them are a difference that counts both. Each is a tree object nothing
+     * names, held by this source in memory: no commit, no ref per turn.
+     */
+    checkpoint: (dir, session, turn) => trees.capture(dir, session, turn),
+
+    /**
+     * And a session that is gone: its trees let go of, and the refs builds
+     * before this one wrote for it, which nothing else would remove.
+     */
+    removeCheckpoints: async (dir, session) => {
+      trees.forget(session);
+      fromCheckpoints.delete(session);
+      await removeAll(dir, session);
+    },
 
     summary: (dir) => held.get(dir)?.summary,
 
@@ -1721,18 +1748,24 @@ export function gitChanges(): ChangesetSource {
      * The counts that belong to a row: a commit in the folder takes the
      * uncommitted ones to nothing, and two sessions in one folder share them.
      */
-    sessionSummary: async (dir, session, running) => {
+    sessionSummary: async (dir, session, running): Promise<ChangesSummary | ChangesUnknown> => {
+      const ends = await trees.ends(dir, session);
+      /*
+       * A repository with no baseline for the session is a count nobody can
+       * give: the tracker saw the tools' edits and nothing a shell wrote, so
+       * its answer would look whole and be short. Said as unknown, with why.
+       */
+      if (ends.kind === 'unknown') return { unknown: true, reason: ends.reason };
       /*
        * A turn that is running is in no checkpoint yet, so the working tree is
        * the second side and the baseline is the first. The same answer at the
        * turn's end, when the checkpoint holds that tree.
        */
-      if (running === true) {
-        const from = await baselineOf(dir, session);
-        const found = from === undefined ? undefined : await branchLook(dir, from);
+      if (running === true && ends.kind === 'known') {
+        const found = await branchLook(dir, ends.baseline);
         if (found !== undefined) return found.summary;
       }
-      return summaryOf(await sessionFiles(dir, session));
+      return summaryOf(await sessionFiles(dir, session, ends));
     },
 
     /*

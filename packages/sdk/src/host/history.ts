@@ -61,6 +61,16 @@ export interface History {
   /** A session deleted here, removed from the listed sessions this host holds, by id. */
   removeListedSession(resource: string): void;
   /**
+   * A listed row nobody's, claimed by the agent the opening caller names
+   * (#38259), and held under the name that agent's sessions are named by.
+   *
+   * The returned `undo` puts the row back as it was - nobody's, under the
+   * neutral name its listing gave it, and listed where it was - for a caller
+   * whose open then refuses the row; nothing is returned where there is no
+   * such row to adopt.
+   */
+  adoptListed(id: string, agent: Agent): (() => void) | undefined;
+  /**
    * A session this host stopped running, its state evicted and its summary
    * listed from here.
    *
@@ -502,10 +512,16 @@ export function createHistory(ctx: HostContext): History {
         return [];
       }
       const owner = owners.get(nameOf(id));
-      if (!row || !owner?.transcript)
+      /*
+       * A row nobody's is read by whichever agent listed the folder, as
+       * `recordSeed` reads one: its turns are what a person browses, and a
+       * read starts nothing and records no owner (#38259).
+       */
+      const reader = owner ?? (row === undefined ? undefined : ctx.first);
+      if (!row || !reader?.transcript)
         return undefined;
       titles.set(id, row.title);
-      const built = replayed?.turns ?? await ctx.transcriptOf(owner, ctx.sessionBackendId(id), launchWorkingDirectory(id), nameOf(id), own);
+      const built = replayed?.turns ?? await ctx.transcriptOf(reader, ctx.sessionBackendId(id), launchWorkingDirectory(id), nameOf(id), own);
       if (!built)
         return undefined;
       /*
@@ -622,9 +638,34 @@ export function createHistory(ctx: HostContext): History {
     return undefined;
   };
 
+  /**
+   * A listed row nobody's, adopted by the agent its opening caller names.
+   *
+   * Read here because this is where the held summaries are: the row is
+   * replaced by the one the catalogue registers for the adopting agent, so the
+   * listing, the session's state and every later open answer with one name,
+   * one owner and one provider.
+   *
+   * #38259 (@dev/review2): the held listing is put back with the catalogue's
+   * record when the caller's open refuses, so a listing taken between the
+   * claim and its undo answers with the row nobody's.
+   */
+  const adoptListed = (id: string, agent: Agent): (() => void) | undefined => {
+    const row = listedSummaries.find((one) => idFor(one.resource) === id);
+    const adopted = row === undefined ? undefined : ctx.adoptListedSession(id, agent, row);
+    if (adopted === undefined) return undefined;
+    const before = listedSummaries;
+    listedSummaries = [...listedSummaries.filter((one) => idFor(one.resource) !== id), adopted.summary];
+    ctx.announceSurfacedSession(adopted.summary);
+    return () => {
+      adopted.undo();
+      listedSummaries = before;
+    };
+  };
+
   return {
     history, subHistory, titles, restoredSubagents, launchWorkingDirectory, restoredParentChat, linkedTurns, refresh,
-    listedSessions, restoreSession, loaded, reloadSession, removeListedSession, evictSessionState,
+    listedSessions, restoreSession, loaded, reloadSession, removeListedSession, evictSessionState, adoptListed,
     catalogueRow: (id) => catalogueRow(id, listingEpoch),
   };
 }

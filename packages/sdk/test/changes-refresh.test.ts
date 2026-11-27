@@ -1352,6 +1352,114 @@ it('moves a session row at a tool call, from its baseline, before the turn ends'
   expect(channelActions(p, URI).some((one) => one.type === 'chat/turnComplete')).toBe(false);
 });
 
+/*
+ * A row whose session has no baseline says so.
+ *
+ * The baseline is a tree nothing names, held by the host: git may collect it,
+ * and a host that restarted never had it. Then the row's counts are none at
+ * all, with the reason under its `_meta` - not zero, and not the edit
+ * tracker's count, which misses every file a shell wrote.
+ */
+it('says a session row\'s counts are unknown, with why, once its baseline is gone, never 0', async () => {
+  const dir = repository();
+  // There before the session, so its baseline is a tree of its own and not
+  // HEAD's, which a ref keeps from being collected.
+  writeFileSync(join(dir, 'scratch.txt'), 'there before the session\n');
+  const { held, agent } = endable(dir);
+  const { client, peer: p } = await open(dir, gitChanges(), agent, dir);
+  void client.handle({
+    method: 'dispatchAction',
+    params: { channel: await mintedChat(client), action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { text: 'hi', origin: { kind: 'user' } } } },
+  });
+  await waitFor(() => p.notes.some((n) => n.method === 'root/sessionAdded'));
+  await settle(8);
+  const from = rowsMoved(p, SESSION).length;
+
+  // What `git gc` does to an object nothing names, once it has aged.
+  git(dir, 'prune', '--expire=now');
+  writeFileSync(join(dir, 'from-tool.txt'), 'made\n');
+  held.emit?.('chat', { type: 'chat/toolCallComplete', turnId: 't1', toolCallId: 'c1', result: editing(join(dir, 'from-tool.txt')) });
+
+  const said = (): Record<string, unknown> | undefined =>
+    rowsMoved(p, SESSION).slice(from).filter((one) => one.changes !== undefined).at(-1);
+  await waitFor(() => said() !== undefined).catch(() => {});
+  expect(said()?.changes).toEqual({});
+  expect(((said()?._meta ?? {}) as Record<string, unknown>)['ahpd.changesUnknown']).toEqual(expect.stringContaining('git collected it'));
+});
+
+/*
+ * And a host that restarted holds no baseline for a session it brings back:
+ * the tree it began from was in the memory of the host before, and the tree
+ * on disk now is not it. Its row says unknown, with why - not the counts the
+ * host before stored, and not a fresh baseline's zero.
+ */
+it('says a brought-back session row\'s counts are unknown, with why, in a host that restarted', async () => {
+  const dir = repository();
+  const home = elsewhere();
+  const store = ranHere();
+  // What the host before the restart last read for it.
+  store.setChanges('stored', { files: 2, additions: 5, deletions: 0 });
+  const held: { emit?: Start['emit'] } = {};
+  const base = stored(home, dir);
+  const agent: Agent = { ...base, create: (start: Start) => { held.emit = start.emit; return base.create(start); } };
+  const host = createHost({
+    path: home, agents: [agent], resources: fileResources(), terminals: shellTerminals(), changes: gitChanges(), sessions: store,
+  });
+  const p = peer();
+  const client = host.accept(p);
+  await client.handle(hello);
+  const resource = 'ahp-session:/stored';
+  // Listed first, as a client after a restart finds it.
+  await client.handle({ method: 'listSessions', params: { channel: 'ahp-root://' } });
+  const opened = await client.handle({ method: 'subscribe', params: { channel: resource } }) as { snapshot: { state: { defaultChat: string } } };
+  void client.handle({
+    method: 'dispatchAction',
+    params: { channel: opened.snapshot.state.defaultChat, action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { text: 'hi', origin: { kind: 'user' } } } },
+  });
+  await waitFor(() => held.emit !== undefined);
+  await settle(8);
+
+  writeFileSync(join(dir, 'from-tool.txt'), 'made\n');
+  held.emit?.('chat', { type: 'chat/toolCallComplete', turnId: 't1', toolCallId: 'c1', result: editing(join(dir, 'from-tool.txt')) });
+
+  const said = (): Record<string, unknown> | undefined =>
+    rowsMoved(p, resource).filter((one) => one.changes !== undefined).at(-1);
+  await waitFor(() => said() !== undefined).catch(() => {});
+  expect(said()?.changes).toEqual({});
+  expect(((said()?._meta ?? {}) as Record<string, unknown>)['ahpd.changesUnknown']).toEqual(expect.stringContaining('started before this host process'));
+});
+
+/*
+ * And the baseline is held without a ref: however many turns a session runs,
+ * the folder's refs are the ones it had, while every turn's shell writes -
+ * which no tool reported - are counted.
+ */
+it('counts what each of several turns wrote and leaves every ref in the folder as it was', async () => {
+  const dir = repository();
+  const refs = (): string => git(dir, 'for-each-ref', '--format=%(objectname) %(refname)');
+  const before = refs();
+  const head = git(dir, 'rev-parse', 'HEAD');
+  const { held, agent } = endable(dir);
+  const { client, peer: p } = await open(dir, gitChanges(), agent, dir);
+  void client.handle({
+    method: 'dispatchAction',
+    params: { channel: await mintedChat(client), action: { type: 'chat/turnStarted', turnId: 't1', startedAt: new Date().toISOString(), message: { text: 'hi', origin: { kind: 'user' } } } },
+  });
+  await waitFor(() => p.notes.some((n) => n.method === 'root/sessionAdded'));
+  await settle(8);
+  const from = rowsMoved(p, SESSION).length;
+
+  const turns = ['t1', 't2', 't3', 't4'];
+  for (const [at, turn] of turns.entries()) {
+    writeFileSync(join(dir, `${turn}.txt`), 'made by a shell\n');
+    held.emit?.('chat', { type: 'chat/turnComplete', turnId: turn, duration: 1 });
+    await waitFor(() => countsMoved(p, from)?.files === at + 1).catch(() => {});
+    expect(countsMoved(p, from)).toEqual({ files: at + 1, additions: at + 1, deletions: 0 });
+  }
+  expect(refs()).toBe(before);
+  expect(git(dir, 'rev-parse', 'HEAD')).toBe(head);
+});
+
 it('moves a worktree row at a tool call, from its branch, before the turn ends', async () => {
   const project = insideAProject();
   const { held, agent } = endable(project);

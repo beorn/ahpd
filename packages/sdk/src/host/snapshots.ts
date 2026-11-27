@@ -4,6 +4,7 @@ import { windowOf } from '../sessions/paging.js';
 import { RpcError } from '../rpc.js';
 import { runState } from './automations.js';
 import { ROOT, isRootChannel, isAutomations, automationOwner, queryOf, sessionOfAnnotations, chatUriFor, servedIn, schemeOf, spaceOf, toolCallOfSubagentChat } from './channels.js';
+import { NO_PROVIDER } from './catalogue.js';
 import { ownerFilter } from '../utils/values.js';
 import { filterChatConfigValues } from './chatconfig.js';
 import { annotationsSummaryOf } from './annotationssummary.js';
@@ -686,7 +687,15 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     const turns = await restoreSession(id);
     // The chat's session read again, once `restoreSession` has named the row.
     const owning = chat ? sessionFor(channel) : channel;
-    const owner = owners.get(nameOf(id)) ?? ctx.first;
+    /*
+     * Whose the row is, and which agent reads it to draw it. They are one
+     * agent for a row this host ran, and differ for a row nobody's (#38259):
+     * no record and no single harness names its agent, so the state says the
+     * empty provider rather than naming whichever agent could read the
+     * transcript, while that agent is still the one that reads it.
+     */
+    const holder = owners.get(nameOf(id));
+    const owner = holder ?? ctx.first;
     if (owner === undefined || !turns || nameOf(id) !== owning) throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${owning}`);
     const title = titles.get(id) ?? 'Session';
     /*
@@ -820,7 +829,7 @@ export function createSnapshots(ctx: HostContext): Snapshots {
     return {
       kind: 'session',
       state: {
-        provider: owner.provider,
+        provider: holder?.provider ?? kept.provider(id) ?? NO_PROVIDER,
         title,
         status: Status.Idle | kept.flags(id),
         lifecycle: 'ready',

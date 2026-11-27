@@ -83,6 +83,10 @@ describe('every shipped plugin declares its contracts', () => {
       });
 
       expect(problems.filter((line) => line.includes('contracts'))).toEqual([]);
+      // And the shipped manifest's grants cover what it registers: a plugin
+      // that gains a channel or a method without its list is a refusal at load
+      // on a real host, so it is one here first.
+      expect(problems.filter((line) => line.includes('PLUGIN_GRANTS_UNDECLARED') || line.includes('callerGrants'))).toEqual([]);
       expect(loaded).toHaveLength(1);
       // The list the check ran against is the package.json's, so a package whose
       // contracts were dropped is a failure here rather than a quiet pass.

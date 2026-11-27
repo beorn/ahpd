@@ -1836,6 +1836,41 @@ export interface PluginManifest {
   /** The names each kind of registration may use. */
   contracts?: PluginContracts;
   /**
+   * What the plugin's own connection needs, as `<subject>:<operation>`.
+   *
+   * Its entry in `plugins` carries the same list (`plugins.<name>.grants`), and
+   * this field says it before anything runs, so `ahpd plugin install` can show
+   * it to a person and write it into the entry only when they consent
+   * (`--grant`, or a yes at a terminal): a manifest never grants itself.
+   * Written in `ahpd.grants` of a package.json or as `grants` in a standalone
+   * manifest. Names one subject and one operation each; a wildcard is refused.
+   *
+   * Not what callers are asked for - that is `callerGrants`, and the two are
+   * different lists: this is what the plugin may do when it acts on the host,
+   * and the other is what a role must hold to use what the plugin serves.
+   */
+  grants?: string[];
+  /**
+   * The grants the plugin's channels, methods and tunnel kinds require of a
+   * caller, as `<subject>:<operation>`.
+   *
+   * The set its surface introduces, said up front so a host lists it for the
+   * role editor before a caller is refused, and so a person reads what a plugin
+   * asks of roles before it is installed. The loader advertises each one in
+   * `ahpd.grants`, the catalogue a role editor draws.
+   *
+   * A manifest that carries the field is held to it: a registration asking for
+   * a grant the list does not name is refused at load
+   * (`PLUGIN_GRANTS_UNDECLARED`), so the list cannot under-declare the surface.
+   * A manifest with no field at all still loads - every plugin written before
+   * this field did - and one line names every grant its registrations need, so
+   * its author can add the list. Names one subject and one operation each; a
+   * wildcard is refused. A grant no registration here asks a caller for is
+   * reported and not advertised: the catalogue is drawn from what the plugin
+   * registers, so the list is not a way to widen another plugin's entry.
+   */
+  callerGrants?: string[];
+  /**
    * What a client draws beside the plugin's name.
    *
    * An `src` that is a path is relative to the plugin's package, and the host
@@ -1964,6 +1999,16 @@ export interface Contribution {
    * Absent when the plugin registered none.
    */
   grants?: Record<string, GrantEntry>;
+  /**
+   * The grants this plugin's manifest declares its surface asks of a caller.
+   *
+   * Set by the loader from the manifest, not by the plugin: the fold advertises
+   * each one in `ahpd.grants` before it checks the registrations against that
+   * catalogue, because the declaration is the plugin introducing the
+   * operations, not asking anybody for them. Absent for a plugin whose manifest
+   * declares none.
+   */
+  callerGrants?: string[];
   /**
    * The channels this plugin serves, keyed by scheme in lowercase.
    *
