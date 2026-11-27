@@ -20,6 +20,18 @@ export const METHOD_NOT_FOUND = -32601;
 export const INVALID_PARAMS = -32602;
 export const INTERNAL_ERROR = -32603;
 
+/*
+ * Two refusals a host makes about ONE saved session, whose `data.reason` names
+ * them for a client that has never heard of the number (#39008).
+ *
+ * A restart can meet a mapping saved before the host recorded enough to resume
+ * it, and that must not take down every other session the host was asked to
+ * bring back: the client parks the session it cannot resume and says so. Both
+ * codes mean "this session", never "this host".
+ */
+export const OWNED_CREATION_NOT_FOUND = -32013;
+export const RESUME_METADATA_MISSING = -32014;
+
 /**
  * An error carrying a JSON-RPC code, and whatever the client needs to act.
  *

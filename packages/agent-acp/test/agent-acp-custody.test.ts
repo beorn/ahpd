@@ -16,6 +16,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { Bag, Session, Start } from '@ahpd/sdk';
 import type { AcpConnection, AcpOptions } from '../src/types.js';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
+import { OWNED_CREATION_NOT_FOUND, RESUME_METADATA_MISSING } from '../../sdk/src/rpc.js';
 import { acpAgent } from '../src/index.js';
 import { createHost } from '../../sdk/src/host.js';
 import { memorySessions } from '../../sdk/src/sessions/sessions.js';
@@ -84,7 +85,11 @@ it.skipIf(!linux)('refuses six retained plugin conversations when only the manag
   const admitted = initializes(log).length;
   expect(initializes(log).at(-1)).toMatchObject({ hostLaunchId: 'managed-probe-launch',
     hostIdentityTokenFile: tokenFile, tribeName: '@probe/fixture', hostSessionUri: probe });
-  await expect(after.plugin.startSession({ owner, resume: probe })).rejects.toThrow('exact owned creation reservation');
+  // #39008: the refusal is typed, so a client parks this ONE session instead of failing every other one it restores.
+  await expect(after.plugin.startSession({ owner, resume: probe })).rejects.toMatchObject({
+    code: OWNED_CREATION_NOT_FOUND, data: { reason: 'OWNED_CREATION_NOT_FOUND' },
+    message: expect.stringContaining('exact owned creation reservation') as unknown as string,
+  });
   expect(initializes(log)).toHaveLength(admitted);
   for (const original of originals) {
     await expect(after.plugin.startSession({ owner, resume: original.uri })).rejects.toThrow('no matching configured ACP process authority');
@@ -97,7 +102,10 @@ it.skipIf(!linux)('refuses six retained plugin conversations when only the manag
   const wrongChatId = wrongChat.uri.split('/').at(-1)!;
   const heldChats = store.chats(wrongChatId);
   store.setChats(wrongChatId, heldChats.map((chat) => ({ ...chat, default: false })));
-  await expect(after.plugin.startSession({ owner, resume: wrongChat.uri })).rejects.toThrow('required provider, config or default chat metadata');
+  await expect(after.plugin.startSession({ owner, resume: wrongChat.uri })).rejects.toMatchObject({
+    code: RESUME_METADATA_MISSING, data: { reason: 'RESUME_METADATA_MISSING' },
+    message: expect.stringContaining('required provider, config or default chat metadata') as unknown as string,
+  });
   store.setChats(wrongChatId, heldChats);
   expect(initializes(log)).toHaveLength(admitted);
   expect(readCustody(prefix)).toEqual(probeCustody);
