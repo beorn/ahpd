@@ -72,4 +72,4 @@ export const appendPlan = ({ onRelease, shared, mine, localChecksums, remoteChec
 
 /** The machines a draft can be published for: each `pins-<target>.json` that is on it. */
 export const finalizeTargets = (onRelease) =>
-  ['linux-x64', 'darwin-arm64'].filter((target) => onRelease.has(`pins-${target}.json`));
+  ['linux-x64', 'darwin-arm64', 'darwin-x64'].filter((target) => onRelease.has(`pins-${target}.json`));

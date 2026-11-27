@@ -150,7 +150,7 @@ export const run = async (
   // The machine word decides which release archive is runnable, so it is read rather than assumed.
   const arch = process.arch;
   if (arch !== 'x64' && arch !== 'arm64') {
-    err(`refused: this machine is ${process.platform}-${arch}; the installer has pins for darwin-arm64 and linux-x64. ${USAGE}`);
+    err(`refused: this machine is ${process.platform}-${arch}; the installer has pins for darwin-arm64, darwin-x64 and linux-x64. ${USAGE}`);
     return 2;
   }
 

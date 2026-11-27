@@ -166,8 +166,7 @@ if (must('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: ro
 const platform = process.platform;
 const arch = process.arch;
 if (!['linux', 'darwin'].includes(platform) || !['x64', 'arm64'].includes(arch))
-  fail(`this machine is ${platform}-${arch}; releases are built for linux-x64 and darwin-arm64`);
-if (platform === 'darwin' && arch === 'x64') fail('the installer pins darwin-arm64 only; no darwin-x64 release is built');
+  fail(`this machine is ${platform}-${arch}; releases are built for linux-x64, darwin-arm64 and darwin-x64`);
 const target = `${platform}-${arch}`;
 
 mkdirSync(out, { recursive: true });
@@ -191,7 +190,7 @@ const sharedOnDraft = (prefix) => {
 
 // 1. The runtime: bun's own release, checked against bun's published SHASUMS256.txt, then copied as the raw file the
 // installer places with one chmod. The zip's top folder spells the target differently (aarch64, not arm64).
-const bunArchive = platform === 'linux' ? `bun-linux-${arch === 'x64' ? 'x64' : 'aarch64'}` : 'bun-darwin-aarch64';
+const bunArchive = `bun-${platform}-${arch === 'x64' ? 'x64' : 'aarch64'}`;
 const bunUrl = `https://github.com/oven-sh/bun/releases/download/bun-v${runtimeVersion}/${bunArchive}.zip`;
 const bunZip = join(work, 'bun.zip');
 await download(bunUrl, bunZip);

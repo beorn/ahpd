@@ -42,6 +42,9 @@ importers:
       ajv-formats:
         specifier: ^3.0.1
         version: 3.0.1(ajv@8.20.0)
+      tar:
+        specifier: ^7.5.23
+        version: 7.5.23
       tsdown:
         specifier: 0.23.7
         version: 0.23.7(typescript@5.9.3)
