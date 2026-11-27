@@ -18,6 +18,8 @@ const sdk = vi.hoisted(() => ({
   /** Each set of servers the session declared, in order. */
   declared: [] as Record<string, Bag>[],
   reconnected: [] as string[],
+  /** Reconnects to fail before one is allowed to take, to prove a failed one changes nothing. */
+  failReconnects: 0,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('../../sdk/test/support/warmed.js')).warmed({
@@ -39,6 +41,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async () => (await import('../../sdk/t
       // A server reconnected with a token comes back connected; without one it still needs signing in.
       reconnectMcpServer: async (name: string) => {
         sdk.reconnected.push(name);
+        if (sdk.failReconnects > 0) {
+          sdk.failReconnects -= 1;
+          throw new Error('the CLI could not reconnect it');
+        }
         const signed = (sdk.declared.at(-1)?.[name]?.headers as Record<string, unknown> | undefined)?.['Authorization'];
         if (signed !== undefined) sdk.mcp = [{ name, status: 'connected' }];
       },
@@ -99,6 +105,19 @@ it('applies a first token to the server that asked, then a renewal on arrival', 
   expect(await session.authenticated?.(URL, 'second')).toBe(true);
   expect(header(sdk.declared.at(-1))).toBe('Bearer second');
   expect(sdk.reconnected).toEqual(['docs', 'docs']);
+  await session.close();
+});
+
+it('leaves a server waiting when the reconnect that carries its token fails', async () => {
+  const session = await signedIn();
+  sdk.failReconnects = 1;
+  expect(await session.authenticated?.(URL, 'first')).toBe(false);
+  // The server never took the token, so it still waits for a sign-in and a
+  // later one is still its first.
+  expect(session.awaiting?.()).toEqual([URL]);
+  expect(await session.authenticated?.(URL, 'second')).toBe(true);
+  expect(header(sdk.declared.at(-1))).toBe('Bearer second');
+  expect(session.awaiting?.()).toEqual([]);
   await session.close();
 });
 
