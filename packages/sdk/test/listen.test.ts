@@ -1,3 +1,4 @@
+import { WAIT_MS } from '../../../tools/wait.ts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { connect, type Socket } from 'node:net';
 import { WebSocket } from 'ws';
@@ -427,7 +428,7 @@ it('closes a client that stops reading once its queue is past the limit, and say
     for (let i = 0; i < 200 && said.length === 0; i++) peer.notify('action', { frame });
     expect(said).toHaveLength(1);
     // The queue it was closed at, which is over the limit and named with it.
-    const [, held] = /^held (\d+) bytes for a client that is not reading/u.exec(said[0] ?? '') ?? [];
+    const [, held] = /^held (\d+) bytes behind the frame in flight for a client that is not reading/u.exec(said[0] ?? '') ?? [];
     expect(Number(held)).toBeGreaterThan(LIMIT);
     expect(said[0]).toContain(`past the ${LIMIT} it is allowed, and was closed`);
     // And the wire really was closed, not merely given up on: the close frame
@@ -479,6 +480,37 @@ it('goes on serving the client that reads, past the one it closed', async () => 
   }
   finally {
     client.destroy();
+    reader.close();
+  }
+});
+
+it('delivers a frame larger than the limit to a client that reads, and keeps serving it', async () => {
+  const said: string[] = [];
+  const peers: Peer[] = [];
+  running = await listen(
+    { port: 0, clientQueueBytes: () => LIMIT, log: (line) => { said.push(line); } },
+    (peer) => { peers.push(peer); return nothing(); },
+  );
+  const reader = new WebSocket(`ws://127.0.0.1:${running.port}`);
+  const frames: Record<string, unknown>[] = [];
+  reader.on('message', (raw) => { frames.push(JSON.parse(String(raw)) as Record<string, unknown>); });
+  await new Promise((opened) => { reader.on('open', opened); });
+  try {
+    while (peers.length < 1) await new Promise((turn) => { setImmediate(turn); });
+    /*
+     * The shape of #38703: one frame past the limit, as a session snapshot is,
+     * and a frame behind it written before the snapshot can have drained. The
+     * second frame is the one that used to close this client and start the
+     * reconnect loop, and it is also the one that proves the connection is
+     * still being served rather than merely left open.
+     */
+    peers[0]?.notify('action', { frame: 'x'.repeat(4 * LIMIT) });
+    peers[0]?.notify('ping', {});
+    await vi.waitFor(() => expect(frames.some((frame) => frame.method === 'ping')).toBe(true), { timeout: WAIT_MS });
+    expect(said).toEqual([]);
+    expect(reader.readyState).toBe(WebSocket.OPEN);
+  }
+  finally {
     reader.close();
   }
 });

@@ -95,6 +95,9 @@ Upstream status is one of:
 - `bdfc82e75` (merge; hh/integration `27f6093df`, `c46e0acf0`) · a listed row two harnesses read that no record names is nobody's; the agent its opening caller names claims it, and an open that refuses puts the row back nobody's · #38259 · upstream ask not written (the guess is the catalogue's own fallback, absent upstream only as a behaviour: no ask is prepared yet)
 - `bdfc82e75` (merge; hh/integration `36e74920d`, `f3e4911f1`) · each open tool call carries its own silence bound (900 s by default, per-call timers, the turn ended naming the call, its open age, its silence and the bound) · #38695 (@cto fb984750) · upstream ask not written (the disarm it replaces is fork-only, #38786 `tools.size > 0`, absent upstream; a bound on an unreported open call is plausibly upstreamable and no ask is prepared yet)
 
+### Host: a slow client is bounded
+- `7b995dde4`, `8ff50a503` · a client is closed for the queue behind the frame in flight, not for the frame, so a session snapshot heavier than `clientQueueBytes` no longer turns into a close-and-reconnect loop · #38703 · upstream ask not written (the bound is our own; upstream has no `clientQueueBytes`)
+
 ### acp: openings, native identity and custody
 - `bdfc82e75` (merge; hh/integration `923c7472e`) · a session that declared tools says so when `hostTools` leaves them out · #38864 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
 - `bdfc82e75` (merge; hh/integration `bbf98bd01`) · the six custody and session diagnostics are said in their sink, not on the console · #38631 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it

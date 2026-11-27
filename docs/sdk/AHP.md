@@ -505,9 +505,14 @@ the socket's own business. `clientQueueBytes` bounds it, 16 MiB by default;
 `0` sets no limit, as VS Code's host writes to an open socket whatever it holds.
 Before each send the peer reads what its wire still holds - `bufferedAmount` on
 Node's `ws` and on Deno's `WebSocket`, `getBufferedAmount` on Bun, the write
-buffer's length on stdio - and a client past the limit is named in the log and
-closed rather than written to. The frame that would have crossed the limit is
-dropped with the close, and so is every answer still in flight to it.
+buffer's length on stdio - less the part of the frame the socket has still to
+write, and a client whose queue is past the limit behind that frame is named in the log
+and closed rather than written to. The frame that would have crossed the limit
+is dropped with the close, and so is every answer still in flight to it. The
+frame in flight is set aside because one frame is not a queue: a session
+snapshot that weighs more than the limit still reaches a client that is reading
+it, and the client this bound closes is one whose frames are piling up behind
+that frame.
 
 A client closed this way is not a client lost: it reconnects with its
 `lastSeenServerSeq` as any client does, and is answered from the replay buffer
