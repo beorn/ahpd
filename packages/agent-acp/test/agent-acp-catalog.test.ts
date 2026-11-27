@@ -2357,6 +2357,15 @@ it('draws a long tool title as one short line, and keeps the whole of it in the 
   const multi: AcpTurn = { turnId: 't3', parts: [], calls: new Map() }
   const many = mapUpdate(multi, { sessionUpdate: 'tool_call', toolCallId: 'c3', title: script, status: 'pending' } as unknown as SessionUpdate, 1_000);
   expect((many.find((one) => one.type === 'chat/toolCallStart') as Bag).displayName).toBe("cd /hh && cat > /tmp/x.ts <<'EOF'");
+  // A cut at the cap never splits a character in half: an emoji is two UTF-16
+  // units, so a plain slice can leave half of one before the ellipsis.
+  const wide = `bun runni${' 😀'.repeat(50)}`;
+  const cut: AcpTurn = { turnId: 't4', parts: [], calls: new Map() }
+  const cutSent = mapUpdate(cut, { sessionUpdate: 'tool_call', toolCallId: 'c4', title: wide, status: 'pending' } as unknown as SessionUpdate, 1_000);
+  const shown = String((cutSent.find((one) => one.type === 'chat/toolCallStart') as Bag).displayName);
+  expect(Array.from(shown).length).toBe(81);
+  expect(shown).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+
 });
 
 it('stamps nothing for an update a session load replayed', () => {

@@ -66,7 +66,8 @@ export const ROW_GLOSS_MAX = 80;
 export const glossOf = (title: string): string => {
   const [first = ''] = title.split('\n', 1);
   const line = first.trim();
-  return line.length <= ROW_GLOSS_MAX ? line : `${line.slice(0, ROW_GLOSS_MAX)}…`;
+  const characters = Array.from(line);
+  return characters.length <= ROW_GLOSS_MAX ? line : `${characters.slice(0, ROW_GLOSS_MAX).join('')}…`;
 };
 
 /**
