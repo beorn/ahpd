@@ -209,6 +209,7 @@ const serversFor = async (
   leftOut: (name: string, why: string) => void = () => {},
   proxied: (name: string, server: { url: string; headers?: Record<string, string> }) => ProxyEndpoint | undefined = () => undefined,
   toolsAnswer: (answer: HostToolsAnswer) => void = () => {},
+  unreached: (name: string) => void = () => {},
 ): Promise<AcpMcpServer[]> => {
   const taken: AcpMcpServer[] = [];
   const mcp = capabilities?.mcpCapabilities;
@@ -244,6 +245,10 @@ const serversFor = async (
       const at = through === undefined ? undefined : await reachedFrom(through.url);
       if (through !== undefined && at === undefined) {
         say(`${name}: computer://${String(machine)} cannot reach the daemon at ${addressOf(through.url)}, so it gets this server direct and a renewed token will not reach it`);
+        // The pass-through is taken back: a token handed to a server that got
+        // the upstream's own URL would go to a path nothing is sent to, and the
+        // server would be said ready on a credential it never received.
+        unreached(name);
       }
       taken.push(at === undefined || through === undefined
         ? { type: 'http', name, url: one.url, headers: Object.entries(one.headers ?? {}).map(([header, value]) => ({ name: header, value })) }
@@ -749,6 +754,12 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
         (name, why) => left.set(name, why),
         (name, server) => proxyOf(ctx, name, server),
         (answer) => { ctx.hostTools = answer; },
+        (name) => {
+          const held = ctx.proxies.get(name);
+          if (held === undefined) return;
+          ctx.proxies.delete(name);
+          held.close();
+        },
       );
       /*
        * The configured servers as customizations, so a targeted token can name
