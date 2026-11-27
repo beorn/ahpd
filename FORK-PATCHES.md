@@ -84,6 +84,7 @@ Upstream status is one of:
 - `e6ed9944d` · name a failed sleep instead of swallowing it · #37577 · upstream ask not written
 - `2dae899b5` · an unlist drops the row and preserves the provider conversation · #37603 · upstream ask not written
 - `0a4e5e621`, `2bd750451` · a row whose recorded agent is not loaded is disposed as `{ kind: 'disposed-orphan', … }`: row and chats forgotten, unlisted mark written under the host's id and the conversation's own, no backend delete · #39031 · upstream ask not written
+- `7e3d57f33` · an unlisted id is answered from its mark in `catalogueRow`, before any backend `find` or listing, so a subscribe to a disposed or unlisted session says -32001 at once · #39031 · upstream ask not written
 - `26303059d` · a throwing close still releases the session folder; restart cases release the old store · #37472 · upstream ask not written
 - `39f5cc389` · turning an agent off sleeps each of its sessions (`stopWhenQuiet`; a running turn finishes first), never removes them · no issue · upstream ask not written (`stopWhenQuiet` absent upstream; upstream's disable only writes `mode: disabled`)
 
