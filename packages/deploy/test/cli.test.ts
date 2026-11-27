@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -213,5 +213,22 @@ describe('ahpd-host-install, the command the bootstrap runs (#38280)', () => {
     const text = sink.lines.join('\n');
     expect(text).toContain('wrote ');
     expect(text).toMatch(/warning: could not prune releases at .*EACCES/);
+  });
+
+  // @level l3 @consumer a root with no install.json is not provably ours: uninstall refuses by name, and only an
+  // explicit --purge deletes it whole.
+  it('refuses to uninstall a root without its record, and --purge deletes that root whole', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'ahpd-cli-norecord-'));
+    mkdirSync(join(home, '.ahpd', 'state'), { recursive: true });
+    writeFileSync(join(home, '.ahpd', 'state', 'ahpd.out.log'), 'left behind\n');
+    const refused = collect();
+    expect(await run(['--uninstall', '--pins', honestPinsFile(), '--home', home], nodeInstallIo(), refused.out, refused.err)).toBe(1);
+    expect(refused.lines.join('\n')).toContain('is missing, so this install did not write');
+    expect(existsSync(join(home, '.ahpd', 'state', 'ahpd.out.log'))).toBe(true);
+
+    const purged = collect();
+    expect(await run(['--uninstall', '--purge', '--pins', honestPinsFile(), '--home', home], nodeInstallIo(), purged.out, purged.err)).toBe(0);
+    expect(purged.lines.join('\n')).toContain('no install.json: --purge deleted the whole root');
+    expect(existsSync(join(home, '.ahpd'))).toBe(false);
   });
 });
