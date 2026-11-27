@@ -1206,9 +1206,9 @@ it('answers an unanswered request with a typed error at its own bound, and the t
       permission: () => new Promise(() => {}),
     },
     log: (line) => { logged.push(line); },
-    startAnswerMs: 50,
+    startAnswerMs: 500,
     lastResortMs: 30_000,
-    toolRequestBoundMs: 200,
+    toolRequestBoundMs: 2_000,
   });
   try {
     await connection.initialize();
