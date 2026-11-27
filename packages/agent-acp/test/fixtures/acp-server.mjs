@@ -93,6 +93,9 @@
  * - text containing `wait` emits one chunk and then holds the prompt open
  *   until `session/cancel` arrives, answering `cancelled` only then; with
  *   `plan`, it sends the two plans first;
+ * - text containing `deafen` says one chunk and then holds the prompt open
+ *   past the `session/cancel`, never answering it: a server that stopped
+ *   working without going away, so only the bridge can end the turn;
  * - text containing `fail` streams the plain answer and then answers the
  *   prompt with a JSON-RPC error;
  * - text containing `die` streams the plain answer and then exits with code 3,
@@ -839,6 +842,13 @@ const promptScript = async (id, params) => {
   // neither an update nor an answer - the turn in front the trial host's wakes
   // queued behind.
   if (text.includes('mute')) return;
+  // #38889: a server that takes the prompt, says one word, and then ignores the
+  // cancel - so the turn it stopped is never answered and never ends unless the
+  // bridge ends it.
+  if (text.includes('deafen')) {
+    notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'deaf' } });
+    return;
+  }
   if (!commandsSent) {
     commandsSent = true;
     notify({

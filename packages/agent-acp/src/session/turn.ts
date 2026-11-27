@@ -314,6 +314,12 @@ export function createTurn(ctx: SessionContext): Turn {
   ): void => {
     const turn = ctx.active;
     if (turn === undefined || String(turn.id) !== turnId) return;
+    // A turn that ended here, however it ended, has no stop left to bound
+    // (#38889).
+    if (ctx.stopBound?.turnId === turnId) {
+      clearTimeout(ctx.stopBound.timer);
+      ctx.stopBound = undefined;
+    }
     if (ctx.agentTurnId === turnId) {
       ctx.agentTurnId = undefined;
       endedHere(turnId);
@@ -628,6 +634,13 @@ export function createTurn(ctx: SessionContext): Turn {
       // The parts the host was still keeping are the turn's, said before it ends.
       await ctx.keeping;
       told = true;
+      /*
+       * A stop that ended this turn here while the server still held it
+       * (#38889): the answer arrives after the turn is over, and its usage and
+       * its ending belong to no turn - certainly not to one that took this
+       * one's place.
+       */
+      if (ctx.active !== turn) return;
       saidUsage(response.usage);
       stopReasonFor(turnId, response.stopReason);
     }
