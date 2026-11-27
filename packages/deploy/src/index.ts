@@ -14,7 +14,8 @@
  *   there is no queue;
  * - an unfinished deploy found at start is reported as `outcome unknown: <step>`, never resumed or retried.
  *
- * ahpd itself is not deployed by this driver (@cto ca6ae480).
+ * ahpd itself is not deployed by this driver (@cto ca6ae480): on our machines it is a Nix profile that
+ * process-compose starts, so a failed upgrade is undone with `nix profile rollback`, not by a switch back here.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
