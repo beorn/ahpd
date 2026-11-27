@@ -186,7 +186,7 @@ describe('a client that is not reading', () => {
       written,
       send: (text) => {
         written.push(JSON.parse(text) as Record<string, unknown>);
-        frames.push(new TextEncoder().encode(text).length);
+        frames.push(Buffer.byteLength(text, 'utf8'));
       },
       close: () => { open = false; },
       isOpen: () => open,
@@ -228,7 +228,7 @@ describe('a client that is not reading', () => {
     const peer = createPeer(socket, { limit: () => LIMIT, log: (line) => { said.push(line); } });
     // A frame in flight, and behind it one and a half limits' worth of frames.
     const frame = weighing(LIMIT);
-    const frameBytes = new TextEncoder().encode(JSON.stringify(frame)).length;
+    const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
     peer.send(frame);
     peer.send(frame);
     expect(socket.isOpen()).toBe(true);
@@ -238,6 +238,29 @@ describe('a client that is not reading', () => {
     expect(said).toEqual([
       `held ${frameBytes} bytes behind the frame in flight for a client that is not reading, past the ${LIMIT} it is allowed, and was closed`,
     ]);
+  });
+
+  it('counts only the part of the frame in flight the socket has not written', () => {
+    /*
+     * Half of one large frame has gone out and the other half is still the
+     * socket's, not the client's backlog. Taking the whole frame out of the
+     * queue lets a client that stopped reading keep one frame's worth past the
+     * limit before anything notices.
+     */
+    const said: string[] = [];
+    const { socket, read } = holding();
+    const peer = createPeer(socket, { limit: () => LIMIT, log: (line) => { said.push(line); } });
+    const big = weighing(LIMIT);
+    const bigBytes = Buffer.byteLength(JSON.stringify(big), 'utf8');
+    peer.send(big);
+    read(Math.floor(bigBytes / 2));
+    const small = weighing(Math.floor(LIMIT * 0.6));
+    peer.send(small);
+    peer.send(small);
+    expect(socket.isOpen()).toBe(true);
+    peer.send(small);
+    expect(said).toHaveLength(1);
+    expect(socket.isOpen()).toBe(false);
   });
 
   it('is read at each send, so a limit pushed while the host runs applies to the next frame', () => {

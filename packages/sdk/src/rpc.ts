@@ -161,7 +161,6 @@ export function createPeer(wire: Wire, bounding?: Bounding): Peer {
    * reading. So the sizes are kept here, to set the frame in flight aside.
    */
   const sizes: number[] = [];
-  const encoder = new TextEncoder();
   let written = 0;
 
   /**
@@ -184,10 +183,18 @@ export function createPeer(wire: Wire, bounding?: Bounding): Peer {
     // What the socket has handed on in all. A wire that counts its own framing
     // can answer a little more than was written; a frame not yet reached
     // simply stays at the head.
-    let flushed = written - queued;
+    // Nothing of this host's has gone out when the wire holds more than was
+    // written (its own framing), so the count of ours is floored at none.
+    let flushed = Math.max(0, written - queued);
     while (sizes.length > 1 && (sizes[0] ?? 0) <= flushed) flushed -= sizes.shift() ?? 0;
     const inFlight = sizes[0] ?? 0;
-    const held = Math.max(0, queued - inFlight);
+    // What is left of the frame being written is still the socket's, not the
+    // client's backlog: `flushed` is how much of it has already gone out, so
+    // the part still queued is `inFlight - flushed`. Counting the whole frame
+    // out of the queue would let a stalled client keep one frame's worth past
+    // the limit.
+    const holding = Math.max(0, inFlight - flushed);
+    const held = Math.max(0, queued - holding);
     return held > bound.limit() ? held : undefined;
   };
 
@@ -209,7 +216,7 @@ export function createPeer(wire: Wire, bounding?: Bounding): Peer {
       }
       const text = JSON.stringify(message);
       if (wire.buffered !== undefined) {
-        const size = encoder.encode(text).length;
+        const size = Buffer.byteLength(text, 'utf8');
         written += size;
         sizes.push(size);
       }
