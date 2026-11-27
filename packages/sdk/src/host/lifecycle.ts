@@ -135,6 +135,27 @@ export interface Unlisted {
   chatsRemoved: number;
 }
 
+/**
+ * What a disposal answers for a row whose recorded agent is not loaded (#39031).
+ *
+ * Its own answer, for a delete and an unlist alike, because it is neither:
+ * the row and its chats go and the unlisted mark is written, but no backend
+ * delete runs, since no loaded agent owns the conversation and handing it to
+ * whichever one read the file is a delete by the wrong owner (#38259). A
+ * caller that proves a retirement reads `kind` to know which happened.
+ */
+export interface DisposedOrphan {
+  kind: 'disposed-orphan';
+  /** The agent the row was recorded for, which this host is not serving. */
+  provider: string;
+  /** The backend's own name for the conversation, which is left where it is. */
+  providerSessionId: string;
+  /** Where it ran, when this host recorded it. */
+  directory?: string;
+  /** How many chat records went with the row. */
+  chatsRemoved: number;
+}
+
 /** How far a removal goes: all of it, or the row alone (`preserveProviderSession`). */
 export interface Removal {
   /**
@@ -162,7 +183,7 @@ export interface Removal {
 
 export interface Lifecycle {
   /** A session gone, with everything it held, and the backend's own copy of it. */
-  removeSession(uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | undefined>;
+  removeSession(uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | DisposedOrphan | undefined>;
   /**
    * Refuse the deletion of a session the acting person may not delete.
    *
@@ -855,7 +876,7 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
    * A name in neither map is not a session this host has ever heard of, and
    * says so rather than deleting nothing successfully.
    */
-  const removeSession = async (uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | undefined> => {
+  const removeSession = async (uri: string, acting?: Principal | Owner, removal?: Removal): Promise<Unlisted | DisposedOrphan | undefined> => {
     mayDispose(acting, uri);
     const held = sessions.get(uri);
     const id = idOf(uri);
@@ -870,6 +891,46 @@ export function createLifecycle(ctx: HostContext): Lifecycle {
       broadcast(ROOT, 'root/sessionRemoved', { channel: ROOT, session: uri });
       log(`deleted the damaged session ${uri}`);
       return;
+    }
+    /*
+     * A row recorded for an agent this host is not serving, which the
+     * catalogue lists as waiting for it (`listSessions`): another harness
+     * still reads its transcript. Nothing runs it, so there is nothing to tear
+     * down, and only the agent it was recorded for may delete its
+     * conversation (#38259). So the row goes and the conversation stays, under
+     * the mark that keeps the reader's listing from bringing it back - for a
+     * delete as for an unlist, since without it the next listing is the same
+     * row again and nothing could ever retire it (#39031).
+     */
+    const waitingFor = !held && !owner ? kept.provider(id) : undefined;
+    if (waitingFor !== undefined && !ctx.agents.has(waitingFor)) {
+      const providerSessionId = ctx.sessionBackendId(id);
+      const expected = removal?.expectProviderSessionId;
+      if (expected !== undefined && expected !== providerSessionId)
+        throw new RpcError(AhpErrorCodes.Conflict, `expectProviderSessionId: ${uri} answers ${providerSessionId}, not ${expected}`);
+      flushDeltas();
+      const directory = kept.workingDirectory?.(id) ?? kept.workingDirectory?.(providerSessionId);
+      const chats = ctx.heldChats(id);
+      const config = kept.config(id);
+      forgetChats(id);
+      kept.forget(id);
+      ctx.leaveForgotten(uri, config);
+      kept.setUnlisted?.(id, true);
+      ctx.removeListedSession(uri);
+      removeNotifiedSummary(uri);
+      for (const [channel, open] of ctx.heldStates) {
+        if (channel === uri || (open.kind === 'chat' && ctx.sessionFor(channel) === uri)) ctx.closeState(channel);
+      }
+      activeSessionsChanged();
+      if (!provisional(uri)) broadcast(ROOT, 'root/sessionRemoved', { channel: ROOT, session: uri });
+      log(`disposed ${uri}, whose agent ${waitingFor} is not loaded here; its conversation ${providerSessionId} is left where it is`);
+      return {
+        kind: 'disposed-orphan',
+        provider: waitingFor,
+        providerSessionId,
+        ...(directory === undefined ? {} : { directory }),
+        chatsRemoved: chats.length,
+      };
     }
     if (!held && !owner)
       throw new RpcError(AhpErrorCodes.SessionNotFound, `No agent for session: ${uri}`);

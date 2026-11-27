@@ -751,6 +751,46 @@ describe('a row two harnesses both list', () => {
     expect(store.config('shared')).toBeUndefined();
   });
 
+  /*
+   * A row whose agent is not loaded, disposed (#39031).
+   *
+   * The road above is the one a turn takes, and a disposal is not that road:
+   * it opens nothing, so it needs no agent to run it. Refused with -32001 it
+   * was a row nothing could retire, because the harness that read the file
+   * kept listing it. So it goes, under a mark, since that harness still lists
+   * the conversation. The conversation itself stays: no loaded agent owns it,
+   * and a delete handed to the reader is a delete by the wrong owner (#38259).
+   */
+  it('disposes a row whose agent is not loaded, with an answer that says so, and the mark that keeps it gone', async () => {
+    const one: string[] = [];
+    const store = memorySessions();
+    store.setProvider('shared', 'two');
+    const { client } = serving(store, [harness('one', ['shared'], one)]);
+    await settle();
+    expect(await catalogue(client)).toEqual(['two:/shared']);
+
+    for (const params of [{ channel: 'two:/shared' }, { channel: 'two:/shared', preserveProviderSession: true }]) {
+      if (params.preserveProviderSession === true) {
+        // The same answer for an unlist, which is the call hab's retirement makes.
+        store.setUnlisted?.('shared', false);
+        store.setProvider('shared', 'two');
+        expect(await catalogue(client)).toEqual(['two:/shared']);
+      }
+      expect(await client.handle({ method: 'disposeSession', params })).toEqual({
+        kind: 'disposed-orphan', provider: 'two', providerSessionId: 'shared', directory: DIR, chatsRemoved: 0,
+      });
+      // The row went, and the reader's listing does not bring it back.
+      expect(store.provider('shared')).toBeUndefined();
+      expect(store.unlisted?.('shared')).toBe(true);
+      expect(await catalogue(client)).toEqual([]);
+      // And the second answer is the one any session this host never heard of gets.
+      await expect(client.handle({ method: 'disposeSession', params }))
+        .rejects.toMatchObject({ code: -32001, message: 'No agent for session: two:/shared' });
+    }
+    // Nothing was started, and nothing was asked of the reader.
+    expect(one).toEqual([]);
+  });
+
   it('leaves a row only one harness lists alone', async () => {
     const one: string[] = [];
     const two: string[] = [];
