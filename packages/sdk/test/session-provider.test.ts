@@ -816,6 +816,35 @@ describe('a row two harnesses both list', () => {
     expect(one).toEqual([]);
   });
 
+  /*
+   * And a subscribe to it is answered from the mark, before any backend is
+   * asked: an unlisted id is not one a client reaches by naming it, so a
+   * listing cannot change the answer, and a codex listing on a real host
+   * takes seconds (#39031: 15 s per subscribe, past hab's 10 s proof wait).
+   */
+  it('answers a subscribe to an unlisted id without listing again', async () => {
+    const one: string[] = [];
+    const store = memorySessions();
+    store.setProvider('host-id', 'two');
+    store.setChats('host-id', [{ uri: chatUriFor('two:/host-id'), backendId: 'conv-1', default: true }]);
+    const base = harness('one', ['conv-1'], one);
+    let listings = 0;
+    const counted: Agent = { ...base, list: async (...args) => { listings += 1; return await base.list!(...args); } };
+    const { client } = serving(store, [counted]);
+    await settle();
+    await showExternal(client);
+    expect(await catalogue(client)).toEqual(['two:/host-id']);
+    await client.handle({ method: 'disposeSession', params: { channel: 'two:/host-id' } });
+
+    const before = listings;
+    for (const channel of ['two:/host-id', 'ahp-session:/host-id', 'ahp-session:/conv-1']) {
+      await expect(client.handle({ method: 'subscribe', params: { channel } }))
+        .rejects.toMatchObject({ code: -32001 });
+    }
+    expect(listings).toBe(before);
+    expect(one).toEqual([]);
+  });
+
   it('leaves a row only one harness lists alone', async () => {
     const one: string[] = [];
     const two: string[] = [];
