@@ -49,6 +49,28 @@ const written = (value: unknown): string | undefined =>
   (value === undefined ? undefined : JSON.stringify(value));
 
 /**
+ * How much of an agent's own tool title a row carries.
+ *
+ * VS Code's agents title a call with a sentence a person reads - "Ran the
+ * tests" - and that is what a client draws while it runs and after. Some
+ * agents put the whole command, or a script of several hundred lines, in the
+ * title instead, and the same string is what the start, the ready and the
+ * result each carry, so one long title is that text three times in every
+ * snapshot that holds the call. The first line, capped, keeps the row
+ * readable and the snapshot small; the whole of it is already in `toolInput`,
+ * which is where a client reads a call's arguments.
+ */
+export const ROW_GLOSS_MAX = 80;
+
+/** The one line a call's label shows, as `ROW_GLOSS_MAX` allows. */
+export const glossOf = (title: string): string => {
+  const [first = ''] = title.split('\n', 1);
+  const line = first.trim();
+  const characters = Array.from(line);
+  return characters.length <= ROW_GLOSS_MAX ? line : `${characters.slice(0, ROW_GLOSS_MAX).join('')}…`;
+};
+
+/**
  * The tool call part this turn holds for a call, found by the call's own id.
  *
  * A tool call part is a kind and a call, as the protocol declares one, so the
@@ -145,7 +167,7 @@ const callOf = (turn: AcpTurn, update: ToolCall | ToolCallUpdate): AcpCall => {
   const call: AcpCall = {
     toolCallId: update.toolCallId,
     toolName: tool?.name ?? name,
-    displayName: title,
+    displayName: glossOf(title),
     readied: false,
     asked: false,
     ...(tool === undefined ? {} : { contributor: tool.owner }),
@@ -157,7 +179,7 @@ const callOf = (turn: AcpTurn, update: ToolCall | ToolCallUpdate): AcpCall => {
     toolCall: {
       toolCallId: update.toolCallId,
       toolName: call.toolName,
-      displayName: title,
+      displayName: call.displayName,
       status: 'streaming',
       ...contributorOf(call),
       ...(toolKind === undefined ? {} : { _meta: { toolKind } }),
@@ -230,7 +252,7 @@ const mayReady = (call: AcpCall): boolean => started(call.status) && !call.asked
 export const ready = (turn: AcpTurn, call: AcpCall, input: string | undefined): Bag => {
   call.readied = true;
   const said: Bag = {
-    invocationMessage: call.displayName,
+    invocationMessage: `Running ${call.displayName}`,
     confirmed: 'not-needed',
     ...(input === undefined ? {} : { toolInput: input }),
     ...contributorOf(call),
@@ -342,7 +364,7 @@ const closed = (turn: AcpTurn, call: AcpCall, content: Bag[], actions: Bag[], at
   const text = contentText(content);
   const result: Bag = {
     success,
-    pastTenseMessage: success ? call.displayName : `"${call.displayName}" failed`,
+    pastTenseMessage: success ? `Ran ${call.displayName}` : `"${call.displayName}" failed`,
     ...(content.length === 0 ? {} : { content }),
     ...(success ? {} : {
       error: { message: text === '' ? 'The tool failed' : text, ...(call.declined === true ? { code: 'denied' } : {}) },

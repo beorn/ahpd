@@ -2323,6 +2323,51 @@ it('says a call\'s kind from the kind ACP reports for it, for a client to draw i
   expect(metaOf(done.find((one) => one.type === 'chat/toolCallComplete'))).toEqual({ toolKind: 'terminal', 'vscode.toolCallDurationMs': 1_000 });
 });
 
+it('draws a long tool title as one short line, and keeps the whole of it in the arguments', () => {
+  /*
+   * ACP's title is the agent's own sentence for a call, but some agents put
+   * the whole command or script there - codex's exec_command does - and the
+   * same string would ride in the start, the ready and the result, three
+   * times over, in every snapshot that holds the call. The labels are capped
+   * to one line of what a row can draw, and the arguments keep every byte,
+   * which is where a client reads them.
+   */
+  const command = `bun run fix:all ${'p'.repeat(200)}`
+  const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() }
+  const sent = mapUpdate(turn, {
+    sessionUpdate: 'tool_call', toolCallId: 'c1', title: command, name: 'exec_command', kind: 'execute', status: 'in_progress',
+    rawInput: { command },
+  } as unknown as SessionUpdate, 1_000);
+  const gloss = `${command.slice(0, 80)}…`;
+  const start = sent.find((one) => one.type === 'chat/toolCallStart') as Bag;
+  const ready = sent.find((one) => one.type === 'chat/toolCallReady') as Bag;
+  expect(start.displayName).toBe(gloss);
+  expect(ready.invocationMessage).toBe(`Running ${gloss}`);
+  // The whole of it is in the input the call carries, so nothing is lost.
+  expect(String((turn.parts[0]?.toolCall as Bag).toolInput)).toContain(command);
+  const done = mapUpdate(turn, toolCallUpdate('c1', 'completed'), 2_000);
+  const complete = done.find((one) => one.type === 'chat/toolCallComplete') as Bag;
+  expect((complete.result as Bag).pastTenseMessage).toBe(`Ran ${gloss}`);
+  // A title that already is one short line is drawn as it stands.
+  const plain: AcpTurn = { turnId: 't2', parts: [], calls: new Map() }
+  const short = mapUpdate(plain, { sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'Ran the tests', status: 'pending' } as unknown as SessionUpdate, 1_000);
+  expect((short.find((one) => one.type === 'chat/toolCallStart') as Bag).displayName).toBe('Ran the tests');
+  // And a multi-line title shows its first line, since a row draws one.
+  const script = `cd /hh && cat > /tmp/x.ts <<'EOF'\n${'const x = 1\n'.repeat(40)}EOF`;
+  const multi: AcpTurn = { turnId: 't3', parts: [], calls: new Map() }
+  const many = mapUpdate(multi, { sessionUpdate: 'tool_call', toolCallId: 'c3', title: script, status: 'pending' } as unknown as SessionUpdate, 1_000);
+  expect((many.find((one) => one.type === 'chat/toolCallStart') as Bag).displayName).toBe("cd /hh && cat > /tmp/x.ts <<'EOF'");
+  // A cut at the cap never splits a character in half: an emoji is two UTF-16
+  // units, so a plain slice can leave half of one before the ellipsis.
+  const wide = `bun runni${' 😀'.repeat(50)}`;
+  const cut: AcpTurn = { turnId: 't4', parts: [], calls: new Map() }
+  const cutSent = mapUpdate(cut, { sessionUpdate: 'tool_call', toolCallId: 'c4', title: wide, status: 'pending' } as unknown as SessionUpdate, 1_000);
+  const shown = String((cutSent.find((one) => one.type === 'chat/toolCallStart') as Bag).displayName);
+  expect(Array.from(shown).length).toBe(81);
+  expect(shown).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+
+});
+
 it('stamps nothing for an update a session load replayed', () => {
   const turn: AcpTurn = { turnId: 't1', parts: [], calls: new Map() };
   // No `at`: the update carries no receive time of its own, and the replay's
@@ -2347,7 +2392,7 @@ it('says a failed call failed in its past tense, and a success by its name', () 
   const done = mapUpdate(turn, toolCallUpdate('c2', 'completed')).find((one) => one.type === 'chat/toolCallComplete');
 
   expect(failed?.result).toEqual({ success: false, pastTenseMessage: '"Fetch" failed', error: { message: 'The tool failed' } });
-  expect(done?.result).toEqual({ success: true, pastTenseMessage: 'Fetch' });
+  expect(done?.result).toEqual({ success: true, pastTenseMessage: 'Ran Fetch' });
 });
 
 /*
