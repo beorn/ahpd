@@ -510,8 +510,25 @@ export type NativeValue = string | number | boolean | readonly string[];
 /** One native change: a path under the entry, and the scalar it becomes or REMOVE. */
 export type NativeChange = readonly [readonly string[], NativeValue | typeof REMOVE];
 
-/** Structural equality over the plain JSON a record is made of. */
-export const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+/** The same plain JSON with every mapping's keys sorted, so its order cannot spell a difference that is not one. */
+const ordered = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(ordered);
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) out[key] = ordered((value as Record<string, unknown>)[key]);
+    return out;
+  }
+  return value;
+};
+
+/**
+ * Structural equality over the plain JSON a record is made of. A mapping's key order is not part of that data: a
+ * record built by laying a patch over an entry carries the patch's order, while the same record read back from the
+ * file carries the declared field order, so comparing serializations refused every `hightea service add --patch`
+ * whose patch named a field before `name` as "did not read back as the record" (#38899). Arrays keep their order:
+ * `depends_on` and a command's arguments mean the order they are written in.
+ */
+export const same = (a: unknown, b: unknown): boolean => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 
 /**
  * The native changes that turn the entry `before` describes into `after`.

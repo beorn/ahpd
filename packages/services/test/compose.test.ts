@@ -164,6 +164,25 @@ describe('an edit changes only the neutral field it carries (rule: every other b
     expect(read()).toBe(HAND_WRITTEN);
   });
 
+  it('a new entry whose patch names schedule before name, command and cwd is written, not refused (#38899)', async () => {
+    // `hightea service add --patch` lays the patch over the entry in the patch's own order (schedule first, then the
+    // named fields), while the record read back from the file is in declared field order. The readback check compares
+    // the record's data, not the order it was built in.
+    const answer = await putService(machine, LOCAL_ONLY, {
+      service: { schedule: { interval: '5m' }, name: 'workmon', command: 'bun run workmon', cwd: '/hh/dev-rev/current' } as never,
+      ifVersion: sha(HAND_WRITTEN),
+    });
+    expect(answer).toMatchObject({ ok: true, changed: true });
+    expect(read()).toBe(HAND_WRITTEN.replace(
+      '     is_daemon: false\n',
+      '     is_daemon: false\n  workmon:\n    command: bun run workmon\n    working_dir: /hh/dev-rev/current\n    schedule:\n      interval: 5m\n',
+    ));
+    const listing = listServices(machine);
+    expect(listing.ok && listing.services.find((one) => one.name === 'workmon')).toEqual({
+      name: 'workmon', command: 'bun run workmon', cwd: '/hh/dev-rev/current', schedule: { interval: '5m' },
+    });
+  });
+
   it('a put that changes nothing writes nothing and does not reload', async () => {
     const answer = await putService(machine, LOCAL_ONLY, { service: { name: 'web', command: 'node server.js' }, ifVersion: sha(HAND_WRITTEN) });
     expect(answer).toMatchObject({ ok: true, changed: false });
