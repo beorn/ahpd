@@ -100,6 +100,9 @@ Upstream status is one of:
 ### Host: a slow client is bounded
 - `7b995dde4`, `8ff50a503` · a client is closed for the queue behind the frame in flight, not for the frame, so a session snapshot heavier than `clientQueueBytes` no longer turns into a close-and-reconnect loop · #38703 · upstream ask not written (the bound is our own; upstream has no `clientQueueBytes`)
 
+### acp: a tool call's label is one short line
+- `716fb5714` (merge; hh/integration `1260016ef`) · a tool call's label is one line - the first line of the ACP title, trimmed, capped at 80 characters, and the cap counts characters so it never splits a surrogate pair - so `displayName`, the ready's `invocationMessage` and the completion's `pastTenseMessage` stop repeating one whole command three times in every snapshot that holds the call; `toolInput` and `confirmationTitle` keep every byte · #39004 (@cto 22b90b43) · upstream ask not written (plausibly upstreamable: any client drawing a call row spends the same bytes; no ask is prepared yet)
+
 ### acp: openings, native identity and custody
 - `bdfc82e75` (merge; hh/integration `923c7472e`) · a session that declared tools says so when `hostTools` leaves them out · #38864 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
 - `bdfc82e75` (merge; hh/integration `bbf98bd01`) · the six custody and session diagnostics are said in their sink, not on the console · #38631 · upstream status not checked: added by the #38983 merge from a checkout with no upstream remote; its author checks it
@@ -250,6 +253,9 @@ merge's `^1..^2` commits):
 Not counted, because not on `main`: `c6f74e9d0` (#38159; ahpio/ahpd#462 was closed unmerged on 2026-11-24) and
 `535303cf5`. The one PR prepared (#38139) was posted and merged upstream (ahpio/ahpd#463, 2026-11-25), so none is
 waiting.
+
+Added after this census: the `#39004` tool-call label row above (`716fb5714`, merged 2026-11-27) is
+`upstream ask not written`, so the open-ask count is 90 until the next census re-measures.
 
 The honest shape of the target is therefore: 89 upstream asks, and a decision on the 17 hab-protocol patches, which
 stay ours unless upstream grows hab's protocol. The other 80 fork-only commits are ours by nature.
