@@ -66,6 +66,9 @@ Upstream status is one of:
 
 ## Patches
 
+### ACP: a record is offered only the MCP servers it names
+- `660c4e2` · an agent record may carry `mcpServers`, the names in the host's catalog that its sessions are offered; absent inherits the whole map, present is exactly those on create, load and resume, and an unknown name fails the session by name · #39079 · upstream ask not written (the field is generic; no ask prepared)
+
 ### Host: chat binding and conversation provenance
 - `84441da3c`, `2ab6dcb47`, `a8bc5f407`, `99935dd5b` · persist the backend chat binding before the first prompt, keep the eager backend identity, and keep a created session's harness and folder before its first binding is saved · #34945 · upstream ask not written (generic host ordering bug; no ask prepared)
 - `daa329f08`, `46db0cb63`, `5e9bb697c` · chat conversation provenance is persisted with the session, projected by the host at startup, and preserved across the chat lifecycle · #32996 (context; no issue names this patch) · upstream ask not written (the `sessionConversation` type is generic)
