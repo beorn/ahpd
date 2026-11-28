@@ -57,3 +57,57 @@ describe('the landing on a service record (#39156 A)', () => {
       .toBe('its x-hh-landing is not a path');
   });
 });
+
+/*
+ * #38276 (@cto deede311): one restarter per service per promotion. The landing watch restarts a resident whose
+ * landing moved, so a deploy `check` that restarts would be a second restarter — refused by name, unless the check
+ * says it only verifies. A deploy with no check step restarts nothing and is allowed.
+ */
+describe('a landing and a deploying check on one entry (#38276)', () => {
+  it('refuses by name, and accepts the same entry once the check says verify_only', () => {
+    const withRestartingCheck = `processes:
+  site:
+    command: bun run site.ts
+    x-hh-landing: /deploy/site/current
+    x-hh-deploy:
+      repo: /hh/dev
+      ref: main
+      check:
+        command: /usr/bin/bash
+        args: ['-c', 'curl -sf http://127.0.0.1:4173/build.json']
+`;
+    expect(reread(withRestartingCheck, 'site')).toBe(
+      '"site" declares both x-hh-landing and an x-hh-deploy whose check restarts: the landing watch is the single restarter on process-compose, so the deploy\'s check must say verify_only: true, or the entry drops one of the two (one restarter per service per promotion, #38276)',
+    );
+
+    const verifyOnly = withRestartingCheck.replace('        args:', '        verify_only: true\n        args:');
+    const read = reread(verifyOnly, 'site');
+    expect(read).not.toBeTypeOf('string');
+    expect((read as ServiceRecord).landing).toBe('/deploy/site/current');
+    expect((read as ServiceRecord).deploy?.check?.verifyOnly).toBe(true);
+
+    const noCheck = `processes:
+  site:
+    command: bun run site.ts
+    x-hh-landing: /deploy/site/current
+    x-hh-deploy:
+      repo: /hh/dev
+      ref: main
+`;
+    expect(typeof reread(noCheck, 'site')).not.toBe('string');
+  });
+
+  it('refuses verify_only anywhere but a check, because only a check can be told not to restart', () => {
+    const onBuild = `processes:
+  site:
+    command: bun run site.ts
+    x-hh-deploy:
+      repo: /hh/dev
+      ref: main
+      build:
+        command: /usr/bin/bash
+        verify_only: true
+`;
+    expect(reread(onBuild, 'site')).toBe('its x-hh-deploy is not a declaration the driver knows: build.verify_only is not a step field; the fields are command, args, cwd, env, timeoutMs');
+  });
+});

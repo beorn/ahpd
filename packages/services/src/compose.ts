@@ -35,7 +35,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { isAlias, isMap, isPair, isScalar, parseDocument, visit, type Document, type Node } from 'yaml';
 import { REMOTE_COMMANDS_OFF, machineSwitches } from './switches.js';
 import {
-  CONDITIONS, FIELDS, LANDING_KEY, MEMORY_KEY, RESTART_POLICIES, applyPatch, bytesOfSize, checkPatch, fromNative, nativeChanges, same,
+  CONDITIONS, FIELDS, LANDING_KEY, MEMORY_KEY, RESTART_POLICIES, applyPatch, bytesOfSize, checkPatch, fromNative, landingConflict, nativeChanges, same,
   type ServicePatch, type ServiceRecord,
 } from './record.js';
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
@@ -560,6 +560,8 @@ export async function putService(machine: Machine, caller: Caller, params: PutPa
     if (reason !== undefined) return done(refuse('READ_ONLY', `${name} is read-only here: ${reason}`));
     if (before === undefined && params.service.command === undefined) return done(refuse('INVALID', `${name} is a new service, so it needs a command`));
     const after = applyPatch(before, params.service);
+    const conflict = landingConflict(after);
+    if (conflict !== undefined) return done(refuse('INVALID', conflict));
     intended = after;
     if (!createOnly && params.ifVersion !== state.ifVersion) return done(stale(state, params.ifVersion, params.seen, caller.remote), hashBefore, stale(state, params.ifVersion, params.seen, true));
     if (caller.remote && newCommand(before, after)) {
