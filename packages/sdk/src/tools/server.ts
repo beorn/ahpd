@@ -359,6 +359,40 @@ const listChanged = (serving: Serving): void => {
   for (const stream of serving.streams) stream.enqueue(said);
 };
 
+/*
+ * How long a call may stand unanswered before the agent is told that it did.
+ *
+ * Long enough for a slow round trip to an upstream, short enough that a turn is
+ * not spent waiting out a call that has wedged. Silence is the one failure a
+ * model cannot read: it sees neither an answer nor a reason, so it retries, and
+ * a retry behind a call that never settles buys a second turn of the same. The
+ * sentence goes in the content beside an `isError`, where a throw's does, since
+ * the model made the call (#39059).
+ */
+const ANSWER_BUDGET_MS = 60_000;
+
+/**
+ * One tool's work, refused to this server's clock rather than to the work's own.
+ *
+ * A tool that never answers keeps whatever holds it wedged - that is the tool's
+ * bug and not this server's to cure - but the caller is told, by name and to the
+ * millisecond, which tool left it waiting.
+ */
+const withinBudget = async <T>(name: string, work: T | Promise<T>): Promise<T> => {
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+  const silent = new Promise<never>((_, refuse) => {
+    expiry = setTimeout(
+      () => refuse(new Error(`${name} did not answer within ${ANSWER_BUDGET_MS / 1000} s`)),
+      ANSWER_BUDGET_MS,
+    );
+  });
+  try {
+    return await Promise.race([Promise.resolve(work), silent]);
+  } finally {
+    if (expiry !== undefined) clearTimeout(expiry);
+  }
+};
+
 /** What one message asked for, answered against these tools. */
 const answered = async (serving: ToolsServing, said: Message, info: ToolsInfo): Promise<Record<string, unknown>> => {
   const params = (said.params ?? {}) as { name?: unknown; arguments?: unknown; _meta?: unknown };
@@ -397,11 +431,14 @@ const answered = async (serving: ToolsServing, said: Message, info: ToolsInfo): 
       if (serving.runClient === undefined) {
         return failure(said.id, INVALID_PARAMS, `${String(params.name)} is a client's tool, which this server cannot run`);
       }
-      const answer = await serving.runClient(found, input, params._meta as Record<string, unknown> | undefined);
+      const answer = await withinBudget(
+        String(params.name),
+        serving.runClient(found, input, params._meta as Record<string, unknown> | undefined),
+      );
       const content = toMcpContent(answer, String(said.id ?? ''));
       return result(said.id, answer.ok ? { content } : { content, isError: true });
     }
-    const text = await run(input);
+    const text = await withinBudget(String(params.name), run(input));
     return result(said.id, { content: [{ type: 'text', text }] });
   }
   catch (error: unknown) {

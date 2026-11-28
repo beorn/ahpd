@@ -1,4 +1,4 @@
-import { expect, describe, it } from 'vitest';
+import { expect, describe, it, vi } from 'vitest';
 import { createHost } from '../src/host.js';
 import { answerTools, toolServers } from '../src/tools/server.js';
 import { toMcpContent } from '../src/tools/mcpcontent.js';
@@ -110,6 +110,31 @@ describe('a session\'s tools server', () => {
       content: [{ type: 'text', text: 'the port was not there' }],
       isError: true,
     });
+  });
+
+  /*
+   * A call that never settles is the failure that used to be silent: no answer,
+   * no throw, nothing for the model to read, so its turn stood until the harness
+   * gave up on it (#39059).
+   */
+  it('tells the agent a tool that never answered, naming the tool and the budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const { servers, endpoint } = serving();
+      const opened = servers.open([{
+        definition: { name: 'silent' },
+        run: () => new Promise<string>(() => {}),
+      }]) as ToolsEndpoint;
+      const pending = call(servers, opened, 'tools/call', { name: 'silent' });
+      await vi.advanceTimersByTimeAsync(60_000);
+      const { said } = await pending;
+      expect(said.result).toEqual({
+        content: [{ type: 'text', text: 'silent did not answer within 60 s' }],
+        isError: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses a token that is not this session\'s, before reading the call', async () => {
@@ -380,6 +405,22 @@ describe('a client\'s tool, run through the server', () => {
     const { servers, endpoint } = serving(() => { throw new Error('the client went away'); });
     const { said } = await call(servers, endpoint, 'tools/call', { name: 'vscode__openFile', arguments: {} });
     expect(said.result).toEqual({ content: [{ type: 'text', text: 'the client went away' }], isError: true });
+  });
+
+  it('tells the agent a client\'s tool that never answered, the same way', async () => {
+    vi.useFakeTimers();
+    try {
+      const { servers, endpoint } = serving(() => new Promise<ClientCallAnswer>(() => {}));
+      const pending = call(servers, endpoint, 'tools/call', { name: 'vscode__openFile', arguments: {} });
+      await vi.advanceTimersByTimeAsync(60_000);
+      const { said } = await pending;
+      expect(said.result).toEqual({
+        content: [{ type: 'text', text: 'vscode__openFile did not answer within 60 s' }],
+        isError: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('still refuses a client\'s tool when it was handed no runner', async () => {
