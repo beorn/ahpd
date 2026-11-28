@@ -892,10 +892,23 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
        * one (the host looks a target up among them). `starting` until the
        * server answers the open, `error` for one this server could not take.
        * The host's own tools are not among them: their token is the host's.
+       *
+       * An entry a record marks `requiresClientToken` starts `authRequired`
+       * instead (#39198, option A of @cto b8fa5918): the pipe's tools server
+       * answers `initialize` 200 with no token, so the child reports it
+       * connected and nothing would ever ask the person to sign in. The
+       * resource is the entry's own URL, the identifier the MCP authorization
+       * spec names; a challenge that names RFC 9728 metadata replaces it when
+       * the server refuses a call. A token handed before the open clears it.
        */
-      publishServers(ctx, Object.keys(offeredServers(start.mcpServers, options.mcpServers, who)), (name) => left.has(name)
-        ? { kind: 'error', error: { errorType: 'mcpServerFailed', message: left.get(name) } }
-        : { kind: 'starting' });
+      publishServers(ctx, Object.keys(offeredServers(start.mcpServers, options.mcpServers, who)), (name) => {
+        if (left.has(name)) return { kind: 'error', error: { errorType: 'mcpServerFailed', message: left.get(name) } };
+        const declared = start.mcpServers?.[name];
+        if (declared?.type === 'http' && declared.requiresClientToken === true && !ctx.serverTokens.has(name)) {
+          return { kind: 'authRequired', reason: 'required', resource: { resource: declared.url, resource_name: name } };
+        }
+        return { kind: 'starting' };
+      });
       /*
        * The conversation to continue: the one this session already had when
        * its server died, or else the one a resume named. Both go through the

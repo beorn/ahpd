@@ -374,6 +374,10 @@ export const mcpServerSchema: Record<string, unknown> = {
     cwd: { type: 'string' },
     url: { type: 'string', minLength: 1 },
     headers: { type: 'object', additionalProperties: { type: 'string', writeOnly: true } },
+    requiresClientToken: {
+      type: 'boolean',
+      description: 'This server needs a person\'s token. The session starts waiting for one and publishes authRequired with the server\'s URL as the resource; a client\'s authenticate becomes the Authorization header on the next call. For an http server only (#39198).',
+    },
   },
   required: ['type'],
 };

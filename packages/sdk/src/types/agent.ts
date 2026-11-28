@@ -44,8 +44,15 @@ export interface StdioMcpServer {
 /**
  * An MCP server the host offers its agents, reached over HTTP.
  *
- * `url` is where it answers and `headers` go with every call, which is how an
- * endpoint that wants a bearer token is reached.
+ * `url` is where it answers.
+ *
+ * `requiresClientToken` is a record saying the server needs a person's token,
+ * which the host cannot hold: the session starts waiting for one, publishes its
+ * customization `authRequired` with the server's own URL as the resource, and a
+ * client's authenticate becomes the header the next call carries (#39198). It
+ * is a fact of the declaration rather than something to discover, because a
+ * server that answers `initialize` without a token is one no probe can tell
+ * apart from a server that needs none.
  */
 export interface HttpMcpServer {
   type: 'http';
@@ -59,6 +66,7 @@ export interface HttpMcpServer {
    * the reference, and the backend reads the value when the session opens.
    */
   headers?: Record<string, string | SecretRef>;
+  requiresClientToken?: boolean;
 }
 
 /**

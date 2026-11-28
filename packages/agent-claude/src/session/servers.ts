@@ -93,6 +93,32 @@ export function createServers(ctx: SessionContext): Servers {
    * not only once the old token has run out and the server asks again.
    */
   const signedIn = new Map<string, Published>();
+  /*
+   * A record's mark that this server needs a person's token (#39198, option A
+   * of @cto 871ffc8f/b8fa5918): the wait starts here, because the pipe's tools
+   * server answers `initialize` 200 with no token, so the CLI reports it
+   * `connected` and would never say `needs-auth` on its own. The resource is
+   * the entry's own URL, the identifier the MCP authorization spec names.
+   * Discovery below never overwrites one of these: it skips a name already in
+   * `wanted`.
+   */
+  for (const [name, entry] of Object.entries(mcpServers)) {
+    if (bag(entry)['requiresClientToken'] !== true) continue;
+    const url = urlOf(entry);
+    if (url === undefined) continue;
+    wanted.set(name, { resource: url, resource_name: name });
+  }
+  /**
+   * The servers this record declares, beside what the CLI reported (#39198).
+   *
+   * A declared entry exists before any CLI answers for it, and a marked one
+   * must be published `authRequired` from the session's first list rather than
+   * after a turn. A name the CLI did report keeps the CLI's row.
+   */
+  const withDeclared = (found: unknown[]): unknown[] => {
+    const seen = new Set(found.map((raw) => str(bag(raw).name) ?? ''));
+    return [...found, ...Object.keys(ctx.mcpServers).filter((name) => !seen.has(name)).map((name) => ({ name }))];
+  };
   /** The servers whose client token ran out, by name: `authRequired` with reason `expired` until a new one arrives. */
   const lapsed = new Set<string>();
   /** A server gone from the session's set holds no sign-in to renew or expire. */
@@ -189,7 +215,7 @@ export function createServers(ctx: SessionContext): Servers {
     const own = (given: unknown[]): unknown[] => given.filter((raw) => !skills.mine(str(bag(raw).name) ?? ''));
     ctx.customizations = customizationsOf(
       { ...reported.init, ...(Array.isArray(reported.init.commands) ? { commands: own(reported.init.commands) } : {}) },
-      reported.mcp, own(reported.skills), wanted, plugins, handed, off, diskNow(), stopRequested, lapsed,
+      withDeclared(reported.mcp), own(reported.skills), wanted, plugins, handed, off, diskNow(), stopRequested, lapsed,
     );
     skills.lay(ctx.customizations);
     if (JSON.stringify(ctx.customizations) !== was) {
@@ -549,7 +575,7 @@ export function createServers(ctx: SessionContext): Servers {
       .map((name) => ({ name }));
     const skills = named('skill');
     const handed = new Set((ctx.options.plugins ?? []).map((one) => one.path));
-    const scanned = customizationsOf({ commands: skills, agents: named('agent') }, named('mcpServer'), skills, wanted, [], handed, [], disk, stopRequested, lapsed);
+    const scanned = customizationsOf({ commands: skills, agents: named('agent') }, withDeclared(named('mcpServer')), skills, wanted, [], handed, [], disk, stopRequested, lapsed);
     const own = (ctx.options.seedCustomizations ?? []).filter((one) => str(one.type) !== 'mcpServer');
     const held = new Set(own.map((one) => str(one.id)));
     return [...own, ...scanned.filter((one) => !held.has(str(one.id)))].map((one) => {
