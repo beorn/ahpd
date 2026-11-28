@@ -166,8 +166,10 @@ it('relays the typed -32001 a call gets before the person has signed in, and ask
     body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'board', arguments: {} } }),
   });
 
-  expect(refused?.status).toBe(401);
-  expect(await refused?.json()).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Hightea token required' } });
+  // The refusal is the call's own answer, in the call's own id: the status stops at the endpoint and the typed
+  // -32001 goes on, so an agent's MCP client has a result rather than a bare 401 it would sit on.
+  expect(refused?.status).toBe(200);
+  expect(await refused?.json()).toEqual({ jsonrpc: '2.0', id: 7, error: { code: -32001, message: 'Hightea token required' } });
   // The refusal is what the session turns into authRequired, aimed at the challenge's resource.
   expect(refusals).toEqual([{ status: 401, metadataUrl: 'https://up.example/.well-known/oauth-protected-resource' }]);
   // A wait with no token yet sends none upstream: nothing of the person's, and no configured stand-in.
