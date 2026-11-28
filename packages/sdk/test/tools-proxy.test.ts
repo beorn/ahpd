@@ -147,6 +147,33 @@ it('bounds and cleans the upstream\'s own sentence before a model reads it', asy
   expect(message.startsWith('line one line two x')).toBe(true);
 });
 
+it('relays the typed -32001 a call gets before the person has signed in, and asks the host to start the sign-in', async () => {
+  const refusals: UpstreamRefusal[] = [];
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => undefined, refused: (one) => { refusals.push(one); } });
+  if (endpoint === undefined) throw new Error('no endpoint');
+
+  // What hightea's tools server answers a call it holds no person token for
+  // (hightea packages/ahp-host/src/mcp-http.ts: unauthorized()). The endpoint
+  // passes the body through untouched, so the type survives to the agent.
+  answer = (_request, response) => {
+    response.writeHead(401, {
+      'content-type': 'application/json',
+      'www-authenticate': 'Bearer resource_metadata="https://up.example/.well-known/oauth-protected-resource"',
+    });
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Hightea token required' } }));
+  };
+  const refused = await asked(endpoint.url, endpoint.token, {
+    body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'board', arguments: {} } }),
+  });
+
+  expect(refused?.status).toBe(401);
+  expect(await refused?.json()).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Hightea token required' } });
+  // The refusal is what the session turns into authRequired, aimed at the challenge's resource.
+  expect(refusals).toEqual([{ status: 401, metadataUrl: 'https://up.example/.well-known/oauth-protected-resource' }]);
+  // A wait with no token yet sends none upstream: nothing of the person's, and no configured stand-in.
+  expect(seen.map((one) => one.headers.authorization)).toEqual([undefined]);
+});
+
 it('refuses a wrong endpoint token with 401 and sends nothing upstream', async () => {
   const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
   if (endpoint === undefined) throw new Error('no endpoint');
