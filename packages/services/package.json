@@ -21,6 +21,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "ws": "^8.18.0",
     "yaml": "2.9.0"
   },
   "scripts": {
@@ -52,7 +53,7 @@
         "hh-services"
       ],
       "closers": [
-        "the five-minute drift check"
+        "the process-state stream and periodic services check"
       ],
       "grants": [
         "service"
