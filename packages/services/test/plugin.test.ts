@@ -136,7 +136,7 @@ const pushProcessState = (row: Record<string, unknown>): void => {
 };
 
 describe('apply', () => {
-  it('checks retry exhaustion as soon as Process Compose reports completion', async () => {
+  it('checks retry exhaustion as soon as Process Compose reports completion, and holds it while the program runs again', async () => {
     writeFileSync(join(dir, 'local.yaml'), 'processes:\n  web:\n    command: sleep 2\n    availability:\n      restart: on_failure\n      max_restarts: 1\n');
     const tokenFile = join(dir, 'pc.token');
     writeFileSync(tokenFile, 'fixture-process-compose-token\n');
@@ -157,7 +157,15 @@ describe('apply', () => {
       await until(() => made.published.length > before);
       expect(made.alerts.filter((alert) => alert.ref === `${GAVE_UP_REF}web`)).toHaveLength(1);
 
-      pcProcesses[0] = { name: 'web', status: 'Running' };
+      // #39156 C (@cto 726f1c98): a re-run in flight must not read as recovery. Running with a bare zero keeps
+      // the gave-up alert; only a later terminal success clears it.
+      pcProcesses[0] = { name: 'web', status: 'Running', exit_code: 0, restarts: 0 };
+      pushProcessState(pcProcesses[0]);
+      await new Promise((done) => setTimeout(done, 300));
+      expect(made.cleared).not.toContain(`${GAVE_UP_REF}web`);
+      expect(made.alerts.filter((alert) => alert.ref === `${GAVE_UP_REF}web`)).toHaveLength(1);
+      // The next terminal success is what clears it.
+      pcProcesses[0] = { name: 'web', status: 'Completed', exit_code: 0, restarts: 0 };
       pushProcessState(pcProcesses[0]);
       await until(() => made.cleared.includes(`${GAVE_UP_REF}web`));
     }
