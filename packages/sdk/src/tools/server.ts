@@ -213,13 +213,22 @@ const paramIn = (challenge: string | null, name: 'scope' | 'resource_metadata'):
  *
  * A server that refuses a bearer often answers with its own message, and that
  * message is the one a model can act on; a server that said nothing gets ours.
+ *
+ * It is another server's text, though, and it lands in an agent's context, so
+ * it is bounded and stripped of control characters before it goes on
+ * (#38864, @cto 2026-11-28).
  */
+const SAID_MAX = 500;
+
 const saidBy = (text: string): string | undefined => {
   try {
     const said = JSON.parse(text) as unknown;
     const one = (Array.isArray(said) ? said[0] : said) as { error?: { message?: unknown } } | null;
     const message = one?.error?.message;
-    return typeof message === 'string' && message !== '' ? message : undefined;
+    if (typeof message !== 'string') return undefined;
+    const clean = message.replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ').replace(/\s+/gu, ' ').trim();
+    if (clean === '') return undefined;
+    return clean.length > SAID_MAX ? `${clean.slice(0, SAID_MAX - 1)}…` : clean;
   }
   catch {
     return undefined;
