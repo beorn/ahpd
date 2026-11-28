@@ -134,13 +134,23 @@ async function talking(
   await turn('t1', 'hi');
   const handed = (requests(log).find((one) => one.method === 'session/new')?.params?.['mcpServers'] as Bag[])[0] as { url: string; headers: { name: string; value: string }[] };
   /** One request from the agent, to the URL and with the token it was handed. */
-  const call = async (): Promise<number | undefined> => (await servers.request(new Request(handed.url, {
-    method: 'POST',
-    headers: { authorization: handed.headers[0]!.value, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-    body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
-  })))?.status;
+  const answered = async (body = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'): Promise<{ status: number | undefined; said: Bag | undefined }> => {
+    const answer = await servers.request(new Request(handed.url, {
+      method: 'POST',
+      headers: { authorization: handed.headers[0]!.value, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body,
+    }));
+    if (answer === undefined) return { status: undefined, said: undefined };
+    const text = await answer.text();
+    return { status: answer.status, said: text === '' ? undefined : JSON.parse(text) as Bag };
+  };
+  const call = async (): Promise<number | undefined> => (await answered()).status;
   const desk = (): Bag | undefined => session.customizations().find((one) => one.id === DESK);
-  return { session, log, handed, call, desk, turn };
+  /** How many times a session's customizations were said, and with what state for the desk. */
+  const publications = (): string[] => actions
+    .filter((one) => one.type === 'session/customizationsChanged')
+    .map((one) => String(((one.customizations as Bag[]).find((two) => two.id === DESK)?.state as Bag | undefined)?.kind));
+  return { session, log, handed, call, answered, desk, turn, publications };
 }
 
 it('claims no pass-through for a machine that cannot reach the daemon', async () => {
@@ -191,15 +201,22 @@ it('takes a token before the session opens, and the pass-through sends it from t
   expect(seen).toEqual([{ authorization: 'Bearer tok-early', tenant: 'acme' }]);
 });
 
-it('says a 401 as authRequired, from the metadata the server named, and a token after clears it', async () => {
-  const { session, call, desk } = await talking('refused');
+it('answers a 401 with a typed error and says authRequired once, from the metadata the server named, and a token after clears it', async () => {
+  const { session, call, answered, desk, publications } = await talking('refused');
   await session.authenticated?.('https://desk.example/', 'stale', DESK);
   answer = (_request, response) => {
     response.writeHead(401, { 'www-authenticate': `Bearer resource_metadata="${new URL('/meta', at).href}"` });
-    response.end();
+    response.end('{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"a live turn token is required"}}');
   };
 
-  expect(await call()).toBe(401);
+  // #38864 (@cto 2026-11-28): the refusal reaches the agent as its call's own error, at once, never as the bare
+  // status - a status with no challenge is what an agent's client holds open until its own timeout.
+  const starting = performance.now();
+  const said = await answered();
+  expect(performance.now() - starting).toBeLessThan(1000);
+  expect(said.status).toBe(200);
+  expect(said.said).toMatchObject({ jsonrpc: '2.0', id: 1, error: { code: -32001, message: 'a live turn token is required' } });
+
   await until(() => (desk()?.state as Bag | undefined)?.kind === 'authRequired');
   expect(desk()?.state).toMatchObject({
     kind: 'authRequired',
@@ -207,6 +224,9 @@ it('says a 401 as authRequired, from the metadata the server named, and a token 
     resource: { resource: at, authorization_servers: ['https://login.example'] },
     requiredScopes: ['desk:read'],
   });
+  // Said once for the requirement: a second refusal of the same token says nothing new.
+  expect(await call()).toBe(200);
+  expect(publications().filter((one) => one === 'authRequired')).toHaveLength(1);
 
   // The refused token is not sent again.
   answer = ok;
@@ -219,17 +239,34 @@ it('says a 401 as authRequired, from the metadata the server named, and a token 
   expect(seen.at(-1)).toEqual({ authorization: 'Bearer fresh', tenant: 'acme' });
 });
 
-it('says a 403 that named a scope as insufficientScope, asking for that scope', async () => {
-  const { session, call, desk } = await talking('scoped');
+it('answers a 403 that named a scope with a typed error, and says insufficientScope asking for that scope', async () => {
+  const { session, answered, desk } = await talking('scoped');
   await session.authenticated?.('https://desk.example/', 'narrow', DESK);
   answer = (_request, response) => {
     response.writeHead(403, { 'www-authenticate': 'Bearer error="insufficient_scope", scope="desk:write desk:read"' });
     response.end();
   };
 
-  expect(await call()).toBe(403);
+  const said = await answered();
+  expect(said.status).toBe(200);
+  expect(said.said).toMatchObject({ id: 1, error: { code: -32001 } });
+  expect(String((said.said?.error as Bag).message)).toContain('403');
   await until(() => (desk()?.state as Bag | undefined)?.kind === 'authRequired');
   expect(desk()?.state).toMatchObject({ kind: 'authRequired', reason: 'insufficientScope', requiredScopes: ['desk:write', 'desk:read'] });
+});
+
+it('passes a non-auth answer through unchanged, status and body', async () => {
+  // Only a bearer refusal is the host's to translate; a server that broke is the agent's to see as it said it.
+  const { answered, desk } = await talking('broken');
+  answer = (_request, response) => {
+    response.writeHead(503, { 'content-type': 'application/json' });
+    response.end('{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"upstream is down"}}');
+  };
+
+  const said = await answered();
+  expect(said.status).toBe(503);
+  expect(said.said).toMatchObject({ error: { code: -32000, message: 'upstream is down' } });
+  expect((desk()?.state as Bag | undefined)?.kind).not.toBe('authRequired');
 });
 
 it('says a token that ran out as expired, and stops sending it', async () => {

@@ -99,7 +99,7 @@ it('passes an SSE stream through as it arrives', async () => {
   expect(seen[0]?.headers['mcp-session-id']).toBe('up-1');
 });
 
-it('says a 401, and a 403 with the scope it named, and keeps the upstream\'s challenge from the agent', async () => {
+it('answers a 401, and a 403 with the scope it named, as the call\'s own error - never the status, never the challenge', async () => {
   const refusals: UpstreamRefusal[] = [];
   const endpoint = servers.openProxy({ url: at, tokenNow: () => 't', refused: (one) => { refusals.push(one); } });
   if (endpoint === undefined) throw new Error('no endpoint');
@@ -115,12 +115,36 @@ it('says a 401, and a 403 with the scope it named, and keeps the upstream\'s cha
   };
   const forbidden = await asked(endpoint.url, endpoint.token);
 
-  expect([unauthorized?.status, forbidden?.status]).toEqual([401, 403]);
+  // #38864 (@cto 2026-11-28): a refusal is the host's to translate, not the agent's to interpret. Handed the
+  // bare status an agent's MCP client has neither a result nor a challenge and holds the call to its timeout, so
+  // the refusal is the call's own error and the person is offered the sign-in through ACP `authRequired`.
+  expect([unauthorized?.status, forbidden?.status]).toEqual([200, 200]);
   expect(refusals).toEqual([
     { status: 401, metadataUrl: 'https://up.example/.well-known/oauth-protected-resource' },
     { status: 403, scope: 'tickets:write' },
   ]);
   expect(unauthorized?.headers.get('www-authenticate')).toBeNull();
+  expect(await unauthorized?.json()).toMatchObject({ jsonrpc: '2.0', id: 1, error: { code: -32001 } });
+  expect(String((await forbidden?.json() as { error: { message: string } }).error.message)).toContain('403');
+});
+
+it('bounds and cleans the upstream\'s own sentence before a model reads it', async () => {
+  // Another server's text in an agent's context: control characters go, and a long message is cut.
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
+  if (endpoint === undefined) throw new Error('no endpoint');
+  const long = `line one\nline two\u0007${'x'.repeat(2000)}`;
+  answer = (_request, response) => {
+    response.writeHead(401, { 'www-authenticate': 'Bearer' });
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: long } }));
+  };
+
+  const said = await (await asked(endpoint.url, endpoint.token))?.json() as { error: { message: string } };
+  const message = said.error.message;
+
+  expect(message.length).toBeLessThanOrEqual(500);
+  expect(message.endsWith('…')).toBe(true);
+  expect(/[\u0000-\u001f\u007f-\u009f]/u.test(message)).toBe(false);
+  expect(message.startsWith('line one line two x')).toBe(true);
 });
 
 it('refuses a wrong endpoint token with 401 and sends nothing upstream', async () => {
