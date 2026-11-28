@@ -2,7 +2,8 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocketServer } from 'ws';
 import { invokeOperation, pluginOperationChannels } from '../../sdk/src/kinds/operations.js';
 import type { PluginChannel, PluginHost, PluginMethod } from '../../sdk/src/types/plugin.js';
 import type { ResourceProvider } from '../../sdk/src/types/resources.js';
@@ -45,6 +46,8 @@ const until = async (check: () => boolean): Promise<void> => {
 
 let dir: string;
 let server: Server;
+let processStates: WebSocketServer;
+let streamToken: string | string[] | undefined;
 let pcSeen: string[];
 let pcProcesses: Array<Record<string, unknown>>;
 let stopResponse: ((response: ServerResponse) => void) | undefined;
@@ -56,6 +59,8 @@ beforeEach(async () => {
   pcSeen = [];
   pcProcesses = [{ name: 'web', status: 'Running' }, { name: 'other', status: 'Running' }];
   stopResponse = undefined;
+  processStates = new WebSocketServer({ noServer: true });
+  streamToken = undefined;
   server = createServer((request, response) => {
     pcSeen.push(`${request.method} ${request.url}`);
     const json = (body: unknown): void => { response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
@@ -64,10 +69,20 @@ beforeEach(async () => {
     else if (request.url?.startsWith('/process/logs/')) json({ logs: ['listening on 8080', 'ready'] });
     else json({});
   });
+  server.on('upgrade', (request, socket, head) => {
+    if (request.url !== '/process/states/ws') {
+      socket.destroy();
+      return;
+    }
+    streamToken = request.headers['x-pc-token-key'];
+    processStates.handleUpgrade(request, socket, head, () => {});
+  });
   await new Promise<void>((done) => server.listen(join(dir, 'pc.sock'), done));
 });
 
 afterEach(async () => {
+  for (const client of processStates.clients) client.terminate();
+  processStates.close();
   await new Promise<void>((done) => server.close(() => done()));
   rmSync(dir, { recursive: true, force: true });
 });
@@ -116,8 +131,57 @@ const ifVersion = (): string => {
 };
 const logLines = (): Array<Record<string, unknown>> =>
   readFileSync(join(dir, 'services', 'changes.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+const pushProcessState = (row: Record<string, unknown>): void => {
+  for (const client of processStates.clients) client.send(JSON.stringify({ state: row }));
+};
 
 describe('apply', () => {
+  it('checks retry exhaustion as soon as Process Compose reports completion', async () => {
+    writeFileSync(join(dir, 'local.yaml'), 'processes:\n  web:\n    command: sleep 2\n    availability:\n      restart: on_failure\n      max_restarts: 1\n');
+    const tokenFile = join(dir, 'pc.token');
+    writeFileSync(tokenFile, 'fixture-process-compose-token\n');
+    const made = host();
+    apply(made.served, options({ tokenFile }));
+    try {
+      await until(() => made.snapshot().rows[0]?.state.status === 'Running');
+      await until(() => processStates.clients.size === 1);
+      expect(streamToken).toBe('fixture-process-compose-token');
+      const completed = { name: 'web', status: 'Completed', exit_code: 17, restarts: 1 };
+      pcProcesses[0] = completed;
+      pushProcessState(completed);
+      await until(() => made.alerts.some((alert) => alert.ref === `${GAVE_UP_REF}web`));
+      expect(made.snapshot().rows[0]).toMatchObject({ state: { status: 'Completed' }, alerts: [{ ref: `${GAVE_UP_REF}web` }] });
+
+      const before = made.published.length;
+      pushProcessState(completed);
+      await until(() => made.published.length > before);
+      expect(made.alerts.filter((alert) => alert.ref === `${GAVE_UP_REF}web`)).toHaveLength(1);
+
+      pcProcesses[0] = { name: 'web', status: 'Running' };
+      pushProcessState(pcProcesses[0]);
+      await until(() => made.cleared.includes(`${GAVE_UP_REF}web`));
+    }
+    finally { await made.close(); }
+  });
+
+  it('reports a lost Process Compose stream and reconnects before the next drift check', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const made = host();
+    apply(made.served, options());
+    const ref = 'services-drift:process-states';
+    try {
+      await until(() => processStates.clients.size === 1);
+      for (const client of processStates.clients) client.terminate();
+      await until(() => made.alerts.some((alert) => alert.ref === ref && alert.text.includes('pc.sock')));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await until(() => processStates.clients.size === 1 && made.cleared.includes(ref));
+    }
+    finally {
+      await made.close();
+      vi.useRealTimers();
+    }
+  });
+
   it('registers the service grants, the channel, both resource schemes and the nine old names, and checks drift at once', async () => {
     const made = host();
     apply(made.served, options());
@@ -187,6 +251,7 @@ describe('the operations, through invokeOperation', () => {
     let acknowledgeStop: (() => void) | undefined;
     stopResponse = (response) => {
       pcProcesses[0] = { name: 'web', status: 'Completed', exit_code: exitCode, restarts: 1, process_start_time: started, process_end_time: new Date().toISOString() };
+      pushProcessState(pcProcesses[0]);
       acknowledgeStop = () => {
         acknowledgeStop = undefined;
         response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
@@ -201,9 +266,9 @@ describe('the operations, through invokeOperation', () => {
     let stop: ReturnType<typeof control> | undefined;
     try {
       await until(() => webStatus(made) === status);
+      await until(() => processStates.clients.size === 1);
       stop = control('stop', 'web');
       await until(() => acknowledgeStop !== undefined);
-      await control('start', 'other');
       await until(() => webStatus(made) === 'Completed');
       expect(made.alerts.map((one) => one.ref)).not.toContain(`${GAVE_UP_REF}web`);
       const published = made.published.length;

@@ -1,10 +1,9 @@
 /**
- * process-compose's REST API, reached over its Unix socket (#38277).
+ * process-compose's API, reached over its Unix socket (#38277).
  *
  * Never TCP: the socket is a file only this machine's user can open, and the
- * token in `X-PC-Token-Key` is a second lock on it. Only the routes the driver
- * needs are here, and each is one bounded request with a timeout, because the
- * whole AHP round trip from Hightea has ten seconds.
+ * token in `X-PC-Token-Key` is a second lock on it. REST reads and the state
+ * stream handshake are bounded because the AHP round trip has ten seconds.
  *
  * Reload is `POST /project/configuration`, which re-reads the `-f` files from
  * disk. `POST /process` and `POST /project` change process-compose's memory
@@ -12,6 +11,8 @@
  */
 import { request } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { createConnection } from 'node:net';
+import WebSocket from 'ws';
 
 /** Where process-compose listens, and the file holding its token. */
 export interface PcSocket {
@@ -27,23 +28,25 @@ export interface PcAnswer {
   readonly body: unknown;
 }
 
-/** Send one request and read the whole answer. Throws, naming the route, on a transport failure. */
-export function pcRequest(pc: PcSocket, method: string, path: string): Promise<PcAnswer> {
-  let token: string | undefined;
-  if (pc.tokenFile !== undefined) {
-    try {
-      token = readFileSync(pc.tokenFile, 'utf8').trim();
-    }
-    catch (error) {
-      return Promise.reject(new Error(`cannot read process-compose's token file ${pc.tokenFile}: ${(error as Error).message}`));
-    }
+const pcHeaders = (pc: PcSocket): Record<string, string> => {
+  if (pc.tokenFile === undefined) return {};
+  try {
+    return { 'X-PC-Token-Key': readFileSync(pc.tokenFile, 'utf8').trim() };
   }
+  catch (error) {
+    throw new Error(`cannot read process-compose's token file ${pc.tokenFile}: ${(error as Error).message}`);
+  }
+};
+
+/** Send one request and read the whole answer. Throws, naming the route, on a transport failure. */
+export async function pcRequest(pc: PcSocket, method: string, path: string): Promise<PcAnswer> {
+  const headers = pcHeaders(pc);
   return new Promise((resolve, reject) => {
     const req = request({
       socketPath: pc.socket,
       method,
       path,
-      headers: { accept: 'application/json', ...(token === undefined ? {} : { 'X-PC-Token-Key': token }) },
+      headers: { accept: 'application/json', ...headers },
       timeout: pc.timeoutMs ?? 5000,
     }, (res) => {
       const chunks: Buffer[] = [];
@@ -64,6 +67,17 @@ export function pcRequest(pc: PcSocket, method: string, path: string): Promise<P
     req.on('timeout', () => req.destroy(new Error(`no answer within ${pc.timeoutMs ?? 5000} ms`)));
     req.on('error', (error) => reject(new Error(`${method} ${path} on ${pc.socket}: ${error.message}`)));
     req.end();
+  });
+}
+
+/** The supervisor's state stream, with the same Unix socket and token as its REST reads. */
+export function pcStateStream(pc: PcSocket): WebSocket {
+  return new WebSocket('ws://localhost/process/states/ws', {
+    createConnection: () => createConnection(pc.socket),
+    headers: pcHeaders(pc),
+    handshakeTimeout: pc.timeoutMs ?? 5000,
+    // Each frame describes one process. Bound what an unexpected sender can buffer.
+    maxPayload: 1024 * 1024,
   });
 }
 

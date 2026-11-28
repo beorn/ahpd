@@ -5,8 +5,8 @@
  * (ADR-004 amendment 6), and two resource schemes: `hh-service://<name>/logs`
  * and `hh-services://{backup,changes}` (see `channel.ts`). It registers the
  * `service` grants a role is given them by, and runs the drift check at start,
- * every five minutes and after each operation, publishing the new snapshot to
- * every subscriber.
+ * at supervisor completion, every five minutes and after each operation,
+ * publishing the new snapshot to every subscriber.
  *
  * The nine `x-ahpd/services/*` methods this plugin served before 0.16.0 are
  * gone. Each name still answers, with a refusal naming the release that
@@ -36,6 +36,7 @@ import {
 } from './channel.js';
 import { isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
+import { pcStateStream } from './pc.js';
 import { GAVE_UP_REF, watchAlerts } from './watch.js';
 
 export { DRIVER, callerOf, type Driver } from './channel.js';
@@ -54,6 +55,7 @@ export const UNREADABLE_REF = 'services-changelog:unreadable';
 
 /** How often drift is checked, after the check at start. */
 export const DRIFT_EVERY_MS = 5 * 60 * 1000;
+const STREAM_RETRY_MS = 15_000;
 
 /** The methods this plugin served before the channel, by the operation or read that replaced each. */
 export const RETIRED: Readonly<Record<string, string>> = {
@@ -246,10 +248,12 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
     return page.message;
   };
   const pendingStops = new Set<{ name: string }>();
+  let closed = false;
   const check = async (): Promise<void> => {
     try {
       checkUnreadable();
       const drift = await checkDrift(machine, stateFile, (facts) => { running = facts.running; });
+      if (closed) return;
       // @cto 8f8fafce (2, 5): a program process-compose gave up on, and a command YAML cut short, beside the drift.
       let watched = watchAlerts(machine.name, driver.list(machine), running);
       if (typeof running === 'object' && watched.some((alert) => alert.ref.startsWith(GAVE_UP_REF))) {
@@ -272,9 +276,82 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
       raised = showDrift(host, raised, alerts);
     }
     catch (error) {
+      if (closed) return;
       host.alert({ level: 'error', text: `the drift check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}check` });
     }
     publish();
+  };
+  let checking = false;
+  let checkAgain = false;
+  const changed = async (): Promise<void> => {
+    if (closed) return;
+    if (checking) {
+      checkAgain = true;
+      return;
+    }
+    checking = true;
+    try {
+      do {
+        checkAgain = false;
+        await check();
+      } while (checkAgain && !closed);
+    }
+    finally {
+      checking = false;
+    }
+  };
+  const streamRef = `${DRIFT_REF}process-states`;
+  let stream: ReturnType<typeof pcStateStream> | undefined;
+  let streamProblem: string | undefined;
+  const streamUnavailable = (problem: string): void => {
+    if (streamProblem === problem) return;
+    streamProblem = problem;
+    host.alert({ level: 'warning', ref: streamRef, text: `cannot watch process-compose state on ${machine.backend.pc.socket}: ${problem}; the periodic services check is still running` });
+  };
+  const connectStream = (): void => {
+    if (closed || stream !== undefined) return;
+    try {
+      const connection = pcStateStream(machine.backend.pc);
+      stream = connection;
+      let failure: string | undefined;
+      connection.on('error', (error) => { failure = error.message; });
+      connection.once('open', () => {
+        if (stream !== connection || streamProblem === undefined) return;
+        streamProblem = undefined;
+        host.clearAlert(streamRef);
+        void changed();
+      });
+      connection.once('close', (code) => {
+        if (stream !== connection) return;
+        stream = undefined;
+        streamUnavailable(failure ?? `the connection closed (${code})`);
+      });
+      connection.on('message', (data) => {
+        if (stream !== connection) return;
+        let event: { snapshot?: unknown; state?: { name?: unknown; status?: unknown } } | undefined;
+        try {
+          event = JSON.parse(data.toString()) as typeof event;
+        }
+        catch (error) {
+          failure = `invalid state event: ${(error as Error).message}`;
+          connection.terminate();
+          return;
+        }
+        const row = event?.state;
+        if (typeof row?.name !== 'string' || typeof row.status !== 'string') {
+          failure = 'a state event had no process name or status';
+          connection.terminate();
+          return;
+        }
+        // The existing check reads the current state and the acknowledged stop journal together.
+        if (event?.snapshot !== true && (row.status === 'Completed' || raised.has(`${GAVE_UP_REF}${row.name}`))) {
+          void changed();
+        }
+      });
+    }
+    catch (error) {
+      streamUnavailable((error as Error).message);
+    }
   };
   const wrote = (file: string, hash: string): void => {
     try {
@@ -304,11 +381,11 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
       }
       finally {
         pendingStops.delete(request);
-        if (!acknowledged) void check();
+        if (!acknowledged) void changed();
       }
     },
   };
-  handle = host.registerChannel(SCHEME, servicesChannel({ machine, driver: controller, state, wrote, changed: () => { void check(); } }));
+  handle = host.registerChannel(SCHEME, servicesChannel({ machine, driver: controller, state, wrote, changed: () => { void changed(); } }));
   host.registerResourceProvider(SERVICE_SCHEME, serviceProvider({ machine, driver }));
   const changes = servicesProvider({ machine, driver });
   // A line of the change log that could not be read is said once, as an alert, whoever read it.
@@ -324,8 +401,24 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
     read: async (uri, wanted, reader) => noted(await changes.read(uri, wanted, reader)),
     readRange: async (uri, wanted, range) => noted(await changes.readRange!(uri, wanted, range)),
   });
-  void check();
-  const timer = setInterval(() => { void check(); }, DRIFT_EVERY_MS);
+  connectStream();
+  void changed();
+  let nextDriftAt = Date.now() + DRIFT_EVERY_MS;
+  const timer = setInterval(() => {
+    const at = Date.now();
+    const due = at >= nextDriftAt;
+    if (due) nextDriftAt = at + DRIFT_EVERY_MS;
+    // One timer keeps the usual drift cadence and also covers a lost supervisor stream.
+    const disconnected = stream === undefined;
+    if (disconnected) connectStream();
+    if (due || disconnected) void changed();
+  }, STREAM_RETRY_MS);
   timer.unref();
-  host.registerClose(() => { clearInterval(timer); });
+  host.registerClose(() => {
+    closed = true;
+    clearInterval(timer);
+    const connection = stream;
+    stream = undefined;
+    connection?.terminate();
+  });
 };
