@@ -317,6 +317,13 @@ it('refuses a signer that could not be run, a nonzero answer, and an answer that
   const failed = habMintChild({ environment: { ...HAB }, spawn: answering({ code: 3, stderr: 'refused: worker is not declared\n' }, []) });
   expect(await failed({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('hab answered 3: refused: worker is not declared') });
 
+  // hab logs a structured recovery line after its reason; the refusal must carry the reason, not the log line.
+  const logged = habMintChild({
+    environment: { ...HAB },
+    spawn: answering({ code: 1, stderr: 'hab mint-child-token: no verified parent for this caller\n{"verb":"hab mint-child-token","outcome":"unknown"}\n' }, []),
+  });
+  expect(await logged({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('hab answered 1: hab mint-child-token: no verified parent for this caller') });
+
   const two = habMintChild({ environment: { ...HAB }, spawn: answering({ stdout: 'one\ntwo\n' }, []) });
   expect(await two({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('expected one JSON line') });
 

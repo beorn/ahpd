@@ -259,7 +259,10 @@ export function habMintChild(options: HabMintOptions = {}): MintChild {
     const where = `${service}: child ${child} was not given an identity`;
     if ('failed' in answer) return { refused: `${where}: hab could not be run: ${answer.failed}` };
     if (answer.code !== 0) {
-      const said = answer.stderr.trim().split('\n').filter((line) => line !== '').slice(-1)[0];
+      // hab writes its reason first and a structured recovery line last, so the last line is not the reason.
+      // Take the last line that is prose; fall back to the last line when every line is structured.
+      const lines = answer.stderr.trim().split('\n').filter((line) => line !== '');
+      const said = [...lines].reverse().find((line) => !line.trimStart().startsWith('{')) ?? lines[lines.length - 1];
       return { refused: `${where}: hab answered ${answer.code}${said === undefined ? '' : `: ${said}`}` };
     }
     const identity = readHabAnswer(answer.stdout, where);
