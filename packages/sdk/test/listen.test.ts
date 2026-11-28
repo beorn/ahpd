@@ -1,5 +1,6 @@
 import { WAIT_MS } from '../../../tools/wait.ts';
 import { afterEach, expect, it, vi } from 'vitest';
+import { once } from 'node:events';
 import { connect, type Socket } from 'node:net';
 import { WebSocket } from 'ws';
 import { echo } from '../../../examples/echo/agent.js';
@@ -121,6 +122,50 @@ it('hands a tap every frame in both directions, numbered by connection', async (
   expect(JSON.parse(seen[0]?.text ?? '{}')).toMatchObject({ id: 1, method: 'ping' });
   expect(JSON.parse(seen[1]?.text ?? '{}')).toMatchObject({ id: 1, result: { pong: true } });
   expect(JSON.parse(seen[3]?.text ?? '{}')).toMatchObject({ id: 7, result: { pong: true } });
+});
+
+it('keeps an idle client that answers WebSocket pings and names a real heartbeat timeout', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] });
+  try {
+    running = await listen({ port: 0 }, nothing);
+    const url = `ws://127.0.0.1:${running.port}`;
+    const greet = async (socket: WebSocket): Promise<void> => {
+      await once(socket, 'open');
+      const answer = once(socket, 'message');
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }));
+      const [message] = await answer;
+      expect(JSON.parse(String(message))).toMatchObject({ id: 1, result: {} });
+    };
+    const answering = new WebSocket(url);
+    const silent = new WebSocket(url, { autoPong: false });
+    await Promise.all([greet(answering), greet(silent)]);
+    const firstProbe = Promise.race([
+      once(answering, 'ping').then(() => 'WebSocket ping'),
+      once(answering, 'message').then(() => 'application message'),
+    ]);
+    const silentClose = once(silent, 'close');
+    let pings = 0;
+    answering.on('ping', () => { pings++; });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await firstProbe).toBe('WebSocket ping');
+    // Run real socket I/O between clock advances so the host can receive each pong.
+    for (let seconds = 0; seconds < 30; seconds++) {
+      await new Promise((resolve) => { setImmediate(resolve); });
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+
+    const [code, reason] = await silentClose;
+    expect({ code, reason: String(reason) }).toEqual({ code: 1001, reason: 'WebSocket heartbeat timed out' });
+    expect(pings).toBeGreaterThan(1);
+    expect(answering.readyState).toBe(WebSocket.OPEN);
+    const answer = once(answering, 'message');
+    answering.send(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping', params: { channel: 'ahp-root://' } }));
+    const [message] = await answer;
+    expect(JSON.parse(String(message))).toMatchObject({ id: 2, result: {} });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('refuses plain requests on Node without the Node listener they are served through', async () => {

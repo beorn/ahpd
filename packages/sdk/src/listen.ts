@@ -38,8 +38,6 @@ interface Bound {
   peer: ReturnType<typeof createPeer>;
   connected: Connected | Raw;
   seen: ReturnType<typeof tapping>;
-  /** The check that the client is still there. */
-  alive: ReturnType<typeof watchClient>;
 }
 
 /**
@@ -284,7 +282,7 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
     } }).Bun;
     // Per socket, because Bun's handler table is one set of callbacks for
     // every connection - `ws` is the only thing distinguishing them.
-    const bound = new Map<object, Bound>();
+    const bound = new Map<BunSocket, Bound & { alive: ReturnType<typeof watchClient> }>();
     const server = Bun.serve({
       port: options.port,
       hostname: host,
@@ -345,7 +343,11 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
               origin: arrival?.origin,
             })),
             seen,
-            alive: watchClient(peer, { close: () => ws.close(), isOpen: () => ws.readyState === 1 }),
+            alive: watchClient({
+              ping: () => { ws.ping(); },
+              close: () => ws.close(GOING_AWAY, HEARTBEAT_TIMEOUT),
+              isOpen: () => ws.readyState === 1,
+            }),
           });
         },
         message(ws: BunSocket, raw: string | Uint8Array) {
@@ -355,6 +357,9 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
           held.seen.in(text);
           held.alive.heard(text);
           take(held.connected, held.peer, text);
+        },
+        pong(ws: BunSocket) {
+          bound.get(ws)?.alive.heard();
         },
         close(ws: BunSocket) {
           const held = bound.get(ws);
@@ -374,7 +379,7 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
       guarded: token !== undefined,
       // The sockets first, since a stop waits on an open one as on a request.
       close: () => {
-        for (const ws of bound.keys()) (ws as BunSocket).close(GOING_AWAY, STOPPING);
+        for (const ws of bound.keys()) ws.close(GOING_AWAY, STOPPING);
         return stopBun(server);
       },
     };
@@ -408,6 +413,7 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
       const forwardedFor = request.headers.get('x-forwarded-for') ?? undefined;
       const userAgent = request.headers.get('user-agent') ?? undefined;
       const origin = request.headers.get('origin') ?? undefined;
+      // Deno sends control pings and checks pongs with its default idle timeout.
       const { socket, response } = Deno.upgradeWebSocket(request);
       sockets.add(socket);
       let held: Bound | undefined;
@@ -428,7 +434,6 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
             url: request.url, node: identity.node, socket: number, address, forwardedFor, userAgent, origin,
           })),
           seen,
-          alive: watchClient(peer, { close: () => socket.close(), isOpen: () => socket.readyState === 1 }),
         };
       };
       socket.onmessage = (event) => {
@@ -436,10 +441,9 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
         if (!open) return;
         const text = String(event.data);
         open.seen.in(text);
-        open.alive.heard(text);
         take(open.connected, open.peer, text);
       };
-      socket.onclose = () => { sockets.delete(socket); held?.alive.stop(); held?.peer.close(); held?.connected.close(); held = undefined; };
+      socket.onclose = () => { sockets.delete(socket); held?.peer.close(); held?.connected.close(); held = undefined; };
       return response;
     });
     return {
@@ -536,13 +540,18 @@ export async function listen(options: ListenOptions, onConnect: OnConnect): Prom
       origin: request.headers.origin,
     }));
     decided.delete(request);
-    const alive = watchClient(peer, { close: () => socket.close(), isOpen: () => socket.readyState === 1 });
+    const alive = watchClient({
+      ping: () => socket.ping(),
+      close: () => socket.close(GOING_AWAY, HEARTBEAT_TIMEOUT),
+      isOpen: () => socket.readyState === 1,
+    });
     socket.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : raw.toString('utf8');
       seen.in(text);
       alive.heard(text);
       take(connected, peer, text);
     });
+    socket.on('pong', () => { alive.heard(); });
     socket.on('close', () => { alive.stop(); peer.close(); connected.close(); });
   });
 
@@ -628,11 +637,11 @@ export async function serveRequests(options: RequestsOptions, handler: RequestHa
  */
 const CLOSE_GRACE_MS = 2_000;
 
-/** The close code each WebSocket client gets when its listener closes: 1001, going away. */
+/** The close code for an endpoint going away, as defined by RFC 6455. */
 const GOING_AWAY = 1001;
 
-/** The reason sent with `GOING_AWAY`. */
 const STOPPING = 'the host is stopping';
+const HEARTBEAT_TIMEOUT = 'WebSocket heartbeat timed out';
 
 /**
  * Close a `node:http` server: the port at once, idle connections at once and
@@ -788,7 +797,7 @@ export async function overStdio(options: StdioOptions, onConnect: OnConnect): Pr
 /** A server `Bun.serve` answered: `stop(true)` drops the connections still open, `stop(false)` waits for them. */
 interface BunServer { stop(closeActive?: boolean): void | Promise<void>; port: number }
 
-interface BunSocket { send(text: string): unknown; close(code?: number, reason?: string): void; readyState: number; getBufferedAmount(): number; data?: unknown }
+interface BunSocket { send(text: string): unknown; ping(): unknown; close(code?: number, reason?: string): void; readyState: number; getBufferedAmount(): number; data?: unknown }
 
 interface DenoSocket {
   send(text: string): void;
@@ -832,10 +841,11 @@ interface NodeServer {
 
 interface NodeSocket {
   send(text: string): void;
-  close(): void;
+  ping(): void;
+  close(code?: number, reason?: string): void;
   readyState: number;
   /** What `ws` has taken and the client has not read, as `@types/ws` declares it. */
   bufferedAmount: number;
   on(event: 'message', handler: (raw: string | Buffer) => void): void;
-  on(event: 'close', handler: () => void): void;
+  on(event: 'close' | 'pong', handler: () => void): void;
 }

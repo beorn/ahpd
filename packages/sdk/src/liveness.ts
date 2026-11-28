@@ -3,14 +3,13 @@
  * `ProtocolLivenessMonitor`.
  *
  * A client that sends nothing for `pingIntervalMs` is sent a `ping`, and one
- * still silent `timeoutMs` later is closed. Any inbound data resets the wait.
+ * still silent `timeoutMs` later is closed. Inbound data and WebSocket pongs
+ * reset the wait.
  * A host under load defers the close and gives the client a fresh window, so a
  * stall of this process is not taken for a silent client.
  * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/common/protocolLivenessMonitor.ts
  * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/protocolServerHandler.ts#L153-L154
  */
-import type { Peer } from './types/rpc.js';
-
 /** How long a client may be silent before it is pinged, VS Code's `CLIENT_PING_INTERVAL`. */
 export const CLIENT_PING_INTERVAL = 10_000;
 /** How long a pinged client may stay silent before it is closed, VS Code's `CLIENT_LIVENESS_TIMEOUT`. */
@@ -152,26 +151,25 @@ const GREETING = /"method"\s*:\s*"(?:initialize|reconnect)"/;
 /**
  * The monitor of one socket, as the listener wires it.
  *
- * The client is checked from its `initialize` or `reconnect` on, as VS Code
- * checks a connection from its handshake. The ping is a request `ping` on the
- * root channel, which a client answers or refuses: either is data.
- * https://github.com/microsoft/vscode/blob/ddbdd50a9ed1/src/vs/platform/agentHost/node/protocolServerHandler.ts#L859-L875
+ * The client is checked from its `initialize` or `reconnect` on. Use a
+ * WebSocket control frame so every WebSocket client can reply, including
+ * clients that only implement AHP's client-to-server `ping` command.
  */
 export const watchClient = (
-  peer: Pick<Peer, 'request'>, socket: { close(): void; isOpen(): boolean }, options: Partial<LivenessOptions> = {},
-): { heard(text: string): void; stop(): void } => {
+  socket: { ping(): void; close(): void; isOpen(): boolean }, options: Partial<LivenessOptions> = {},
+): { heard(text?: string): void; stop(): void } => {
   let greeted = false;
   const monitor = new LivenessMonitor({
     pingIntervalMs: CLIENT_PING_INTERVAL,
     timeoutMs: CLIENT_LIVENESS_TIMEOUT,
     canCheck: () => greeted && socket.isOpen(),
-    onPing: () => { void peer.request('ping', { channel: 'ahp-root://' }, CLIENT_LIVENESS_TIMEOUT).catch(() => { /* silence is what the close timer measures */ }); },
+    onPing: () => { socket.ping(); },
     onTimeout: () => { socket.close(); },
     ...options,
   });
   return {
     heard: (text) => {
-      if (!greeted && GREETING.test(text)) greeted = true;
+      if (!greeted && text !== undefined && GREETING.test(text)) greeted = true;
       monitor.recordInboundTraffic();
     },
     stop: () => { monitor.stop(); },

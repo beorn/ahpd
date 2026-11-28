@@ -14,51 +14,54 @@ const calm = { hasHighLoad: () => false };
 
 /** A socket the monitor watches, recording what it is sent and whether it was closed. */
 const socket = () => {
-  const pinged: unknown[] = [];
+  let pings = 0;
   let open = true;
-  const peer = { request: (method: string, params: unknown) => { pinged.push({ method, params }); return new Promise<unknown>(() => {}); } };
-  const wire = { close: () => { open = false; }, isOpen: () => open };
-  return { pinged, peer, wire, closed: () => !open };
+  const wire = { ping: () => { pings++; }, close: () => { open = false; }, isOpen: () => open };
+  return { pings: () => pings, wire, closed: () => !open };
 };
 
 describe('a client the host watches', () => {
   it('pings a greeted client after 10 s of silence, and closes it 20 s later', () => {
     const one = socket();
-    const alive = watchClient(one.peer, one.wire, { loadEstimator: calm });
+    const alive = watchClient(one.wire, { loadEstimator: calm });
     alive.heard('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
     vi.advanceTimersByTime(CLIENT_PING_INTERVAL - 1);
-    expect(one.pinged).toEqual([]);
+    expect(one.pings()).toBe(0);
     vi.advanceTimersByTime(1);
-    expect(one.pinged).toEqual([{ method: 'ping', params: { channel: 'ahp-root://' } }]);
+    expect(one.pings()).toBe(1);
     vi.advanceTimersByTime(CLIENT_LIVENESS_TIMEOUT - 1);
     expect(one.closed()).toBe(false);
     vi.advanceTimersByTime(1);
     expect(one.closed()).toBe(true);
   });
 
-  it('starts the wait again on any data, so an answered ping keeps the client', () => {
+  it('starts the wait again on inbound data or a pong', () => {
     const one = socket();
-    const alive = watchClient(one.peer, one.wire, { loadEstimator: calm });
+    const alive = watchClient(one.wire, { loadEstimator: calm });
     alive.heard('{"jsonrpc":"2.0","id":1,"method":"reconnect","params":{}}');
     vi.advanceTimersByTime(CLIENT_PING_INTERVAL + 5_000);
-    expect(one.pinged).toHaveLength(1);
+    expect(one.pings()).toBe(1);
     alive.heard('{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}');
     vi.advanceTimersByTime(CLIENT_LIVENESS_TIMEOUT);
     expect(one.closed()).toBe(false);
-    expect(one.pinged).toHaveLength(2);
+    expect(one.pings()).toBe(2);
+    alive.heard();
+    vi.advanceTimersByTime(CLIENT_LIVENESS_TIMEOUT);
+    expect(one.closed()).toBe(false);
+    expect(one.pings()).toBe(3);
   });
 
   it('leaves a client alone until it greets the host, and after the socket closes', () => {
     const one = socket();
-    const alive = watchClient(one.peer, one.wire, { loadEstimator: calm });
+    const alive = watchClient(one.wire, { loadEstimator: calm });
     alive.heard('{"jsonrpc":"2.0","method":"unsubscribe","params":{}}');
     vi.advanceTimersByTime(60_000);
-    expect(one.pinged).toEqual([]);
+    expect(one.pings()).toBe(0);
     expect(one.closed()).toBe(false);
     alive.heard('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
     alive.stop();
     vi.advanceTimersByTime(60_000);
-    expect(one.pinged).toEqual([]);
+    expect(one.pings()).toBe(0);
   });
 });
 
