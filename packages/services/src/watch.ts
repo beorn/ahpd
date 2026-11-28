@@ -103,8 +103,12 @@ export function watchAlerts(
       if (rows !== undefined && row === undefined) { delete held[record.name]; continue; }
       if (row !== undefined && row.endedAt !== undefined && row.endedAt !== '' && row.exitCode !== undefined
         && (row.status === 'Completed' || row.status === 'Scheduled')) {
-        if (row.exitCode === 0 || record.reports?.includes(row.exitCode) === true) { delete held[record.name]; continue; }
-        held[record.name] = { exit: row.exitCode, restarts: row.restarts ?? 0, at: row.endedAt };
+        // 6ea4f263 by its letter: the job's next observed *success* clears it. A code the entry declares report-only
+        // neither raises a failure nor counts as that success, so a failure already held stays held through one.
+        if (row.exitCode === 0) { delete held[record.name]; continue; }
+        if (record.reports?.includes(row.exitCode) !== true) {
+          held[record.name] = { exit: row.exitCode, restarts: row.restarts ?? 0, at: row.endedAt };
+        }
       }
       const ran = held[record.name];
       if (ran === undefined) continue;
@@ -113,8 +117,8 @@ export function watchAlerts(
         ref: `${SCHEDULED_FAILED_REF}${record.name}`,
         text: `scheduled job ${record.name} on ${machine}: its last run exited ${ran.exit} at ${ran.at}. This is a failed `
           + `scheduled run, not a service whose retries ran out, so the next slot will run it again. Its log is that `
-          + `run\'s own output, read with the driver\'s logs read for ${record.name} (process-compose keeps it in `
-          + `memory, so there is no path to name); ${ownerOf(record)}`,
+          + `run\'s own output, at hh-service://${record.name}/logs (process-compose keeps it in memory, so there `
+          + `is no path to name); ${ownerOf(record)}`,
       });
       continue;
     }

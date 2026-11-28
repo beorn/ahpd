@@ -290,7 +290,7 @@ describe('a scheduled run that failed (#39156 C, @cto 6ea4f263)', () => {
     expect(alerts[0]!.text).toContain('scheduled job nightly on test-machine');
     expect(alerts[0]!.text).toContain('exited 17 at 2026-11-28T11:00:03-08:00');
     expect(alerts[0]!.text).toContain('not a service whose retries ran out');
-    expect(alerts[0]!.text).toContain('read with the driver\'s logs read for nightly');
+    expect(alerts[0]!.text).toContain('at hh-service://nightly/logs');
     expect(alerts[0]!.text).toContain('its owner is program nightly-report (x-hh-source)');
     expect(alerts.some((one) => one.ref.startsWith(GAVE_UP_REF))).toBe(false);
   });
@@ -303,6 +303,19 @@ describe('a scheduled run that failed (#39156 C, @cto 6ea4f263)', () => {
     // A job waiting for its first slot has no end time and no code: nothing was observed, so nothing is claimed.
     expect(watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Pending', restarts: 0 }])).toEqual([]);
     expect(watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Scheduled', restarts: 0 }])).toEqual([]);
+  });
+
+  it('does not let a report-only run clear a failure already held', () => {
+    const answer = listing();
+    const held: Record<string, { exit: number; restarts: number; at: string }> = { reporting: { exit: 9, restarts: 0, at: '2026-11-28T11:30:04-08:00' } };
+    // The entry declares 3 report-only; a 3 neither raises nor counts as the success that clears the held 9.
+    const alerts = watchAlerts('test-machine', answer, [{ name: 'reporting', status: 'Scheduled', exitCode: 3, restarts: 0, endedAt: '2026-11-29T11:30:04-08:00' }], held);
+    expect(alerts.map((one) => one.ref)).toEqual([`${SCHEDULED_FAILED_REF}reporting`]);
+    expect(alerts[0]!.text).toContain('exited 9 at 2026-11-28T11:30:04-08:00');
+    expect(held['reporting']).toMatchObject({ exit: 9 });
+    // An observed success is what clears it.
+    expect(watchAlerts('test-machine', answer, [{ name: 'reporting', status: 'Scheduled', exitCode: 0, restarts: 0, endedAt: '2026-11-30T11:30:02-08:00' }], held)).toEqual([]);
+    expect(held['reporting']).toBeUndefined();
   });
 
   it('keeps the failure while the job runs again, and clears only on an observed success', () => {

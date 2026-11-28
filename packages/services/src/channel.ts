@@ -27,7 +27,7 @@ import {
   type AcknowledgeParams, type Answer, type Caller, type Listing, type Machine, type PutParams, type Refusal,
 } from './compose.js';
 import { DRIFT_REF, type DriftAlert, type DriftFacts } from './drift.js';
-import { CUT_COMMAND_REF, GAVE_UP_REF } from './watch.js';
+import { CUT_COMMAND_REF, GAVE_UP_REF, SCHEDULED_FAILED_REF } from './watch.js';
 import type { ServiceRecord } from './record.js';
 
 /** The channel's scheme, and its one URI. */
@@ -132,7 +132,14 @@ export interface ServiceRow {
   /** Whether a `-f` file defines it: process-compose can hold one no file defines. */
   readonly inFiles: boolean;
   /** Its state as process-compose has it, or why that could not be read. */
-  readonly state: { readonly status: string; readonly why?: string };
+  readonly state: {
+    readonly status: string;
+    readonly why?: string;
+    /** The last run's exit code, when process-compose said one (#39156 C): a scheduled job keeps it after the run ends. */
+    readonly exitCode?: number;
+    /** The last run's end time as process-compose said it, so a completion can be measured rather than inferred. */
+    readonly endedAt?: string;
+  };
   /** The drift alerts about this service. */
   readonly alerts: readonly DriftAlert[];
 }
@@ -153,7 +160,7 @@ export interface ServicesState {
   readonly error?: string;
 }
 
-const NAMED = [`${DRIFT_REF}not-loaded:`, `${DRIFT_REF}not-in-files:`, GAVE_UP_REF, CUT_COMMAND_REF];
+const NAMED = [`${DRIFT_REF}not-loaded:`, `${DRIFT_REF}not-in-files:`, GAVE_UP_REF, CUT_COMMAND_REF, SCHEDULED_FAILED_REF];
 
 /** The service a drift alert is about, or nothing for one about the machine. */
 const aboutService = (alert: DriftAlert): string | undefined => {
@@ -166,11 +173,19 @@ const aboutService = (alert: DriftAlert): string | undefined => {
  * each with its alerts, and the machine's own alerts beside them.
  */
 export function servicesState(machine: string, listing: Answer<Listing>, running: DriftFacts['running'] | undefined, alerts: readonly DriftAlert[]): ServicesState {
-  const held = typeof running === 'object' ? new Map(running.map((one) => [one.name, one.status])) : undefined;
+  const held = typeof running === 'object' ? new Map(running.map((one) => [one.name, one])) : undefined;
   const stateOf = (name: string): ServiceRow['state'] => {
     if (running === undefined) return { status: 'unknown', why: 'process-compose has not been read yet' };
     if (typeof running === 'string') return { status: 'unknown', why: running };
-    return { status: held!.get(name) ?? 'not loaded' };
+    const row = held!.get(name);
+    if (row === undefined) return { status: 'not loaded' };
+    // #39156 C: the exit code and the run's end time travel with the status, so a reader (the steward included) can
+    // tell a measured completion from an absence of news.
+    return {
+      status: row.status,
+      ...(row.exitCode === undefined ? {} : { exitCode: row.exitCode }),
+      ...(row.endedAt === undefined || row.endedAt === '' ? {} : { endedAt: row.endedAt }),
+    };
   };
   const named = (name: string): DriftAlert[] => alerts.filter((one) => aboutService(one) === name);
   const rows: ServiceRow[] = [];
