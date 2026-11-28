@@ -62,7 +62,7 @@ const asked = (url: string, token: string, init: RequestInit = {}): Promise<Resp
 
 it('sends the token the host holds now, so a renewal applies on the next request with no reconnect', async () => {
   let token = 'first';
-  const endpoint = servers.openProxy({ url: at, tokenNow: () => token });
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => token }, 'session:renewing');
   if (endpoint === undefined) throw new Error('no endpoint');
 
   expect((await asked(endpoint.url, endpoint.token))?.status).toBe(200);
@@ -81,7 +81,7 @@ it('passes an SSE stream through as it arrives', async () => {
     response.write('event: message\ndata: {"n":1}\n\n');
     more = () => { response.end('event: message\ndata: {"n":2}\n\n'); };
   };
-  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' }, 'session:streaming');
   if (endpoint === undefined) throw new Error('no endpoint');
 
   const response = await asked(endpoint.url, endpoint.token, { method: 'GET', headers: { accept: 'text/event-stream', 'mcp-session-id': 'up-1' } });
@@ -101,7 +101,7 @@ it('passes an SSE stream through as it arrives', async () => {
 
 it('says a 401, and a 403 with the scope it named, and keeps the upstream\'s challenge from the agent', async () => {
   const refusals: UpstreamRefusal[] = [];
-  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't', refused: (one) => { refusals.push(one); } });
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't', refused: (one) => { refusals.push(one); } }, 'session:refused');
   if (endpoint === undefined) throw new Error('no endpoint');
 
   answer = (_request, response) => {
@@ -124,7 +124,7 @@ it('says a 401, and a 403 with the scope it named, and keeps the upstream\'s cha
 });
 
 it('refuses a wrong endpoint token with 401 and sends nothing upstream', async () => {
-  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' }, 'session:wrong-token');
   if (endpoint === undefined) throw new Error('no endpoint');
 
   expect((await asked(endpoint.url, 'not-the-token'))?.status).toBe(401);
@@ -132,7 +132,7 @@ it('refuses a wrong endpoint token with 401 and sends nothing upstream', async (
 });
 
 it('forwards only the allow-listed headers, sends the configured ones, and the upstream it opened with', async () => {
-  const endpoint = servers.openProxy({ url: at, headers: { 'x-tenant': 'acme', authorization: 'Bearer configured' } });
+  const endpoint = servers.openProxy({ url: at, headers: { 'x-tenant': 'acme', authorization: 'Bearer configured' } }, 'session:allow-listed');
   if (endpoint === undefined) throw new Error('no endpoint');
 
   const response = await servers.request(new Request(`${endpoint.url}/tools/../../admin?to=http://evil.example`, {
@@ -160,12 +160,23 @@ it('forwards only the allow-listed headers, sends the configured ones, and the u
   expect(headers.host).toBe(new URL(at).host);
 });
 
+it('names the session the host opened as, and replaces one the request carried (#39153)', async () => {
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' }, 'session:knows-its-own');
+  if (endpoint === undefined) throw new Error('no endpoint');
+
+  await asked(endpoint.url, endpoint.token, { headers: { 'x-ahpd-session': 'session:forged' } });
+  await asked(endpoint.url, endpoint.token);
+
+  // The agent's own word for the session is a claim the host never repeats, and the host's own is on every call.
+  expect(seen.map((one) => one.headers['x-ahpd-session'])).toEqual(['session:knows-its-own', 'session:knows-its-own']);
+});
+
 it('refuses a redirect rather than follow it', async () => {
   answer = (_request, response) => {
     response.writeHead(307, { location: 'http://evil.example/mcp' });
     response.end();
   };
-  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' }, 'session:redirect');
   if (endpoint === undefined) throw new Error('no endpoint');
 
   const response = await asked(endpoint.url, endpoint.token);
@@ -178,7 +189,7 @@ it('answers 404 once closed, and ends a stream that was open', async () => {
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     response.write('event: message\ndata: {}\n\n');
   };
-  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' });
+  const endpoint = servers.openProxy({ url: at, tokenNow: () => 't' }, 'session:closing');
   if (endpoint === undefined) throw new Error('no endpoint');
   const open = await asked(endpoint.url, endpoint.token, { method: 'GET', headers: { accept: 'text/event-stream' } });
   const reader = open!.body!.getReader();

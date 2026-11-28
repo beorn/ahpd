@@ -261,5 +261,7 @@ waiting.
 Added after this census: the `#39004` tool-call label row above (`716fb5714`, merged 2026-11-27) is
 `upstream ask not written`, so the open-ask count is 90 until the next census re-measures.
 
+- `dd53ab0f7` · a session's pass-through to a configured MCP server names that session upstream in `x-ahpd-session` (host's own value, never the request's) · #39153 (a plugin's server offered to several sessions cannot tell them apart) · upstream ask not written
+
 The honest shape of the target is therefore: 89 upstream asks, and a decision on the 17 hab-protocol patches, which
 stay ours unless upstream grows hab's protocol. The other 80 fork-only commits are ours by nature.

@@ -154,6 +154,10 @@ A backend that can call the host's tools in process is handed them as `Start.too
 
 A backend that cannot - an ACP agent, which asks its client for tools - is handed an endpoint instead. `start.toolsServer()` opens one MCP server per session on the host's own listener, under `/ahp-mcp`, with one path and one bearer token for that session, speaking streamable HTTP at revision `2025-06-18` and answering `initialize`, `tools/list` and `tools/call`. The same list as the in-process case, and a `tools/call` for a client's tool is handed to the backend's runner rather than run here. The endpoint is opened once per session and closed when the session goes. A daemon over stdio has nothing to serve on, so a session there is offered none. The shape that goes to an agent, and what a server that cannot take an `http` server is told, is [PLUGINS.md](../plugins/PLUGINS.md).
 
+A session reaching a configured `mcpServers` entry through the host's pass-through gets one endpoint per session too,
+and every request it forwards names that session in `x-ahpd-session` - the host's own word, never the request's - so
+a server offered to several sessions can tell them apart (#39153).
+
 ## Configuration keys
 
 | Key | Values | Default | What changes |

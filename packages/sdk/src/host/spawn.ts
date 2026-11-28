@@ -1358,7 +1358,7 @@ export function createSpawn(ctx: HostContext): Spawn {
     /** A pass-through to one upstream MCP server, closed with the session as a tools endpoint is. */
     const proxyServer = (upstream: ProxyUpstream): ProxyEndpoint | undefined => {
       if (bare) return undefined;
-      const opened = options.toolsServers?.openProxy(upstream);
+      const opened = options.toolsServers?.openProxy(upstream, uri);
       if (opened === undefined) return undefined;
       const open = ctx.served.get(uri) ?? [];
       open.push(opened);

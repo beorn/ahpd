@@ -180,8 +180,14 @@ export interface ToolsServers {
   /**
    * Open a pass-through to one upstream MCP server, under a path and a token
    * of its own. Undefined where nothing can be served, as for `open`.
+   *
+   * `session` is the session the pass-through belongs to, and every request it
+   * forwards says so in `x-ahpd-session`. The agent holds the endpoint's token
+   * and nothing else, so a server behind it that is offered to several sessions
+   * can tell them apart by the host's own word rather than by guessing from the
+   * request (#39153).
    */
-  openProxy(upstream: ProxyUpstream): ProxyEndpoint | undefined;
+  openProxy(upstream: ProxyUpstream, session: string): ProxyEndpoint | undefined;
   /** Answer a request for one of the endpoints open here, or nothing for a path that is not one. */
   request(request: Request): Promise<Response | undefined>;
 }
@@ -196,9 +202,21 @@ export interface ToolsServers {
 const FORWARDED = ['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'];
 const RETURNED = ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'cache-control'];
 
+/**
+ * The header that names the session a forwarded request belongs to.
+ *
+ * Not in `FORWARDED` and never read from the request: an agent's own value
+ * would be a claim, and the host's is a fact. `forward` sets it from the
+ * endpoint's session after the allow-list is copied, so a request that carried
+ * one anyway has it replaced.
+ */
+const SESSION_HEADER = 'x-ahpd-session';
+
 /** One open proxy endpoint. */
 interface Proxied extends ProxyUpstream {
   token: string;
+  /** The session this endpoint belongs to, as every forwarded request names it. */
+  session: string;
   inflight: Set<AbortController>;
 }
 
@@ -223,6 +241,7 @@ const forward = async (request: Request, proxied: Proxied): Promise<Response> =>
     const value = request.headers.get(name);
     if (value !== null) headers.set(name, value);
   }
+    headers.set(SESSION_HEADER, proxied.session);
   const abort = new AbortController();
   proxied.inflight.add(abort);
   let answer: Response;
@@ -546,12 +565,12 @@ export const toolServers = (options: ToolsServerOptions): ToolsServers => {
         },
       };
     },
-    openProxy: (upstream) => {
+        openProxy: (upstream, session) => {
       const origin = options.origin();
       if (origin === undefined) return undefined;
       const path = `${TOOLS_PREFIX}/${crypto.randomUUID()}`;
       const token = crypto.randomUUID();
-      proxies.set(path, { ...upstream, token, inflight: new Set() });
+            proxies.set(path, { ...upstream, token, session, inflight: new Set() });
       return {
         url: `${origin.replace(/\/$/, '')}${path}`,
         token,
