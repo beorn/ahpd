@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isWrapperCommand, wrapperExecutable } from '../src/self-command.js';
 
 const STORE = '/nix/store/r631q12dbiy1qcmh59ammfzmbmq1k2hp-ahpd-trial-0.15.0-rc.4-source.fba91316';
-const PACKAGED_MODULE = `file://${STORE}/lib/ahpd-trial/node_modules/@ahpd/services/dist/self-command.js`;
+const PACKAGED_MODULE = `file://${STORE}/lib/ahpd-trial/packages/services/dist/self-command.js`;
 const CHECKOUT_MODULE = 'file:///hh/var/@dev/luna6/39156-compose/packages/services/src/self-command.ts';
 
 describe('the executable word a wrapper line names (#39156 B)', () => {
@@ -14,8 +14,10 @@ describe('the executable word a wrapper line names (#39156 B)', () => {
     expect(wrapperExecutable(PACKAGED_MODULE, () => false)).toBe('ahpd');
   });
 
-  it('keeps the bare word in a checkout, even when an unrelated bin/ahpd sits above it', () => {
-    expect(wrapperExecutable(CHECKOUT_MODULE, () => true)).toBe('ahpd');
+  it('stops at the checkout, so an unrelated bin/ahpd above the repository is never named', () => {
+    const at = (path: string): boolean =>
+      path === '/hh/bin/ahpd' || path === '/hh/var/@dev/luna6/39156-compose/.git';
+    expect(wrapperExecutable(CHECKOUT_MODULE, at)).toBe('ahpd');
   });
 
   it('recognises both executable words as the wrapper, and nothing else', () => {
