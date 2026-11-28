@@ -22,9 +22,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
-  openSync,
-  closeSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -32,7 +31,6 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
-  writeSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, join } from 'node:path';
@@ -189,28 +187,43 @@ const readLock = (layout: DeployLayout): DeployLock | undefined => {
 };
 
 /**
- * Take the deploy lock, or say who holds it. `wx` is the whole mutual exclusion: two calls, one wins the create.
+ * The lock body in a file of its own beside the lock, so the lock itself only ever appears or changes whole. A reader
+ * polls the lock while the child takes it and moves it through the steps; an empty or half-written lock reads as
+ * 'unreadable', and the plugin then refuses its own deploy as RUNNING (#39160).
+ */
+const writeLockBody = (layout: DeployLayout, body: DeployLock): string => {
+  const staged = `${paths(layout).lock}.${String(process.pid)}.${randomUUID()}`;
+  writeFileSync(staged, `${JSON.stringify(body)}\n`, { flag: 'wx' });
+  return staged;
+};
+
+/**
+ * Take the deploy lock, or say who holds it. `link` is the whole mutual exclusion: it refuses a name that exists, so
+ * of two calls one wins, and the winner's lock appears with its body already in it.
  */
 const takeLock = (layout: DeployLayout, body: DeployLock): boolean => {
   mkdirSync(paths(layout).root, { recursive: true });
+  const staged = writeLockBody(layout, body);
   try {
-    const descriptor = openSync(paths(layout).lock, 'wx');
-    try {
-      writeSync(descriptor, `${JSON.stringify(body)}\n`);
-    } finally {
-      closeSync(descriptor);
-    }
+    linkSync(staged, paths(layout).lock);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw error;
+  } finally {
+    rmSync(staged, { force: true });
   }
+};
+
+/** Replace the held lock's body whole: a rename swaps the name in one step, so a reader sees the old body or the new. */
+const rewriteLock = (layout: DeployLayout, body: DeployLock): void => {
+  renameSync(writeLockBody(layout, body), paths(layout).lock);
 };
 
 /** Move the lock's step forward before the step runs, so a crash names the step it was in. */
 const setLockStep = (layout: DeployLayout, body: DeployLock, step: DeployStep): DeployLock => {
   const next = { ...body, step };
-  writeFileSync(paths(layout).lock, `${JSON.stringify(next)}\n`);
+  rewriteLock(layout, next);
   return next;
 };
 
@@ -587,7 +600,7 @@ export const deploy = async (options: DeployOptions): Promise<DeployResult> => {
     throw error;
   }
   const resolving = { ...lock, to: sha };
-  writeFileSync(paths(layout).lock, `${JSON.stringify(resolving)}\n`);
+  rewriteLock(layout, resolving);
 
   const steps: DeployStepResult[] = [];
   // What a remote reader needs: which steps ran, how long, and how each ended - never the output, which a build may
