@@ -81,3 +81,37 @@ describe('the child identity on a service record (#39156 B)', () => {
       .toBe('its command uses the secrets wrapper in a form the driver does not write');
   });
 });
+
+/*
+ * The shape the promotion movers declare: a child identity, a landing, and the one non-secret path it needs at start,
+ * all on the same entry. Each field was tested on its own (#123/#126); this guards the combination the live witness
+ * writes, where a wrapper line that lost one of the three would still read back as a record that "mostly" matches.
+ */
+const MOVERS = `processes:
+  mover:
+    command: bun run mover.ts
+  api:
+    command: node api.js
+`;
+
+describe('a mover entry that names a child, a landing and a plain socket at once (#39156 B)', () => {
+  it('writes all three to one entry, and reads the identical record back', () => {
+    const before = fromNative('mover', { command: 'bun run mover.ts' }) as ServiceRecord;
+    const after = applyPatch(before, {
+      name: 'mover',
+      command: 'bun run mover.ts',
+      cwd: '/deploy/mover/current',
+      landing: '/deploy/mover/current',
+      child: 'mover',
+      env: { TRIBE_SOCKET: { plain: '/hh/main.hab/run/tribe.sock' } },
+    }) as ServiceRecord;
+    expect(after.child).toBe('mover');
+    expect(after.landing).toBe('/deploy/mover/current');
+
+    const text = editEntry(MOVERS, parseDocument(MOVERS), 'mover', nativeChanges(before, after));
+    expect(text).toContain("ahpd secrets exec mover --set TRIBE_SOCKET=/hh/main.hab/run/tribe.sock --child mover -- 'bun run mover.ts'");
+    expect(text).toContain('x-hh-landing: /deploy/mover/current');
+    expect(text).toContain('  api:\n    command: node api.js\n');
+    expect(same(reread(text, 'mover') as ServiceRecord, after)).toBe(true);
+  });
+});
