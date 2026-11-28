@@ -34,10 +34,10 @@ import {
   rpcError, servicesChannel, serviceProvider, servicesProvider, servicesState,
   type Driver, type ServicesChannel, type ServicesProvider, type ServicesState,
 } from './channel.js';
-import { isUnreadableLine, type ComposeMachine } from './compose.js';
+import { checkLandings, checkMemory, checkSchedules, isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
 import { pcStateStream } from './pc.js';
-import { GAVE_UP_REF, watchAlerts } from './watch.js';
+import { GAVE_UP_REF, readOutcomes, watchAlerts, writeOutcomes } from './watch.js';
 
 export { DRIVER, callerOf, type Driver } from './channel.js';
 
@@ -56,6 +56,12 @@ export const UNREADABLE_REF = 'services-changelog:unreadable';
 /** How often drift is checked, after the check at start. */
 export const DRIFT_EVERY_MS = 5 * 60 * 1000;
 const STREAM_RETRY_MS = 15_000;
+/** How often landing identities are read: a promotion should restart a resident within seconds, not five minutes. */
+export const LANDINGS_EVERY_MS = 5 * 1000;
+/** How often a per-run memory cap is read: an alarm wants a minute's notice, not a slot's. */
+export const MEMORY_EVERY_MS = 15 * 1000;
+/** How often missed cron slots are caught up: a slot is a minute, and the answer only changes at one. */
+export const SCHEDULES_EVERY_MS = 60 * 1000;
 
 /** The methods this plugin served before the channel, by the operation or read that replaced each. */
 export const RETIRED: Readonly<Record<string, string>> = {
@@ -255,23 +261,29 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
       const drift = await checkDrift(machine, stateFile, (facts) => { running = facts.running; });
       if (closed) return;
       // @cto 8f8fafce (2, 5): a program process-compose gave up on, and a command YAML cut short, beside the drift.
-      let watched = watchAlerts(machine.name, driver.list(machine), running);
+      // #39156 C (@dev/21): the terminal failure is carried across a re-run, so a restart in flight does not read as
+      // recovery; only a later terminal success clears it.
+      const outcomes = join(machine.configDir, 'services', 'outcomes.json');
+      const carried = readOutcomes(outcomes);
+      let watched = watchAlerts(machine.name, driver.list(machine), running, carried);
       if (typeof running === 'object' && watched.some((alert) => alert.ref.startsWith(GAVE_UP_REF))) {
         const historyError = readStops();
         if (historyError !== undefined) drift.push({ level: 'error', ref: `${DRIFT_REF}stop-history`, text: historyError });
-        const held = new Map(running.map((one) => [one.name, one]));
+        const rows = new Map(running.map((one) => [one.name, one]));
         const pending = new Set([...pendingStops].map((request) => request.name));
         watched = watched.flatMap((alert) => {
           if (!alert.ref.startsWith(GAVE_UP_REF)) return [alert];
           const name = alert.ref.slice(GAVE_UP_REF.length);
-          const row = held.get(name);
+          const row = rows.get(name);
           const stop = historyError === undefined ? stops.get(name) : undefined;
-          if (stop !== undefined && row?.startedAt !== undefined && row.endedAt !== undefined
+          if (stop !== undefined && row?.startedAt !== undefined && row?.endedAt !== undefined
             && Date.parse(row.startedAt) <= stop && stop <= Date.parse(row.endedAt)) return [];
           // A snapshot can see the stop before the driver's acknowledgement is on disk.
           return pending.has(name) ? alerts.filter((previous) => previous.ref === alert.ref) : [alert];
         });
       }
+      try { writeOutcomes(outcomes, carried); }
+      catch (error) { host.alert({ level: 'error', text: `cannot record what failed in ${outcomes}: ${(error as Error).message}`, ref: `${DRIFT_REF}outcomes` }); }
       alerts = [...drift, ...watched];
       raised = showDrift(host, raised, alerts);
     }
@@ -414,9 +426,77 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
     if (due || disconnected) void changed();
   }, STREAM_RETRY_MS);
   timer.unref();
+  // #39156 acceptance A: a promotion is a file change, so it is watched on a short cadence rather than the drift's
+  // five minutes. The check reads a symlink and only asks process-compose to restart when an identity actually moved,
+  // so the cost of the short cadence is one readlink per service.
+  const checkLanding = async (): Promise<void> => {
+    try {
+      const answer = await checkLandings(machine, { principal: 'services-plugin', remote: false });
+      if (!answer.ok) {
+        host.alert({ level: 'error', text: `the landing check failed: ${answer.message}`, ref: `${DRIFT_REF}landing` });
+        return;
+      }
+      host.clearAlert(`${DRIFT_REF}landing`);
+      if (answer.restarted.length > 0) publish();
+    }
+    catch (error) {
+      host.alert({ level: 'error', text: `the landing check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}landing` });
+    }
+  };
+  void checkLanding();
+  const landings = setInterval(() => { void checkLanding(); }, LANDINGS_EVERY_MS);
+  landings.unref();
+  // #39156 acceptance C: the memory cap process-compose does not enforce. An alarm and a kill are alerts of this
+  // plugin's own, raised and cleared per service, so a reader sees them beside the drift and gave-up alerts.
+  const checkMemoryCap = async (): Promise<void> => {
+    try {
+      const answer = await checkMemory(machine, { principal: 'services-plugin', remote: false });
+      if (!answer.ok) {
+        host.alert({ level: 'error', text: `the memory check failed: ${answer.message}`, ref: `${DRIFT_REF}memory` });
+        return;
+      }
+      host.clearAlert(`${DRIFT_REF}memory`);
+      for (const one of answer.alarmed) {
+        host.alert({ level: 'warning', text: `${one.name} is at ${(one.bytes / 1024 ** 3).toFixed(2)} GiB, over its ${(one.alarmBytes / 1024 ** 3).toFixed(2)} GiB alarm`, ref: `${DRIFT_REF}memory:${one.name}` });
+      }
+      for (const one of answer.killed) {
+        host.alert({ level: 'error', text: `${one.name} passed its ${(one.killBytes / 1024 ** 3).toFixed(2)} GiB kill value at ${(one.bytes / 1024 ** 3).toFixed(2)} GiB and was stopped`, ref: `${DRIFT_REF}memory:${one.name}` });
+      }
+      if (answer.alarmed.length > 0 || answer.killed.length > 0) publish();
+    }
+    catch (error) {
+      host.alert({ level: 'error', text: `the memory check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}memory` });
+    }
+  };
+  void checkMemoryCap();
+  const memory = setInterval(() => { void checkMemoryCap(); }, MEMORY_EVERY_MS);
+  memory.unref();
+  // #39156 acceptance C, the catch-up half: a cron slot that passed while the driver was down is run once, from the
+  // schedule the entry itself names. The pass is the only thing that knows the driver was watching, so it runs at
+  // start and then once a minute: after a bounce, the start pass is the one that answers the missed slot.
+  const checkSchedule = async (): Promise<void> => {
+    try {
+      const answer = await checkSchedules(machine, { principal: 'services-plugin', remote: false });
+      if (!answer.ok) {
+        host.alert({ level: 'error', text: `the schedule check failed: ${answer.message}`, ref: `${DRIFT_REF}schedules` });
+        return;
+      }
+      host.clearAlert(`${DRIFT_REF}schedules`);
+      if (answer.caughtUp.length > 0) publish();
+    }
+    catch (error) {
+      host.alert({ level: 'error', text: `the schedule check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}schedules` });
+    }
+  };
+  void checkSchedule();
+  const schedules = setInterval(() => { void checkSchedule(); }, SCHEDULES_EVERY_MS);
+  schedules.unref();
   host.registerClose(() => {
     closed = true;
     clearInterval(timer);
+    clearInterval(landings);
+    clearInterval(memory);
+    clearInterval(schedules);
     const connection = stream;
     stream = undefined;
     connection?.terminate();

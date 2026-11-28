@@ -126,6 +126,13 @@ export interface ServiceRecord {
   readonly health?: Health;
   readonly deploy?: ServiceDeployDeclaration;
   readonly source?: ServiceSource;
+  /** The per-run memory cap: an alarm value and a kill value, read at each check (#39156 C). */
+  readonly memory?: ServiceMemory;
+  /**
+   * The child's own identity (#39156 B): the name the published service declaration lists as this service's child.
+   * The wrapper mints a token for it at every start, so the child acts as itself, never as the parent's service row.
+   */
+  readonly child?: string;
 }
 
 /**
@@ -144,16 +151,38 @@ export interface ServicePatch {
   readonly health?: Health | null;
   readonly deploy?: ServiceDeployDeclaration | null;
   readonly source?: ServiceSource | null;
+  readonly memory?: ServiceMemory | null;
+  readonly child?: string | null;
 }
 
 /** The neutral fields, in the order they are written; `list` answers them as the capability list. */
-export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source'] as const;
+export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source', 'memory', 'child'] as const;
 
 /** The native key a deploy declaration is written under: process-compose ignores `x-` extensions. */
 export const DEPLOY_KEY = 'x-hh-deploy';
 
 /** The native key a service's source is written under, beside the deploy declaration. */
 export const SOURCE_KEY = 'x-hh-source';
+
+/** The native key a service's per-run memory cap is written under, beside the deploy declaration and its source. */
+export const MEMORY_KEY = 'x-hh-memory';
+
+/**
+ * A per-run memory cap (#39156 acceptance C): the value at which the driver alarms, and the value at which it
+ * stops the process. Sizes are a person's spelling - `3G`, `512M`, `1024K` - as host-backup states them.
+ */
+export interface ServiceMemory {
+  readonly alarm: string;
+  readonly kill: string;
+}
+
+/** A size as a person writes it: `3G`, `512M`, `1024K`. Powers of 1024, and a bare number is bytes. */
+export function bytesOfSize(text: string): number | undefined {
+  const match = /^(\d+(?:\.\d+)?)\s*([KMGT]?)(?:i?B)?$/iu.exec(text.trim());
+  if (match === null) return undefined;
+  const scale = { '': 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[match[2]!.toUpperCase() as '' | 'K' | 'M' | 'G' | 'T'];
+  return Math.round(Number(match[1]) * scale);
+}
 
 /** The wrapper's fixed words. */
 export const WRAPPER = 'ahpd secrets exec';
@@ -270,7 +299,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   for (const key of Object.keys(patch)) {
     if (!(FIELDS as readonly string[]).includes(key)) return bad(`"${key}" is not a service field; the fields are ${FIELDS.join(', ')}`);
   }
-  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source } = patch;
+  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source, memory, child } = patch;
   if (typeof name !== 'string' || !SAFE_NAME.test(name)) return bad('name must be letters, digits, "_", "." or "-", starting with a letter or digit');
   const text = (field: string, value: unknown): Invalid | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return bad(`${field} must be a non-empty string`);
@@ -346,6 +375,23 @@ export function checkPatch(patch: unknown): Invalid | undefined {
     const read = readSource(source);
     if (typeof read === 'string') return bad(`source: ${read}`);
   }
+  if (memory !== undefined && memory !== null) {
+    if (!isObject(memory)) return bad('memory must be {alarm: "<size>", kill: "<size>"}');
+    if (Object.keys(memory).length !== 2 || memory['alarm'] === undefined || memory['kill'] === undefined) {
+      return bad('memory needs exactly alarm and kill');
+    }
+    for (const key of ['alarm', 'kill'] as const) {
+      const size = text(`memory.${key}`, memory[key]);
+      if (size) return size;
+      if (bytesOfSize(memory[key] as string) === undefined) return bad(`memory.${key} is not a size such as 3G, 512M or 1024K`);
+    }
+  }
+  if (child !== undefined && child !== null) {
+    if (typeof child !== 'string') return bad('child must be the name the service declaration lists');
+    const wrong = text('child', child);
+    if (wrong) return wrong;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(child)) return bad('child must be the name the service declaration lists: letters, digits, "_", "." or "-"');
+  }
   return undefined;
 }
 
@@ -364,17 +410,23 @@ export function applyPatch(before: ServiceRecord | undefined, patch: ServicePatc
 
 const quoteWord = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
 
-/** The native `command` for a neutral command and its references. */
-export function nativeCommand(name: string, command: string, env: Readonly<Record<string, SecretRef>> | undefined): string {
+/** The native `command` for a neutral command, its references and its child identity. */
+export function nativeCommand(
+  name: string,
+  command: string,
+  env: Readonly<Record<string, SecretRef>> | undefined,
+  child?: string,
+): string {
   const refs = Object.entries(env ?? {});
-  if (refs.length === 0) return command;
-  return `${WRAPPER} ${name}${refs.map(([key, ref]) => ` --env ${key}=${ref.$secret}`).join('')} -- ${quoteWord(command)}`;
+  if (refs.length === 0 && child === undefined) return command;
+  const childWords = child === undefined ? '' : ` --child ${child}`;
+  return `${WRAPPER} ${name}${refs.map(([key, ref]) => ` --env ${key}=${ref.$secret}`).join('')}${childWords} -- ${quoteWord(command)}`;
 }
 
-const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*) -- '((?:[^']|'\\'')*)'$/;
+const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*)(?: --child ([A-Za-z0-9][A-Za-z0-9_.-]*))? -- '((?:[^']|'\\'')*)'$/;
 
-/** The neutral command and references a native command carries, or why it is not the wrapper the driver writes. */
-function neutralCommand(name: string, native: string): { command: string; env?: Record<string, SecretRef> } | string {
+/** The neutral command, references and child a native command carries, or why it is not the wrapper the driver writes. */
+function neutralCommand(name: string, native: string): { command: string; env?: Record<string, SecretRef>; child?: string } | string {
   if (!native.startsWith(`${WRAPPER} `)) return { command: native };
   const match = WRAPPED.exec(native);
   if (!match) return 'its command uses the secrets wrapper in a form the driver does not write';
@@ -384,7 +436,11 @@ function neutralCommand(name: string, native: string): { command: string; env?: 
     if (!REFERENCE.test(ref!)) return `its secrets wrapper names "${ref}", which is not a reference`;
     env[key!] = { $secret: ref! };
   }
-  return { command: (match[3] ?? '').replace(/'\\''/g, `'`), env };
+  return {
+    command: (match[4] ?? '').replace(/'\\''/g, `'`),
+    env,
+    ...(match[3] === undefined ? {} : { child: match[3] }),
+  };
 }
 
 /**
@@ -410,6 +466,7 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
   }
   const record: Record<string, unknown> = { name, command: command.command };
   if (command.env !== undefined && Object.keys(command.env).length > 0) record['env'] = command.env;
+  if (command.child !== undefined) record['child'] = command.child;
 
   const cwd = entry['working_dir'];
   if (cwd !== undefined && cwd !== null) {
@@ -500,6 +557,16 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
     if (typeof read === 'string') return `its ${SOURCE_KEY} is not a source the driver knows: ${read}`;
     record['source'] = read;
   }
+
+  const cap = entry[MEMORY_KEY];
+  if (cap !== undefined && cap !== null) {
+    if (!isObject(cap)) return `its ${MEMORY_KEY} is not a mapping`;
+    const alarm = cap['alarm'];
+    const kill = cap['kill'];
+    if (typeof alarm !== 'string' || typeof kill !== 'string') return `its ${MEMORY_KEY} alarm and kill are not strings`;
+    if (bytesOfSize(alarm) === undefined || bytesOfSize(kill) === undefined) return `its ${MEMORY_KEY} alarm or kill is not a size`;
+    record['memory'] = { alarm, kill };
+  }
   return record as unknown as ServiceRecord;
 }
 
@@ -545,7 +612,7 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
   const changed = (field: keyof ServiceRecord): boolean => before === undefined || !same(before[field], after[field]);
   const leaf = (path: string[], value: NativeValue | undefined): void => { out.push([path, value === undefined ? REMOVE : value]); };
 
-  if (changed('command') || changed('env')) leaf(['command'], nativeCommand(after.name, after.command, after.env));
+  if (changed('command') || changed('env') || changed('child')) leaf(['command'], nativeCommand(after.name, after.command, after.env, after.child));
   if (changed('cwd')) leaf(['working_dir'], after.cwd);
   if (changed('restart')) {
     leaf(['availability', 'restart'], after.restart?.policy);
@@ -602,6 +669,13 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
     else {
       leaf([SOURCE_KEY, 'kind'], after.source.kind);
       leaf([SOURCE_KEY, 'id'], after.source.id);
+    }
+  }
+  if (changed('memory')) {
+    if (after.memory === undefined) leaf([MEMORY_KEY], undefined);
+    else {
+      leaf([MEMORY_KEY, 'alarm'], after.memory.alarm);
+      leaf([MEMORY_KEY, 'kill'], after.memory.kill);
     }
   }
   if (changed('schedule')) {

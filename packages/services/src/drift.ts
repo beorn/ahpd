@@ -38,7 +38,7 @@ export interface DriftAlert {
 export interface DriftFacts {
   /** The machine's name, as the alerts say it. */
   readonly machine: string;
-  /** Every process process-compose holds, by name, with its status, and its exit code and restart count when it said them. */
+  /** Every process process-compose holds, by name, with its status, and its exit code, restart count and run times when it said them. */
   readonly running: ReadonlyArray<{
     readonly name: string;
     readonly status: string;
@@ -233,7 +233,7 @@ export async function driftFacts(machine: ComposeMachine, stateFile: string): Pr
         ...(typeof one.exit_code === 'number' ? { exitCode: one.exit_code } : {}),
         ...(typeof one.restarts === 'number' ? { restarts: one.restarts } : {}),
         ...(typeof one.process_start_time === 'string' ? { startedAt: one.process_start_time } : {}),
-        ...(typeof one.process_end_time === 'string' ? { endedAt: one.process_end_time } : {}),
+        ...(typeof one.process_end_time === 'string' && one.process_end_time !== '' ? { endedAt: one.process_end_time } : {}),
       }));
     }
   }

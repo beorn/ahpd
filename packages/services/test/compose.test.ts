@@ -114,7 +114,7 @@ describe('an edit changes only the neutral field it carries (rule: every other b
     expect(listing.readOnly).toEqual([]);
     expect(listing.ifVersion).toBe(sha(HAND_WRITTEN));
     expect(listing.file).toBe(local);
-    expect(listing.capabilities).toMatchObject({ schedule: ['cron', 'interval'], missedRunCatchup: false });
+    expect(listing.capabilities).toMatchObject({ schedule: ['cron', 'interval'], missedRunCatchup: true });
     expect(listing.capabilities.fields).toContain('health');
   });
 

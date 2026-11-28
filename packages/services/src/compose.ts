@@ -29,18 +29,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync, closeSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync,
-  writeSync,
+  writeFileSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { isAlias, isMap, isPair, isScalar, parseDocument, visit, type Document, type Node } from 'yaml';
 import { REMOTE_COMMANDS_OFF, machineSwitches } from './switches.js';
 import {
-  CONDITIONS, FIELDS, RESTART_POLICIES, applyPatch, checkPatch, fromNative, nativeChanges, same,
+  CONDITIONS, FIELDS, MEMORY_KEY, RESTART_POLICIES, applyPatch, bytesOfSize, checkPatch, fromNative, nativeChanges, same,
   type ServicePatch, type ServiceRecord,
 } from './record.js';
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
 import { ROUTES, pcFailure, pcRequest, type PcSocket } from './pc.js';
 import { cutCommand, cutReason } from './watch.js';
+import { previousSlot } from './cron.js';
 import { controlUnit, putUnit, removeUnit, unsupported, type SystemdMachine, type SystemdUserBackend } from './systemd.js';
 
 /** A machine whose services process-compose runs. */
@@ -99,7 +100,7 @@ export interface Listing {
    * ("K (plain value, set in <file>)"); the value itself is never answered (@cto 7af7ed84), and turning
    * one into a secret reference is a person's edit on the machine.
    */
-  readonly services: ReadonlyArray<ServiceRecord & { readonly plainEnv?: readonly string[] }>;
+  readonly services: ReadonlyArray<ServiceRecord & { readonly plainEnv?: readonly string[]; readonly reports?: readonly number[] }>;
   readonly readOnly: ReadonlyArray<{ readonly name: string; readonly reason: string }>;
   readonly capabilities: typeof CAPABILITIES;
   readonly ifVersion: string;
@@ -108,11 +109,11 @@ export interface Listing {
   readonly hashes: Readonly<Record<string, string>>;
 }
 
-/** What this driver can carry. process-compose's scheduler keeps no last-run time, so a run missed while it is down is not caught up. */
+/** What this driver can carry. process-compose keeps no last-run time, so a cron slot missed while the driver was down is caught up from the entry's own schedule. */
 export const CAPABILITIES = {
   fields: FIELDS,
   schedule: ['cron', 'interval'] as const,
-  missedRunCatchup: false,
+  missedRunCatchup: true,
   restart: RESTART_POLICIES,
   conditions: CONDITIONS,
   health: ['exec', 'http'] as const,
@@ -152,6 +153,8 @@ interface State {
   readonly readOnlyIn: Map<string, string>;
   /** Per editable service, the keys its `environment:` sets with plain values. */
   readonly plainEnv: Map<string, string[]>;
+  /** Exit codes an entry declares report-only (`x-hh-reports`): a nonzero exit that is an answer, not a failure. */
+  readonly reports: Map<string, number[]>;
 }
 
 const parseFile = (file: string, text: string): Document => {
@@ -203,6 +206,15 @@ function sharedNames(machine: ComposeMachine, last: string, lastDoc: Document): 
   return names;
 }
 
+/** The exit codes an entry declares report-only under `x-hh-reports`, or undefined when it declares none. */
+function reportsOf(native: unknown): number[] | undefined {
+  if (typeof native !== 'object' || native === null) return undefined;
+  const declared = (native as Record<string, unknown>)['x-hh-reports'];
+  if (!Array.isArray(declared)) return undefined;
+  const codes = declared.filter((one): one is number => typeof one === 'number' && Number.isInteger(one));
+  return codes.length === 0 ? undefined : [...codes].sort((a, b) => a - b);
+}
+
 /** Whether a node carries an anchor, an alias or a merge key anywhere inside it. */
 const usesAnchors = (node: unknown): boolean => {
   if (isAlias(node)) return true;
@@ -228,6 +240,7 @@ function readState(machine: ComposeMachine): State {
   const readOnly = new Map<string, string>();
   const readOnlyIn = new Map<string, string>();
   const plainEnv = new Map<string, string[]>();
+  const reports = new Map<string, number[]>();
   let processes;
   try {
     processes = processesOf(doc);
@@ -252,11 +265,13 @@ function readState(machine: ComposeMachine): State {
     readOnlyIn.delete(name);
     const keys = plainEnvKeys(native);
     if (keys.length > 0) plainEnv.set(name, keys);
+    const declared = reportsOf(native);
+    if (declared !== undefined) reports.set(name, declared);
   }
   for (const [name, other] of shared) {
     if (!services.has(name) && !readOnly.has(name)) { readOnly.set(name, `it is defined in ${other}; ${where(other)}`); readOnlyIn.set(name, other); }
   }
-  return { file, text, doc, ifVersion: hash, services, readOnly, readOnlyIn, plainEnv };
+  return { file, text, doc, ifVersion: hash, services, readOnly, readOnlyIn, plainEnv, reports };
 }
 
 /** Make sure the change log can be appended to before anything is changed, so no change goes unlogged. */
@@ -282,6 +297,14 @@ export interface LogLine {
   readonly fileHashAfter: string | null;
   /** An acknowledge's files and the hashes it named. */
   readonly files?: Readonly<Record<string, string>>;
+  /** A landing restart's identities and pids: #39156 acceptance A records the old and the new pid. */
+  readonly landing?: LandingRestart;
+  /** A memory kill: the observed bytes and the cap (#39156 acceptance C). */
+  readonly memory?: MemoryKill;
+  /** A memory alarm: the observed bytes and the alarm value (#39156 acceptance C). */
+  readonly memoryAlarm?: MemoryAlarm;
+  /** A slot a scheduled service missed while the driver was down, and whether a run caught it up (#39156 C). */
+  readonly missedRun?: MissedRun;
   readonly refused?: { readonly code: RefusalCode; readonly message: string };
 }
 
@@ -368,7 +391,12 @@ export function listServices(machine: Machine): Answer<Listing> {
       ok: true,
       services: [...state.services.values()].map((record) => {
         const keys = state.plainEnv.get(record.name);
-        return keys ? { ...record, plainEnv: keys.map((key) => `${key} (plain value, set in ${state.file})`) } : record;
+        const reported = state.reports.get(record.name);
+        const extra = {
+          ...(keys === undefined ? {} : { plainEnv: keys.map((key) => `${key} (plain value, set in ${state.file})`) }),
+          ...(reported === undefined ? {} : { reports: reported }),
+        };
+        return Object.keys(extra).length === 0 ? record : { ...record, ...extra };
       }),
       readOnly: [...state.readOnly].map(([name, reason]) => ({ name, reason })),
       capabilities: CAPABILITIES,
@@ -647,6 +675,394 @@ const currentHash = (machine: ComposeMachine): string | null => {
     return null;
   }
 };
+
+/** A service over its alarm value, as the answer reports it. */
+export interface MemoryAlarm {
+  readonly name: string;
+  readonly bytes: number;
+  readonly alarmBytes: number;
+}
+
+/** A service the driver stopped for passing its kill value. */
+export interface MemoryKill {
+  readonly name: string;
+  readonly bytes: number;
+  readonly killBytes: number;
+}
+
+/** What one memory check found. */
+export interface MemoryReport {
+  readonly alarmed: readonly MemoryAlarm[];
+  readonly killed: readonly MemoryKill[];
+}
+
+/** The memory caps this machine's file names, by service. */
+function memoryCapsOf(machine: ComposeMachine): Map<string, { alarmBytes: number; killBytes: number }> {
+  const file = machine.backend.files[machine.backend.files.length - 1]!;
+  const doc = parseDocument(readFileSync(file, 'utf8'));
+  const processes = processesOf(doc);
+  const found = new Map<string, { alarmBytes: number; killBytes: number }>();
+  for (const item of processes?.items ?? []) {
+    const name = isScalar(item.key) ? String(item.key.value) : undefined;
+    const entry = item.value;
+    if (name === undefined || !isMap(entry)) continue;
+    const cap = entry.get(MEMORY_KEY, true);
+    if (!isMap(cap)) continue;
+    const alarm = cap.get('alarm', true);
+    const kill = cap.get('kill', true);
+    const alarmBytes = isScalar(alarm) && typeof alarm.value === 'string' ? bytesOfSize(alarm.value) : undefined;
+    const killBytes = isScalar(kill) && typeof kill.value === 'string' ? bytesOfSize(kill.value) : undefined;
+    if (alarmBytes === undefined || killBytes === undefined) continue;
+    found.set(name, { alarmBytes, killBytes });
+  }
+  return found;
+}
+
+const memoryStateFile = (machine: Machine): string => join(machine.configDir, 'memory.json');
+
+/**
+ * #39156 acceptance C, the memory half: a per-run cap with an alarm value and a kill value, as host-backup needs
+ * (alarm 3G, kill 4G). process-compose reports each process's `mem` and enforces nothing, so the driver reads it:
+ * at or above the alarm it records one alert until the process drops back under it, and at or above the kill it
+ * stops the process once and records the kill. A service with no `x-hh-memory` is never looked at.
+ */
+export async function checkMemory(machine: Machine, caller: Caller): Promise<Answer<MemoryReport>> {
+  if (!isCompose(machine)) return unsupported('memory', machine);
+  try {
+    const caps = memoryCapsOf(machine);
+    if (caps.size === 0) return { ok: true, alarmed: [], killed: [] };
+    const [method, path] = ROUTES.processes();
+    const answer = await pcRequest(machine.backend.pc, method, path);
+    if (answer.status !== 200) return refuse('PC_REFUSED', `memory: ${pcFailure(answer)}`);
+    const data = (answer.body as { data?: unknown } | undefined)?.data;
+    if (!Array.isArray(data)) return refuse('DRIVER_FAILED', `memory: GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`);
+    const bytes = new Map<string, number>();
+    for (const one of data as Array<{ name?: unknown; mem?: unknown }>) {
+      if (typeof one?.name === 'string' && typeof one.mem === 'number') bytes.set(one.name, one.mem);
+    }
+    let state: Record<string, string>;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(memoryStateFile(machine), 'utf8'));
+      state = isRecordOfStrings(parsed) ? parsed : {};
+    }
+    catch {
+      state = {};
+    }
+    const alarmed: MemoryAlarm[] = [];
+    const killed: MemoryKill[] = [];
+    for (const [name, cap] of caps) {
+      const mem = bytes.get(name);
+      if (mem === undefined) continue;
+      if (mem >= cap.killBytes) {
+        if (state[name] === 'kill') continue;
+        const stopRoute = ROUTES.stop(name);
+        const stopped = await pcRequest(machine.backend.pc, stopRoute[0], stopRoute[1]);
+        const report: MemoryKill = { name, bytes: mem, killBytes: cap.killBytes };
+        state[name] = 'kill';
+        killed.push(report);
+        writeLog(machine.changeLog, {
+          principal: caller.principal, op: 'memory-kill', name, before: null, after: null,
+          fileHashBefore: null, fileHashAfter: null, memory: report,
+          ...(stopped.status === 200 ? {} : { refused: { code: 'PC_REFUSED' as const, message: `stop ${name}: ${pcFailure(stopped)}` } }),
+        });
+        continue;
+      }
+      if (mem >= cap.alarmBytes) {
+        if (state[name] === 'alarm' || state[name] === 'kill') continue;
+        const report: MemoryAlarm = { name, bytes: mem, alarmBytes: cap.alarmBytes };
+        state[name] = 'alarm';
+        alarmed.push(report);
+        writeLog(machine.changeLog, {
+          principal: caller.principal, op: 'memory-alarm', name, before: null, after: null,
+          fileHashBefore: null, fileHashAfter: null, memoryAlarm: report,
+        });
+        continue;
+      }
+      delete state[name];
+    }
+    writeFileSync(memoryStateFile(machine), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    return { ok: true, alarmed, killed };
+  }
+  catch (error) {
+    return failed(error);
+  }
+}
+
+/** A slot a scheduled service missed while the driver was not watching, and the run that answered it. */
+export interface MissedRun {
+  readonly name: string;
+  /** The slot that should have fired, as an instant. */
+  readonly slot: string;
+  /** The last pass before the gap: the slot is after it, so no pass saw the slot go by. */
+  readonly lastSeen: string;
+  /** Whether process-compose took the catch-up run; false when it was already running, or refused. */
+  readonly ran: boolean;
+}
+
+/** What one schedule check found: how many entries are scheduled, and the slots it caught up. */
+export interface ScheduleCheck {
+  readonly checked: number;
+  readonly caughtUp: readonly MissedRun[];
+}
+
+const scheduleStateFile = (machine: Machine): string => join(machine.configDir, 'schedule.json');
+
+/** The last pass's time, and the last slot each service was accounted for. */
+interface ScheduleState {
+  readonly checkedAt?: string;
+  readonly runs: Record<string, string>;
+}
+
+/** The persisted schedule state; an unreadable file reads as no history, which baselines rather than catches up. */
+function readScheduleState(machine: Machine): ScheduleState {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(scheduleStateFile(machine), 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { runs: {} };
+    const held = parsed as Record<string, unknown>;
+    const runs = isRecordOfStrings(held['runs']) ? held['runs'] : {};
+    return typeof held['checkedAt'] === 'string' ? { checkedAt: held['checkedAt'], runs } : { runs };
+  }
+  catch {
+    return { runs: {} };
+  }
+}
+
+/**
+ * #39156 acceptance C, the catch-up half: a cron slot that passed while the driver was down is run once.
+ *
+ * process-compose keeps no last-run time, so the driver keeps one: `<configDir>/schedule.json` holds the time of the
+ * last pass and, per scheduled service, the last slot that was accounted for. A slot after that pass's time means no
+ * pass was running to see it go by, so the scheduler was never asked and the run is made now, once. The first pass
+ * for a service only records its slot: a machine never watched has no before, and guessing a run is worse than
+ * skipping one. A service already running takes no second run, and a refusal is recorded rather than retried.
+ *
+ * Only `cron` schedules are caught up. An `interval` has no slot to name, and process-compose counts it from start.
+ */
+export async function checkSchedules(machine: Machine, caller: Caller, now: Date = new Date()): Promise<Answer<ScheduleCheck>> {
+  if (!isCompose(machine)) return unsupported('schedules', machine);
+  try {
+    const services = readState(machine).services;
+    const scheduled = new Map<string, { readonly cron: string; readonly timezone?: string }>();
+    for (const [name, record] of services) {
+      const schedule = record.schedule;
+      if (schedule?.cron !== undefined) {
+        scheduled.set(name, { cron: schedule.cron, ...(schedule.timezone === undefined ? {} : { timezone: schedule.timezone }) });
+      }
+    }
+    if (scheduled.size === 0) return { ok: true, checked: 0, caughtUp: [] };
+    const stored = readScheduleState(machine);
+    const lastSeenAt = stored.checkedAt === undefined ? undefined : Date.parse(stored.checkedAt);
+    const runs: Record<string, string> = {};
+    const caughtUp: MissedRun[] = [];
+    let running: Set<string> | undefined;
+    for (const [name, { cron, timezone }] of scheduled) {
+      const slot = previousSlot(cron, now, timezone);
+      const seen = stored.runs[name];
+      if (slot === undefined) { if (seen !== undefined) runs[name] = seen; continue; }
+      const at = slot.toISOString();
+      if (seen === undefined) { runs[name] = at; continue; }
+      if (Date.parse(seen) >= slot.getTime()) { runs[name] = seen; continue; }
+      if (lastSeenAt === undefined || !(slot.getTime() > lastSeenAt)) { runs[name] = at; continue; }
+      if (running === undefined) {
+        const held = await runningNames(machine);
+        if (typeof held === 'string') return refuse('PC_REFUSED', `schedules: ${held}`);
+        running = held;
+      }
+      if (running.has(name)) { runs[name] = at; continue; }
+      const [method, path] = ROUTES.restart(name);
+      const answer = await pcRequest(machine.backend.pc, method, path);
+      const ran = answer.status === 200;
+      const missedRun: MissedRun = { name, slot: at, lastSeen: stored.checkedAt!, ran };
+      caughtUp.push(missedRun);
+      runs[name] = at;
+      writeLog(machine.changeLog, {
+        principal: caller.principal, op: 'schedule-catchup', name, before: null, after: null,
+        fileHashBefore: null, fileHashAfter: null, missedRun,
+        ...(ran ? {} : { refused: { code: 'PC_REFUSED' as const, message: `catch up ${name} for slot ${at}: ${pcFailure(answer)}` } }),
+      });
+    }
+    writeFileSync(scheduleStateFile(machine), `${JSON.stringify({ checkedAt: now.toISOString(), runs }, null, 2)}\n`, { mode: 0o600 });
+    return { ok: true, checked: scheduled.size, caughtUp };
+  }
+  catch (error) {
+    return failed(error);
+  }
+}
+
+/** The names process-compose reports as running, or the reason it could not be read. */
+async function runningNames(machine: ComposeMachine): Promise<Set<string> | string> {
+  const [method, path] = ROUTES.processes();
+  try {
+    const answer = await pcRequest(machine.backend.pc, method, path);
+    if (answer.status !== 200) return pcFailure(answer);
+    const data = (answer.body as { data?: unknown } | undefined)?.data;
+    if (!Array.isArray(data)) return `GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`;
+    return new Set((data as Array<{ name?: unknown; status?: unknown }>)
+      .filter((one) => typeof one?.name === 'string' && String(one.status) === 'Running')
+      .map((one) => one.name as string));
+  }
+  catch (error) {
+    return (error as Error).message;
+  }
+}
+
+/** The extension key an entry names its landing under: process-compose ignores `x-` keys, as it does `x-hh-deploy`. */
+export const LANDING_KEY = 'x-hh-landing';
+
+/** One resident a promotion restarted (#39156 acceptance A: the old and the new pid are recorded). */
+export interface LandingRestart {
+  readonly name: string;
+  readonly from: string;
+  readonly to: string;
+  readonly oldPid: number | null;
+  readonly newPid: number | null;
+  readonly elapsedMs: number;
+}
+
+/** What one check found: how many entries name a landing, and the residents it restarted. */
+export interface LandingCheck {
+  readonly checked: number;
+  readonly restarted: readonly LandingRestart[];
+}
+
+const landingStateFile = (machine: Machine): string => join(machine.configDir, 'landings.json');
+
+const isRecordOfStrings = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every((one) => typeof one === 'string');
+
+/** The identities last seen per service; an unreadable file reads as none, because it holds only a baseline. */
+function readLandingState(machine: Machine): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(landingStateFile(machine), 'utf8'));
+    return isRecordOfStrings(parsed) ? parsed : {};
+  }
+  catch {
+    return {};
+  }
+}
+
+/** The landing identities this machine's file names, by service. */
+function landingsOf(machine: ComposeMachine): Map<string, string> {
+  const file = machine.backend.files[machine.backend.files.length - 1]!;
+  const doc = parseDocument(readFileSync(file, 'utf8'));
+  const processes = processesOf(doc);
+  const found = new Map<string, string>();
+  for (const item of processes?.items ?? []) {
+    const name = isScalar(item.key) ? String(item.key.value) : undefined;
+    const entry = item.value;
+    if (name === undefined || !isMap(entry)) continue;
+    const landing = entry.get(LANDING_KEY, true);
+    if (isScalar(landing) && typeof landing.value === 'string' && landing.value !== '') found.set(name, landing.value);
+  }
+  return found;
+}
+
+/** What the landing points at now: the real path it resolves to, or the link text when it does not resolve. */
+function landingIdentity(target: string): string {
+  try {
+    return realpathSync(target);
+  }
+  catch {
+    return target;
+  }
+}
+
+/** Every process-compose process and its pid, or the reason it could not be read. */
+async function pidsOf(machine: ComposeMachine): Promise<Map<string, number> | string> {
+  const [method, path] = ROUTES.processes();
+  try {
+    const answer = await pcRequest(machine.backend.pc, method, path);
+    if (answer.status !== 200) return pcFailure(answer);
+    const data = (answer.body as { data?: unknown } | undefined)?.data;
+    if (!Array.isArray(data)) return `GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`;
+    const pids = new Map<string, number>();
+    for (const one of data as Array<{ name?: unknown; pid?: unknown }>) {
+      if (typeof one?.name === 'string' && typeof one.pid === 'number') pids.set(one.name, one.pid);
+    }
+    return pids;
+  }
+  catch (error) {
+    return (error as Error).message;
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * #39156 acceptance A: a promoted landing restarts the resident, and the old and the new pids are recorded.
+ *
+ * The identity is where the entry's landing resolves to now, so a promotion reads as a different real path and
+ * nothing else counts as one. The first check for a service records the baseline and restarts nothing: a machine
+ * never checked has no before to compare. A restart is followed by a bounded wait for a pid that differs, so the
+ * recorded new pid is the one process-compose started rather than a guess; when none appears in the window the
+ * restart is still recorded, with `newPid: null`, instead of pretending it worked.
+ */
+export async function checkLandings(
+  machine: Machine,
+  caller: Caller,
+  wait: { readonly pidPollMs?: number; readonly pidTimeoutMs?: number } = {},
+): Promise<Answer<LandingCheck>> {
+  if (!isCompose(machine)) return unsupported('landings', machine);
+  const pollMs = wait.pidPollMs ?? 50;
+  const timeoutMs = wait.pidTimeoutMs ?? 5000;
+  try {
+    const landings = landingsOf(machine);
+    if (landings.size === 0) return { ok: true, checked: 0, restarted: [] };
+    const state = readLandingState(machine);
+    // The common case is nothing moved, and then the driver asks process-compose nothing at all: every tick of a
+    // short cadence costs one symlink read per service, not a socket round trip.
+    const moved: Array<{ readonly name: string; readonly from: string; readonly to: string }> = [];
+    let baselined = false;
+    for (const [name, target] of landings) {
+      const identity = landingIdentity(target);
+      const seen = state[name];
+      if (seen === undefined) {
+        state[name] = identity;
+        baselined = true;
+        continue;
+      }
+      if (seen !== identity) moved.push({ name, from: seen, to: identity });
+    }
+    const finish = (restarted: readonly LandingRestart[]): Answer<LandingCheck> => {
+      if (baselined || restarted.length > 0) writeFileSync(landingStateFile(machine), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      return { ok: true, checked: landings.size, restarted };
+    };
+    if (moved.length === 0) return finish([]);
+    const before = await pidsOf(machine);
+    if (typeof before === 'string') return refuse('DRIVER_FAILED', `landings: ${before}`);
+    const restarted: LandingRestart[] = [];
+    for (const { name, from: seen, to: identity } of moved) {
+      const oldPid = before.get(name) ?? null;
+      const started = Date.now();
+      const [method, path] = ROUTES.restart(name);
+      const answer = await pcRequest(machine.backend.pc, method, path);
+      if (answer.status !== 200) return refuse('PC_REFUSED', `restart ${name} for a promoted landing: ${pcFailure(answer)}`);
+      let newPid: number | null = null;
+      const deadline = started + timeoutMs;
+      for (;;) {
+        const now = await pidsOf(machine);
+        const pid = typeof now === 'string' ? undefined : now.get(name);
+        if (pid !== undefined && pid !== oldPid) {
+          newPid = pid;
+          break;
+        }
+        if (Date.now() >= deadline) break;
+        await sleep(pollMs);
+      }
+      const restart: LandingRestart = { name, from: seen, to: identity, oldPid, newPid, elapsedMs: Date.now() - started };
+      restarted.push(restart);
+      state[name] = identity;
+      writeLog(machine.changeLog, {
+        principal: caller.principal, op: 'landing-restart', name, before: null, after: null,
+        fileHashBefore: null, fileHashAfter: null, landing: restart,
+      });
+    }
+    return finish(restarted);
+  }
+  catch (error) {
+    return failed(error);
+  }
+}
 
 /**
  * `start`, `stop` or `restart` one process. These run nothing new, so they work
