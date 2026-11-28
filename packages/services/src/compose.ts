@@ -29,7 +29,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync, closeSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync,
-  writeSync,
+  writeFileSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { isAlias, isMap, isPair, isScalar, parseDocument, visit, type Document, type Node } from 'yaml';
@@ -282,6 +282,8 @@ export interface LogLine {
   readonly fileHashAfter: string | null;
   /** An acknowledge's files and the hashes it named. */
   readonly files?: Readonly<Record<string, string>>;
+  /** A landing restart's identities and pids: #39156 acceptance A records the old and the new pid. */
+  readonly landing?: LandingRestart;
   readonly refused?: { readonly code: RefusalCode; readonly message: string };
 }
 
@@ -647,6 +649,156 @@ const currentHash = (machine: ComposeMachine): string | null => {
     return null;
   }
 };
+
+/** The extension key an entry names its landing under: process-compose ignores `x-` keys, as it does `x-hh-deploy`. */
+export const LANDING_KEY = 'x-hh-landing';
+
+/** One resident a promotion restarted (#39156 acceptance A: the old and the new pid are recorded). */
+export interface LandingRestart {
+  readonly name: string;
+  readonly from: string;
+  readonly to: string;
+  readonly oldPid: number | null;
+  readonly newPid: number | null;
+  readonly elapsedMs: number;
+}
+
+/** What one check found: how many entries name a landing, and the residents it restarted. */
+export interface LandingCheck {
+  readonly checked: number;
+  readonly restarted: readonly LandingRestart[];
+}
+
+const landingStateFile = (machine: Machine): string => join(machine.configDir, 'landings.json');
+
+const isRecordOfStrings = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every((one) => typeof one === 'string');
+
+/** The identities last seen per service; an unreadable file reads as none, because it holds only a baseline. */
+function readLandingState(machine: Machine): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(landingStateFile(machine), 'utf8'));
+    return isRecordOfStrings(parsed) ? parsed : {};
+  }
+  catch {
+    return {};
+  }
+}
+
+/** The landing identities this machine's file names, by service. */
+function landingsOf(machine: ComposeMachine): Map<string, string> {
+  const file = machine.backend.files[machine.backend.files.length - 1]!;
+  const doc = parseDocument(readFileSync(file, 'utf8'));
+  const processes = processesOf(doc);
+  const found = new Map<string, string>();
+  for (const item of processes?.items ?? []) {
+    const name = isScalar(item.key) ? String(item.key.value) : undefined;
+    const entry = item.value;
+    if (name === undefined || !isMap(entry)) continue;
+    const landing = entry.get(LANDING_KEY, true);
+    if (isScalar(landing) && typeof landing.value === 'string' && landing.value !== '') found.set(name, landing.value);
+  }
+  return found;
+}
+
+/** What the landing points at now: the real path it resolves to, or the link text when it does not resolve. */
+function landingIdentity(target: string): string {
+  try {
+    return realpathSync(target);
+  }
+  catch {
+    return target;
+  }
+}
+
+/** Every process-compose process and its pid, or the reason it could not be read. */
+async function pidsOf(machine: ComposeMachine): Promise<Map<string, number> | string> {
+  const [method, path] = ROUTES.processes();
+  try {
+    const answer = await pcRequest(machine.backend.pc, method, path);
+    if (answer.status !== 200) return pcFailure(answer);
+    const data = (answer.body as { data?: unknown } | undefined)?.data;
+    if (!Array.isArray(data)) return `GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`;
+    const pids = new Map<string, number>();
+    for (const one of data as Array<{ name?: unknown; pid?: unknown }>) {
+      if (typeof one?.name === 'string' && typeof one.pid === 'number') pids.set(one.name, one.pid);
+    }
+    return pids;
+  }
+  catch (error) {
+    return (error as Error).message;
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * #39156 acceptance A: a promoted landing restarts the resident, and the old and the new pids are recorded.
+ *
+ * The identity is where the entry's landing resolves to now, so a promotion reads as a different real path and
+ * nothing else counts as one. The first check for a service records the baseline and restarts nothing: a machine
+ * never checked has no before to compare. A restart is followed by a bounded wait for a pid that differs, so the
+ * recorded new pid is the one process-compose started rather than a guess; when none appears in the window the
+ * restart is still recorded, with `newPid: null`, instead of pretending it worked.
+ */
+export async function checkLandings(
+  machine: Machine,
+  caller: Caller,
+  wait: { readonly pidPollMs?: number; readonly pidTimeoutMs?: number } = {},
+): Promise<Answer<LandingCheck>> {
+  if (!isCompose(machine)) return unsupported('landings', machine);
+  const pollMs = wait.pidPollMs ?? 50;
+  const timeoutMs = wait.pidTimeoutMs ?? 5000;
+  try {
+    const landings = landingsOf(machine);
+    if (landings.size === 0) return { ok: true, checked: 0, restarted: [] };
+    const before = await pidsOf(machine);
+    if (typeof before === 'string') return refuse('DRIVER_FAILED', `landings: ${before}`);
+    const state = readLandingState(machine);
+    const restarted: LandingRestart[] = [];
+    let wrote = false;
+    for (const [name, target] of landings) {
+      const identity = landingIdentity(target);
+      const seen = state[name];
+      if (seen === undefined) {
+        state[name] = identity;
+        wrote = true;
+        continue;
+      }
+      if (seen === identity) continue;
+      const oldPid = before.get(name) ?? null;
+      const started = Date.now();
+      const [method, path] = ROUTES.restart(name);
+      const answer = await pcRequest(machine.backend.pc, method, path);
+      if (answer.status !== 200) return refuse('PC_REFUSED', `restart ${name} for a promoted landing: ${pcFailure(answer)}`);
+      let newPid: number | null = null;
+      const deadline = started + timeoutMs;
+      for (;;) {
+        const now = await pidsOf(machine);
+        const pid = typeof now === 'string' ? undefined : now.get(name);
+        if (pid !== undefined && pid !== oldPid) {
+          newPid = pid;
+          break;
+        }
+        if (Date.now() >= deadline) break;
+        await sleep(pollMs);
+      }
+      const restart: LandingRestart = { name, from: seen, to: identity, oldPid, newPid, elapsedMs: Date.now() - started };
+      restarted.push(restart);
+      state[name] = identity;
+      wrote = true;
+      writeLog(machine.changeLog, {
+        principal: caller.principal, op: 'landing-restart', name, before: null, after: null,
+        fileHashBefore: null, fileHashAfter: null, landing: restart,
+      });
+    }
+    if (wrote) writeFileSync(landingStateFile(machine), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    return { ok: true, checked: landings.size, restarted };
+  }
+  catch (error) {
+    return failed(error);
+  }
+}
 
 /**
  * `start`, `stop` or `restart` one process. These run nothing new, so they work
