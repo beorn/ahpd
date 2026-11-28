@@ -27,7 +27,8 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, statSync, unlinkSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { constants, hostname } from 'node:os';
 import { scopeOf } from '@ahpd/sdk';
 import { vaultPath } from '../config.js';
@@ -158,15 +159,105 @@ export interface ExecOptions {
   readonly mintChild?: MintChild;
 }
 
-/**
- * The mint before the hab half of #39156 B lands: it refuses by name, so a line that asks for an identity starts
- * nothing rather than running as the parent. Replaced by hab's signer; never by an ahpd-issued token.
- */
-const UNWIRED_MINT: MintChild = async ({ service, child }) => ({
-  refused: `${service}: child ${child} cannot be given an identity: no hab signer is wired for a service's children on this machine yet (#39156 B), and a child never runs as its parent's token`,
-});
-
 const FORWARDED: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGUSR1', 'SIGUSR2'];
+
+/** What the hab signer is reached through (#39156 B); a test names its own. */
+export interface HabMintOptions {
+  /** The wrapper's own environment: hab's CLI path and its habitat (and its own identity, which hab reads). */
+  readonly environment?: NodeJS.ProcessEnv;
+  /** The spawn used to ask hab, so a test sees the exact argv and answers for it. */
+  readonly spawn?: typeof nodeSpawn;
+  /** How long hab is given to answer; a signer that hangs starts nothing rather than holds the start open. */
+  readonly timeoutMs?: number;
+  /** The token file's permission bits, so a test can answer without a file; `statSync` by default. */
+  readonly modeOf?: (path: string) => number | undefined;
+}
+
+const KINDS: readonly string[] = ['service', 'seat'];
+
+/** One line of hab's answer, as JSON, or the reason it is not one. */
+function readHabAnswer(text: string, where: string): ChildIdentity | { readonly refused: string } {
+  const lines = text.split('\n').filter((line) => line.trim() !== '');
+  if (lines.length !== 1) return { refused: `${where}: expected one JSON line telling the child's identity, got ${lines.length}` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(lines[0]!);
+  }
+  catch (error) {
+    return { refused: `${where}: its answer is not JSON: ${(error as Error).message}` };
+  }
+  const answer = parsed as { actor?: unknown; kind?: unknown; tokenFile?: unknown };
+  if (typeof answer?.actor !== 'string' || answer.actor === '') return { refused: `${where}: its answer names no actor` };
+  if (typeof answer.kind !== 'string' || !KINDS.includes(answer.kind)) return { refused: `${where}: its answer's kind "${String(answer.kind)}" is not one of ${KINDS.join(', ')}` };
+  if (typeof answer.tokenFile !== 'string' || !isAbsolute(answer.tokenFile)) return { refused: `${where}: its answer's tokenFile is not an absolute path` };
+  return { actor: answer.actor, kind: answer.kind as ChildIdentity['kind'], tokenFile: answer.tokenFile };
+}
+
+/**
+ * hab's signer, as the wrapper asks it (#39156 B): `hab --hab-dir <abs> mint-child-token <child>`.
+ *
+ * The parent is not named here and cannot be: hab selects it from the wrapper's own identity and proves that
+ * identity against the canonical parent record, so a caller can neither invent a parent nor pick a child's name as
+ * one. The wrapper only has to name the habitat and the child. A name it cannot find is a refusal by name — it never
+ * falls back to the parent's own token — and the token file's 0600 bits are checked here again so a signer that
+ * answered with a loose file starts nothing.
+ */
+export function habMintChild(options: HabMintOptions = {}): MintChild {
+  const environment = options.environment ?? process.env;
+  const spawn = options.spawn ?? nodeSpawn;
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const modeOf = options.modeOf ?? ((path: string) => {
+    try {
+      return statSync(path).mode & 0o777;
+    }
+    catch {
+      return undefined;
+    }
+  });
+  return async ({ service, child }) => {
+    const hab = environment['HAB_CLI_BIN'];
+    const habitat = environment['HAB_SESSION_HABITAT_ROOT'];
+    const missing = [
+      hab === undefined || hab === '' ? 'HAB_CLI_BIN' : undefined,
+      habitat === undefined || habitat === '' ? 'HAB_SESSION_HABITAT_ROOT' : undefined,
+    ].filter((one): one is string => one !== undefined);
+    if (missing.length > 0) {
+      return { refused: `${service}: child ${child} cannot be given an identity: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set, so there is no hab signer to ask for it, and a child never runs as its parent's token` };
+    }
+    if (!isAbsolute(habitat!)) return { refused: `${service}: child ${child} cannot be given an identity: HAB_SESSION_HABITAT_ROOT is not an absolute path` };
+    if (child.startsWith('-')) return { refused: `${service}: child ${child} cannot be given an identity: that is not a child name` };
+
+    const answer = await new Promise<{ code: number | null; stdout: string; stderr: string } | { failed: string }>((done) => {
+      let child_: ReturnType<typeof nodeSpawn>;
+      try {
+        child_ = spawn(hab!, ['--hab-dir', habitat!, 'mint-child-token', child], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...environment } });
+      }
+      catch (error) {
+        done({ failed: (error as Error).message });
+        return;
+      }
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => { child_.kill('SIGKILL'); }, timeoutMs);
+      child_.stdout?.on('data', (chunk: Buffer | string) => { stdout += String(chunk); });
+      child_.stderr?.on('data', (chunk: Buffer | string) => { stderr += String(chunk); });
+      child_.on('error', (error) => { clearTimeout(timer); done({ failed: error.message }); });
+      child_.on('close', (code) => { clearTimeout(timer); done({ code, stdout, stderr }); });
+    });
+    const where = `${service}: child ${child} was not given an identity`;
+    if ('failed' in answer) return { refused: `${where}: hab could not be run: ${answer.failed}` };
+    if (answer.code !== 0) {
+      const said = answer.stderr.trim().split('\n').filter((line) => line !== '').slice(-1)[0];
+      return { refused: `${where}: hab answered ${answer.code}${said === undefined ? '' : `: ${said}`}` };
+    }
+    const identity = readHabAnswer(answer.stdout, where);
+    if ('refused' in identity) return identity;
+    const mode = modeOf(identity.tokenFile);
+    if (mode === undefined) return { refused: `${where}: hab's token file ${identity.tokenFile} cannot be read` };
+    if (mode !== 0o600) return { refused: `${where}: hab's token file ${identity.tokenFile} is mode 0${mode.toString(8)}, not 0600` };
+    return identity;
+  };
+}
 
 /**
  * Read the line, fetch each value from the vault, and run the command with the
@@ -224,7 +315,7 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
     // With no `--child` the inherited environment is left alone: until hab mints children (@dev/22's half), a service's
     // own start still presents the token process-compose handed its wrapper, and scrubbing it here would refuse it.
     for (const key of IDENTITY_ENV) delete environment[key];
-    const mint = options.mintChild ?? UNWIRED_MINT;
+    const mint = options.mintChild ?? habMintChild({ environment });
     let identity: ChildIdentity | { readonly refused: string };
     try {
       identity = await mint({ service: line.service, child: line.child });

@@ -192,13 +192,92 @@ it('starts nothing when the mint refuses the child, and says which child and why
   expect(said).toEqual(['ahpd secrets exec: web: child stranger is not in the declaration the service publishes; nothing was started\n']);
 });
 
-it('starts nothing when no mint is wired, rather than running as the parent', async () => {
-  const end = await secretsExec(['web', '--child', 'worker', '--', command()], options());
+it('starts nothing when hab\'s signer cannot be reached, rather than running as the parent', async () => {
+  const end = await secretsExec(['web', '--child', 'worker', '--', command()], options({ environment: {} }));
 
   expect(end).toEqual({ code: EXIT_NO_IDENTITY });
   expect(spawned).toEqual([]);
   expect(existsSync(started)).toBe(false);
-  expect(said.join('')).toContain('no hab signer is wired for a service\'s children');
+  expect(said.join('')).toContain('HAB_CLI_BIN, HAB_SESSION_HABITAT_ROOT are not set');
+});
+
+/*
+ * #39156 B, the signer's own contract: the wrapper asks hab, never ahpd, and names only the habitat and the child —
+ * hab infers the parent from the wrapper's own proven identity. Each refusal below starts nothing and says which
+ * name was wrong; the token is a 0600 file path that is checked again here, so a signer answering with a loose file
+ * cannot make a child run with it.
+ */
+import { EventEmitter } from 'node:events';
+import { habMintChild } from '../src/commands/secrets.js';
+
+/** A spawn that answers as hab would, and records the argv it was asked with. */
+const answering = (answer: { code?: number | null; stdout?: string; stderr?: string }, seen: string[][]): typeof spawn =>
+  ((file: string, args: readonly string[]) => {
+    seen.push([file, ...args]);
+    const child = new EventEmitter() as unknown as ReturnType<typeof spawn> & { stdout: EventEmitter; stderr: EventEmitter; kill: (signal?: string) => boolean };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    setTimeout(() => {
+      child.stdout.emit('data', answer.stdout ?? '');
+      child.stderr.emit('data', answer.stderr ?? '');
+      child.emit('close', answer.code === undefined ? 0 : answer.code);
+    }, 0);
+    return child;
+  }) as unknown as typeof spawn;
+
+const HAB = { HAB_CLI_BIN: '/nix/store/hab/bin/hab', HAB_SESSION_HABITAT_ROOT: '/hh/main.hab', HAB_SERVICE: 'a-name-the-wrapper-must-ignore' };
+const TOKEN = '/hh/main.hab/run/child/token';
+
+it('asks hab for the child alone, letting hab infer the parent, and reads the one line it answers', async () => {
+  const seen: string[][] = [];
+  const mint = habMintChild({
+    environment: { ...HAB },
+    spawn: answering({ stdout: `${JSON.stringify({ actor: 'worker', kind: 'service', tokenFile: TOKEN })}\n` }, seen),
+    modeOf: () => 0o600,
+  });
+
+  expect(await mint({ service: 'web', child: 'worker' })).toEqual({ actor: 'worker', kind: 'service', tokenFile: TOKEN });
+  expect(seen).toEqual([['/nix/store/hab/bin/hab', '--hab-dir', '/hh/main.hab', 'mint-child-token', 'worker']]);
+});
+
+it('refuses by name when the environment cannot name the signer, and never falls back to the parent', async () => {
+  const seen: string[][] = [];
+  const mint = habMintChild({ environment: { HAB_CLI_BIN: '/hab' }, spawn: answering({}, seen) });
+
+  const answer = await mint({ service: 'web', child: 'worker' });
+  expect(answer).toEqual({ refused: expect.stringContaining('HAB_SESSION_HABITAT_ROOT is not set') });
+  expect(seen).toEqual([]);
+});
+
+it('refuses a signer that could not be run, a nonzero answer, and an answer that is not one JSON line', async () => {
+  const failed = habMintChild({ environment: { ...HAB }, spawn: answering({ code: 3, stderr: 'refused: worker is not declared\n' }, []) });
+  expect(await failed({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('hab answered 3: refused: worker is not declared') });
+
+  const two = habMintChild({ environment: { ...HAB }, spawn: answering({ stdout: 'one\ntwo\n' }, []) });
+  expect(await two({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('expected one JSON line') });
+
+  const noKind = habMintChild({ environment: { ...HAB }, spawn: answering({ stdout: '{"actor":"worker"}\n' }, []) });
+  expect(await noKind({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('kind "undefined" is not one of service, seat') });
+
+  const noFile = habMintChild({ environment: { ...HAB }, spawn: answering({ stdout: '{"actor":"worker","kind":"service"}\n' }, []) });
+  expect(await noFile({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('tokenFile is not an absolute path') });
+});
+
+it('refuses a token file that is not 0600 or cannot be read, even when hab named it', async () => {
+  const loose = habMintChild({
+    environment: { ...HAB },
+    spawn: answering({ stdout: `${JSON.stringify({ actor: 'worker', kind: 'service', tokenFile: TOKEN })}\n` }, []),
+    modeOf: () => 0o644,
+  });
+  expect(await loose({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('mode 0644, not 0600') });
+
+  const gone = habMintChild({
+    environment: { ...HAB },
+    spawn: answering({ stdout: `${JSON.stringify({ actor: 'worker', kind: 'service', tokenFile: TOKEN })}\n` }, []),
+    modeOf: () => undefined,
+  });
+  expect(await gone({ service: 'web', child: 'worker' })).toEqual({ refused: expect.stringContaining('cannot be read') });
 });
 
 /*
