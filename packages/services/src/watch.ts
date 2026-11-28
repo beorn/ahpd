@@ -25,6 +25,8 @@ import type { DriftAlert, DriftFacts } from './drift.js';
 
 /** The ref prefix of the alert for a program process-compose stopped restarting. */
 export const GAVE_UP_REF = 'services-gave-up:';
+/** The ref prefix of the alert for a scheduled job whose last run exited nonzero (@cto 6ea4f263). */
+export const SCHEDULED_FAILED_REF = 'scheduled-run-failed:';
 /** The ref prefix of the alert for a command YAML cut at a ` #`. */
 export const CUT_COMMAND_REF = 'services-lint:';
 /** How a read-only entry's reason begins when its command was cut; the plugin raises an alert for each. */
@@ -93,6 +95,29 @@ export function watchAlerts(
     const eligible = most !== undefined && most !== 0
       && (record.restart?.policy === 'always' || record.restart?.policy === 'on_failure');
     const row = rows?.get(record.name);
+    if (record.schedule !== undefined) {
+      // A scheduled job is a different fact from a service whose retries ran out (@cto 6ea4f263). Its row comes back as
+      // `Scheduled` (or `Completed`) holding the last run's exit code and `process_end_time`, so a nonzero exit is a
+      // failed run: raised per job, quiet for a code the entry declares report-only, kept while a re-run is in flight,
+      // and cleared only by a later observed success. The same ref for the job updates on a repeat failure.
+      if (rows !== undefined && row === undefined) { delete held[record.name]; continue; }
+      if (row !== undefined && row.endedAt !== undefined && row.endedAt !== '' && row.exitCode !== undefined
+        && (row.status === 'Completed' || row.status === 'Scheduled')) {
+        if (row.exitCode === 0 || record.reports?.includes(row.exitCode) === true) { delete held[record.name]; continue; }
+        held[record.name] = { exit: row.exitCode, restarts: row.restarts ?? 0, at: row.endedAt };
+      }
+      const ran = held[record.name];
+      if (ran === undefined) continue;
+      out.push({
+        level: 'error',
+        ref: `${SCHEDULED_FAILED_REF}${record.name}`,
+        text: `scheduled job ${record.name} on ${machine}: its last run exited ${ran.exit} at ${ran.at}. This is a failed `
+          + `scheduled run, not a service whose retries ran out, so the next slot will run it again. Its log is that `
+          + `run\'s own output, read with the driver\'s logs read for ${record.name} (process-compose keeps it in `
+          + `memory, so there is no path to name); ${ownerOf(record)}`,
+      });
+      continue;
+    }
     if (!eligible) { delete held[record.name]; continue; }
     // A readable process list that holds no row for this service means it is gone; an unreadable one means nothing was
     // answered, and silence is never read as success: what is held stays held, and drift says the machine is unreadable.

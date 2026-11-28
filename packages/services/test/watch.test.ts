@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { listServices, type ComposeMachine } from '../src/compose.js';
 import { driftFacts } from '../src/drift.js';
-import { CUT_COMMAND_REF, GAVE_UP_REF, readOutcomes, watchAlerts, writeOutcomes } from '../src/watch.js';
+import { CUT_COMMAND_REF, GAVE_UP_REF, SCHEDULED_FAILED_REF, readOutcomes, watchAlerts, writeOutcomes } from '../src/watch.js';
 
 /*
  * @cto 8f8fafce, the #38120 supervisor ruling: process-compose stays the format,
@@ -248,4 +248,129 @@ describe('a gave-up program across a re-run (#39156 C, @dev/21)', () => {
     rmSync(file);
     expect(readOutcomes(file)).toEqual({});
   });
+});
+
+/*
+ * @cto 6ea4f263: a scheduled job that exited nonzero is a different fact from a service whose retries ran out.
+ * process-compose answers it with the row back in `Scheduled` (or `Completed`), the run's exit code and a real
+ * `process_end_time`; the classification is the driver's, the delivery (@dev/21's) relays the ref unchanged.
+ */
+describe('a scheduled run that failed (#39156 C, @cto 6ea4f263)', () => {
+  const SCHEDULED = `processes:
+  nightly:
+    command: "sh -c 'exit 17'"
+    schedule:
+      cron: "0 3 * * *"
+      timezone: America/Los_Angeles
+    availability:
+      restart: always
+      max_restarts: 2
+    x-hh-source:
+      kind: program
+      id: nightly-report
+  reporting:
+    command: "sh -c 'exit 3'"
+    schedule:
+      cron: "30 3 * * *"
+    x-hh-reports: [3]
+`;
+  const listing = (): ReturnType<typeof listServices> => {
+    const answer = listServices(machineFor(SCHEDULED));
+    if (!answer.ok) throw new Error(answer.message);
+    return answer;
+  };
+
+  it('raises scheduled-run-failed, not services-gave-up, naming the job, the exit and the run time', () => {
+    const alerts = watchAlerts('test-machine', listing(), [
+      { name: 'nightly', status: 'Scheduled', exitCode: 17, restarts: 0, endedAt: '2026-11-28T11:00:03-08:00' },
+    ]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.ref).toBe(`${SCHEDULED_FAILED_REF}nightly`);
+    expect(alerts[0]!.level).toBe('error');
+    expect(alerts[0]!.text).toContain('scheduled job nightly on test-machine');
+    expect(alerts[0]!.text).toContain('exited 17 at 2026-11-28T11:00:03-08:00');
+    expect(alerts[0]!.text).toContain('not a service whose retries ran out');
+    expect(alerts[0]!.text).toContain('read with the driver\'s logs read for nightly');
+    expect(alerts[0]!.text).toContain('its owner is program nightly-report (x-hh-source)');
+    expect(alerts.some((one) => one.ref.startsWith(GAVE_UP_REF))).toBe(false);
+  });
+
+  it('keeps a code the entry declares report-only quiet, and says nothing before the first run', () => {
+    const answer = listing();
+    expect(watchAlerts('test-machine', answer, [
+      { name: 'reporting', status: 'Scheduled', exitCode: 3, restarts: 0, endedAt: '2026-11-28T11:30:04-08:00' },
+    ])).toEqual([]);
+    // A job waiting for its first slot has no end time and no code: nothing was observed, so nothing is claimed.
+    expect(watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Pending', restarts: 0 }])).toEqual([]);
+    expect(watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Scheduled', restarts: 0 }])).toEqual([]);
+  });
+
+  it('keeps the failure while the job runs again, and clears only on an observed success', () => {
+    const answer = listing();
+    const held: Record<string, { exit: number; restarts: number; at: string }> = {};
+    watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Scheduled', exitCode: 17, restarts: 0, endedAt: '2026-11-28T11:00:03-08:00' }], held);
+    expect(held['nightly']).toMatchObject({ exit: 17, at: '2026-11-28T11:00:03-08:00' });
+    // In flight: a bare zero while running is not a success.
+    expect(watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Running', exitCode: 0, restarts: 0 }], held).map((one) => one.ref))
+      .toEqual([`${SCHEDULED_FAILED_REF}nightly`]);
+    // Unreadable list: silence is not success either.
+    expect(watchAlerts('test-machine', answer, 'cannot reach process-compose', held).map((one) => one.ref))
+      .toEqual([`${SCHEDULED_FAILED_REF}nightly`]);
+    // The next slot succeeds: the same ref goes away.
+    expect(watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Scheduled', exitCode: 0, restarts: 0, endedAt: '2026-11-29T11:00:02-08:00' }], held)).toEqual([]);
+    expect(held['nightly']).toBeUndefined();
+  });
+
+  it('updates the same ref when the same job fails again, and drops it when the job is gone', () => {
+    const answer = listing();
+    const held: Record<string, { exit: number; restarts: number; at: string }> = {};
+    const first = watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Scheduled', exitCode: 17, restarts: 0, endedAt: '2026-11-28T11:00:03-08:00' }], held);
+    const second = watchAlerts('test-machine', answer, [{ name: 'nightly', status: 'Scheduled', exitCode: 21, restarts: 0, endedAt: '2026-11-29T11:00:05-08:00' }], held);
+    expect(first.map((one) => one.ref)).toEqual(second.map((one) => one.ref));
+    expect(second[0]!.text).toContain('exited 21 at 2026-11-29T11:00:05-08:00');
+    expect(held['nightly']).toMatchObject({ exit: 21, at: '2026-11-29T11:00:05-08:00' });
+    // No row for it in a readable list: the job is gone, and its failure is not carried against a name nobody holds.
+    expect(watchAlerts('test-machine', answer, [{ name: 'reporting', status: 'Scheduled' }], held)).toEqual([]);
+    expect(held['nightly']).toBeUndefined();
+  });
+});
+
+describe('the real process-compose, through a scheduled run that failed', () => {
+  let pc: ChildProcess | undefined;
+  afterEach(() => { pc?.kill('SIGKILL'); pc = undefined; });
+
+  it('answers Scheduled with the exit code and a real end time, and the driver raises scheduled-run-failed', async () => {
+    const binary = processCompose();
+    if (binary === undefined) {
+      throw new Error('process-compose was not found: set PROCESS_COMPOSE_BIN or put it on PATH. This test is what proves the scheduled-run classification matches what process-compose really reports.');
+    }
+    const machine = machineFor(`processes:
+  nightly:
+    command: "sh -c 'exit 17'"
+    schedule:
+      cron: "* * * * *"
+      run_on_start: true
+    x-hh-source:
+      kind: program
+      id: nightly-report
+`, 'pc.sock');
+    pc = spawn(binary, ['-f', machine.backend.files[0]!, '--unix-socket', machine.backend.pc.socket, '--use-uds', '-t=false', '-L', join(dir, 'pc.log'), 'up'],
+      { stdio: 'ignore', env: { ...process.env, PC_DISABLE_TUI: 'true' } });
+    const listing = listServices(machine);
+    let alerts: ReturnType<typeof watchAlerts> = [];
+    let last: unknown;
+    const until = Date.now() + 25_000;
+    while (Date.now() < until) {
+      const facts = await driftFacts(machine, join(dir, 'drift.json'));
+      last = facts.running;
+      alerts = watchAlerts('test-machine', listing, facts.running);
+      if (alerts.length > 0) break;
+      await new Promise((done) => setTimeout(done, 250));
+    }
+    expect(alerts.map((one) => one.ref), `last process list: ${JSON.stringify(last)}`).toEqual([`${SCHEDULED_FAILED_REF}nightly`]);
+    expect(alerts[0]!.text).toContain('exited 17 at ');
+    const row = (last as Array<{ name: string; status: string; endedAt?: string }>).find((one) => one.name === 'nightly')!;
+    expect(row.status).toBe('Scheduled');
+    expect(typeof row.endedAt).toBe('string');
+  }, 40_000);
 });
