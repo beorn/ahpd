@@ -35,7 +35,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { isAlias, isMap, isPair, isScalar, parseDocument, visit, type Document, type Node } from 'yaml';
 import { REMOTE_COMMANDS_OFF, machineSwitches } from './switches.js';
 import {
-  CONDITIONS, FIELDS, MEMORY_KEY, RESTART_POLICIES, applyPatch, bytesOfSize, checkPatch, fromNative, nativeChanges, same,
+  CONDITIONS, FIELDS, LANDING_KEY, MEMORY_KEY, RESTART_POLICIES, applyPatch, bytesOfSize, checkPatch, fromNative, nativeChanges, same,
   type ServicePatch, type ServiceRecord,
 } from './record.js';
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
@@ -905,9 +905,6 @@ async function runningNames(machine: ComposeMachine): Promise<Set<string> | stri
     return (error as Error).message;
   }
 }
-
-/** The extension key an entry names its landing under: process-compose ignores `x-` keys, as it does `x-hh-deploy`. */
-export const LANDING_KEY = 'x-hh-landing';
 
 /** One resident a promotion restarted (#39156 acceptance A: the old and the new pid are recorded). */
 export interface LandingRestart {
