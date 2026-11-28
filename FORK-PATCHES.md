@@ -66,6 +66,9 @@ Upstream status is one of:
 
 ## Patches
 
+### SDK: idle WebSocket client liveness
+- `ac2ff15b4` · keep clients that answer WebSocket Ping connected and give a real heartbeat timeout a close reason · #39178 · upstream ask not written (upstream `2dda46a83` still sends a reverse JSON-RPC ping from the listener)
+
 ### ACP: a record is offered only the MCP servers it names
 - `660c4e2` · an agent record may carry `mcpServers`, the names in the host's catalog that its sessions are offered; absent inherits the whole map, present is exactly those on create, load and resume, and an unknown name fails the session by name · #39079 · upstream ask not written (the field is generic; no ask prepared)
 
