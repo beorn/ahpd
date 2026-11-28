@@ -1,5 +1,5 @@
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import {
 } from '../src/channel.js';
 import { listServices } from '../src/compose.js';
 import type { DriftAlert } from '../src/drift.js';
+import { GAVE_UP_REF } from '../src/watch.js';
 import {
   REPLACED_IN, RETIRED, UNREADABLE_REF, apply, callerOf, showDrift,
   type ServicesChannelHandle, type ServicesHost, type ServicesMethod,
@@ -45,16 +46,21 @@ const until = async (check: () => boolean): Promise<void> => {
 let dir: string;
 let server: Server;
 let pcSeen: string[];
+let pcProcesses: Array<Record<string, unknown>>;
+let stopResponse: ((response: ServerResponse) => void) | undefined;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'ahpd-services-channel-'));
   writeFileSync(join(dir, 'local.yaml'), 'processes:\n  web:\n    command: sleep 2\n');
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ machine: { allowRemoteCommands: true } }));
   pcSeen = [];
+  pcProcesses = [{ name: 'web', status: 'Running' }, { name: 'other', status: 'Running' }];
+  stopResponse = undefined;
   server = createServer((request, response) => {
     pcSeen.push(`${request.method} ${request.url}`);
     const json = (body: unknown): void => { response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
-    if (request.url === '/processes') json({ data: [{ name: 'web', status: 'Running' }, { name: 'other', status: 'Running' }] });
+    if (request.url === '/processes') json({ data: pcProcesses });
+    else if (request.method === 'PATCH' && request.url === '/process/stop/web' && stopResponse !== undefined) stopResponse(response);
     else if (request.url?.startsWith('/process/logs/')) json({ logs: ['listening on 8080', 'ready'] });
     else json({});
   });
@@ -172,6 +178,59 @@ describe('the operations, through invokeOperation', () => {
     }
     expect(pcSeen.filter((one) => one.includes('/process/'))).toEqual(['POST /process/start/web', 'PATCH /process/stop/web', 'POST /process/restart/web']);
     await made.close();
+  });
+
+  it.each([['Running', -1], ['Restarting', 19]])('stays quiet when a managed stop ends a %s service at its restart limit', async (status, exitCode) => {
+    writeFileSync(join(dir, 'local.yaml'), 'processes:\n  web:\n    command: sleep 2\n    availability:\n      restart: on_failure\n      max_restarts: 1\n  other:\n    command: sleep 2\n');
+    const started = new Date(Date.now() - 10_000).toISOString();
+    pcProcesses = [{ name: 'web', status, exit_code: 19, restarts: 1, process_start_time: started }, { name: 'other', status: 'Running' }];
+    let acknowledgeStop: (() => void) | undefined;
+    stopResponse = (response) => {
+      pcProcesses[0] = { name: 'web', status: 'Completed', exit_code: exitCode, restarts: 1, process_start_time: started, process_end_time: new Date().toISOString() };
+      acknowledgeStop = () => {
+        acknowledgeStop = undefined;
+        response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+      };
+    };
+    const made = host();
+    apply(made.served, options());
+    const control = (verb: string, name: string) => made.invoke().handle(
+      { channel: CHANNEL, operationId: verb, target: { id: name } }, holding([`service:${verb}`]), 'pipe-1', 'user:ana',
+    );
+    const webStatus = (current: ReturnType<typeof host>) => current.snapshot().rows.find((row) => row.name === 'web')?.state.status;
+    let stop: ReturnType<typeof control> | undefined;
+    try {
+      await until(() => webStatus(made) === status);
+      stop = control('stop', 'web');
+      await until(() => acknowledgeStop !== undefined);
+      await control('start', 'other');
+      await until(() => webStatus(made) === 'Completed');
+      expect(made.alerts.map((one) => one.ref)).not.toContain(`${GAVE_UP_REF}web`);
+      const published = made.published.length;
+      acknowledgeStop!();
+      await stop;
+      await until(() => made.published.length > published);
+      expect(logLines().at(-1)).toMatchObject({ op: 'stop', name: 'web', principal: 'user:ana' });
+      expect(made.alerts.map((one) => one.ref)).not.toContain(`${GAVE_UP_REF}web`);
+
+      const restartedHost = host();
+      apply(restartedHost.served, options());
+      try {
+        await until(() => webStatus(restartedHost) === 'Completed');
+        expect(restartedHost.alerts.map((one) => one.ref)).not.toContain(`${GAVE_UP_REF}web`);
+      }
+      finally { await restartedHost.close(); }
+
+      // A later native start has a new start time and does not write to the driver's journal.
+      pcProcesses[0] = { ...pcProcesses[0], exit_code: -1, process_start_time: new Date().toISOString(), process_end_time: new Date().toISOString() };
+      await control('start', 'other');
+      await until(() => made.alerts.some((one) => one.ref === `${GAVE_UP_REF}web`));
+    }
+    finally {
+      acknowledgeStop?.();
+      try { await stop; }
+      finally { await made.close(); }
+    }
   });
 
   it('answers a driver refusal as an RpcError carrying its code and difference, and records no write', async () => {
