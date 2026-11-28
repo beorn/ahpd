@@ -119,6 +119,11 @@ export interface ServiceRecord {
   readonly name: string;
   readonly command: string;
   readonly cwd?: string;
+  /**
+   * The landing this resident is served from (#39156 acceptance A): the deployed link a promotion moves.
+   * The watch restarts the resident when the link resolves somewhere new; a service with no landing is ignored.
+   */
+  readonly landing?: string;
   readonly env?: Readonly<Record<string, SecretRef>>;
   readonly schedule?: Schedule;
   readonly restart?: Restart;
@@ -144,6 +149,7 @@ export interface ServicePatch {
   readonly name: string;
   readonly command?: string;
   readonly cwd?: string | null;
+  readonly landing?: string | null;
   readonly env?: Readonly<Record<string, SecretRef>> | null;
   readonly schedule?: Schedule | null;
   readonly restart?: Restart | null;
@@ -156,7 +162,7 @@ export interface ServicePatch {
 }
 
 /** The neutral fields, in the order they are written; `list` answers them as the capability list. */
-export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source', 'memory', 'child'] as const;
+export const FIELDS = ['name', 'command', 'cwd', 'landing', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source', 'memory', 'child'] as const;
 
 /** The native key a deploy declaration is written under: process-compose ignores `x-` extensions. */
 export const DEPLOY_KEY = 'x-hh-deploy';
@@ -166,6 +172,9 @@ export const SOURCE_KEY = 'x-hh-source';
 
 /** The native key a service's per-run memory cap is written under, beside the deploy declaration and its source. */
 export const MEMORY_KEY = 'x-hh-memory';
+
+/** The extension key an entry names its landing under: process-compose ignores `x-` keys, as it does `x-hh-deploy`. */
+export const LANDING_KEY = 'x-hh-landing';
 
 /**
  * A per-run memory cap (#39156 acceptance C): the value at which the driver alarms, and the value at which it
@@ -299,7 +308,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   for (const key of Object.keys(patch)) {
     if (!(FIELDS as readonly string[]).includes(key)) return bad(`"${key}" is not a service field; the fields are ${FIELDS.join(', ')}`);
   }
-  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source, memory, child } = patch;
+  const { name, command, cwd, landing, env, schedule, restart, depends_on: depends, health, deploy, source, memory, child } = patch;
   if (typeof name !== 'string' || !SAFE_NAME.test(name)) return bad('name must be letters, digits, "_", "." or "-", starting with a letter or digit');
   const text = (field: string, value: unknown): Invalid | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return bad(`${field} must be a non-empty string`);
@@ -308,6 +317,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   };
   if (command !== undefined) { const wrong = text('command', command); if (wrong) return wrong; }
   if (cwd !== undefined && cwd !== null) { const wrong = text('cwd', cwd); if (wrong) return wrong; }
+  if (landing !== undefined && landing !== null) { const wrong = text('landing', landing); if (wrong) return wrong; }
   if (env !== undefined && env !== null) {
     if (!isObject(env)) return bad('env must be an object of NAME: {"$secret": "<scope>:<name>"}');
     for (const [key, value] of Object.entries(env)) {
@@ -474,6 +484,12 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
     record['cwd'] = cwd;
   }
 
+  const landing = entry[LANDING_KEY];
+  if (landing !== undefined && landing !== null) {
+    if (typeof landing !== 'string' || landing === '') return `its ${LANDING_KEY} is not a path`;
+    record['landing'] = landing;
+  }
+
   const schedule = entry['schedule'];
   if (schedule !== undefined && schedule !== null) {
     if (!isObject(schedule)) return 'its schedule is not a mapping';
@@ -614,6 +630,7 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
 
   if (changed('command') || changed('env') || changed('child')) leaf(['command'], nativeCommand(after.name, after.command, after.env, after.child));
   if (changed('cwd')) leaf(['working_dir'], after.cwd);
+  if (changed('landing')) leaf([LANDING_KEY], after.landing);
   if (changed('restart')) {
     leaf(['availability', 'restart'], after.restart?.policy);
     leaf(['availability', 'backoff_seconds'], after.restart?.backoff_seconds);
