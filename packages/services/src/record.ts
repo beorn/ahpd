@@ -21,6 +21,8 @@
  * something the driver wrote, and that entry is read-only.
  */
 
+import { isWrapperCommand, ownWrapperExecutable } from './self-command.js';
+
 /** A reference into the machine's vault; the only form an `env` value may take. */
 export interface SecretRef {
   readonly $secret: string;
@@ -217,8 +219,8 @@ export function bytesOfSize(text: string): number | undefined {
   return Math.round(Number(match[1]) * scale);
 }
 
-/** The wrapper's fixed words. */
-export const WRAPPER = 'ahpd secrets exec';
+/** The wrapper's fixed words, after the executable word. */
+export const WRAPPER_WORDS = 'secrets exec';
 
 /** A name that is a plain YAML key, a plain shell word and a process-compose name, all at once. */
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -469,14 +471,14 @@ export function nativeCommand(
   if (refs.length === 0 && child === undefined) return command;
   const childWords = child === undefined ? '' : ` --child ${child}`;
   const refWords = refs.map(([key, value]) => ('$secret' in value ? ` --env ${key}=${value.$secret}` : ` --set ${key}=${value.plain}`)).join('');
-  return `${WRAPPER} ${name}${refWords}${childWords} -- ${quoteWord(command)}`;
+  return `${ownWrapperExecutable()} ${WRAPPER_WORDS} ${name}${refWords}${childWords} -- ${quoteWord(command)}`;
 }
 
-const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*)((?: --set [A-Za-z_][A-Za-z0-9_]*=\S+)*)(?: --child ([A-Za-z0-9][A-Za-z0-9_.-]*))? -- '((?:[^']|'\\'')*)'$/;
+const WRAPPED = /^(?:ahpd|\/\S*\/bin\/ahpd) secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*)((?: --set [A-Za-z_][A-Za-z0-9_]*=\S+)*)(?: --child ([A-Za-z0-9][A-Za-z0-9_.-]*))? -- '((?:[^']|'\\'')*)'$/;
 
 /** The neutral command, references and child a native command carries, or why it is not the wrapper the driver writes. */
 function neutralCommand(name: string, native: string): { command: string; env?: Record<string, EnvValue>; child?: string } | string {
-  if (!native.startsWith(`${WRAPPER} `)) return { command: native };
+  if (!isWrapperCommand(native)) return { command: native };
   const match = WRAPPED.exec(native);
   if (!match) return 'its command uses the secrets wrapper in a form the driver does not write';
   if (match[1] !== name) return `its secrets wrapper names the service ${match[1]}`;

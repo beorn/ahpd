@@ -146,3 +146,23 @@ describe('a plain env value on a service record (#38276)', () => {
       .toBe('its secrets wrapper sets HAB_ID_TOKEN plainly, and only TRIBE_SOCKET may be written that way');
   });
 });
+
+/*
+ * #39156 B: the row may name this install's absolute bin/ahpd instead of the bare word, because a service unit's
+ * PATH can resolve a different ahpd than the driver that wrote the line. Reading it back must stay neutral.
+ */
+describe('a wrapper line that names an absolute ahpd (#39156 B)', () => {
+  it('reads back as the same neutral record', () => {
+    const store = '/nix/store/r631q12dbiy1qcmh59ammfzmbmq1k2hp-ahpd-trial-0.15.0-rc.4-source.fba91316';
+    const native = `${store}/bin/ahpd secrets exec yrd --set TRIBE_SOCKET=/s --child yrd -- 'bun yrd.ts'`;
+    expect(fromNative('yrd', { command: native })).toEqual({
+      name: 'yrd', command: 'bun yrd.ts', env: { TRIBE_SOCKET: { plain: '/s' } }, child: 'yrd',
+    });
+  });
+
+  it('still refuses a wrapper line that names another service', () => {
+    const store = '/nix/store/r631q12dbiy1qcmh59ammfzmbmq1k2hp-ahpd-trial-0.15.0-rc.4-source.fba91316';
+    expect(fromNative('yrd', { command: `${store}/bin/ahpd secrets exec other -- 'bun yrd.ts'` }))
+      .toBe('its secrets wrapper names the service other');
+  });
+});
