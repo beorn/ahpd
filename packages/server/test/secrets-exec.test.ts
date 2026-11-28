@@ -181,6 +181,38 @@ it('mints the child\'s identity, gives it only its own token file, and removes t
   expect(existsSync(tokenFile)).toBe(false);
 });
 
+/*
+ * hab's parent selector (#39200, @dev/22 10:14Z) infers the parent from the *caller's* resident
+ * HAB_ID_TOKEN/HAB_ID_TOKEN_FILE. The wrapper drops those names from what the child inherits, but the signer is the
+ * wrapper's own subprocess and must still see them — the source of a real defect this test was written for: the
+ * first cut stripped the environment and then built the default mint from the stripped copy, so hab would have been
+ * asked to prove a parent it could not see. This runs the default mint (no injected seam) against a stub hab.
+ */
+it('gives hab the wrapper\'s resident identity, while the child gets only its minted token file', async () => {
+  const tokenFile = join(dir, 'minted-token');
+  const hab = join(dir, 'hab');
+  writeFileSync(hab, `#!/bin/sh\nprintf '{"tokenFile":"%s","bearer":"%s"}\\n' "$HAB_ID_TOKEN_FILE" "$HAB_ID_TOKEN" > '${join(dir, 'mintenv.json')}'\nprintf 'x' > '${tokenFile}'\nchmod 600 '${tokenFile}'\nprintf '{"actor":"worker","kind":"service","tokenFile":"${tokenFile}"}\\n'\n`, { mode: 0o755 });
+
+  const end = await secretsExec(['web', '--child', 'worker', '--', command()], options({
+    environment: {
+      ...process.env,
+      HAB_CLI_BIN: hab,
+      HAB_SESSION_HABITAT_ROOT: dir,
+      HAB_ID_TOKEN: 'resident-bearer',
+      HAB_ID_TOKEN_FILE: '/parent/token',
+      AHPD_SERVICE_TOKEN_FILE: '/parent/service-token',
+    },
+  }));
+
+  expect(end).toEqual({ code: 0 });
+  expect(JSON.parse(readFileSync(join(dir, 'mintenv.json'), 'utf8'))).toEqual({ tokenFile: '/parent/token', bearer: 'resident-bearer' });
+  const seen = identityReport();
+  expect(seen['tokenFile']).toBe(tokenFile);
+  expect(seen['bearer']).toBeNull();
+  expect(seen['serviceToken']).toBeNull();
+  expect(existsSync(tokenFile)).toBe(false);
+});
+
 it('starts nothing when the mint refuses the child, and says which child and why', async () => {
   const end = await secretsExec(['web', '--child', 'stranger', '--', command()], options({
     mintChild: async () => ({ refused: 'web: child stranger is not in the declaration the service publishes' }),
