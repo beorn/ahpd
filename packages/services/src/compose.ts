@@ -752,20 +752,30 @@ export async function checkLandings(
   try {
     const landings = landingsOf(machine);
     if (landings.size === 0) return { ok: true, checked: 0, restarted: [] };
-    const before = await pidsOf(machine);
-    if (typeof before === 'string') return refuse('DRIVER_FAILED', `landings: ${before}`);
     const state = readLandingState(machine);
-    const restarted: LandingRestart[] = [];
-    let wrote = false;
+    // The common case is nothing moved, and then the driver asks process-compose nothing at all: every tick of a
+    // short cadence costs one symlink read per service, not a socket round trip.
+    const moved: Array<{ readonly name: string; readonly from: string; readonly to: string }> = [];
+    let baselined = false;
     for (const [name, target] of landings) {
       const identity = landingIdentity(target);
       const seen = state[name];
       if (seen === undefined) {
         state[name] = identity;
-        wrote = true;
+        baselined = true;
         continue;
       }
-      if (seen === identity) continue;
+      if (seen !== identity) moved.push({ name, from: seen, to: identity });
+    }
+    const finish = (restarted: readonly LandingRestart[]): Answer<LandingCheck> => {
+      if (baselined || restarted.length > 0) writeFileSync(landingStateFile(machine), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      return { ok: true, checked: landings.size, restarted };
+    };
+    if (moved.length === 0) return finish([]);
+    const before = await pidsOf(machine);
+    if (typeof before === 'string') return refuse('DRIVER_FAILED', `landings: ${before}`);
+    const restarted: LandingRestart[] = [];
+    for (const { name, from: seen, to: identity } of moved) {
       const oldPid = before.get(name) ?? null;
       const started = Date.now();
       const [method, path] = ROUTES.restart(name);
@@ -786,14 +796,12 @@ export async function checkLandings(
       const restart: LandingRestart = { name, from: seen, to: identity, oldPid, newPid, elapsedMs: Date.now() - started };
       restarted.push(restart);
       state[name] = identity;
-      wrote = true;
       writeLog(machine.changeLog, {
         principal: caller.principal, op: 'landing-restart', name, before: null, after: null,
         fileHashBefore: null, fileHashAfter: null, landing: restart,
       });
     }
-    if (wrote) writeFileSync(landingStateFile(machine), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-    return { ok: true, checked: landings.size, restarted };
+    return finish(restarted);
   }
   catch (error) {
     return failed(error);

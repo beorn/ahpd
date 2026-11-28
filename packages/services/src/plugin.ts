@@ -34,7 +34,7 @@ import {
   rpcError, servicesChannel, serviceProvider, servicesProvider, servicesState,
   type Driver, type ServicesChannel, type ServicesProvider, type ServicesState,
 } from './channel.js';
-import { isUnreadableLine, type ComposeMachine } from './compose.js';
+import { checkLandings, isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
 import { pcStateStream } from './pc.js';
 import { GAVE_UP_REF, watchAlerts } from './watch.js';
@@ -56,6 +56,8 @@ export const UNREADABLE_REF = 'services-changelog:unreadable';
 /** How often drift is checked, after the check at start. */
 export const DRIFT_EVERY_MS = 5 * 60 * 1000;
 const STREAM_RETRY_MS = 15_000;
+/** How often landing identities are read: a promotion should restart a resident within seconds, not five minutes. */
+export const LANDINGS_EVERY_MS = 5 * 1000;
 
 /** The methods this plugin served before the channel, by the operation or read that replaced each. */
 export const RETIRED: Readonly<Record<string, string>> = {
@@ -414,9 +416,30 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
     if (due || disconnected) void changed();
   }, STREAM_RETRY_MS);
   timer.unref();
+  // #39156 acceptance A: a promotion is a file change, so it is watched on a short cadence rather than the drift's
+  // five minutes. The check reads a symlink and only asks process-compose to restart when an identity actually moved,
+  // so the cost of the short cadence is one readlink per service.
+  const checkLanding = async (): Promise<void> => {
+    try {
+      const answer = await checkLandings(machine, { principal: 'services-plugin', remote: false });
+      if (!answer.ok) {
+        host.alert({ level: 'error', text: `the landing check failed: ${answer.message}`, ref: `${DRIFT_REF}landing` });
+        return;
+      }
+      host.clearAlert(`${DRIFT_REF}landing`);
+      if (answer.restarted.length > 0) publish();
+    }
+    catch (error) {
+      host.alert({ level: 'error', text: `the landing check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}landing` });
+    }
+  };
+  void checkLanding();
+  const landings = setInterval(() => { void checkLanding(); }, LANDINGS_EVERY_MS);
+  landings.unref();
   host.registerClose(() => {
     closed = true;
     clearInterval(timer);
+    clearInterval(landings);
     const connection = stream;
     stream = undefined;
     connection?.terminate();
