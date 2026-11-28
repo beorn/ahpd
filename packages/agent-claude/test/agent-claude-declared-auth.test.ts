@@ -117,3 +117,14 @@ it('leaves an unmarked entry waiting for nothing, exactly as before', async () =
   expect(stateOf(session)?.['kind']).not.toBe('authRequired');
   await session.close();
 });
+
+it('shows a declared server the CLI never reported as stopped, never connected', async () => {
+  // A declared entry exists before any CLI answer for it; a name the CLI never
+  // reports must not read `ready`, which would be a connection this host cannot
+  // see (@cto 10:22Z). Only a mark makes it wait; otherwise it is stopped.
+  const session = open({ type: 'http', url: URL });
+  await settle();
+  expect(sdk.mcp).toEqual([]);
+  expect(stateOf(session)?.['kind']).toBe('stopped');
+  await session.close();
+});
