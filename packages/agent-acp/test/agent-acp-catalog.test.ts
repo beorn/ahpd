@@ -394,6 +394,81 @@ describe('the MCP servers a session is opened with', () => {
     ]);
   });
 
+  /*
+   * #39059 (@cto 90847897): a record's `mcpServers` entry may name its
+   * credential as `{ "$secret": "host:x" }`, the way its `env` may, and nothing
+   * resolved one there — so the reference reached the agent as an object, which
+   * an http server testing its authorization header for a bearer refuses and
+   * codex-acp cannot type. Read at the session's open, through the reader `env`
+   * uses, and never said in a line.
+   */
+  it('reads a $secret in a server\'s header out of the vault at the open, and never says its value', async () => {
+    const asked: string[] = [];
+    const { agent, log, said } = withLog({
+      secret: async (name) => {
+        asked.push(name);
+        return 'Bearer t-held';
+      },
+    });
+    const { session, watch } = await start(agent, 'stdio', {
+      mcpServers: {
+        api: {
+          type: 'http',
+          url: 'https://example.test/mcp',
+          headers: { authorization: { $secret: 'host:hightea' }, 'X-Row': 'row-1' },
+        },
+      },
+    });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+
+    expect(asked).toEqual(['host:hightea']);
+    expect(opened(log)).toEqual([{
+      type: 'http',
+      name: 'api',
+      url: 'https://example.test/mcp',
+      headers: [{ name: 'authorization', value: 'Bearer t-held' }, { name: 'X-Row', value: 'row-1' }],
+    }]);
+    // The host's own lines carry the name and never the value.
+    expect(said.join('\n')).not.toContain('t-held');
+  });
+
+  it('refuses the session by name when the secret cannot be read, and never sends the reference', async () => {
+    const { agent, log } = withLog({
+      secret: async (name) => {
+        throw new Error(`the vault holds no ${name}`);
+      },
+    });
+    await expect(start(agent, 'stdio', {
+      mcpServers: { api: { type: 'http', url: 'https://example.test/mcp', headers: { authorization: { $secret: 'host:missing' } } } },
+    })).rejects.toThrow('MCP_SERVER_SECRET_UNREADABLE: api header authorization names host:missing');
+    // Nothing was opened with the reference still in it.
+    expect(opened(log)).toBeUndefined();
+  });
+
+  it('carries a literal header unchanged beside a reference', async () => {
+    const { agent, log } = withLog({ secret: async () => 'Bearer t-two' });
+    const { session, watch } = await start(agent, 'stdio', {
+      mcpServers: {
+        api: {
+          type: 'http',
+          url: 'https://example.test/mcp',
+          headers: { authorization: 'Bearer literal', 'X-Row': { $secret: 'host:row' } },
+        },
+      },
+    });
+    const before = watch.endings().length;
+    session.sendMessage('t1', 'hi');
+    await until(() => watch.endings().length > before);
+    expect(opened(log)).toEqual([{
+      type: 'http',
+      name: 'api',
+      url: 'https://example.test/mcp',
+      headers: [{ name: 'authorization', value: 'Bearer literal' }, { name: 'X-Row', value: 'Bearer t-two' }],
+    }]);
+  });
+
   it('leaves an http server out of a server that takes none, and says which', async () => {
     const { agent, log, said } = withLog({}, ['--no-http-mcp']);
     const { session, watch } = await start(agent, 'nohttp', { mcpServers: servers });
