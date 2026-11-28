@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { EXIT_NO_VALUE, EXIT_USAGE, readExecLine, secretsExec } from '../src/commands/secrets.js';
+import { EXIT_NO_IDENTITY, EXIT_NO_VALUE, EXIT_USAGE, readExecLine, secretsExec } from '../src/commands/secrets.js';
 
 /*
  * #38277 slice 2: the secrets wrapper process-compose starts a program
@@ -23,7 +23,7 @@ let spawned: Array<{ file: string; args: readonly string[] }>;
 /** A child that writes what it was started with: its argv, and the variable's value. */
 const PROBE = `
 const fs = require('node:fs');
-fs.writeFileSync(process.argv[2], JSON.stringify({ argv: process.argv, value: process.env.TOKEN ?? null, parentArgv: fs.existsSync('/proc/' + process.ppid + '/cmdline') ? fs.readFileSync('/proc/' + process.ppid + '/cmdline', 'utf8') : null }));
+fs.writeFileSync(process.argv[2], JSON.stringify({ argv: process.argv, value: process.env.TOKEN ?? null, parentArgv: fs.existsSync('/proc/' + process.ppid + '/cmdline') ? fs.readFileSync('/proc/' + process.ppid + '/cmdline', 'utf8') : null, tokenFile: process.env.HAB_ID_TOKEN_FILE ?? null, bearer: process.env.HAB_ID_TOKEN ?? null, serviceToken: process.env.AHPD_SERVICE_TOKEN_FILE ?? null }));
 fs.writeFileSync(process.argv[3], 'ran');
 `;
 
@@ -39,7 +39,7 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
-const options = () => ({
+const options = (extra: Record<string, unknown> = {}) => ({
   vaultFile: vault,
   machine: 'test-machine',
   stderr: (text: string) => { said.push(text); },
@@ -49,6 +49,7 @@ const options = () => ({
     return spawn(file, args, opts);
   }) as typeof spawn,
   forward: [],
+  ...extra,
 });
 
 /** The probe's command line, as the driver would write the program's command. */
@@ -121,4 +122,66 @@ it('refuses a line it cannot read and starts nothing', async () => {
 it('answers the child\'s own exit code, and its signal', async () => {
   expect(await secretsExec(['web', '--', 'exit 7'], options())).toEqual({ code: 7 });
   expect(await secretsExec(['web', '--', 'kill -TERM $$'], options())).toEqual({ signal: 'SIGTERM' });
+});
+
+/*
+ * #39156 B: a child runs as itself or not at all. The wrapper drops every identity the parent carries, mints the one
+ * the child was declared with (hab signs; ahpd never does), and removes that token when the child ends. Until the
+ * hab half lands, asking for a child identity refuses by name and starts nothing.
+ */
+const identityReport = (): Record<string, string | null> => JSON.parse(readFileSync(report, 'utf8')) as Record<string, string | null>;
+
+it('reads --child, and refuses a repeated or malformed child name', () => {
+  expect(readExecLine(['web', '--child', 'worker', '--', 'run'])).toEqual({ service: 'web', env: [], child: 'worker', command: 'run' });
+  expect(readExecLine(['web', '--env', 'T=host:a', '--child=worker', '--', 'run'])).toEqual({
+    service: 'web', env: [['T', 'host:a']], child: 'worker', command: 'run',
+  });
+  expect(readExecLine(['web', '--child', 'a', '--child', 'b', '--', 'run'])).toBe('web: --child names a child twice');
+  expect(readExecLine(['web', '--child', 'not a name', '--', 'run'])).toBe('web: --child not a name is not a child name');
+});
+
+it('never hands the parent\'s identity to a child', async () => {
+  const end = await secretsExec(['web', '--', command()], options({
+    environment: { ...process.env, HAB_ID_TOKEN: 'bearer-of-the-parent', HAB_ID_TOKEN_FILE: '/parent/token', AHPD_SERVICE_TOKEN_FILE: '/parent/service-token' },
+  }));
+
+  expect(end).toEqual({ code: 0 });
+  const seen = identityReport();
+  expect(seen['bearer']).toBeNull();
+  expect(seen['tokenFile']).toBeNull();
+  expect(seen['serviceToken']).toBeNull();
+});
+
+it('mints the child\'s identity, gives it only its own token file, and removes that file when the child ends', async () => {
+  const tokenFile = join(dir, 'child-token');
+  writeFileSync(tokenFile, 'child-token-bytes', { mode: 0o600 });
+  const asked: Array<{ service: string; child: string }> = [];
+  const end = await secretsExec(['web', '--child', 'worker', '--', command()], options({
+    mintChild: async (request) => { asked.push({ ...request }); return { actor: 'worker', kind: 'service', tokenFile }; },
+  }));
+
+  expect(end).toEqual({ code: 0 });
+  expect(asked).toEqual([{ service: 'web', child: 'worker' }]);
+  expect(identityReport()['tokenFile']).toBe(tokenFile);
+  expect(existsSync(tokenFile)).toBe(false);
+});
+
+it('starts nothing when the mint refuses the child, and says which child and why', async () => {
+  const end = await secretsExec(['web', '--child', 'stranger', '--', command()], options({
+    mintChild: async () => ({ refused: 'web: child stranger is not in the declaration the service publishes' }),
+  }));
+
+  expect(end).toEqual({ code: EXIT_NO_IDENTITY });
+  expect(spawned).toEqual([]);
+  expect(existsSync(started)).toBe(false);
+  expect(said).toEqual(['ahpd secrets exec: web: child stranger is not in the declaration the service publishes; nothing was started\n']);
+});
+
+it('starts nothing when no mint is wired, rather than running as the parent', async () => {
+  const end = await secretsExec(['web', '--child', 'worker', '--', command()], options());
+
+  expect(end).toEqual({ code: EXIT_NO_IDENTITY });
+  expect(spawned).toEqual([]);
+  expect(existsSync(started)).toBe(false);
+  expect(said.join('')).toContain('no hab signer is wired for a service\'s children');
 });

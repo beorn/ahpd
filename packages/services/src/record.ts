@@ -128,6 +128,11 @@ export interface ServiceRecord {
   readonly source?: ServiceSource;
   /** The per-run memory cap: an alarm value and a kill value, read at each check (#39156 C). */
   readonly memory?: ServiceMemory;
+  /**
+   * The child's own identity (#39156 B): the name the published service declaration lists as this service's child.
+   * The wrapper mints a token for it at every start, so the child acts as itself, never as the parent's service row.
+   */
+  readonly child?: string;
 }
 
 /**
@@ -147,10 +152,11 @@ export interface ServicePatch {
   readonly deploy?: ServiceDeployDeclaration | null;
   readonly source?: ServiceSource | null;
   readonly memory?: ServiceMemory | null;
+  readonly child?: string | null;
 }
 
 /** The neutral fields, in the order they are written; `list` answers them as the capability list. */
-export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source', 'memory'] as const;
+export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source', 'memory', 'child'] as const;
 
 /** The native key a deploy declaration is written under: process-compose ignores `x-` extensions. */
 export const DEPLOY_KEY = 'x-hh-deploy';
@@ -293,7 +299,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   for (const key of Object.keys(patch)) {
     if (!(FIELDS as readonly string[]).includes(key)) return bad(`"${key}" is not a service field; the fields are ${FIELDS.join(', ')}`);
   }
-  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source, memory } = patch;
+  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source, memory, child } = patch;
   if (typeof name !== 'string' || !SAFE_NAME.test(name)) return bad('name must be letters, digits, "_", "." or "-", starting with a letter or digit');
   const text = (field: string, value: unknown): Invalid | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return bad(`${field} must be a non-empty string`);
@@ -380,6 +386,12 @@ export function checkPatch(patch: unknown): Invalid | undefined {
       if (bytesOfSize(memory[key] as string) === undefined) return bad(`memory.${key} is not a size such as 3G, 512M or 1024K`);
     }
   }
+  if (child !== undefined && child !== null) {
+    if (typeof child !== 'string') return bad('child must be the name the service declaration lists');
+    const wrong = text('child', child);
+    if (wrong) return wrong;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(child)) return bad('child must be the name the service declaration lists: letters, digits, "_", "." or "-"');
+  }
   return undefined;
 }
 
@@ -398,17 +410,23 @@ export function applyPatch(before: ServiceRecord | undefined, patch: ServicePatc
 
 const quoteWord = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
 
-/** The native `command` for a neutral command and its references. */
-export function nativeCommand(name: string, command: string, env: Readonly<Record<string, SecretRef>> | undefined): string {
+/** The native `command` for a neutral command, its references and its child identity. */
+export function nativeCommand(
+  name: string,
+  command: string,
+  env: Readonly<Record<string, SecretRef>> | undefined,
+  child?: string,
+): string {
   const refs = Object.entries(env ?? {});
-  if (refs.length === 0) return command;
-  return `${WRAPPER} ${name}${refs.map(([key, ref]) => ` --env ${key}=${ref.$secret}`).join('')} -- ${quoteWord(command)}`;
+  if (refs.length === 0 && child === undefined) return command;
+  const childWords = child === undefined ? '' : ` --child ${child}`;
+  return `${WRAPPER} ${name}${refs.map(([key, ref]) => ` --env ${key}=${ref.$secret}`).join('')}${childWords} -- ${quoteWord(command)}`;
 }
 
-const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*) -- '((?:[^']|'\\'')*)'$/;
+const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*)(?: --child ([A-Za-z0-9][A-Za-z0-9_.-]*))? -- '((?:[^']|'\\'')*)'$/;
 
-/** The neutral command and references a native command carries, or why it is not the wrapper the driver writes. */
-function neutralCommand(name: string, native: string): { command: string; env?: Record<string, SecretRef> } | string {
+/** The neutral command, references and child a native command carries, or why it is not the wrapper the driver writes. */
+function neutralCommand(name: string, native: string): { command: string; env?: Record<string, SecretRef>; child?: string } | string {
   if (!native.startsWith(`${WRAPPER} `)) return { command: native };
   const match = WRAPPED.exec(native);
   if (!match) return 'its command uses the secrets wrapper in a form the driver does not write';
@@ -418,7 +436,11 @@ function neutralCommand(name: string, native: string): { command: string; env?: 
     if (!REFERENCE.test(ref!)) return `its secrets wrapper names "${ref}", which is not a reference`;
     env[key!] = { $secret: ref! };
   }
-  return { command: (match[3] ?? '').replace(/'\\''/g, `'`), env };
+  return {
+    command: (match[4] ?? '').replace(/'\\''/g, `'`),
+    env,
+    ...(match[3] === undefined ? {} : { child: match[3] }),
+  };
 }
 
 /**
@@ -444,6 +466,7 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
   }
   const record: Record<string, unknown> = { name, command: command.command };
   if (command.env !== undefined && Object.keys(command.env).length > 0) record['env'] = command.env;
+  if (command.child !== undefined) record['child'] = command.child;
 
   const cwd = entry['working_dir'];
   if (cwd !== undefined && cwd !== null) {
@@ -589,7 +612,7 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
   const changed = (field: keyof ServiceRecord): boolean => before === undefined || !same(before[field], after[field]);
   const leaf = (path: string[], value: NativeValue | undefined): void => { out.push([path, value === undefined ? REMOVE : value]); };
 
-  if (changed('command') || changed('env')) leaf(['command'], nativeCommand(after.name, after.command, after.env));
+  if (changed('command') || changed('env') || changed('child')) leaf(['command'], nativeCommand(after.name, after.command, after.env, after.child));
   if (changed('cwd')) leaf(['working_dir'], after.cwd);
   if (changed('restart')) {
     leaf(['availability', 'restart'], after.restart?.policy);

@@ -27,7 +27,7 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
 import { constants, hostname } from 'node:os';
 import { scopeOf } from '@ahpd/sdk';
 import { vaultPath } from '../config.js';
@@ -38,32 +38,68 @@ export interface ExecLine {
   readonly service: string;
   /** Each variable and the reference its value comes from, in the order given. */
   readonly env: ReadonlyArray<readonly [string, string]>;
+  /**
+   * The child's own identity, when the entry names one (#39156 B): the name the published service declaration
+   * lists as this service's child. The wrapper mints that child a token at every start, so the child acts as
+   * itself and never as the parent's service row.
+   */
+  readonly child?: string;
   /** The program, one shell word, run with `/bin/sh -c`. */
   readonly command: string;
 }
+
+/** A child's identity, as it is minted for one start: who the child is, and the 0600 file it presents. */
+export interface ChildIdentity {
+  readonly actor: string;
+  readonly kind: 'service' | 'seat';
+  /** The 0600 token file the child reads as `HAB_ID_TOKEN_FILE`; removed when the child ends. */
+  readonly tokenFile: string;
+}
+
+/**
+ * Mints one child's identity. The signer is hab's, never ahpd's (@cto 30f1871e): a second trust root would let any
+ * driver name any actor. hab signs an actor and kind only when the published declaration lists it as that service's
+ * child, and a request for any other name is refused by name.
+ */
+export type MintChild = (request: { readonly service: string; readonly child: string }) => Promise<ChildIdentity | { readonly refused: string }>;
 
 /** How a run ended: the child's exit code, or the signal that ended it. */
 export type ExecEnd = { readonly code: number } | { readonly signal: NodeJS.Signals };
 
 /** Exit codes when nothing was started: the line is wrong, or the vault cannot give a value (sysexits). */
 export const EXIT_USAGE = 64;
+/** Nothing was started because the child's identity could not be minted (sysexits EX_UNAVAILABLE). */
+export const EXIT_NO_IDENTITY = 69;
 export const EXIT_NO_VALUE = 78;
 /** The shell could not be started at all, as a shell answers a command it cannot find. */
 export const EXIT_NO_SHELL = 127;
 
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const USAGE = "secrets exec <service> [--env NAME=<scope>:<name>]... -- '<command>'";
+const CHILD_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/u;
+const USAGE = "secrets exec <service> [--env NAME=<scope>:<name>]... [--child <name>] -- '<command>'";
+
+/** The variables that carry an identity. A child gets none of the parent's, only the one minted for itself. */
+const IDENTITY_ENV = ['HAB_ID_TOKEN', 'HAB_ID_TOKEN_FILE', 'AHPD_SERVICE_TOKEN_FILE'] as const;
 
 /** The line read, or the sentence saying what is wrong with it. Never quotes a value: the line holds none. */
 export function readExecLine(words: readonly string[]): ExecLine | string {
   const [service, ...rest] = words;
   if (service === undefined || service === '' || service.startsWith('-')) return `the first word must be the service's name; the line is ${USAGE}`;
   const env: Array<readonly [string, string]> = [];
+  let child: string | undefined;
   let at = 0;
   while (at < rest.length && rest[at] !== '--') {
     const word = rest[at]!;
+    const childName = word === '--child' ? rest[at + 1] : word.startsWith('--child=') ? word.slice('--child='.length) : undefined;
+    if (childName !== undefined) {
+      at += word === '--child' ? 2 : 1;
+      if (child !== undefined) return `${service}: --child names a child twice`;
+      if (!CHILD_NAME.test(childName)) return `${service}: --child ${childName} is not a child name`;
+      child = childName;
+      continue;
+    }
     const pair = word === '--env' ? rest[at + 1] : word.startsWith('--env=') ? word.slice('--env='.length) : undefined;
-    if (pair === undefined) return `${service}: "${word}" is not --env NAME=<scope>:<name> or --; the line is ${USAGE}`;
+    if (pair === undefined) return `${service}: "${word}" is not --env NAME=<scope>:<name>, --child <name> or --; the line is ${USAGE}`;
     at += word === '--env' ? 2 : 1;
     const equals = pair.indexOf('=');
     const key = equals === -1 ? pair : pair.slice(0, equals);
@@ -81,7 +117,7 @@ export function readExecLine(words: readonly string[]): ExecLine | string {
   if (rest[at] !== '--') return `${service}: no -- before the command; the line is ${USAGE}`;
   const after = rest.slice(at + 1);
   if (after.length !== 1 || after[0]!.trim() === '') return `${service}: the command after -- must be one quoted word; the line is ${USAGE}`;
-  return { service, env, command: after[0]! };
+  return { service, env, ...(child === undefined ? {} : { child }), command: after[0]! };
 }
 
 /** What a run reads from outside it, so a test can name its own. */
@@ -98,7 +134,17 @@ export interface ExecOptions {
   readonly spawn?: typeof nodeSpawn;
   /** The signals passed on to the child while it runs. */
   readonly forward?: readonly NodeJS.Signals[];
+  /** The child-identity mint; hab's signer by default. A test names its own. */
+  readonly mintChild?: MintChild;
 }
+
+/**
+ * The mint before the hab half of #39156 B lands: it refuses by name, so a line that asks for an identity starts
+ * nothing rather than running as the parent. Replaced by hab's signer; never by an ahpd-issued token.
+ */
+const UNWIRED_MINT: MintChild = async ({ service, child }) => ({
+  refused: `${service}: child ${child} cannot be given an identity: no hab signer is wired for a service's children on this machine yet (#39156 B), and a child never runs as its parent's token`,
+});
 
 const FORWARDED: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGUSR1', 'SIGUSR2'];
 
@@ -150,17 +196,46 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
       return { code: EXIT_NO_VALUE };
     }
   }
+  // A child is never handed the parent's identity: the variables that carry one are dropped from what it inherits.
+  // With `--child` it gets exactly the token minted for itself, and with no mint wired it starts nothing at all.
+  const environment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env) };
+  for (const key of IDENTITY_ENV) delete environment[key];
+  let minted: ChildIdentity | undefined;
+  if (line.child !== undefined) {
+    const mint = options.mintChild ?? UNWIRED_MINT;
+    let identity: ChildIdentity | { readonly refused: string };
+    try {
+      identity = await mint({ service: line.service, child: line.child });
+    }
+    catch (error) {
+      say(`ahpd secrets exec ${line.service}: the mint for child ${line.child} failed: ${(error as Error).message}; nothing was started\n`);
+      return { code: EXIT_NO_IDENTITY };
+    }
+    if ('refused' in identity) {
+      say(`ahpd secrets exec: ${identity.refused}; nothing was started\n`);
+      return { code: EXIT_NO_IDENTITY };
+    }
+    minted = identity;
+    environment.HAB_ID_TOKEN_FILE = identity.tokenFile;
+  }
   const spawn = options.spawn ?? nodeSpawn;
   return await new Promise<ExecEnd>((resolve) => {
     const child = spawn('/bin/sh', ['-c', line.command], {
       stdio: 'inherit',
-      env: { ...(options.environment ?? process.env), ...values },
+      env: { ...environment, ...values },
     });
+    // The token belongs to this start: it is removed when the child ends, so a dead child leaves no identity behind
+    // and the next start mints a new one.
+    const discard = (): void => {
+      if (minted === undefined) return;
+      try { unlinkSync(minted.tokenFile); } catch { /* already gone, or the child removed it */ }
+    };
     const pass = (signal: NodeJS.Signals): void => { child.kill(signal); };
     const signals = options.forward ?? FORWARDED;
     for (const signal of signals) process.on(signal, pass);
     const done = (end: ExecEnd): void => {
       for (const signal of signals) process.off(signal, pass);
+      discard();
       resolve(end);
     };
     child.on('error', (error) => {
