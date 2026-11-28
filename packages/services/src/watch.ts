@@ -17,6 +17,7 @@
  * Both are pure functions of what the driver already read; the plugin raises and
  * clears them by `ref` with the drift alerts.
  */
+import { readFileSync, writeFileSync } from 'node:fs';
 import type { Node } from 'yaml';
 import { isMap, isScalar, Scalar } from 'yaml';
 import type { Answer, Listing } from './compose.js';
@@ -28,6 +29,20 @@ export const GAVE_UP_REF = 'services-gave-up:';
 export const CUT_COMMAND_REF = 'services-lint:';
 /** How a read-only entry's reason begins when its command was cut; the plugin raises an alert for each. */
 export const CUT_COMMAND_REASON = 'its command is unquoted and YAML reads';
+
+/**
+ * The last terminal outcome a service was left in (#39156 C, @dev/21's measured replay).
+ *
+ * process-compose answers a re-run in flight with `Running` and a zero `exit_code`, so judging the alert from the
+ * current row alone made a gave-up program read as recovered the moment it was started again — a bare zero while
+ * running cannot clear a failure. The driver therefore keeps the terminal exit of the run that failed and clears it
+ * only on a later *terminal* success (exit 0, or a code the entry declares report-only).
+ */
+export interface TerminalFailure {
+  readonly exit: number;
+  readonly restarts: number;
+  readonly at: string;
+}
 
 /**
  * What process-compose runs of a `command` YAML cut at a ` #`, or nothing when it
@@ -58,27 +73,44 @@ const ownerOf = (record: Listing['services'][number]): string =>
  * one per program process-compose gave up on, and one per command YAML cut short.
  *
  * Gave up means `Completed`, a non-zero exit its `x-hh-reports` does not declare, a restart policy that restarts, and
- * as many restarts as `max_restarts` allows (0 is unlimited, so it never gives up).
- * A read-only entry has no record to read its limit from, so it is never judged.
+ * as many restarts as `max_restarts` allows (0 is unlimited, so it never gives up). The failure is remembered in
+ * `held` while the service runs again, because process-compose answers a re-run in flight with `Running` and exit 0;
+ * it is cleared only by a later terminal success. A read-only entry has no record to read its limit from, so it is
+ * never judged.
  */
-export function watchAlerts(machine: string, listing: Answer<Listing>, running: DriftFacts['running'] | undefined): DriftAlert[] {
+export function watchAlerts(
+  machine: string,
+  listing: Answer<Listing>,
+  running: DriftFacts['running'] | undefined,
+  held: Record<string, TerminalFailure> = {},
+  now: Date = new Date(),
+): DriftAlert[] {
   if (!listing.ok) return [];
   const out: DriftAlert[] = [];
-  const held = typeof running === 'object' ? new Map(running.map((one) => [one.name, one])) : undefined;
+  const rows = typeof running === 'object' ? new Map(running.map((one) => [one.name, one])) : undefined;
   for (const record of [...listing.services].sort((a, b) => a.name.localeCompare(b.name))) {
-    const now = held?.get(record.name);
     const most = record.restart?.max_restarts;
-    if (now === undefined || most === undefined || most === 0) continue;
-    if (record.restart?.policy !== 'always' && record.restart?.policy !== 'on_failure') continue;
-    if (now.status !== 'Completed' || now.exitCode === undefined || now.exitCode === 0) continue;
-    // #39156 acceptance C: a code the entry declares report-only is an answer, not a failure, so it takes no
-    // incident path. Only a code it did not declare is treated as the program having failed.
-    if (record.reports?.includes(now.exitCode) === true) continue;
-    if (now.restarts === undefined || now.restarts < most) continue;
+    const eligible = most !== undefined && most !== 0
+      && (record.restart?.policy === 'always' || record.restart?.policy === 'on_failure');
+    const row = rows?.get(record.name);
+    if (!eligible) { delete held[record.name]; continue; }
+    // A readable process list that holds no row for this service means it is gone; an unreadable one means nothing was
+    // answered, and silence is never read as success: what is held stays held, and drift says the machine is unreadable.
+    if (rows !== undefined && row === undefined) { delete held[record.name]; continue; }
+    if (row !== undefined && row.status === 'Completed' && row.exitCode !== undefined) {
+      // #39156 acceptance C: a code the entry declares report-only is an answer, not a failure, and exit 0 is the
+      // success that ends a held failure. A failure below the restart limit is not terminal yet.
+      if (row.exitCode === 0 || record.reports?.includes(row.exitCode) === true) { delete held[record.name]; continue; }
+      if (row.restarts !== undefined && row.restarts >= most) {
+        held[record.name] = { exit: row.exitCode, restarts: row.restarts, at: now.toISOString() };
+      }
+    }
+    const failure = held[record.name];
+    if (failure === undefined) continue;
     out.push({
       level: 'error',
       ref: `${GAVE_UP_REF}${record.name}`,
-      text: `process-compose on ${machine} gave up on ${record.name}: it exited ${now.exitCode} after ${now.restarts} restarts `
+      text: `process-compose on ${machine} gave up on ${record.name}: it exited ${failure.exit} after ${failure.restarts} restarts `
         + `(max_restarts ${most}) and will not be started again until someone starts it; ${ownerOf(record)}`,
     });
   }
@@ -87,4 +119,29 @@ export function watchAlerts(machine: string, listing: Answer<Listing>, running: 
     out.push({ level: 'error', ref: `${CUT_COMMAND_REF}${one.name}`, text: `${one.name} on ${machine}: ${one.reason}` });
   }
   return out;
+}
+
+/** The last terminal failures per service, read from the machine's outcomes file; an unreadable file reads as none. */
+export function readOutcomes(file: string): Record<string, TerminalFailure> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, TerminalFailure> = {};
+    for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value !== 'object' || value === null) continue;
+      const { exit, restarts, at } = value as Record<string, unknown>;
+      if (typeof exit === 'number' && typeof restarts === 'number' && typeof at === 'string') {
+        out[name] = { exit, restarts, at };
+      }
+    }
+    return out;
+  }
+  catch {
+    return {};
+  }
+}
+
+/** Write the held failures back; 0600, because the file is the machine's own record of what failed. */
+export function writeOutcomes(file: string, held: Record<string, TerminalFailure>): void {
+  writeFileSync(file, `${JSON.stringify(held, null, 2)}\n`, { mode: 0o600 });
 }

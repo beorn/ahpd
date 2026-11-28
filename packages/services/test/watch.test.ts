@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { listServices, type ComposeMachine } from '../src/compose.js';
 import { driftFacts } from '../src/drift.js';
-import { CUT_COMMAND_REF, GAVE_UP_REF, watchAlerts } from '../src/watch.js';
+import { CUT_COMMAND_REF, GAVE_UP_REF, readOutcomes, watchAlerts, writeOutcomes } from '../src/watch.js';
 
 /*
  * @cto 8f8fafce, the #38120 supervisor ruling: process-compose stays the format,
@@ -175,5 +175,77 @@ describe('a declared report-only exit code (#39156 C)', () => {
     expect(watchAlerts('test-machine', answer, [{ name: 'reporter', status: 'Completed', exitCode: 3, restarts: 2 }])).toEqual([]);
     const undeclared = watchAlerts('test-machine', answer, [{ name: 'reporter', status: 'Completed', exitCode: 4, restarts: 2 }]);
     expect(undeclared.map((one) => one.ref)).toEqual([`${GAVE_UP_REF}reporter`]);
+  });
+});
+
+/*
+ * @dev/21's measured replay (#39156 C): process-compose answers a re-run in flight with `Running` and a zero exit_code,
+ * so reading the alert from the current row alone cleared a gave-up program the moment it was started again. The
+ * terminal failure is carried instead, and only a later terminal success clears it.
+ */
+describe('a gave-up program across a re-run (#39156 C, @dev/21)', () => {
+  const listing = (): ReturnType<typeof listServices> => {
+    const answer = listServices(machineFor(CRASHER));
+    if (!answer.ok) throw new Error(answer.message);
+    return answer;
+  };
+
+  it('keeps the failure while it runs again, and through an unreadable process list', () => {
+    const answer = listing();
+    const held: Record<string, { exit: number; restarts: number; at: string }> = {};
+    const failed = watchAlerts('test-machine', answer, [{ name: 'crasher', status: 'Completed', exitCode: 3, restarts: 2 }], held);
+    expect(failed).toHaveLength(1);
+    expect(held['crasher']).toMatchObject({ exit: 3, restarts: 2 });
+    // A re-run in flight: Running with a bare zero must not clear it.
+    const running = watchAlerts('test-machine', answer, [{ name: 'crasher', status: 'Running', exitCode: 0, restarts: 0 }], held);
+    expect(running.map((one) => one.ref)).toEqual([`${GAVE_UP_REF}crasher`]);
+    // The process list cannot be read at all: silence is not success either.
+    const unreadable = watchAlerts('test-machine', answer, 'cannot reach process-compose', held);
+    expect(unreadable.map((one) => one.ref)).toEqual([`${GAVE_UP_REF}crasher`]);
+  });
+
+  it('clears only on a terminal success, and never on a non-terminal failure', () => {
+    const answer = listing();
+    const held: Record<string, { exit: number; restarts: number; at: string }> = { crasher: { exit: 3, restarts: 2, at: '2026-11-28T07:00:00.000Z' } };
+    expect(watchAlerts('test-machine', answer, [{ name: 'crasher', status: 'Completed', exitCode: 3, restarts: 1 }], held))
+      .toHaveLength(1);
+    expect(held['crasher']).toBeDefined();
+    expect(watchAlerts('test-machine', answer, [{ name: 'crasher', status: 'Completed', exitCode: 0, restarts: 0 }], held))
+      .toEqual([]);
+    expect(held['crasher']).toBeUndefined();
+  });
+
+  it('clears on a code the entry declares report-only', () => {
+    const answer = listServices(machineFor(`processes:
+  reporter:
+    command: "false"
+    availability:
+      restart: on_failure
+      max_restarts: 2
+    x-hh-reports: [3]
+`));
+    if (!answer.ok) throw new Error(answer.message);
+    const held: Record<string, { exit: number; restarts: number; at: string }> = { reporter: { exit: 5, restarts: 2, at: '2026-11-28T07:00:00.000Z' } };
+    expect(watchAlerts('test-machine', answer, [{ name: 'reporter', status: 'Completed', exitCode: 3, restarts: 2 }], held)).toEqual([]);
+    expect(held['reporter']).toBeUndefined();
+  });
+
+  it('drops a failure for a service the process list no longer holds', () => {
+    const answer = listing();
+    const held: Record<string, { exit: number; restarts: number; at: string }> = { crasher: { exit: 3, restarts: 2, at: '2026-11-28T07:00:00.000Z' } };
+    expect(watchAlerts('test-machine', answer, [{ name: 'keeper', status: 'Running' }], held)).toEqual([]);
+    expect(held['crasher']).toBeUndefined();
+  });
+
+  it('round-trips the held failures through the outcomes file', () => {
+    const machine = machineFor(CRASHER);
+    const file = join(machine.configDir, 'outcomes.json');
+    const held = { crasher: { exit: 3, restarts: 2, at: '2026-11-28T07:00:00.000Z' } };
+    writeOutcomes(file, held);
+    expect(readOutcomes(file)).toEqual(held);
+    writeFileSync(file, '{"crasher": {"exit": "three"}}');
+    expect(readOutcomes(file)).toEqual({});
+    rmSync(file);
+    expect(readOutcomes(file)).toEqual({});
   });
 });

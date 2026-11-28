@@ -37,7 +37,7 @@ import {
 import { checkLandings, checkMemory, checkSchedules, isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
 import { pcStateStream } from './pc.js';
-import { GAVE_UP_REF, watchAlerts } from './watch.js';
+import { GAVE_UP_REF, readOutcomes, watchAlerts, writeOutcomes } from './watch.js';
 
 export { DRIVER, callerOf, type Driver } from './channel.js';
 
@@ -261,23 +261,29 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
       const drift = await checkDrift(machine, stateFile, (facts) => { running = facts.running; });
       if (closed) return;
       // @cto 8f8fafce (2, 5): a program process-compose gave up on, and a command YAML cut short, beside the drift.
-      let watched = watchAlerts(machine.name, driver.list(machine), running);
+      // #39156 C (@dev/21): the terminal failure is carried across a re-run, so a restart in flight does not read as
+      // recovery; only a later terminal success clears it.
+      const outcomes = join(machine.configDir, 'services', 'outcomes.json');
+      const carried = readOutcomes(outcomes);
+      let watched = watchAlerts(machine.name, driver.list(machine), running, carried);
       if (typeof running === 'object' && watched.some((alert) => alert.ref.startsWith(GAVE_UP_REF))) {
         const historyError = readStops();
         if (historyError !== undefined) drift.push({ level: 'error', ref: `${DRIFT_REF}stop-history`, text: historyError });
-        const held = new Map(running.map((one) => [one.name, one]));
+        const rows = new Map(running.map((one) => [one.name, one]));
         const pending = new Set([...pendingStops].map((request) => request.name));
         watched = watched.flatMap((alert) => {
           if (!alert.ref.startsWith(GAVE_UP_REF)) return [alert];
           const name = alert.ref.slice(GAVE_UP_REF.length);
-          const row = held.get(name);
+          const row = rows.get(name);
           const stop = historyError === undefined ? stops.get(name) : undefined;
-          if (stop !== undefined && row?.startedAt !== undefined && row.endedAt !== undefined
+          if (stop !== undefined && row?.startedAt !== undefined && row?.endedAt !== undefined
             && Date.parse(row.startedAt) <= stop && stop <= Date.parse(row.endedAt)) return [];
           // A snapshot can see the stop before the driver's acknowledgement is on disk.
           return pending.has(name) ? alerts.filter((previous) => previous.ref === alert.ref) : [alert];
         });
       }
+      try { writeOutcomes(outcomes, carried); }
+      catch (error) { host.alert({ level: 'error', text: `cannot record what failed in ${outcomes}: ${(error as Error).message}`, ref: `${DRIFT_REF}outcomes` }); }
       alerts = [...drift, ...watched];
       raised = showDrift(host, raised, alerts);
     }
