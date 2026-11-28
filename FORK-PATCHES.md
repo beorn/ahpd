@@ -211,6 +211,7 @@ Upstream status is one of:
 - `05f15b6f6`, `4b87c342c` · the services driver becomes the `x-hh-services://` channel, whose actions are its operations, and the package is published as `@hallohuman/hightea-services` · #38277 · not upstreamable: `@hallohuman/hightea-services` is a Hightea package that leaves this repo with the deploy plugin (ADR-004 amendment 6)
 - `3548ee7cc` · a service says who put it on the machine, as `source` (`x-hh-source`) · #38278 · not upstreamable: same Hightea package
 - `8c521d5d1` · alert when process-compose gives up on a program (`services-gave-up:<name>`), and make read-only a command YAML cuts at ` #` · #38120 · not upstreamable: same Hightea package
+- `c9d44e702` · keep the restart-exhaustion alert quiet when the services driver's acknowledged stop belongs to the completed Process Compose run · #38222 · not upstreamable: same Hightea package
 
 ### Our own process docs
 - `c17289eb2`, `4c403b657` · every upstream post gets `/pro` and an independent Fable critique first, and prior art is checked before any ahpd change · #38236 · not upstreamable: our review process
