@@ -210,10 +210,11 @@ it('starts nothing when hab\'s signer cannot be reached, rather than running as 
 import { EventEmitter } from 'node:events';
 import { habMintChild } from '../src/commands/secrets.js';
 
-/** A spawn that answers as hab would, and records the argv it was asked with. */
-const answering = (answer: { code?: number | null; stdout?: string; stderr?: string }, seen: string[][]): typeof spawn =>
-  ((file: string, args: readonly string[]) => {
+/** A spawn that answers as hab would, and records the argv (and environment) it was asked with. */
+const answering = (answer: { code?: number | null; stdout?: string; stderr?: string }, seen: string[][], environments?: NodeJS.ProcessEnv[]): typeof spawn =>
+  ((file: string, args: readonly string[], options?: { env?: NodeJS.ProcessEnv }) => {
     seen.push([file, ...args]);
+    environments?.push({ ...(options?.env ?? {}) });
     const child = new EventEmitter() as unknown as ReturnType<typeof spawn> & { stdout: EventEmitter; stderr: EventEmitter; kill: (signal?: string) => boolean };
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -239,6 +240,20 @@ it('asks hab for the child alone, letting hab infer the parent, and reads the on
 
   expect(await mint({ service: 'web', child: 'worker' })).toEqual({ actor: 'worker', kind: 'service', tokenFile: TOKEN });
   expect(seen).toEqual([['/nix/store/hab/bin/hab', '--hab-dir', '/hh/main.hab', 'mint-child-token', 'worker']]);
+});
+
+it('hands hab the wrapper\'s own resident identity, so the signer can prove the parent it inferred', async () => {
+  const environments: NodeJS.ProcessEnv[] = [];
+  const mint = habMintChild({
+    environment: { ...HAB, HAB_ID_TOKEN: 'resident-bearer', HAB_ID_TOKEN_FILE: '/hh/main.hab/run/parent/token' },
+    spawn: answering({ stdout: `${JSON.stringify({ actor: 'worker', kind: 'service', tokenFile: TOKEN })}\n` }, [], environments),
+    modeOf: () => 0o600,
+  });
+
+  expect(await mint({ service: 'web', child: 'worker' })).toEqual({ actor: 'worker', kind: 'service', tokenFile: TOKEN });
+  expect(environments).toHaveLength(1);
+  expect(environments[0]['HAB_ID_TOKEN']).toBe('resident-bearer');
+  expect(environments[0]['HAB_ID_TOKEN_FILE']).toBe('/hh/main.hab/run/parent/token');
 });
 
 it('refuses by name when the environment cannot name the signer, and never falls back to the parent', async () => {
