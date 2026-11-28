@@ -41,6 +41,7 @@ import {
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
 import { ROUTES, pcFailure, pcRequest, type PcSocket } from './pc.js';
 import { cutCommand, cutReason } from './watch.js';
+import { previousSlot } from './cron.js';
 import { controlUnit, putUnit, removeUnit, unsupported, type SystemdMachine, type SystemdUserBackend } from './systemd.js';
 
 /** A machine whose services process-compose runs. */
@@ -108,11 +109,11 @@ export interface Listing {
   readonly hashes: Readonly<Record<string, string>>;
 }
 
-/** What this driver can carry. process-compose's scheduler keeps no last-run time, so a run missed while it is down is not caught up. */
+/** What this driver can carry. process-compose keeps no last-run time, so a cron slot missed while the driver was down is caught up from the entry's own schedule. */
 export const CAPABILITIES = {
   fields: FIELDS,
   schedule: ['cron', 'interval'] as const,
-  missedRunCatchup: false,
+  missedRunCatchup: true,
   restart: RESTART_POLICIES,
   conditions: CONDITIONS,
   health: ['exec', 'http'] as const,
@@ -302,6 +303,8 @@ export interface LogLine {
   readonly memory?: MemoryKill;
   /** A memory alarm: the observed bytes and the alarm value (#39156 acceptance C). */
   readonly memoryAlarm?: MemoryAlarm;
+  /** A slot a scheduled service missed while the driver was down, and whether a run caught it up (#39156 C). */
+  readonly missedRun?: MissedRun;
   readonly refused?: { readonly code: RefusalCode; readonly message: string };
 }
 
@@ -793,6 +796,124 @@ export async function checkMemory(machine: Machine, caller: Caller): Promise<Ans
   }
   catch (error) {
     return failed(error);
+  }
+}
+
+/** A slot a scheduled service missed while the driver was not watching, and the run that answered it. */
+export interface MissedRun {
+  readonly name: string;
+  /** The slot that should have fired, as an instant. */
+  readonly slot: string;
+  /** The last pass before the gap: the slot is after it, so no pass saw the slot go by. */
+  readonly lastSeen: string;
+  /** Whether process-compose took the catch-up run; false when it was already running, or refused. */
+  readonly ran: boolean;
+}
+
+/** What one schedule check found: how many entries are scheduled, and the slots it caught up. */
+export interface ScheduleCheck {
+  readonly checked: number;
+  readonly caughtUp: readonly MissedRun[];
+}
+
+const scheduleStateFile = (machine: Machine): string => join(machine.configDir, 'schedule.json');
+
+/** The last pass's time, and the last slot each service was accounted for. */
+interface ScheduleState {
+  readonly checkedAt?: string;
+  readonly runs: Record<string, string>;
+}
+
+/** The persisted schedule state; an unreadable file reads as no history, which baselines rather than catches up. */
+function readScheduleState(machine: Machine): ScheduleState {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(scheduleStateFile(machine), 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { runs: {} };
+    const held = parsed as Record<string, unknown>;
+    const runs = isRecordOfStrings(held['runs']) ? held['runs'] : {};
+    return typeof held['checkedAt'] === 'string' ? { checkedAt: held['checkedAt'], runs } : { runs };
+  }
+  catch {
+    return { runs: {} };
+  }
+}
+
+/**
+ * #39156 acceptance C, the catch-up half: a cron slot that passed while the driver was down is run once.
+ *
+ * process-compose keeps no last-run time, so the driver keeps one: `<configDir>/schedule.json` holds the time of the
+ * last pass and, per scheduled service, the last slot that was accounted for. A slot after that pass's time means no
+ * pass was running to see it go by, so the scheduler was never asked and the run is made now, once. The first pass
+ * for a service only records its slot: a machine never watched has no before, and guessing a run is worse than
+ * skipping one. A service already running takes no second run, and a refusal is recorded rather than retried.
+ *
+ * Only `cron` schedules are caught up. An `interval` has no slot to name, and process-compose counts it from start.
+ */
+export async function checkSchedules(machine: Machine, caller: Caller, now: Date = new Date()): Promise<Answer<ScheduleCheck>> {
+  if (!isCompose(machine)) return unsupported('schedules', machine);
+  try {
+    const services = readState(machine).services;
+    const scheduled = new Map<string, { readonly cron: string; readonly timezone?: string }>();
+    for (const [name, record] of services) {
+      const schedule = record.schedule;
+      if (schedule?.cron !== undefined) {
+        scheduled.set(name, { cron: schedule.cron, ...(schedule.timezone === undefined ? {} : { timezone: schedule.timezone }) });
+      }
+    }
+    if (scheduled.size === 0) return { ok: true, checked: 0, caughtUp: [] };
+    const stored = readScheduleState(machine);
+    const lastSeenAt = stored.checkedAt === undefined ? undefined : Date.parse(stored.checkedAt);
+    const runs: Record<string, string> = {};
+    const caughtUp: MissedRun[] = [];
+    let running: Set<string> | undefined;
+    for (const [name, { cron, timezone }] of scheduled) {
+      const slot = previousSlot(cron, now, timezone);
+      const seen = stored.runs[name];
+      if (slot === undefined) { if (seen !== undefined) runs[name] = seen; continue; }
+      const at = slot.toISOString();
+      if (seen === undefined) { runs[name] = at; continue; }
+      if (Date.parse(seen) >= slot.getTime()) { runs[name] = seen; continue; }
+      if (lastSeenAt === undefined || !(slot.getTime() > lastSeenAt)) { runs[name] = at; continue; }
+      if (running === undefined) {
+        const held = await runningNames(machine);
+        if (typeof held === 'string') return refuse('PC_REFUSED', `schedules: ${held}`);
+        running = held;
+      }
+      if (running.has(name)) { runs[name] = at; continue; }
+      const [method, path] = ROUTES.restart(name);
+      const answer = await pcRequest(machine.backend.pc, method, path);
+      const ran = answer.status === 200;
+      const missedRun: MissedRun = { name, slot: at, lastSeen: stored.checkedAt!, ran };
+      caughtUp.push(missedRun);
+      runs[name] = at;
+      writeLog(machine.changeLog, {
+        principal: caller.principal, op: 'schedule-catchup', name, before: null, after: null,
+        fileHashBefore: null, fileHashAfter: null, missedRun,
+        ...(ran ? {} : { refused: { code: 'PC_REFUSED' as const, message: `catch up ${name} for slot ${at}: ${pcFailure(answer)}` } }),
+      });
+    }
+    writeFileSync(scheduleStateFile(machine), `${JSON.stringify({ checkedAt: now.toISOString(), runs }, null, 2)}\n`, { mode: 0o600 });
+    return { ok: true, checked: scheduled.size, caughtUp };
+  }
+  catch (error) {
+    return failed(error);
+  }
+}
+
+/** The names process-compose reports as running, or the reason it could not be read. */
+async function runningNames(machine: ComposeMachine): Promise<Set<string> | string> {
+  const [method, path] = ROUTES.processes();
+  try {
+    const answer = await pcRequest(machine.backend.pc, method, path);
+    if (answer.status !== 200) return pcFailure(answer);
+    const data = (answer.body as { data?: unknown } | undefined)?.data;
+    if (!Array.isArray(data)) return `GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`;
+    return new Set((data as Array<{ name?: unknown; status?: unknown }>)
+      .filter((one) => typeof one?.name === 'string' && String(one.status) === 'Running')
+      .map((one) => one.name as string));
+  }
+  catch (error) {
+    return (error as Error).message;
   }
 }
 

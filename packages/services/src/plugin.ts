@@ -34,7 +34,7 @@ import {
   rpcError, servicesChannel, serviceProvider, servicesProvider, servicesState,
   type Driver, type ServicesChannel, type ServicesProvider, type ServicesState,
 } from './channel.js';
-import { checkLandings, checkMemory, isUnreadableLine, type ComposeMachine } from './compose.js';
+import { checkLandings, checkMemory, checkSchedules, isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
 import { pcStateStream } from './pc.js';
 import { GAVE_UP_REF, watchAlerts } from './watch.js';
@@ -60,6 +60,8 @@ const STREAM_RETRY_MS = 15_000;
 export const LANDINGS_EVERY_MS = 5 * 1000;
 /** How often a per-run memory cap is read: an alarm wants a minute's notice, not a slot's. */
 export const MEMORY_EVERY_MS = 15 * 1000;
+/** How often missed cron slots are caught up: a slot is a minute, and the answer only changes at one. */
+export const SCHEDULES_EVERY_MS = 60 * 1000;
 
 /** The methods this plugin served before the channel, by the operation or read that replaced each. */
 export const RETIRED: Readonly<Record<string, string>> = {
@@ -463,11 +465,32 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
   void checkMemoryCap();
   const memory = setInterval(() => { void checkMemoryCap(); }, MEMORY_EVERY_MS);
   memory.unref();
+  // #39156 acceptance C, the catch-up half: a cron slot that passed while the driver was down is run once, from the
+  // schedule the entry itself names. The pass is the only thing that knows the driver was watching, so it runs at
+  // start and then once a minute: after a bounce, the start pass is the one that answers the missed slot.
+  const checkSchedule = async (): Promise<void> => {
+    try {
+      const answer = await checkSchedules(machine, { principal: 'services-plugin', remote: false });
+      if (!answer.ok) {
+        host.alert({ level: 'error', text: `the schedule check failed: ${answer.message}`, ref: `${DRIFT_REF}schedules` });
+        return;
+      }
+      host.clearAlert(`${DRIFT_REF}schedules`);
+      if (answer.caughtUp.length > 0) publish();
+    }
+    catch (error) {
+      host.alert({ level: 'error', text: `the schedule check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}schedules` });
+    }
+  };
+  void checkSchedule();
+  const schedules = setInterval(() => { void checkSchedule(); }, SCHEDULES_EVERY_MS);
+  schedules.unref();
   host.registerClose(() => {
     closed = true;
     clearInterval(timer);
     clearInterval(landings);
     clearInterval(memory);
+    clearInterval(schedules);
     const connection = stream;
     stream = undefined;
     connection?.terminate();
