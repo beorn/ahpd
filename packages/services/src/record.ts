@@ -71,6 +71,12 @@ export interface ServiceDeployCommand {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, SecretRef>>;
   readonly timeoutMs?: number;
+  /**
+   * A `check` step that only verifies: it may read what the new release serves, and never restarts the service.
+   * Needed only where a service also declares `landing` (#38276, @cto deede311): the landing watch is the single
+   * restarter there, so a check that restarts would be a second one.
+   */
+  readonly verifyOnly?: boolean;
 }
 
 /**
@@ -221,7 +227,7 @@ const DEPLOY_STEPS = ['build', 'before_switch', 'check'] as const;
 /** One deploy step as the record carries it, or the sentence saying why it is not one. */
 function readDeployStep(value: unknown, where: string): ServiceDeployCommand | string {
   if (!isObject(value)) return `${where} is an object { command, args?, cwd?, env?, timeoutMs? }`;
-  const fields = 'command, args, cwd, env, timeoutMs';
+  const fields = where === 'check' ? 'command, args, cwd, env, timeoutMs, verify_only' : 'command, args, cwd, env, timeoutMs';
   for (const key of Object.keys(value)) if (!fields.split(', ').includes(key)) return `${where}.${key} is not a step field; the fields are ${fields}`;
   const command = value['command'];
   if (typeof command !== 'string' || command.trim() === '') return `${where}.command is a non-empty string`;
@@ -238,6 +244,12 @@ function readDeployStep(value: unknown, where: string): ServiceDeployCommand | s
   if (args !== undefined) out['args'] = args;
   if (cwd !== undefined) out['cwd'] = cwd;
   if (timeoutMs !== undefined) out['timeoutMs'] = timeoutMs;
+  const verifyOnly = value['verify_only'];
+  if (verifyOnly !== undefined) {
+    if (typeof verifyOnly !== 'boolean') return `${where}.verify_only is true or false`;
+    if (where !== 'check') return `${where}.verify_only is only a check field: only a check may be told it verifies and does not restart`;
+    if (verifyOnly) out['verifyOnly'] = true;
+  }
   const env = value['env'];
   if (env !== undefined) {
     if (!isObject(env)) return `${where}.env is an object of NAME: {"$secret": "<scope>:<name>"}`;
@@ -583,7 +595,24 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
     if (bytesOfSize(alarm) === undefined || bytesOfSize(kill) === undefined) return `its ${MEMORY_KEY} alarm or kill is not a size`;
     record['memory'] = { alarm, kill };
   }
-  return record as unknown as ServiceRecord;
+  const read = record as unknown as ServiceRecord;
+  const conflict = landingConflict(read);
+  if (conflict !== undefined) return conflict;
+  return read;
+}
+
+/**
+ * #38276 (@cto deede311): one restarter per service per promotion.
+ *
+ * On process-compose the landing watch restarts a resident whose landing moved. A deploy's `check` step that also
+ * restarts would be a second restarter for the same promotion, so an entry naming both is refused by name unless
+ * the check declares `verify_only: true`. A deploy with no `check` step restarts nothing and is allowed.
+ */
+export function landingConflict(record: ServiceRecord): string | undefined {
+  if (record.landing === undefined) return undefined;
+  const check = record.deploy?.check;
+  if (check === undefined || check.verifyOnly === true) return undefined;
+  return `"${record.name}" declares both ${LANDING_KEY} and an ${DEPLOY_KEY} whose check restarts: the landing watch is the single restarter on process-compose, so the deploy's check must say verify_only: true, or the entry drops one of the two (one restarter per service per promotion, #38276)`;
 }
 
 /** Remove the native subtree at this path. */
@@ -675,6 +704,7 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
         leaf([...at, 'args'], held.args);
         leaf([...at, 'cwd'], held.cwd);
         leaf([...at, 'timeoutMs'], held.timeoutMs);
+        leaf([...at, 'verify_only'], held.verifyOnly);
         const kept = new Set(Object.keys(held.env ?? {}));
         for (const gone of Object.keys(before?.deploy?.[step]?.env ?? {})) if (!kept.has(gone)) leaf([...at, 'env', gone], undefined);
         for (const [key, ref] of Object.entries(held.env ?? {})) leaf([...at, 'env', key, '$secret'], ref.$secret);
