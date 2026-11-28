@@ -159,12 +159,22 @@ export const signInNeeded = async (
   const scopes = said.scope !== undefined
     ? said.scope.split(' ').filter((one) => one !== '')
     : Array.isArray(resource.scopes_supported) ? resource.scopes_supported.filter((one: unknown): one is string => typeof one === 'string') : [];
-  publishServers(ctx, serverNames(ctx), (one, was) => one !== name ? was : {
+  const next = {
     kind: 'authRequired',
     reason,
     resource,
     ...(scopes.length > 0 ? { requiredScopes: scopes } : {}),
-  });
+  };
+  /*
+   * Said once per requirement, not once per request (#38864, @cto 2026-11-28): a server that keeps refusing the
+   * same token says the same thing, and a client told it again has nothing new to act on. A changed requirement -
+   * another reason, another resource, other scopes - is published, and so is one coming back after `ready`.
+   */
+  const was = ctx.servers.find((one) => String(one.name) === name)?.state as Bag | undefined;
+  if (was !== undefined && was.kind === next.kind && was.reason === next.reason
+    && JSON.stringify(was.resource) === JSON.stringify(next.resource)
+    && JSON.stringify(was.requiredScopes ?? []) === JSON.stringify(next.requiredScopes ?? [])) return;
+  publishServers(ctx, serverNames(ctx), (one, previous) => one !== name ? previous : next);
 };
 
 /**

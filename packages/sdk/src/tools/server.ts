@@ -196,6 +196,8 @@ export interface ToolsServers {
 const FORWARDED = ['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'];
 const RETURNED = ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'cache-control'];
 
+const DECODER = new TextDecoder();
+
 /** One open proxy endpoint. */
 interface Proxied extends ProxyUpstream {
   token: string;
@@ -205,6 +207,49 @@ interface Proxied extends ProxyUpstream {
 /** One parameter of a `WWW-Authenticate` challenge: `scope` (RFC 6750 §3) or `resource_metadata` (RFC 9728 §5.1). */
 const paramIn = (challenge: string | null, name: 'scope' | 'resource_metadata'): string | undefined =>
   new RegExp(`\\b${name}="([^"]*)"`, 'u').exec(challenge ?? '')?.[1];
+
+/**
+ * The sentence an upstream refusal said, when it said a JSON-RPC error.
+ *
+ * A server that refuses a bearer often answers with its own message, and that
+ * message is the one a model can act on; a server that said nothing gets ours.
+ */
+const saidBy = (text: string): string | undefined => {
+  try {
+    const said = JSON.parse(text) as unknown;
+    const one = (Array.isArray(said) ? said[0] : said) as { error?: { message?: unknown } } | null;
+    const message = one?.error?.message;
+    return typeof message === 'string' && message !== '' ? message : undefined;
+  }
+  catch {
+    return undefined;
+  }
+};
+
+/**
+ * A refusal said as the JSON-RPC answer to every request in the frame.
+ *
+ * Nothing in a refused frame ran, so each request that carried an id gets the
+ * same error, and a frame of notifications - which carry none - gets nothing
+ * (`undefined`): there is nobody to tell.
+ */
+const refusedFrame = (sent: ArrayBuffer | undefined, message: string): unknown => {
+  let said: unknown;
+  try {
+    said = sent === undefined ? undefined : JSON.parse(DECODER.decode(sent)) as unknown;
+  }
+  catch {
+    return failure(null, -32001, message);
+  }
+  const one = (message_: unknown): Record<string, unknown> | undefined => {
+    if (typeof message_ !== 'object' || message_ === null) return failure(null, -32001, message);
+    const id = (message_ as { id?: unknown }).id;
+    return id === undefined ? undefined : failure(id, -32001, message);
+  };
+  if (!Array.isArray(said)) return one(said);
+  const answers = said.map(one).filter((answer): answer is Record<string, unknown> => answer !== undefined);
+  return answers.length === 0 ? undefined : answers;
+};
 
 /**
  * Forward one request to the endpoint's upstream and stream its answer back.
@@ -225,12 +270,13 @@ const forward = async (request: Request, proxied: Proxied): Promise<Response> =>
   }
   const abort = new AbortController();
   proxied.inflight.add(abort);
+  const sent = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer();
   let answer: Response;
   try {
     answer = await fetch(proxied.url, {
       method: request.method,
       headers,
-      ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: await request.arrayBuffer() }),
+      ...(sent === undefined ? {} : { body: sent }),
       redirect: 'manual',
       signal: abort.signal,
     });
@@ -253,6 +299,17 @@ const forward = async (request: Request, proxied: Proxied): Promise<Response> =>
       ...(scope === undefined ? {} : { scope }),
       ...(metadataUrl === undefined ? {} : { metadataUrl }),
     });
+    /*
+     * A refusal is not an answer to a call (#38864, @cto 2026-11-28): the agent is told, in the tool's own
+     * result, that the server needs a sign-in, and the person is the one offered it - through the ACP
+     * `authRequired` the refusal above raises. Handed the bare status, an agent's MCP client has neither a
+     * result nor a challenge to act on and holds the call open until its own timeout, which is the silence
+     * this pass-through exists to avoid. So the status stops here and only the sentence goes on.
+     */
+    const said = await answer.text().catch(() => '');
+    proxied.inflight.delete(abort);
+    const refusal = refusedFrame(sent, saidBy(said) ?? `This server needs a sign-in: the request was refused with ${String(answer.status)} before it ran`);
+    return refusal === undefined ? new Response(null, { status: 202 }) : json(200, refusal);
   }
   const back = new Headers();
   for (const name of RETURNED) {

@@ -523,7 +523,19 @@ export function acpSession(
      */
     authenticated: async (_resource, token, server) => {
       const named = ctx.servers.find((one) => one.id === server)?.name;
-      if (typeof named !== 'string' || !ctx.proxies.has(named)) return false;
+      /*
+       * A false here is the client's answer, and a client that is told nothing about why learns nothing it can
+       * fix (#38864, @cto 2026-11-28): the two reasons a token cannot be taken are different faults, and each
+       * names the server it was aimed at.
+       */
+      if (typeof named !== 'string') {
+        ctx.options.log?.(`authenticate for MCP server ${server}: this session holds no server of that id, so no pass-through can take a token for it`, 'warn');
+        return false;
+      }
+      if (!ctx.proxies.has(named)) {
+        ctx.options.log?.(`authenticate for ${named}: this session reaches it without a pass-through, so a token handed over would never be sent`, 'warn');
+        return false;
+      }
       ctx.serverTokens.set(named, token);
       publishServers(ctx, serverNames(ctx), (one, was) => one === named && was.kind === 'authRequired' ? { kind: 'ready' } : was);
       return true;
