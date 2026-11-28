@@ -307,7 +307,10 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
       return { code: EXIT_NO_VALUE };
     }
   }
-  const environment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env) };
+  // The wrapper's own environment, kept as it arrived: hab's parent selector verifies the caller's resident
+  // `HAB_ID_TOKEN`/`HAB_ID_TOKEN_FILE`, so the mint must see them even when the child may not.
+  const resident: NodeJS.ProcessEnv = { ...(options.environment ?? process.env) };
+  const environment: NodeJS.ProcessEnv = { ...resident };
   let minted: ChildIdentity | undefined;
   if (line.child !== undefined) {
     // A named child is never handed the parent's identity: the variables that carry one are dropped from what it
@@ -315,7 +318,7 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
     // With no `--child` the inherited environment is left alone: until hab mints children (@dev/22's half), a service's
     // own start still presents the token process-compose handed its wrapper, and scrubbing it here would refuse it.
     for (const key of IDENTITY_ENV) delete environment[key];
-    const mint = options.mintChild ?? habMintChild({ environment });
+    const mint = options.mintChild ?? habMintChild({ environment: resident });
     let identity: ChildIdentity | { readonly refused: string };
     try {
       identity = await mint({ service: line.service, child: line.child });
