@@ -34,7 +34,7 @@ import {
   rpcError, servicesChannel, serviceProvider, servicesProvider, servicesState,
   type Driver, type ServicesChannel, type ServicesProvider, type ServicesState,
 } from './channel.js';
-import { checkLandings, isUnreadableLine, type ComposeMachine } from './compose.js';
+import { checkLandings, checkMemory, isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
 import { pcStateStream } from './pc.js';
 import { GAVE_UP_REF, watchAlerts } from './watch.js';
@@ -58,6 +58,8 @@ export const DRIFT_EVERY_MS = 5 * 60 * 1000;
 const STREAM_RETRY_MS = 15_000;
 /** How often landing identities are read: a promotion should restart a resident within seconds, not five minutes. */
 export const LANDINGS_EVERY_MS = 5 * 1000;
+/** How often a per-run memory cap is read: an alarm wants a minute's notice, not a slot's. */
+export const MEMORY_EVERY_MS = 15 * 1000;
 
 /** The methods this plugin served before the channel, by the operation or read that replaced each. */
 export const RETIRED: Readonly<Record<string, string>> = {
@@ -436,10 +438,36 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
   void checkLanding();
   const landings = setInterval(() => { void checkLanding(); }, LANDINGS_EVERY_MS);
   landings.unref();
+  // #39156 acceptance C: the memory cap process-compose does not enforce. An alarm and a kill are alerts of this
+  // plugin's own, raised and cleared per service, so a reader sees them beside the drift and gave-up alerts.
+  const checkMemoryCap = async (): Promise<void> => {
+    try {
+      const answer = await checkMemory(machine, { principal: 'services-plugin', remote: false });
+      if (!answer.ok) {
+        host.alert({ level: 'error', text: `the memory check failed: ${answer.message}`, ref: `${DRIFT_REF}memory` });
+        return;
+      }
+      host.clearAlert(`${DRIFT_REF}memory`);
+      for (const one of answer.alarmed) {
+        host.alert({ level: 'warning', text: `${one.name} is at ${(one.bytes / 1024 ** 3).toFixed(2)} GiB, over its ${(one.alarmBytes / 1024 ** 3).toFixed(2)} GiB alarm`, ref: `${DRIFT_REF}memory:${one.name}` });
+      }
+      for (const one of answer.killed) {
+        host.alert({ level: 'error', text: `${one.name} passed its ${(one.killBytes / 1024 ** 3).toFixed(2)} GiB kill value at ${(one.bytes / 1024 ** 3).toFixed(2)} GiB and was stopped`, ref: `${DRIFT_REF}memory:${one.name}` });
+      }
+      if (answer.alarmed.length > 0 || answer.killed.length > 0) publish();
+    }
+    catch (error) {
+      host.alert({ level: 'error', text: `the memory check failed: ${(error as Error).message}`, ref: `${DRIFT_REF}memory` });
+    }
+  };
+  void checkMemoryCap();
+  const memory = setInterval(() => { void checkMemoryCap(); }, MEMORY_EVERY_MS);
+  memory.unref();
   host.registerClose(() => {
     closed = true;
     clearInterval(timer);
     clearInterval(landings);
+    clearInterval(memory);
     const connection = stream;
     stream = undefined;
     connection?.terminate();

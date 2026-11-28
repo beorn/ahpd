@@ -284,6 +284,10 @@ export interface LogLine {
   readonly files?: Readonly<Record<string, string>>;
   /** A landing restart's identities and pids: #39156 acceptance A records the old and the new pid. */
   readonly landing?: LandingRestart;
+  /** A memory kill: the observed bytes and the cap (#39156 acceptance C). */
+  readonly memory?: MemoryKill;
+  /** A memory alarm: the observed bytes and the alarm value (#39156 acceptance C). */
+  readonly memoryAlarm?: MemoryAlarm;
   readonly refused?: { readonly code: RefusalCode; readonly message: string };
 }
 
@@ -649,6 +653,129 @@ const currentHash = (machine: ComposeMachine): string | null => {
     return null;
   }
 };
+
+/** The extension key an entry names its per-run memory cap under, beside `x-hh-landing`. */
+export const MEMORY_KEY = 'x-hh-memory';
+
+/** A service over its alarm value, as the answer reports it. */
+export interface MemoryAlarm {
+  readonly name: string;
+  readonly bytes: number;
+  readonly alarmBytes: number;
+}
+
+/** A service the driver stopped for passing its kill value. */
+export interface MemoryKill {
+  readonly name: string;
+  readonly bytes: number;
+  readonly killBytes: number;
+}
+
+/** What one memory check found. */
+export interface MemoryReport {
+  readonly alarmed: readonly MemoryAlarm[];
+  readonly killed: readonly MemoryKill[];
+}
+
+/** A size as a person writes it: `3G`, `512M`, `1024K`. Powers of 1024, and a bare number is bytes. */
+export function bytesOfSize(text: string): number | undefined {
+  const match = /^(\d+(?:\.\d+)?)\s*([KMGT]?)(?:i?B)?$/iu.exec(text.trim());
+  if (match === null) return undefined;
+  const scale = { '': 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[match[2]!.toUpperCase() as '' | 'K' | 'M' | 'G' | 'T'];
+  return Math.round(Number(match[1]) * scale);
+}
+
+/** The memory caps this machine's file names, by service. */
+function memoryCapsOf(machine: ComposeMachine): Map<string, { alarmBytes: number; killBytes: number }> {
+  const file = machine.backend.files[machine.backend.files.length - 1]!;
+  const doc = parseDocument(readFileSync(file, 'utf8'));
+  const processes = processesOf(doc);
+  const found = new Map<string, { alarmBytes: number; killBytes: number }>();
+  for (const item of processes?.items ?? []) {
+    const name = isScalar(item.key) ? String(item.key.value) : undefined;
+    const entry = item.value;
+    if (name === undefined || !isMap(entry)) continue;
+    const cap = entry.get(MEMORY_KEY, true);
+    if (!isMap(cap)) continue;
+    const alarm = cap.get('alarm', true);
+    const kill = cap.get('kill', true);
+    const alarmBytes = isScalar(alarm) && typeof alarm.value === 'string' ? bytesOfSize(alarm.value) : undefined;
+    const killBytes = isScalar(kill) && typeof kill.value === 'string' ? bytesOfSize(kill.value) : undefined;
+    if (alarmBytes === undefined || killBytes === undefined) continue;
+    found.set(name, { alarmBytes, killBytes });
+  }
+  return found;
+}
+
+const memoryStateFile = (machine: Machine): string => join(machine.configDir, 'memory.json');
+
+/**
+ * #39156 acceptance C, the memory half: a per-run cap with an alarm value and a kill value, as host-backup needs
+ * (alarm 3G, kill 4G). process-compose reports each process's `mem` and enforces nothing, so the driver reads it:
+ * at or above the alarm it records one alert until the process drops back under it, and at or above the kill it
+ * stops the process once and records the kill. A service with no `x-hh-memory` is never looked at.
+ */
+export async function checkMemory(machine: Machine, caller: Caller): Promise<Answer<MemoryReport>> {
+  if (!isCompose(machine)) return unsupported('memory', machine);
+  try {
+    const caps = memoryCapsOf(machine);
+    if (caps.size === 0) return { ok: true, alarmed: [], killed: [] };
+    const [method, path] = ROUTES.processes();
+    const answer = await pcRequest(machine.backend.pc, method, path);
+    if (answer.status !== 200) return refuse('PC_REFUSED', `memory: ${pcFailure(answer)}`);
+    const data = (answer.body as { data?: unknown } | undefined)?.data;
+    if (!Array.isArray(data)) return refuse('DRIVER_FAILED', `memory: GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`);
+    const bytes = new Map<string, number>();
+    for (const one of data as Array<{ name?: unknown; mem?: unknown }>) {
+      if (typeof one?.name === 'string' && typeof one.mem === 'number') bytes.set(one.name, one.mem);
+    }
+    let state: Record<string, string>;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(memoryStateFile(machine), 'utf8'));
+      state = isRecordOfStrings(parsed) ? parsed : {};
+    }
+    catch {
+      state = {};
+    }
+    const alarmed: MemoryAlarm[] = [];
+    const killed: MemoryKill[] = [];
+    for (const [name, cap] of caps) {
+      const mem = bytes.get(name);
+      if (mem === undefined) continue;
+      if (mem >= cap.killBytes) {
+        if (state[name] === 'kill') continue;
+        const stopRoute = ROUTES.stop(name);
+        const stopped = await pcRequest(machine.backend.pc, stopRoute[0], stopRoute[1]);
+        const report: MemoryKill = { name, bytes: mem, killBytes: cap.killBytes };
+        state[name] = 'kill';
+        killed.push(report);
+        writeLog(machine.changeLog, {
+          principal: caller.principal, op: 'memory-kill', name, before: null, after: null,
+          fileHashBefore: null, fileHashAfter: null, memory: report,
+          ...(stopped.status === 200 ? {} : { refused: { code: 'PC_REFUSED' as const, message: `stop ${name}: ${pcFailure(stopped)}` } }),
+        });
+        continue;
+      }
+      if (mem >= cap.alarmBytes) {
+        if (state[name] === 'alarm' || state[name] === 'kill') continue;
+        const report: MemoryAlarm = { name, bytes: mem, alarmBytes: cap.alarmBytes };
+        state[name] = 'alarm';
+        alarmed.push(report);
+        writeLog(machine.changeLog, {
+          principal: caller.principal, op: 'memory-alarm', name, before: null, after: null,
+          fileHashBefore: null, fileHashAfter: null, memoryAlarm: report,
+        });
+        continue;
+      }
+      delete state[name];
+    }
+    writeFileSync(memoryStateFile(machine), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    return { ok: true, alarmed, killed };
+  }
+  catch (error) {
+    return failed(error);
+  }
+}
 
 /** The extension key an entry names its landing under: process-compose ignores `x-` keys, as it does `x-hh-deploy`. */
 export const LANDING_KEY = 'x-hh-landing';
