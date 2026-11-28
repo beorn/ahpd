@@ -140,15 +140,30 @@ it('reads --child, and refuses a repeated or malformed child name', () => {
   expect(readExecLine(['web', '--child', 'not a name', '--', 'run'])).toBe('web: --child not a name is not a child name');
 });
 
-it('never hands the parent\'s identity to a child', async () => {
+it('keeps the parent\'s identity for a start that names no child, so today\'s emitters still act as themselves', async () => {
   const end = await secretsExec(['web', '--', command()], options({
     environment: { ...process.env, HAB_ID_TOKEN: 'bearer-of-the-parent', HAB_ID_TOKEN_FILE: '/parent/token', AHPD_SERVICE_TOKEN_FILE: '/parent/service-token' },
   }));
 
   expect(end).toEqual({ code: 0 });
   const seen = identityReport();
+  expect(seen['bearer']).toBe('bearer-of-the-parent');
+  expect(seen['tokenFile']).toBe('/parent/token');
+  expect(seen['serviceToken']).toBe('/parent/service-token');
+});
+
+it('never hands the parent\'s identity to a named child', async () => {
+  const tokenFile = join(dir, 'child-token');
+  writeFileSync(tokenFile, 'child-token-bytes', { mode: 0o600 });
+  const end = await secretsExec(['web', '--child', 'worker', '--', command()], options({
+    environment: { ...process.env, HAB_ID_TOKEN: 'bearer-of-the-parent', HAB_ID_TOKEN_FILE: '/parent/token', AHPD_SERVICE_TOKEN_FILE: '/parent/service-token' },
+    mintChild: async () => ({ actor: 'worker', kind: 'service', tokenFile }),
+  }));
+
+  expect(end).toEqual({ code: 0 });
+  const seen = identityReport();
   expect(seen['bearer']).toBeNull();
-  expect(seen['tokenFile']).toBeNull();
+  expect(seen['tokenFile']).toBe(tokenFile);
   expect(seen['serviceToken']).toBeNull();
 });
 

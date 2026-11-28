@@ -196,12 +196,14 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
       return { code: EXIT_NO_VALUE };
     }
   }
-  // A child is never handed the parent's identity: the variables that carry one are dropped from what it inherits.
-  // With `--child` it gets exactly the token minted for itself, and with no mint wired it starts nothing at all.
   const environment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env) };
-  for (const key of IDENTITY_ENV) delete environment[key];
   let minted: ChildIdentity | undefined;
   if (line.child !== undefined) {
+    // A named child is never handed the parent's identity: the variables that carry one are dropped from what it
+    // inherits, and it gets exactly the token minted for itself. With no mint wired it starts nothing at all.
+    // With no `--child` the inherited environment is left alone: until hab mints children (@dev/22's half), a service's
+    // own start still presents the token process-compose handed its wrapper, and scrubbing it here would refuse it.
+    for (const key of IDENTITY_ENV) delete environment[key];
     const mint = options.mintChild ?? UNWIRED_MINT;
     let identity: ChildIdentity | { readonly refused: string };
     try {
