@@ -33,6 +33,7 @@ import { constants, hostname } from 'node:os';
 import { scopeOf } from '@ahpd/sdk';
 import { vaultPath } from '../config.js';
 import { fileVault } from '../vault.js';
+import { residentIdentity } from '../service-identity.js';
 
 /** The words this takes after `secrets exec`, read. */
 export interface ExecLine {
@@ -86,6 +87,17 @@ const USAGE = "secrets exec <service> [--env NAME=<scope>:<name>]... [--set NAME
 
 /** The variables that carry an identity. A child gets none of the parent's, only the one minted for itself. */
 const IDENTITY_ENV = ['HAB_ID_TOKEN', 'HAB_ID_TOKEN_FILE', 'AHPD_SERVICE_TOKEN_FILE'] as const;
+
+/**
+ * Fills the names a start was given at startup into an environment that no longer carries them
+ * (`service-identity.ts` scrubs `process.env` on import). A name the environment already has wins.
+ */
+export const withResidentIdentity = (environment: NodeJS.ProcessEnv, captured: Readonly<Record<string, string | undefined>>): NodeJS.ProcessEnv => {
+  for (const [name, value] of Object.entries(captured)) {
+    if (value !== undefined && environment[name] === undefined) environment[name] = value;
+  }
+  return environment;
+};
 
 /** The line read, or the sentence saying what is wrong with it. Never quotes a value: the line holds none. */
 export function readExecLine(words: readonly string[]): ExecLine | string {
@@ -308,8 +320,13 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
     }
   }
   // The wrapper's own environment, kept as it arrived: hab's parent selector verifies the caller's resident
-  // `HAB_ID_TOKEN`/`HAB_ID_TOKEN_FILE`, so the mint must see them even when the child may not.
-  const resident: NodeJS.ProcessEnv = { ...(options.environment ?? process.env) };
+  // `HAB_ID_TOKEN`/`HAB_ID_TOKEN_FILE`, so the mint must see them even when the child may not. `service-identity.ts`
+  // takes the identity out of `process.env` at startup (it is main.ts's first import), so in the real wrapper the
+  // captured copy is put back here; a caller that supplies an environment (a test) keeps exactly what it supplied.
+  const resident: NodeJS.ProcessEnv = withResidentIdentity(
+    { ...(options.environment ?? process.env) },
+    options.environment === undefined ? residentIdentity() : {},
+  );
   const environment: NodeJS.ProcessEnv = { ...resident };
   let minted: ChildIdentity | undefined;
   if (line.child !== undefined) {
