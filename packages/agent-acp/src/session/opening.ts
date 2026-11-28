@@ -1,6 +1,6 @@
 import { RequestError } from '@agentclientprotocol/sdk';
 import type { AgentCapabilities, McpServer as AcpMcpServer } from '@agentclientprotocol/sdk';
-import { machineAsked, machinePathOf, mcpServerCustomization, protectedResource } from '@ahpd/sdk';
+import { machineAsked, machinePathOf, mcpServerCustomization, protectedResource, secretRef } from '@ahpd/sdk';
 import type { ProxyEndpoint, Spawn, Start, ToolsEndpoint, UpstreamRefusal } from '@ahpd/sdk';
 import { heardCapabilities, isNoRollout, watchSession } from '../catalog.js';
 import { childProcessOf, connectAcp, KILL_GRACE_MS } from '../connection.js';
@@ -192,6 +192,69 @@ const proxyOf = (ctx: SessionContext, name: string, server: { url: string; heade
 };
 
 /**
+ * One value ACP must carry as a string, with a `$secret` reference read out of
+ * the host's vault first (#39059).
+ *
+ * A record's `mcpServers` entry may name its credential as `{ "$secret": "host:x" }`,
+ * the way its `env` may, and the host is the only thing that can read it. ACP
+ * has no shape for a reference: a server's headers and variables are strings,
+ * so one passed through would reach the agent as an object - refused by an http
+ * server that tests its authorization header for a bearer, and a type error
+ * everywhere else. So it is read here, at the moment the session opens, through
+ * the same reader `env` uses.
+ *
+ * A reference nothing can read fails the session loudly and by name: an agent
+ * started with a server it was denied, or with an empty credential, is worse
+ * than one that was not started. The refusals name the server and the secret,
+ * never the value, because a refusal is printed on a terminal and written to a
+ * log.
+ */
+const carriedValue = async (
+  server: string,
+  field: string,
+  value: unknown,
+  read: ((name: string) => Promise<string>) | undefined,
+): Promise<string> => {
+  const referenced = secretRef(value);
+  if (referenced === undefined) {
+    if (typeof value !== 'string') {
+      throw new Error(`MCP_SERVER_VALUE_NOT_A_STRING: ${server} ${field} is not a string, so this agent cannot be given it`);
+    }
+    return value;
+  }
+  if (read === undefined) {
+    throw new Error(`MCP_SERVER_SECRET_UNREADABLE: ${server} ${field} names ${referenced}, and this agent has no vault to read it from`);
+  }
+  let held: string;
+  try {
+    held = await read(referenced);
+  }
+  catch (error) {
+    throw new Error(`MCP_SERVER_SECRET_UNREADABLE: ${server} ${field} names ${referenced}: ${messageOf(error)}`);
+  }
+  if (typeof held !== 'string' || held === '') {
+    throw new Error(`MCP_SERVER_SECRET_UNREADABLE: ${server} ${field} names ${referenced}, which the vault does not hold as a value`);
+  }
+  return held;
+};
+
+/**
+ * One server's headers, each reference read, in the order the entry wrote them.
+ */
+const carriedHeaders = async (
+  name: string,
+  headers: Record<string, unknown> | undefined,
+  read: ((name: string) => Promise<string>) | undefined,
+): Promise<Record<string, string> | undefined> => {
+  if (headers === undefined) return undefined;
+  const out: Record<string, string> = {};
+  for (const [header, value] of Object.entries(headers)) {
+    out[header] = await carriedValue(name, `header ${header}`, value, read);
+  }
+  return out;
+};
+
+/**
  * The host's servers this record is offered, by the names it declares (#39079).
  *
  * A record that declares nothing is handed the whole map, which is what every
@@ -229,6 +292,7 @@ const serversFor = async (
   proxied: (name: string, server: { url: string; headers?: Record<string, string> }) => ProxyEndpoint | undefined = () => undefined,
   toolsAnswer: (answer: HostToolsAnswer) => void = () => {},
   unreached: (name: string) => void = () => {},
+  read: ((name: string) => Promise<string>) | undefined = undefined,
 ): Promise<AcpMcpServer[]> => {
   const taken: AcpMcpServer[] = [];
   const mcp = capabilities?.mcpCapabilities;
@@ -243,6 +307,9 @@ const serversFor = async (
     return reached === undefined && !toolsReachable(at, machine === undefined ? undefined : `computer://${machine}`) ? undefined : at;
   };
   for (const [name, one] of Object.entries(offeredServers(start.mcpServers, declaredServers, who))) {
+    // #39059: a `$secret` in a header is read here, before either path takes the
+    // entry, so the pass-through and the agent both see the value ACP can carry.
+    const headers = one.type === 'http' ? await carriedHeaders(name, one.headers, read) : undefined
     // ACP has one shape per transport and this host has two, so a stdio server
     // is a name, a command and a list of variables, and an HTTP one is a name,
     // a URL and a list of headers.
@@ -260,7 +327,7 @@ const serversFor = async (
        * host. A machine that cannot reach the daemon gets the server direct,
        * and is told a renewal will not reach it.
        */
-      const through = proxied(name, one);
+      const through = proxied(name, headers === undefined ? { url: one.url } : { url: one.url, headers });
       const at = through === undefined ? undefined : await reachedFrom(through.url);
       if (through !== undefined && at === undefined) {
         say(`${name}: computer://${String(machine)} cannot reach the daemon at ${addressOf(through.url)}, so it gets this server direct and a renewed token will not reach it`);
@@ -270,7 +337,7 @@ const serversFor = async (
         unreached(name);
       }
       taken.push(at === undefined || through === undefined
-        ? { type: 'http', name, url: one.url, headers: Object.entries(one.headers ?? {}).map(([header, value]) => ({ name: header, value })) }
+        ? { type: 'http', name, url: one.url, headers: Object.entries(headers ?? {}).map(([header, value]) => ({ name: header, value })) }
         : { type: 'http', name, url: at, headers: [{ name: 'authorization', value: `Bearer ${through.token}` }] });
       continue;
     }
@@ -283,7 +350,10 @@ const serversFor = async (
       name,
       command: one.command,
       args: one.args ?? [],
-      env: Object.entries(one.env ?? {}).map(([variable, value]) => ({ name: variable, value })),
+      env: await Promise.all(Object.entries(one.env ?? {}).map(async ([variable, value]) => ({
+        name: variable,
+        value: await carriedValue(name, `env.${variable}`, value, read),
+      }))),
     });
   }
   /*
@@ -805,6 +875,7 @@ export function createOpening(ctx: SessionContext, capabilityOwner: AcpOptions):
           ctx.proxies.delete(name);
           held.close();
         },
+        options.secret,
       );
       /*
        * The configured servers as customizations, so a targeted token can name

@@ -528,6 +528,9 @@ const engineOf = (host: PluginHost, values: Record<string, unknown>): Engine => 
     keyVariables: KEY_VARIABLES,
     open: (record) => acpAgent({
       ...optionsOfRecord(shared, record),
+      // #39059: the same reader a record's `env` is read through, so a `$secret` in a record's `mcpServers` entry
+      // resolves at the session's open instead of reaching the agent as an object ACP cannot carry.
+      secret: (name) => host.secret(name),
       ...(host.hostId === undefined ? {} : { hostScope: { configDir: host.configDir, hostId: host.hostId } }),
       presetOf: () => ({ ...optionsOfRecord(shared, record), ...(host.hostId === undefined ? {} : { hostScope: { configDir: host.configDir, hostId: host.hostId } }) }),
     }),

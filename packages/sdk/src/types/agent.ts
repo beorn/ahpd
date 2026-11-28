@@ -18,6 +18,7 @@ import type { MachineNeed } from './machine.js';
 import type { ShellEnv } from '../machines/shellenv.js';
 import type { SessionConfigAnswerer } from './completions.js';
 import type { ManagedSettingsPermissions, PermissionKind } from './permissions.js';
+import type { SecretRef } from './vault.js';
 
 /**
  * An MCP server the host offers its agents, reached over stdio.
@@ -29,7 +30,14 @@ export interface StdioMcpServer {
   type: 'stdio';
   command: string;
   args?: string[];
-  env?: Record<string, string>;
+  /**
+   * Its own environment, a variable at a time.
+   *
+   * A value may be a name the host's vault holds, `{ "$secret": "host:x" }`
+   * (#39059): a configured file keeps the reference and the backend reads the
+   * value at the session's open, because ACP can carry only a string.
+   */
+  env?: Record<string, string | SecretRef>;
   cwd?: string;
 }
 
@@ -42,7 +50,15 @@ export interface StdioMcpServer {
 export interface HttpMcpServer {
   type: 'http';
   url: string;
-  headers?: Record<string, string>;
+  /**
+   * What goes with every call, which is how an endpoint that wants a bearer is
+   * reached.
+   *
+   * A value may be a name the host's vault holds, `{ "$secret": "host:x" }`
+   * (#39059), for the same reason a stdio server's `env` may: the file keeps
+   * the reference, and the backend reads the value when the session opens.
+   */
+  headers?: Record<string, string | SecretRef>;
 }
 
 /**

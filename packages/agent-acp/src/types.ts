@@ -81,6 +81,18 @@ export interface AcpOptions {
   spawnGuard?: 'inherited-fd-v1';
   /** Existing daemon identity/configuration authority, supplied at construction. */
   hostScope?: { configDir: string; hostId: string };
+  /**
+   * The host's vault, read once for each `{ "$secret": "<name>" }` a record's
+   * `mcpServers` entry carries (#39059).
+   *
+   * ACP carries a server's headers and variables as strings, so a reference
+   * that reached one would arrive at the agent as an object — refused outright
+   * by an http server that tests for a bearer, and unusable by any server at
+   * all. The value is read here, at the moment the session opens, through the
+   * same reader a record's `env` uses; it is never logged and never written
+   * back to disk.
+   */
+  secret?: (name: string) => Promise<string>;
   /** The program to spawn as the ACP server. */
   command: string;
   /** The arguments to give it. */
