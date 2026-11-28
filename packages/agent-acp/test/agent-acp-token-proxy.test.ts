@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import type { Bag, ComputerPort, Emit, Session, Start } from '@ahpd/sdk';
+import type { Bag, ComputerPort, Emit, McpServer, Session, Start } from '@ahpd/sdk';
 import { DEFAULT_CLIENT_TOOL_TIMEOUT_MS } from '../../sdk/src/tools/clientcalls.js';
 import { toolServers } from '../../sdk/src/tools/server.js';
 import type { ToolsServers } from '../../sdk/src/tools/server.js';
@@ -94,6 +94,7 @@ async function talking(
   id: string,
   machine?: { reach: (id: string, url: string) => Promise<string | undefined> },
   before?: (session: Session) => Promise<void>,
+  entry: McpServer = { type: 'http', url: at, headers: { 'x-tenant': 'acme' } },
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'ahpd-acp-proxy-'));
   made.push(dir);
@@ -119,7 +120,7 @@ async function talking(
     emit,
     clientToolTimeoutMs: DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
     trusted: () => true,
-    mcpServers: { desk: { type: 'http', url: at, headers: { 'x-tenant': 'acme' } } },
+    mcpServers: { desk: entry },
     proxyServer: (upstreamServer) => servers.openProxy(upstreamServer),
   };
   const session = await agent.create(start);
@@ -289,4 +290,17 @@ it('keeps the same pass-through across a server that died, holding the token it 
   expect(again).toEqual(handed);
   await call();
   expect(seen.at(-1)).toEqual({ authorization: 'Bearer kept', tenant: 'acme' });
+});
+
+it('starts a server the record marks as needing a person token waiting for one, with the entry\'s own URL', async () => {
+  // #39198: the pipe's tools server answers `initialize` 200 with no token, so
+  // the child reports it connected and no refusal ever asks the person to sign
+  // in. The declaration's mark starts the wait, before the first turn.
+  const { session, desk } = await talking('marked', undefined, undefined, { type: 'http', url: at, requiresClientToken: true });
+
+  expect(desk()?.state).toMatchObject({ kind: 'authRequired', reason: 'required', resource: { resource: at } });
+  // The host aims a client's token at that resource, and the pass-through sends
+  // it from the next request on with the wait cleared.
+  expect(await session.authenticated?.(at, 'fresh', DESK)).toBe(true);
+  expect(desk()?.state).toEqual({ kind: 'ready' });
 });
