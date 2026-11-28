@@ -26,6 +26,24 @@ export interface SecretRef {
   readonly $secret: string;
 }
 
+/**
+ * A value that is not a secret at all, written on the entry as `--set NAME=VALUE` (#38276): the handful of paths a
+ * resident needs at start, such as the tribe socket. Only a name on {@link PLAIN_ENV} may use it: a blanket plain
+ * value is how a secret ends up in the machine's file, so the exception is a list, not a permission.
+ */
+export interface PlainEnv {
+  readonly plain: string;
+}
+
+/** One `env` value: a vault reference, or a plain value for a name this list allows. */
+export type EnvValue = SecretRef | PlainEnv;
+
+/**
+ * The names whose value may be written plainly. Every mover that speaks on the wire needs the socket's path, and a
+ * path is not a secret; nothing that carries an identity may appear here.
+ */
+export const PLAIN_ENV = ['TRIBE_SOCKET'] as const;
+
 /** process-compose's `availability.restart` values. */
 export const RESTART_POLICIES = ['always', 'on_failure', 'exit_on_failure', 'no'] as const;
 export type RestartPolicy = (typeof RESTART_POLICIES)[number];
@@ -130,7 +148,7 @@ export interface ServiceRecord {
    * The watch restarts the resident when the link resolves somewhere new; a service with no landing is ignored.
    */
   readonly landing?: string;
-  readonly env?: Readonly<Record<string, SecretRef>>;
+  readonly env?: Readonly<Record<string, EnvValue>>;
   readonly schedule?: Schedule;
   readonly restart?: Restart;
   readonly depends_on?: readonly Dependency[];
@@ -156,7 +174,7 @@ export interface ServicePatch {
   readonly command?: string;
   readonly cwd?: string | null;
   readonly landing?: string | null;
-  readonly env?: Readonly<Record<string, SecretRef>> | null;
+  readonly env?: Readonly<Record<string, EnvValue>> | null;
   readonly schedule?: Schedule | null;
   readonly restart?: Restart | null;
   readonly depends_on?: readonly Dependency[] | null;
@@ -335,6 +353,14 @@ export function checkPatch(patch: unknown): Invalid | undefined {
     for (const [key, value] of Object.entries(env)) {
       if (!VARIABLE.test(key)) return bad(`env name "${key}" is not a variable name`);
       const ref = isObject(value) && Object.keys(value).length === 1 ? value['$secret'] : undefined;
+      const plain = isObject(value) && Object.keys(value).length === 1 ? value['plain'] : undefined;
+      if (plain !== undefined) {
+        if (!(PLAIN_ENV as readonly string[]).includes(key)) return { code: 'PLAIN_ENV_VALUE', message: `env ${key} may not be a plain value: only ${PLAIN_ENV.join(', ')} may be written plainly, and every other name must be {"$secret":"<scope>:<name>"}` };
+        if (typeof plain !== 'string' || plain.trim() === '') return bad(`env ${key}: plain is a non-empty string`);
+        if (plain.includes('{{')) return bad(`env ${key}: plain holds "{{", which process-compose reads as a template`);
+        if (/[\s'"]/u.test(plain)) return bad(`env ${key}: plain holds a space or a quote, which the wrapper's line cannot carry`);
+        continue;
+      }
       if (typeof ref !== 'string') {
         return { code: 'PLAIN_ENV_VALUE', message: `env ${key} must be a secret reference {"$secret":"<scope>:<name>"}; a plain value is never written to the machine's file` };
       }
@@ -436,32 +462,37 @@ const quoteWord = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
 export function nativeCommand(
   name: string,
   command: string,
-  env: Readonly<Record<string, SecretRef>> | undefined,
+  env: Readonly<Record<string, EnvValue>> | undefined,
   child?: string,
 ): string {
   const refs = Object.entries(env ?? {});
   if (refs.length === 0 && child === undefined) return command;
   const childWords = child === undefined ? '' : ` --child ${child}`;
-  return `${WRAPPER} ${name}${refs.map(([key, ref]) => ` --env ${key}=${ref.$secret}`).join('')}${childWords} -- ${quoteWord(command)}`;
+  const refWords = refs.map(([key, value]) => ('$secret' in value ? ` --env ${key}=${value.$secret}` : ` --set ${key}=${value.plain}`)).join('');
+  return `${WRAPPER} ${name}${refWords}${childWords} -- ${quoteWord(command)}`;
 }
 
-const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*)(?: --child ([A-Za-z0-9][A-Za-z0-9_.-]*))? -- '((?:[^']|'\\'')*)'$/;
+const WRAPPED = /^ahpd secrets exec (\S+)((?: --env [A-Za-z_][A-Za-z0-9_]*=\S+)*)((?: --set [A-Za-z_][A-Za-z0-9_]*=\S+)*)(?: --child ([A-Za-z0-9][A-Za-z0-9_.-]*))? -- '((?:[^']|'\\'')*)'$/;
 
 /** The neutral command, references and child a native command carries, or why it is not the wrapper the driver writes. */
-function neutralCommand(name: string, native: string): { command: string; env?: Record<string, SecretRef>; child?: string } | string {
+function neutralCommand(name: string, native: string): { command: string; env?: Record<string, EnvValue>; child?: string } | string {
   if (!native.startsWith(`${WRAPPER} `)) return { command: native };
   const match = WRAPPED.exec(native);
   if (!match) return 'its command uses the secrets wrapper in a form the driver does not write';
   if (match[1] !== name) return `its secrets wrapper names the service ${match[1]}`;
-  const env: Record<string, SecretRef> = {};
+  const env: Record<string, EnvValue> = {};
   for (const [, key, ref] of (match[2] ?? '').matchAll(/ --env ([A-Za-z_][A-Za-z0-9_]*)=(\S+)/g)) {
     if (!REFERENCE.test(ref!)) return `its secrets wrapper names "${ref}", which is not a reference`;
     env[key!] = { $secret: ref! };
   }
+  for (const [, key, plain] of (match[3] ?? '').matchAll(/ --set ([A-Za-z_][A-Za-z0-9_]*)=(\S+)/g)) {
+    if (!(PLAIN_ENV as readonly string[]).includes(key!)) return `its secrets wrapper sets ${key} plainly, and only ${PLAIN_ENV.join(', ')} may be written that way`;
+    env[key!] = { plain: plain! };
+  }
   return {
-    command: (match[4] ?? '').replace(/'\\''/g, `'`),
+    command: (match[5] ?? '').replace(/'\\''/g, `'`),
     env,
-    ...(match[3] === undefined ? {} : { child: match[3] }),
+    ...(match[4] === undefined ? {} : { child: match[4] }),
   };
 }
 

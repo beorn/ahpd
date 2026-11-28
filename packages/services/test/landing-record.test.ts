@@ -111,3 +111,38 @@ describe('a landing and a deploying check on one entry (#38276)', () => {
     expect(reread(onBuild, 'site')).toBe('its x-hh-deploy is not a declaration the driver knows: build.verify_only is not a step field; the fields are command, args, cwd, env, timeoutMs');
   });
 });
+
+/*
+ * #38276: a resident that speaks on the wire needs one non-secret path at start. It is a named exception, not a
+ * permission: only the names on PLAIN_ENV may be written plainly, and everything else stays a secret reference.
+ */
+import { PLAIN_ENV, nativeCommand } from '../src/record.js';
+
+describe('a plain env value on a service record (#38276)', () => {
+  it('writes the allowed name on the wrapper line, and reads it back', () => {
+    expect(PLAIN_ENV).toContain('TRIBE_SOCKET');
+    expect(checkPatch({ name: 'yrd', env: { TRIBE_SOCKET: { plain: '/hh/main.hab/run/tribe.sock' } } })).toBeUndefined();
+    const native = nativeCommand('yrd', 'bun yrd.ts', { TRIBE_SOCKET: { plain: '/hh/main.hab/run/tribe.sock' } });
+    expect(native).toBe("ahpd secrets exec yrd --set TRIBE_SOCKET=/hh/main.hab/run/tribe.sock -- 'bun yrd.ts'");
+    expect(fromNative('yrd', { command: native })).toEqual({
+      name: 'yrd', command: 'bun yrd.ts', env: { TRIBE_SOCKET: { plain: '/hh/main.hab/run/tribe.sock' } },
+    });
+  });
+
+  it('refuses a plain value on any other name, by name and with the list', () => {
+    expect(checkPatch({ name: 'yrd', env: { AWS_SECRET_ACCESS_KEY: { plain: 'oops' } } })).toEqual({
+      code: 'PLAIN_ENV_VALUE',
+      message: 'env AWS_SECRET_ACCESS_KEY may not be a plain value: only TRIBE_SOCKET may be written plainly, and every other name must be {"$secret":"<scope>:<name>"}',
+    });
+    expect(checkPatch({ name: 'yrd', env: { TRIBE_SOCKET: { plain: '/a b' } } }))
+      .toEqual({ code: 'INVALID', message: 'env TRIBE_SOCKET: plain holds a space or a quote, which the wrapper\'s line cannot carry' });
+  });
+
+  it('reads a hand-written plain set back, and refuses one the list does not name', () => {
+    expect(fromNative('yrd', { command: "ahpd secrets exec yrd --set TRIBE_SOCKET=/s -- 'bun yrd.ts'" })).toEqual({
+      name: 'yrd', command: 'bun yrd.ts', env: { TRIBE_SOCKET: { plain: '/s' } },
+    });
+    expect(fromNative('yrd', { command: "ahpd secrets exec yrd --set HAB_ID_TOKEN=x -- 'bun yrd.ts'" }))
+      .toBe('its secrets wrapper sets HAB_ID_TOKEN plainly, and only TRIBE_SOCKET may be written that way');
+  });
+});

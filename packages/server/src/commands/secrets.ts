@@ -39,6 +39,11 @@ export interface ExecLine {
   /** Each variable and the reference its value comes from, in the order given. */
   readonly env: ReadonlyArray<readonly [string, string]>;
   /**
+   * Each variable and the value it is set to, in the order given (#38276): only a name the record's plain allowlist
+   * admits reaches here, so a value that is not a secret never has to pretend to be one.
+   */
+  readonly set?: ReadonlyArray<readonly [string, string]>;
+  /**
    * The child's own identity, when the entry names one (#39156 B): the name the published service declaration
    * lists as this service's child. The wrapper mints that child a token at every start, so the child acts as
    * itself and never as the parent's service row.
@@ -76,7 +81,7 @@ export const EXIT_NO_SHELL = 127;
 
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const CHILD_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/u;
-const USAGE = "secrets exec <service> [--env NAME=<scope>:<name>]... [--child <name>] -- '<command>'";
+const USAGE = "secrets exec <service> [--env NAME=<scope>:<name>]... [--set NAME=<value>]... [--child <name>] -- '<command>'";
 
 /** The variables that carry an identity. A child gets none of the parent's, only the one minted for itself. */
 const IDENTITY_ENV = ['HAB_ID_TOKEN', 'HAB_ID_TOKEN_FILE', 'AHPD_SERVICE_TOKEN_FILE'] as const;
@@ -86,6 +91,7 @@ export function readExecLine(words: readonly string[]): ExecLine | string {
   const [service, ...rest] = words;
   if (service === undefined || service === '' || service.startsWith('-')) return `the first word must be the service's name; the line is ${USAGE}`;
   const env: Array<readonly [string, string]> = [];
+  const set: Array<readonly [string, string]> = [];
   let child: string | undefined;
   let at = 0;
   while (at < rest.length && rest[at] !== '--') {
@@ -98,14 +104,28 @@ export function readExecLine(words: readonly string[]): ExecLine | string {
       child = childName;
       continue;
     }
+    const assigned = word === '--set' ? rest[at + 1] : word.startsWith('--set=') ? word.slice('--set='.length) : undefined;
+    if (assigned !== undefined) {
+      at += word === '--set' ? 2 : 1;
+      const equals = assigned.indexOf('=');
+      const key = equals === -1 ? assigned : assigned.slice(0, equals);
+      const value = equals === -1 ? '' : assigned.slice(equals + 1);
+      if (!VARIABLE.test(key)) return `${service}: --set ${assigned} does not start with a variable name`;
+      if ((IDENTITY_ENV as readonly string[]).includes(key)) return `${service}: --set ${key} is an identity, and an identity is never set plainly; it is minted for the child or not at all`;
+      if (value === '') return `${service}: --set ${key} needs a value`;
+      if (/[\s'"]/u.test(value)) return `${service}: --set ${key} holds a space or a quote, which this line cannot carry`;
+      if (set.some(([held]) => held === key) || env.some(([held]) => held === key)) return `${service}: --set names ${key} twice`;
+      set.push([key, value]);
+      continue;
+    }
     const pair = word === '--env' ? rest[at + 1] : word.startsWith('--env=') ? word.slice('--env='.length) : undefined;
-    if (pair === undefined) return `${service}: "${word}" is not --env NAME=<scope>:<name>, --child <name> or --; the line is ${USAGE}`;
+    if (pair === undefined) return `${service}: "${word}" is not --env NAME=<scope>:<name>, --set NAME=<value>, --child <name> or --; the line is ${USAGE}`;
     at += word === '--env' ? 2 : 1;
     const equals = pair.indexOf('=');
     const key = equals === -1 ? pair : pair.slice(0, equals);
     const ref = equals === -1 ? '' : pair.slice(equals + 1);
     if (!VARIABLE.test(key)) return `${service}: --env ${pair} does not start with a variable name`;
-    if (env.some(([held]) => held === key)) return `${service}: --env names ${key} twice`;
+    if (env.some(([held]) => held === key) || set.some(([held]) => held === key)) return `${service}: --env names ${key} twice`;
     try {
       scopeOf(ref);
     }
@@ -117,7 +137,7 @@ export function readExecLine(words: readonly string[]): ExecLine | string {
   if (rest[at] !== '--') return `${service}: no -- before the command; the line is ${USAGE}`;
   const after = rest.slice(at + 1);
   if (after.length !== 1 || after[0]!.trim() === '') return `${service}: the command after -- must be one quoted word; the line is ${USAGE}`;
-  return { service, env, ...(child === undefined ? {} : { child }), command: after[0]! };
+  return { service, env, ...(set.length === 0 ? {} : { set }), ...(child === undefined ? {} : { child }), command: after[0]! };
 }
 
 /** What a run reads from outside it, so a test can name its own. */
@@ -221,10 +241,11 @@ export async function secretsExec(words: readonly string[], options: ExecOptions
     environment.HAB_ID_TOKEN_FILE = identity.tokenFile;
   }
   const spawn = options.spawn ?? nodeSpawn;
+  const assigned = Object.fromEntries(line.set ?? []);
   return await new Promise<ExecEnd>((resolve) => {
     const child = spawn('/bin/sh', ['-c', line.command], {
       stdio: 'inherit',
-      env: { ...environment, ...values },
+      env: { ...environment, ...assigned, ...values },
     });
     // The token belongs to this start: it is removed when the child ends, so a dead child leaves no identity behind
     // and the next start mints a new one.

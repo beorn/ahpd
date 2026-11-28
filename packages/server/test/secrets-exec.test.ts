@@ -23,7 +23,7 @@ let spawned: Array<{ file: string; args: readonly string[] }>;
 /** A child that writes what it was started with: its argv, and the variable's value. */
 const PROBE = `
 const fs = require('node:fs');
-fs.writeFileSync(process.argv[2], JSON.stringify({ argv: process.argv, value: process.env.TOKEN ?? null, parentArgv: fs.existsSync('/proc/' + process.ppid + '/cmdline') ? fs.readFileSync('/proc/' + process.ppid + '/cmdline', 'utf8') : null, tokenFile: process.env.HAB_ID_TOKEN_FILE ?? null, bearer: process.env.HAB_ID_TOKEN ?? null, serviceToken: process.env.AHPD_SERVICE_TOKEN_FILE ?? null }));
+fs.writeFileSync(process.argv[2], JSON.stringify({ argv: process.argv, value: process.env.TOKEN ?? null, tribeSocket: process.env.TRIBE_SOCKET ?? null, parentArgv: fs.existsSync('/proc/' + process.ppid + '/cmdline') ? fs.readFileSync('/proc/' + process.ppid + '/cmdline', 'utf8') : null, tokenFile: process.env.HAB_ID_TOKEN_FILE ?? null, bearer: process.env.HAB_ID_TOKEN ?? null, serviceToken: process.env.AHPD_SERVICE_TOKEN_FILE ?? null }));
 fs.writeFileSync(process.argv[3], 'ran');
 `;
 
@@ -199,4 +199,25 @@ it('starts nothing when no mint is wired, rather than running as the parent', as
   expect(spawned).toEqual([]);
   expect(existsSync(started)).toBe(false);
   expect(said.join('')).toContain('no hab signer is wired for a service\'s children');
+});
+
+/*
+ * #38276: a non-secret path reaches the child through --set, and an identity name may never arrive that way.
+ */
+it('sets a plain value in the child\'s environment beside the secrets, and never as an identity', async () => {
+  const end = await secretsExec(['web', '--set', 'TRIBE_SOCKET=/hh/main.hab/run/tribe.sock', '--env', 'TOKEN=host:api-token', '--', command()], options());
+  expect(end).toEqual({ code: 0 });
+  const seen = JSON.parse(readFileSync(report, 'utf8')) as Record<string, unknown>;
+  expect(seen['tribeSocket']).toBe('/hh/main.hab/run/tribe.sock');
+  expect(seen['value']).toBe(VALUE);
+  expect(said).toEqual([]);
+});
+
+it('refuses --set on an identity name, a duplicate, and a value with a space', () => {
+  expect(readExecLine(['web', '--set', 'HAB_ID_TOKEN=x', '--', 'run']))
+    .toBe('web: --set HAB_ID_TOKEN is an identity, and an identity is never set plainly; it is minted for the child or not at all');
+  expect(readExecLine(['web', '--set', 'TRIBE_SOCKET=/a', '--env', 'TRIBE_SOCKET=host:a', '--', 'run']))
+    .toBe('web: --env names TRIBE_SOCKET twice');
+  expect(readExecLine(['web', '--set', 'TRIBE_SOCKET=/a b', '--', 'run']))
+    .toBe('web: --set TRIBE_SOCKET holds a space or a quote, which this line cannot carry');
 });
