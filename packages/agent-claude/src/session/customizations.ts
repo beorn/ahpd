@@ -491,7 +491,15 @@ export function customizationsOf(init: Bag, mcp: unknown[], skills: unknown[] = 
         : {}),
       ...(said !== undefined ? { description: said } : {}),
     } as OnWire<McpServerState>);
-    const state: OnWire<McpServerState> = published !== undefined && expired?.has(name) === true ? asked(published, 'expired')
+    /*
+     * A server that is still waiting for a person's token is said so, whatever
+     * the CLI reports (#39198): the pipe's tools server answers `initialize` 200
+     * with no token, so it reads `connected` there while every call is a 401.
+     * The wait is the honest state, and publishing it is what makes a client's
+     * sign-in possible at all.
+     */
+    const state: OnWire<McpServerState> = published !== undefined
+      ? asked(published, expired?.has(name) === true ? 'expired' : 'required')
       : reported === 'connected' ? { kind: 'ready' }
       : reported === 'disabled' || reported === undefined ? { kind: 'stopped' }
         : reported === 'failed'
