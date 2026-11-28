@@ -158,3 +158,22 @@ describe('the real process-compose, through the crash shape', () => {
     expect((last as Array<{ name: string; status: string }>).find((one) => one.name === 'keeper')!.status).toBe('Running');
   }, 40_000);
 });
+
+describe('a declared report-only exit code (#39156 C)', () => {
+  const REPORTING = `processes:
+  reporter:
+    command: "sh -c 'exit 3'"
+    availability:
+      restart: on_failure
+      max_restarts: 2
+    x-hh-reports: [3]
+`;
+  it('takes no incident path for a code the entry declares, and one for a code it does not', () => {
+    const answer = listServices(machineFor(REPORTING));
+    if (!answer.ok) throw new Error(answer.message);
+    expect(answer.services.find((one) => one.name === 'reporter')?.reports).toEqual([3]);
+    expect(watchAlerts('test-machine', answer, [{ name: 'reporter', status: 'Completed', exitCode: 3, restarts: 2 }])).toEqual([]);
+    const undeclared = watchAlerts('test-machine', answer, [{ name: 'reporter', status: 'Completed', exitCode: 4, restarts: 2 }]);
+    expect(undeclared.map((one) => one.ref)).toEqual([`${GAVE_UP_REF}reporter`]);
+  });
+});

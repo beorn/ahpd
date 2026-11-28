@@ -57,7 +57,7 @@ const ownerOf = (record: Listing['services'][number]): string =>
  * Every alert the listing and the process list answer together, in a stable order:
  * one per program process-compose gave up on, and one per command YAML cut short.
  *
- * Gave up means `Completed`, a non-zero exit, a restart policy that restarts, and
+ * Gave up means `Completed`, a non-zero exit its `x-hh-reports` does not declare, a restart policy that restarts, and
  * as many restarts as `max_restarts` allows (0 is unlimited, so it never gives up).
  * A read-only entry has no record to read its limit from, so it is never judged.
  */
@@ -71,6 +71,9 @@ export function watchAlerts(machine: string, listing: Answer<Listing>, running: 
     if (now === undefined || most === undefined || most === 0) continue;
     if (record.restart?.policy !== 'always' && record.restart?.policy !== 'on_failure') continue;
     if (now.status !== 'Completed' || now.exitCode === undefined || now.exitCode === 0) continue;
+    // #39156 acceptance C: a code the entry declares report-only is an answer, not a failure, so it takes no
+    // incident path. Only a code it did not declare is treated as the program having failed.
+    if (record.reports?.includes(now.exitCode) === true) continue;
     if (now.restarts === undefined || now.restarts < most) continue;
     out.push({
       level: 'error',

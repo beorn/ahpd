@@ -99,7 +99,7 @@ export interface Listing {
    * ("K (plain value, set in <file>)"); the value itself is never answered (@cto 7af7ed84), and turning
    * one into a secret reference is a person's edit on the machine.
    */
-  readonly services: ReadonlyArray<ServiceRecord & { readonly plainEnv?: readonly string[] }>;
+  readonly services: ReadonlyArray<ServiceRecord & { readonly plainEnv?: readonly string[]; readonly reports?: readonly number[] }>;
   readonly readOnly: ReadonlyArray<{ readonly name: string; readonly reason: string }>;
   readonly capabilities: typeof CAPABILITIES;
   readonly ifVersion: string;
@@ -152,6 +152,8 @@ interface State {
   readonly readOnlyIn: Map<string, string>;
   /** Per editable service, the keys its `environment:` sets with plain values. */
   readonly plainEnv: Map<string, string[]>;
+  /** Exit codes an entry declares report-only (`x-hh-reports`): a nonzero exit that is an answer, not a failure. */
+  readonly reports: Map<string, number[]>;
 }
 
 const parseFile = (file: string, text: string): Document => {
@@ -203,6 +205,15 @@ function sharedNames(machine: ComposeMachine, last: string, lastDoc: Document): 
   return names;
 }
 
+/** The exit codes an entry declares report-only under `x-hh-reports`, or undefined when it declares none. */
+function reportsOf(native: unknown): number[] | undefined {
+  if (typeof native !== 'object' || native === null) return undefined;
+  const declared = (native as Record<string, unknown>)['x-hh-reports'];
+  if (!Array.isArray(declared)) return undefined;
+  const codes = declared.filter((one): one is number => typeof one === 'number' && Number.isInteger(one));
+  return codes.length === 0 ? undefined : [...codes].sort((a, b) => a - b);
+}
+
 /** Whether a node carries an anchor, an alias or a merge key anywhere inside it. */
 const usesAnchors = (node: unknown): boolean => {
   if (isAlias(node)) return true;
@@ -228,6 +239,7 @@ function readState(machine: ComposeMachine): State {
   const readOnly = new Map<string, string>();
   const readOnlyIn = new Map<string, string>();
   const plainEnv = new Map<string, string[]>();
+  const reports = new Map<string, number[]>();
   let processes;
   try {
     processes = processesOf(doc);
@@ -252,11 +264,13 @@ function readState(machine: ComposeMachine): State {
     readOnlyIn.delete(name);
     const keys = plainEnvKeys(native);
     if (keys.length > 0) plainEnv.set(name, keys);
+    const declared = reportsOf(native);
+    if (declared !== undefined) reports.set(name, declared);
   }
   for (const [name, other] of shared) {
     if (!services.has(name) && !readOnly.has(name)) { readOnly.set(name, `it is defined in ${other}; ${where(other)}`); readOnlyIn.set(name, other); }
   }
-  return { file, text, doc, ifVersion: hash, services, readOnly, readOnlyIn, plainEnv };
+  return { file, text, doc, ifVersion: hash, services, readOnly, readOnlyIn, plainEnv, reports };
 }
 
 /** Make sure the change log can be appended to before anything is changed, so no change goes unlogged. */
@@ -374,7 +388,12 @@ export function listServices(machine: Machine): Answer<Listing> {
       ok: true,
       services: [...state.services.values()].map((record) => {
         const keys = state.plainEnv.get(record.name);
-        return keys ? { ...record, plainEnv: keys.map((key) => `${key} (plain value, set in ${state.file})`) } : record;
+        const reported = state.reports.get(record.name);
+        const extra = {
+          ...(keys === undefined ? {} : { plainEnv: keys.map((key) => `${key} (plain value, set in ${state.file})`) }),
+          ...(reported === undefined ? {} : { reports: reported }),
+        };
+        return Object.keys(extra).length === 0 ? record : { ...record, ...extra };
       }),
       readOnly: [...state.readOnly].map(([name, reason]) => ({ name, reason })),
       capabilities: CAPABILITIES,
