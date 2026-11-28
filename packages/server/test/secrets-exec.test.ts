@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { EXIT_NO_IDENTITY, EXIT_NO_VALUE, EXIT_USAGE, readExecLine, secretsExec } from '../src/commands/secrets.js';
+import { EXIT_NO_IDENTITY, EXIT_NO_VALUE, EXIT_USAGE, readExecLine, secretsExec, withResidentIdentity } from '../src/commands/secrets.js';
 
 /*
  * #38277 slice 2: the secrets wrapper process-compose starts a program
@@ -211,6 +211,22 @@ it('gives hab the wrapper\'s resident identity, while the child gets only its mi
   expect(seen['bearer']).toBeNull();
   expect(seen['serviceToken']).toBeNull();
   expect(existsSync(tokenFile)).toBe(false);
+});
+
+/*
+ * `service-identity.ts` is main.ts's first import and takes the identity out of `process.env` there, so in the real
+ * wrapper `secrets exec` sees none of it. What was captured at startup is put back for the mint (and for a start that
+ * names no child, which presents its own identity), and a name the environment already has is never overwritten.
+ */
+it('puts the identity captured at startup back into the environment, never over one already there', () => {
+  const environment: NodeJS.ProcessEnv = { PATH: '/bin', HAB_ID_TOKEN: 'from-the-surroundings' };
+  const captured = { HAB_ID_TOKEN: 'captured-at-startup', HAB_ID_TOKEN_FILE: '/hh/main.hab/run/parent/token', AHPD_SERVICE_TOKEN_FILE: undefined };
+
+  expect(withResidentIdentity(environment, captured)).toEqual({
+    PATH: '/bin',
+    HAB_ID_TOKEN: 'from-the-surroundings',
+    HAB_ID_TOKEN_FILE: '/hh/main.hab/run/parent/token',
+  });
 });
 
 it('starts nothing when the mint refuses the child, and says which child and why', async () => {
