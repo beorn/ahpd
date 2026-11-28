@@ -35,7 +35,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { isAlias, isMap, isPair, isScalar, parseDocument, visit, type Document, type Node } from 'yaml';
 import { REMOTE_COMMANDS_OFF, machineSwitches } from './switches.js';
 import {
-  CONDITIONS, FIELDS, RESTART_POLICIES, applyPatch, checkPatch, fromNative, nativeChanges, same,
+  CONDITIONS, FIELDS, MEMORY_KEY, RESTART_POLICIES, applyPatch, bytesOfSize, checkPatch, fromNative, nativeChanges, same,
   type ServicePatch, type ServiceRecord,
 } from './record.js';
 import { LayoutError, addEntry, editEntry, lineDiff, processesOf, redactEnv, removeEntry } from './splice.js';
@@ -676,9 +676,6 @@ const currentHash = (machine: ComposeMachine): string | null => {
   }
 };
 
-/** The extension key an entry names its per-run memory cap under, beside `x-hh-landing`. */
-export const MEMORY_KEY = 'x-hh-memory';
-
 /** A service over its alarm value, as the answer reports it. */
 export interface MemoryAlarm {
   readonly name: string;
@@ -697,14 +694,6 @@ export interface MemoryKill {
 export interface MemoryReport {
   readonly alarmed: readonly MemoryAlarm[];
   readonly killed: readonly MemoryKill[];
-}
-
-/** A size as a person writes it: `3G`, `512M`, `1024K`. Powers of 1024, and a bare number is bytes. */
-export function bytesOfSize(text: string): number | undefined {
-  const match = /^(\d+(?:\.\d+)?)\s*([KMGT]?)(?:i?B)?$/iu.exec(text.trim());
-  if (match === null) return undefined;
-  const scale = { '': 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[match[2]!.toUpperCase() as '' | 'K' | 'M' | 'G' | 'T'];
-  return Math.round(Number(match[1]) * scale);
 }
 
 /** The memory caps this machine's file names, by service. */

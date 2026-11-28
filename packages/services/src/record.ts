@@ -126,6 +126,8 @@ export interface ServiceRecord {
   readonly health?: Health;
   readonly deploy?: ServiceDeployDeclaration;
   readonly source?: ServiceSource;
+  /** The per-run memory cap: an alarm value and a kill value, read at each check (#39156 C). */
+  readonly memory?: ServiceMemory;
 }
 
 /**
@@ -144,16 +146,37 @@ export interface ServicePatch {
   readonly health?: Health | null;
   readonly deploy?: ServiceDeployDeclaration | null;
   readonly source?: ServiceSource | null;
+  readonly memory?: ServiceMemory | null;
 }
 
 /** The neutral fields, in the order they are written; `list` answers them as the capability list. */
-export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source'] as const;
+export const FIELDS = ['name', 'command', 'cwd', 'env', 'schedule', 'restart', 'depends_on', 'health', 'deploy', 'source', 'memory'] as const;
 
 /** The native key a deploy declaration is written under: process-compose ignores `x-` extensions. */
 export const DEPLOY_KEY = 'x-hh-deploy';
 
 /** The native key a service's source is written under, beside the deploy declaration. */
 export const SOURCE_KEY = 'x-hh-source';
+
+/** The native key a service's per-run memory cap is written under, beside the deploy declaration and its source. */
+export const MEMORY_KEY = 'x-hh-memory';
+
+/**
+ * A per-run memory cap (#39156 acceptance C): the value at which the driver alarms, and the value at which it
+ * stops the process. Sizes are a person's spelling - `3G`, `512M`, `1024K` - as host-backup states them.
+ */
+export interface ServiceMemory {
+  readonly alarm: string;
+  readonly kill: string;
+}
+
+/** A size as a person writes it: `3G`, `512M`, `1024K`. Powers of 1024, and a bare number is bytes. */
+export function bytesOfSize(text: string): number | undefined {
+  const match = /^(\d+(?:\.\d+)?)\s*([KMGT]?)(?:i?B)?$/iu.exec(text.trim());
+  if (match === null) return undefined;
+  const scale = { '': 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[match[2]!.toUpperCase() as '' | 'K' | 'M' | 'G' | 'T'];
+  return Math.round(Number(match[1]) * scale);
+}
 
 /** The wrapper's fixed words. */
 export const WRAPPER = 'ahpd secrets exec';
@@ -270,7 +293,7 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   for (const key of Object.keys(patch)) {
     if (!(FIELDS as readonly string[]).includes(key)) return bad(`"${key}" is not a service field; the fields are ${FIELDS.join(', ')}`);
   }
-  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source } = patch;
+  const { name, command, cwd, env, schedule, restart, depends_on: depends, health, deploy, source, memory } = patch;
   if (typeof name !== 'string' || !SAFE_NAME.test(name)) return bad('name must be letters, digits, "_", "." or "-", starting with a letter or digit');
   const text = (field: string, value: unknown): Invalid | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return bad(`${field} must be a non-empty string`);
@@ -345,6 +368,17 @@ export function checkPatch(patch: unknown): Invalid | undefined {
   if (source !== undefined && source !== null) {
     const read = readSource(source);
     if (typeof read === 'string') return bad(`source: ${read}`);
+  }
+  if (memory !== undefined && memory !== null) {
+    if (!isObject(memory)) return bad('memory must be {alarm: "<size>", kill: "<size>"}');
+    if (Object.keys(memory).length !== 2 || memory['alarm'] === undefined || memory['kill'] === undefined) {
+      return bad('memory needs exactly alarm and kill');
+    }
+    for (const key of ['alarm', 'kill'] as const) {
+      const size = text(`memory.${key}`, memory[key]);
+      if (size) return size;
+      if (bytesOfSize(memory[key] as string) === undefined) return bad(`memory.${key} is not a size such as 3G, 512M or 1024K`);
+    }
   }
   return undefined;
 }
@@ -500,6 +534,16 @@ export function fromNative(name: string, entry: unknown): ServiceRecord | string
     if (typeof read === 'string') return `its ${SOURCE_KEY} is not a source the driver knows: ${read}`;
     record['source'] = read;
   }
+
+  const cap = entry[MEMORY_KEY];
+  if (cap !== undefined && cap !== null) {
+    if (!isObject(cap)) return `its ${MEMORY_KEY} is not a mapping`;
+    const alarm = cap['alarm'];
+    const kill = cap['kill'];
+    if (typeof alarm !== 'string' || typeof kill !== 'string') return `its ${MEMORY_KEY} alarm and kill are not strings`;
+    if (bytesOfSize(alarm) === undefined || bytesOfSize(kill) === undefined) return `its ${MEMORY_KEY} alarm or kill is not a size`;
+    record['memory'] = { alarm, kill };
+  }
   return record as unknown as ServiceRecord;
 }
 
@@ -602,6 +646,13 @@ export function nativeChanges(before: ServiceRecord | undefined, after: ServiceR
     else {
       leaf([SOURCE_KEY, 'kind'], after.source.kind);
       leaf([SOURCE_KEY, 'id'], after.source.id);
+    }
+  }
+  if (changed('memory')) {
+    if (after.memory === undefined) leaf([MEMORY_KEY], undefined);
+    else {
+      leaf([MEMORY_KEY, 'alarm'], after.memory.alarm);
+      leaf([MEMORY_KEY, 'kill'], after.memory.kill);
     }
   }
   if (changed('schedule')) {

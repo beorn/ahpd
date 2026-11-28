@@ -15,5 +15,5 @@ export {
   type Changes, type ChangesRange,
 } from './compose.js';
 export { unitText, putUnit, removeUnit, controlUnit, type SystemdMachine, type SystemdUserBackend, type UnitHost, type UnitRun } from './systemd.js';
-export type { ServiceRecord, ServicePatch, ServiceSource, SourceKind, SecretRef, Schedule, Restart, Dependency, Health, RestartPolicy, Condition } from './record.js';
+export type { ServiceRecord, ServicePatch, ServiceSource, ServiceMemory, SourceKind, SecretRef, Schedule, Restart, Dependency, Health, RestartPolicy, Condition } from './record.js';
 export type { PcSocket } from './pc.js';
