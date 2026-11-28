@@ -36,7 +36,7 @@ import {
 } from './channel.js';
 import { isUnreadableLine, type ComposeMachine } from './compose.js';
 import { DRIFT_REF, acknowledge, checkDrift, type DriftAlert, type DriftFacts } from './drift.js';
-import { watchAlerts } from './watch.js';
+import { GAVE_UP_REF, watchAlerts } from './watch.js';
 
 export { DRIVER, callerOf, type Driver } from './channel.js';
 
@@ -209,12 +209,66 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
       host.clearAlert(UNREADABLE_REF);
     }
   };
+  const noteUnreadable = (line: { offset: number }, log: string | undefined): void => {
+    if (unreadableIn !== undefined && unreadableIn === log) return;
+    unreadableIn = log;
+    host.alert({ level: 'warning', text: `services change log has an unreadable line at ${line.offset} (${machine.changeLog})`, ref: UNREADABLE_REF });
+  };
+  const stops = new Map<string, number>();
+  let changesPosition = 0;
+  let changesLog: string | undefined;
+  // Read new journal entries on demand. A replaced journal cannot vouch for an old stop.
+  const readStops = (): string | undefined => {
+    let page = driver.changes(machine, { position: changesPosition }, changesLog);
+    if (!page.ok && page.code === 'CHANGES_REPLACED') {
+      stops.clear();
+      changesPosition = 0;
+      changesLog = undefined;
+      page = driver.changes(machine);
+    }
+    while (page.ok) {
+      for (const line of page.lines) {
+        if (isUnreadableLine(line)) {
+          stops.clear();
+          noteUnreadable(line, page.log);
+          continue;
+        }
+        if (line.refused !== undefined || typeof line.name !== 'string') continue;
+        if (line.op === 'stop' && typeof line.at === 'string') stops.set(line.name, Date.parse(line.at));
+        else if (line.op === 'start' || line.op === 'restart') stops.delete(line.name);
+      }
+      const advanced = page.end > changesPosition;
+      changesPosition = page.end;
+      changesLog = page.log;
+      if (!advanced || page.end === page.size) return undefined;
+      page = driver.changes(machine, { position: changesPosition }, changesLog);
+    }
+    return page.message;
+  };
+  const pendingStops = new Set<{ name: string }>();
   const check = async (): Promise<void> => {
     try {
       checkUnreadable();
       const drift = await checkDrift(machine, stateFile, (facts) => { running = facts.running; });
       // @cto 8f8fafce (2, 5): a program process-compose gave up on, and a command YAML cut short, beside the drift.
-      alerts = [...drift, ...watchAlerts(machine.name, driver.list(machine), running)];
+      let watched = watchAlerts(machine.name, driver.list(machine), running);
+      if (typeof running === 'object' && watched.some((alert) => alert.ref.startsWith(GAVE_UP_REF))) {
+        const historyError = readStops();
+        if (historyError !== undefined) drift.push({ level: 'error', ref: `${DRIFT_REF}stop-history`, text: historyError });
+        const held = new Map(running.map((one) => [one.name, one]));
+        const pending = new Set([...pendingStops].map((request) => request.name));
+        watched = watched.flatMap((alert) => {
+          if (!alert.ref.startsWith(GAVE_UP_REF)) return [alert];
+          const name = alert.ref.slice(GAVE_UP_REF.length);
+          const row = held.get(name);
+          const stop = historyError === undefined ? stops.get(name) : undefined;
+          if (stop !== undefined && row?.startedAt !== undefined && row.endedAt !== undefined
+            && Date.parse(row.startedAt) <= stop && stop <= Date.parse(row.endedAt)) return [];
+          // A snapshot can see the stop before the driver's acknowledgement is on disk.
+          return pending.has(name) ? alerts.filter((previous) => previous.ref === alert.ref) : [alert];
+        });
+      }
+      alerts = [...drift, ...watched];
       raised = showDrift(host, raised, alerts);
     }
     catch (error) {
@@ -237,16 +291,31 @@ export const apply = (host: ServicesHost, options: Record<string, unknown>, driv
   catch (error) {
     host.alert({ level: 'error', text: `cannot make the services directory: ${(error as Error).message}`, ref: 'services-options' });
   }
-  handle = host.registerChannel(SCHEME, servicesChannel({ machine, driver, state, wrote, changed: () => { void check(); } }));
+  const controller: Driver = {
+    ...driver,
+    control: async (machine, caller, request) => {
+      if (request.verb !== 'stop') return driver.control(machine, caller, request);
+      pendingStops.add(request);
+      let acknowledged = false;
+      try {
+        const answer = await driver.control(machine, caller, request);
+        acknowledged = answer.ok;
+        return answer;
+      }
+      finally {
+        pendingStops.delete(request);
+        if (!acknowledged) void check();
+      }
+    },
+  };
+  handle = host.registerChannel(SCHEME, servicesChannel({ machine, driver: controller, state, wrote, changed: () => { void check(); } }));
   host.registerResourceProvider(SERVICE_SCHEME, serviceProvider({ machine, driver }));
   const changes = servicesProvider({ machine, driver });
   // A line of the change log that could not be read is said once, as an alert, whoever read it.
   const noted = <T extends { data: string }>(answer: T): T => {
     const lines = (JSON.parse(answer.data) as { lines?: Array<Record<string, unknown>> }).lines ?? [];
     for (const line of lines) {
-      if (!isUnreadableLine(line)) continue;
-      unreadableIn = logIdentity();
-      host.alert({ level: 'warning', text: `services change log has an unreadable line at ${line.offset} (${machine.changeLog})`, ref: UNREADABLE_REF });
+      if (isUnreadableLine(line)) noteUnreadable(line, logIdentity());
     }
     return answer;
   };

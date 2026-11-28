@@ -39,7 +39,14 @@ export interface DriftFacts {
   /** The machine's name, as the alerts say it. */
   readonly machine: string;
   /** Every process process-compose holds, by name, with its status, and its exit code and restart count when it said them. */
-  readonly running: ReadonlyArray<{ readonly name: string; readonly status: string; readonly exitCode?: number; readonly restarts?: number }> | string;
+  readonly running: ReadonlyArray<{
+    readonly name: string;
+    readonly status: string;
+    readonly exitCode?: number;
+    readonly restarts?: number;
+    readonly startedAt?: string;
+    readonly endedAt?: string;
+  }> | string;
   /** Every process name the `-f` files define, and the file that defines it. */
   readonly defined: ReadonlyMap<string, string> | string;
   /** Each `-f` file's sha256 now, or why it cannot be read. */
@@ -220,11 +227,13 @@ export async function driftFacts(machine: ComposeMachine, stateFile: string): Pr
       running = `GET /processes answered without a list of named processes: ${JSON.stringify(answer.body)}`;
     }
     else {
-      running = data.map((one: { name: string; status?: unknown; exit_code?: unknown; restarts?: unknown }) => ({
+      running = data.map((one: { name: string; status?: unknown; exit_code?: unknown; restarts?: unknown; process_start_time?: unknown; process_end_time?: unknown }) => ({
         name: one.name,
         status: String(one.status ?? 'unknown'),
         ...(typeof one.exit_code === 'number' ? { exitCode: one.exit_code } : {}),
         ...(typeof one.restarts === 'number' ? { restarts: one.restarts } : {}),
+        ...(typeof one.process_start_time === 'string' ? { startedAt: one.process_start_time } : {}),
+        ...(typeof one.process_end_time === 'string' ? { endedAt: one.process_end_time } : {}),
       }));
     }
   }

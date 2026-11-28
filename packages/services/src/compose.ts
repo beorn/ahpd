@@ -285,8 +285,8 @@ export interface LogLine {
   readonly refused?: { readonly code: RefusalCode; readonly message: string };
 }
 
-const writeLog = (changeLog: string, line: Omit<LogLine, 'at'>): void => {
-  appendFileSync(changeLog, `${JSON.stringify({ at: new Date().toISOString(), ...line })}\n`, { mode: 0o600 });
+const writeLog = (changeLog: string, line: Omit<LogLine, 'at'>, at = new Date().toISOString()): void => {
+  appendFileSync(changeLog, `${JSON.stringify({ at, ...line })}\n`, { mode: 0o600 });
 };
 
 /**
@@ -659,10 +659,11 @@ export async function controlService(machine: Machine, caller: Caller, params: {
   const name = typeof params?.name === 'string' ? params.name : '';
   const verb = params?.verb;
   const hash = currentHash(machine);
+  let requestedAt: string | undefined;
   const line = (refused?: Refusal): void => writeLog(machine.changeLog, {
     principal: caller.principal, op: String(verb), name, before: null, after: null, fileHashBefore: hash, fileHashAfter: hash,
     ...(refused ? { refused: { code: refused.code, message: refused.message } } : {}),
-  });
+  }, requestedAt);
   try {
     const unwritable = openLog(machine.changeLog);
     if (unwritable) return unwritable;
@@ -679,6 +680,8 @@ export async function controlService(machine: Machine, caller: Caller, params: {
     const [method, path] = ROUTES[verb](name);
     let refusal: Refusal | undefined;
     try {
+      // The stop may complete before its HTTP acknowledgement lets us append the record.
+      requestedAt = new Date().toISOString();
       const answer = await pcRequest(machine.backend.pc, method, path);
       if (answer.status !== 200) refusal = refuse('PC_REFUSED', `${verb} ${name}: ${pcFailure(answer)}`);
     }
